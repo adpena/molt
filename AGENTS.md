@@ -74,6 +74,9 @@ over stale prose or precedent.
 - Ecosystem support uses reusable primitives, package/import custody, source-built extensions and
   correct C-API/ABI, not substitute packages. Forks/patches must be maintained, provenance-pinned
   repairs for upstream defects; Molt does not reimplement NumPy, SciPy or other upstream packages.
+- Never rewrite Python in Python. A stdlib module CPython ships as Python compiles from CPython's
+  pinned source, patched only where the verified subset requires; a C module or hot path becomes a
+  Rust intrinsic with thin Python glue. Speed comes from Rust and from code that avoids the runtime.
 - Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
   runtime memory management and every shipped backend/profile are first-class optimization surfaces.
 - Preserve deterministic CPython behavior by default while designing for free-threaded and GIL-less execution.
@@ -92,6 +95,9 @@ over stale prose or precedent.
   Cargo, Go and uv set the millisecond no-change rebuild bar.
 - Measure changed contracts before/after: latency/throughput, startup, allocation/I/O, peak live
   and process-tree memory, caches/atomics/contention, code/artifact size, link time, failure atomicity.
+- Time CPython with the uv-managed interpreter in isolated mode (`python3.X -I`); the dev
+  environment re-execs test scripts under a memory guard. Attribute a cost only when its source, a
+  per-module profile and an interleaved A/B agree; `docs/design/foundation/call_anatomy.md` is the anchor.
 - Optimize per platform and architecture through typed capability and target plans. Do not use
   post-failure retries or silent fallback as feature detection.
 - Extend instrumentation only to shorten decisions or remove measured recurring bottlenecks; avoid
@@ -163,6 +169,9 @@ over stale prose or precedent.
   once; CI arbitrates release candidates. Review matching receipts; avoid duplicate prechecks and
   reflexive rechecks. Hand off a lane only after `tools/molt_dev.py land --repo <checkout>
   --precheck-only` and its changed tests pass in the runner's plain environment, not a lane env.sh.
+- Before each commit, `tools/consumer_gate.py run -- PATHS` runs the static gates and first-hop
+  importers as presubmit does (`-n auto --skip-slow`). Mark a test whose median is 60 s or more
+  `@pytest.mark.slow`; postsubmit runs it (`docs/ops/INTEGRATION.md`).
 - Reuse one compiled producer for compatible profiles/features and affected selectors. Batch useful
   checks without adding unrelated suites to amortize a compile; avoid cold targets and competing
   Cargo writers. Measure the actual critical path before changing concurrency or coverage.
@@ -206,6 +215,9 @@ over stale prose or precedent.
 - Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - CI or JUnit failure triage (NEW versus main, owners): `tools/ci_triage.py RUN_ID|--junit FILE`
+- Why Molt is slow and the staged plan (read its stage status before any performance analysis,
+  ordering or speed claim; time CPython with the managed interpreter, never the dev env):
+  `docs/design/foundation/call_anatomy.md`
 - Loop anatomy and cost buckets: `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md`
 
 Load only the authority the task needs, and update it when its facts change.

@@ -2210,28 +2210,6 @@ pub(crate) fn awaitable_await_func_bits(_py: &PyToken<'_>) -> u64 {
 
 pub(crate) type SlotsInfo = crate::object::class_storage::ClassSlotPolicy;
 
-/// Canonical admission policy for the two layout-owned instance attributes.
-/// This must run before MRO descriptor binding: builtin roots may publish
-/// class-level descriptors named `__dict__`/`__weakref__`, but those do not
-/// create storage on exact slots-only instances.
-pub(crate) unsafe fn class_instance_layout_attr_allowed(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    attr_bits: u64,
-) -> Option<bool> {
-    unsafe {
-        let dict_name_bits = crate::NameId::DunderDict.bits(_py);
-        if crate::object::ops_compare::string_storage_equal(attr_bits, dict_name_bits) {
-            return Some(class_slots_info(_py, class_ptr).is_some_and(|info| info.allows_dict));
-        }
-        let weakref_name_bits = crate::NameId::DunderWeakref.bits(_py);
-        if crate::object::ops_compare::string_storage_equal(attr_bits, weakref_name_bits) {
-            return Some(class_slots_info(_py, class_ptr).is_some_and(|info| info.allows_weakref));
-        }
-        None
-    }
-}
-
 /// Hot queries project the admission record directly. Only unpublished class
 /// construction can lack this record; mutable namespaces and MRO scans never
 /// reclassify a published class's dictionary or weakref capabilities.
@@ -2592,19 +2570,6 @@ unsafe fn object_attr_lookup_inner(
                         );
                     }
                 }
-            }
-            let weakref_name_bits = crate::NameId::DunderWeakref.bits(_py);
-            if !obj_ptr.is_null()
-                && crate::object::ops_compare::string_storage_equal(attr_bits, weakref_name_bits)
-            {
-                if let Some(class_ptr) = class_ptr_opt
-                    && class_instance_layout_attr_allowed(_py, class_ptr, attr_bits) == Some(false)
-                {
-                    return Ok(None);
-                }
-                return Ok(Some(crate::object::weakref::weakref_head_for_target(
-                    _py, obj_bits,
-                )));
             }
             let instance = if let Some(dictionary) = dictionary {
                 crate::object::accessors::attribute_dictionary_lookup(

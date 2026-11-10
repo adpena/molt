@@ -5207,11 +5207,28 @@ mod tests {
                 crate::MoltObject::from_ptr(class_ptr).bits(),
             );
             dec_ref_bits(_py, dict_name);
+            // CPython's add_weak rule: a heap class over `object` without
+            // __slots__ also gets a __weakref__ getset, which owns the class too.
+            let weakref_name = crate::dynamic_attr_name_bits(_py, b"__weakref__")
+                .expect("weakref descriptor name");
+            let weakref = unsafe { crate::dict_get_in_place(_py, namespace, weakref_name) }
+                .expect("namespace lookup succeeded")
+                .expect("sealed class owns a __weakref__ descriptor");
+            let weakref_ptr = crate::obj_from_bits(weakref).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { super::layout::native_descriptor_flavor(weakref_ptr) },
+                Some(super::layout::NativeDescriptorFlavor::InstanceWeakref),
+            );
+            assert_eq!(
+                unsafe { super::layout::native_descriptor_owner_bits(weakref_ptr) },
+                crate::MoltObject::from_ptr(class_ptr).bits(),
+            );
+            dec_ref_bits(_py, weakref_name);
             assert!(!crate::exception_pending(_py));
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                allocated_class_rc + 1,
-                "sealing publishes the descriptor's class owner before the baseline"
+                allocated_class_rc + 2,
+                "sealing publishes both descriptors' class owners before the baseline"
             );
             (crate::MoltObject::from_ptr(class_ptr).bits(), unsafe {
                 (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot()
@@ -5274,8 +5291,8 @@ mod tests {
             unsafe { super::heap_lifecycle::clear_cycle_edges(_py, class_ptr) };
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                initial_class_rc - 1,
-                "fixture teardown releases the descriptor-owned class reference"
+                initial_class_rc - 2,
+                "fixture teardown releases both descriptor-owned class references"
             );
             dec_ref_bits(_py, class_bits);
             assert!(!crate::exception_pending(_py));

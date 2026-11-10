@@ -1104,59 +1104,13 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
             reference_type,
         ] {
             set_class_attr_text(_py, bits, crate::NameId::DunderModule, Some("builtins"))?;
-            // Prevent inheriting `object.__text_signature__` across the builtins type graph.
-            // CPython generally defines `__text_signature__ = None` on builtin types unless
-            // a specific public signature is provided.
-            set_class_attr_text(_py, bits, crate::NameId::DunderTextSignature, None)?;
         }
-        // Signature metadata for builtin types used by `inspect.signature` (CPython parity).
-        // Keep these in sync with the 3.12+ union expectations in differential probes.
+        // `__text_signature__` is never namespace content: `type`'s descriptor
+        // derives it (attributes::type_metadata::static_text_signature).
         let overrides: &[(u64, crate::NameId, Option<&str>)] = &[
-            (
-                property,
-                crate::NameId::DunderTextSignature,
-                Some("(fget=None, fset=None, fdel=None, doc=None)"),
-            ),
-            (object, crate::NameId::DunderTextSignature, Some("()")),
-            (
-                memoryview,
-                crate::NameId::DunderTextSignature,
-                Some("(object)"),
-            ),
-            (
-                enumerate,
-                crate::NameId::DunderTextSignature,
-                Some("(iterable, start=0)"),
-            ),
-            (
-                reversed,
-                crate::NameId::DunderTextSignature,
-                Some("(sequence, /)"),
-            ),
-            (
-                complex,
-                crate::NameId::DunderTextSignature,
-                Some("(real=0, imag=0)"),
-            ),
-            (float, crate::NameId::DunderTextSignature, Some("(x=0, /)")),
-            (
-                list,
-                crate::NameId::DunderTextSignature,
-                Some("(iterable=(), /)"),
-            ),
             (list, crate::NameId::DunderHash, None),
-            (
-                tuple,
-                crate::NameId::DunderTextSignature,
-                Some("(iterable=(), /)"),
-            ),
             (reference_type, crate::NameId::DunderModule, Some("weakref")),
             (generic_alias, crate::NameId::DunderModule, Some("types")),
-            (
-                reference_type,
-                crate::NameId::DunderTextSignature,
-                Some("(object, callback=None, /)"),
-            ),
         ];
         for &(bits, name, value) in overrides {
             set_class_attr_text(_py, bits, name, value)?;

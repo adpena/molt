@@ -185,6 +185,29 @@ hide unreached code (HF-87, HF-178). Which cells a change selects, and whether
 a passing result is reused, belongs to F (2026-10-30 re-cut).
 
 **Prior art.**
+- *python-formalization (2026-11).* [F] A Lean 4 model of CPython 3.15.2
+  (Apache-2.0, Lean 4.35.0, the toolchain `formal/lean` pins): 613k lines,
+  executable models differentially tested against the interpreter, a
+  26,004-function inventory with per-function review (15.7% reviewed
+  faithful) and 418 reproduced CPython bugs. Source:
+  https://github.com/Broyojo/python-formalization. [I] Molt's `MoltPython`
+  model uses flat types, so TIR rewrite proofs (constant folding, SCCP)
+  prove against semantics that are not CPython's. Pinned as a Lake
+  dependency, its reviewed models can be the semantic reference for those
+  proofs, and its case generators a differential oracle for native and WASM.
+- *lean-rs (conao3, 2026).* [F] Translates Lean's compiler IR to Rust in the
+  shape of Lean's C backend, with a Rust reimplementation of the Lean runtime,
+  so verified Lean code builds with `cargo` alone; it also extracts Rust
+  functions to Lean through Charon and Aeneas and tracks proof obligations in a
+  lockfile that warns when a proof goes stale (Apache-2.0, `lean-rust` 0.2.1;
+  no atomic refcounts, Linux and macOS only, no `unsafe`, interior mutability
+  or concurrency in verified code). Sources: https://github.com/conao3/lean-rs,
+  https://s.conao3.com/blog/2026/b43a06. [I] Molt's proofs are about Lean
+  models, not the Rust passes (CERTIFICATION_STATUS.md, scope disclaimer).
+  Extraction can close that gap for small pure kernels: the NaN-box integer
+  encoding every backend's generators share, the SCCP lattice join and the
+  constant-fold rules, each proved against a CPython-faithful model
+  (python-formalization) and checked for staleness at build time.
 - *Bazel.* [F] Tests are targets with declared dependencies;
   `rdeps(universe, set)` returns every target that depends on a changed one.
   Source: https://bazel.build/query/language. Cost [I]: every edge needs a
@@ -917,6 +940,17 @@ from the declared Python version and target: StringPrep and Unicode tables
   (`zerrors_*`) are generated from each target's own headers inside
   containers, committed, and selected by build tags. Source:
   https://github.com/golang/sys/blob/v0.26.0/unix/README.md.
+- *serc (astral-experiments, 2026-11).* [F] A CPython bytecode compiler in
+  Rust for 3.12, 3.13, 3.14 and 3.15 (MIT or Apache-2.0), built on Ruff's
+  `ruff_python_parser` and `ruff_python_ast`, with its own symbol table and
+  AST optimizer per target version. Its README claims byte-identical `.pyc`
+  output to CPython on Django, Airflow and Transformers, 3-4x faster than
+  `compileall`. Source: https://github.com/astral-experiments/serc. [I] It
+  is the reference for HF-822: parse for the declared target in Rust, without
+  a host interpreter of that version, and take scope rules (PEP 709 inlined
+  comprehensions, 3.14 annotation scopes) from an implementation checked
+  byte for byte against CPython. Molt needs its parser and scoping, not its
+  bytecode emitter.
 - *Target-version analysis.* [F] mypy evaluates `sys.version_info` checks
   against `--python-version`, not the running interpreter;
   `ast.parse(feature_version=...)` is best-effort. PEP 720 records

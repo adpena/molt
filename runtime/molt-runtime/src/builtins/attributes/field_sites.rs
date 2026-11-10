@@ -204,7 +204,6 @@ pub(super) unsafe fn remember_field_site(
     site_id: u64,
     obj_bits: u64,
     name_bits: u64,
-    name: &[u8],
 ) -> Result<(), ()> {
     unsafe {
         let Some(obj_ptr) = plain_instance(obj_bits) else {
@@ -214,7 +213,7 @@ pub(super) unsafe fn remember_field_site(
         let Some(class) = obj_from_bits(class_bits).as_ptr() else {
             return Ok(());
         };
-        if object_type_id(class) != TYPE_ID_TYPE || name == b"__weakref__" {
+        if object_type_id(class) != TYPE_ID_TYPE {
             return Ok(());
         }
         let type_version = crate::object::global_type_version();

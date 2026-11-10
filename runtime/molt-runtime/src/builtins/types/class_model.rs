@@ -265,30 +265,8 @@ pub(crate) fn molt_class_new_attached_body(_py: &crate::PyToken<'_>, name_bits: 
                 return MoltObject::none().bits();
             }
         }
-        // Set __doc__ = None on the class dict (CPython parity).
-        // Every class has a __doc__ attribute; without this, `cls.__doc__`
-        // raises AttributeError which breaks libraries like six.
-        unsafe {
-            let dict_bits = class_dict_bits(ptr);
-            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                let doc_key = alloc_string(_py, b"__doc__");
-                if doc_key.is_null() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
-                let installed = dict_set_in_place(
-                    _py,
-                    dict_ptr,
-                    MoltObject::from_ptr(doc_key).bits(),
-                    MoltObject::none().bits(),
-                );
-                dec_ref_bits(_py, MoltObject::from_ptr(doc_key).bits());
-                if !installed {
-                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                    return MoltObject::none().bits();
-                }
-            }
-        }
+        // `__doc__ = None` is published at class birth
+        // (class_storage::class_capture_creation_doc), never during the body.
         MoltObject::from_ptr(ptr).bits()
     })
 }

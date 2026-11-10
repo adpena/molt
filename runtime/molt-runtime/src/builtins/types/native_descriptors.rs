@@ -35,9 +35,11 @@ impl NativeDescriptorFlavor {
     fn type_name(self) -> &'static str {
         match self {
             Self::Member | Self::ManagedSlot | Self::CallableMember => "member_descriptor",
-            Self::GetSet | Self::InstanceDictionary | Self::CallableGetSet | Self::RootMetadata => {
-                "getset_descriptor"
-            }
+            Self::GetSet
+            | Self::InstanceDictionary
+            | Self::InstanceWeakref
+            | Self::CallableGetSet
+            | Self::RootMetadata => "getset_descriptor",
         }
     }
 }
@@ -192,6 +194,7 @@ pub(crate) fn native_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptor
         | NativeDescriptorFlavor::CallableMember => member_descriptor_class(py),
         NativeDescriptorFlavor::GetSet
         | NativeDescriptorFlavor::InstanceDictionary
+        | NativeDescriptorFlavor::InstanceWeakref
         | NativeDescriptorFlavor::CallableGetSet
         | NativeDescriptorFlavor::RootMetadata => getset_descriptor_class(py),
     }
@@ -541,6 +544,14 @@ pub(crate) unsafe fn native_descriptor_get(
         inc_ref_bits(py, value);
         return Ok(value);
     }
+    if flavor == NativeDescriptorFlavor::InstanceWeakref {
+        // CPython's subtype_getweakref: the first weak reference, or None.
+        // The setter is absent, so writes and deletes are not writable.
+        let _inputs = DescriptorInputs::new(py, [descriptor, instance]);
+        return Ok(crate::object::weakref::weakref_head_for_target(
+            py, instance,
+        ));
+    }
     if matches!(
         flavor,
         NativeDescriptorFlavor::CallableGetSet | NativeDescriptorFlavor::CallableMember
@@ -796,6 +807,7 @@ pub(crate) unsafe fn native_descriptor_repr(py: &PyToken<'_>, descriptor: u64) -
         | NativeDescriptorFlavor::CallableMember => "member",
         NativeDescriptorFlavor::GetSet
         | NativeDescriptorFlavor::InstanceDictionary
+        | NativeDescriptorFlavor::InstanceWeakref
         | NativeDescriptorFlavor::CallableGetSet
         | NativeDescriptorFlavor::RootMetadata => "attribute",
     };

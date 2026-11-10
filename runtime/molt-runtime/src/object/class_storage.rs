@@ -623,7 +623,9 @@ pub(crate) unsafe fn class_module_bits(
 /// Capture the internal doc once at class birth. Store an exact string, not
 /// the possibly callback-bearing str subclass from the public namespace. A NUL
 /// terminates CPython's copied tp_doc; absence is a captured None, never a later
-/// invitation to read mutable __doc__ again.
+/// invitation to read mutable __doc__ again. Like PyType_Ready's
+/// type_dict_set_doc, a namespace without `__doc__` gains `__doc__ = None` here,
+/// once, on every class-birth path; the class body never sees a default.
 pub(crate) unsafe fn class_capture_creation_doc(py: &PyToken<'_>, class: *mut u8) -> bool {
     unsafe {
         if ClassReferenceSlot::CreationDoc.load(class) != 0 {
@@ -635,6 +637,15 @@ pub(crate) unsafe fn class_capture_creation_doc(py: &PyToken<'_>, class: *mut u8
         let doc = crate::object::ops::dict_get_str_bytes_borrowed(py, dictionary, b"__doc__");
         if crate::exception_pending(py) {
             return false;
+        }
+        if doc.is_none() {
+            let Some(key) = crate::NameId::DunderDoc.owned_bits(py) else {
+                return false;
+            };
+            let _key = crate::PtrDropGuard::new(py, crate::obj_from_bits(key).as_ptr().unwrap());
+            if !crate::dict_set_in_place(py, dictionary, key, MoltObject::none().bits()) {
+                return false;
+            }
         }
         let captured = if let Some(doc) = doc
             .and_then(|bits| crate::obj_from_bits(bits).as_ptr())

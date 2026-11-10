@@ -1548,7 +1548,6 @@ pub(crate) unsafe fn molt_set_attr_object_ic_attached_body(
                 site_id,
                 obj_bits,
                 name,
-                bytes,
             )
             .is_ok()
             {

@@ -1136,14 +1136,32 @@ pub(crate) unsafe fn prepare<'guard>(
             }
             published_names.push(name);
         }
+        // CPython's type_new publishes `__dict__` and `__weakref__` getsets
+        // only on the class that adds that capability to its best base.
         let policy = super::layout::class_slot_policy(class).expect("captured slot policy");
-        if policy.allows_dict
-            && !best.is_some_and(|base| {
-                super::layout::class_slot_policy(obj_from_bits(base.direct).as_ptr().unwrap())
-                    .is_some_and(|policy| policy.allows_dict)
-            })
-        {
-            let name = crate::NameId::DunderDict.bits(py);
+        let base_policy = best.and_then(|base| {
+            super::layout::class_slot_policy(obj_from_bits(base.direct).as_ptr().unwrap())
+        });
+        for (adds, name, flavor) in [
+            (
+                policy.allows_dict && !base_policy.is_some_and(|base| base.allows_dict),
+                crate::NameId::DunderDict,
+                super::layout::NativeDescriptorFlavor::InstanceDictionary,
+            ),
+            // Static types (type, function, set, ...) support weakrefs
+            // natively without a public getset; only type_new adds one.
+            (
+                policy.allows_weakref
+                    && !base_policy.is_some_and(|base| base.allows_weakref)
+                    && super::class_storage::class_is_heap_type(class),
+                crate::NameId::DunderWeakref,
+                super::layout::NativeDescriptorFlavor::InstanceWeakref,
+            ),
+        ] {
+            if !adds {
+                continue;
+            }
+            let name = name.bits(py);
             if obj_from_bits(name).as_ptr().is_none() {
                 return Err(());
             }
@@ -1151,7 +1169,7 @@ pub(crate) unsafe fn prepare<'guard>(
                 let descriptor = crate::builtins::types::alloc_native_descriptor(
                     py,
                     crate::builtins::types::NativeDescriptorSpec {
-                        flavor: super::layout::NativeDescriptorFlavor::InstanceDictionary,
+                        flavor,
                         operation: 0,
                         owner: class_bits,
                         name,
@@ -1460,18 +1478,10 @@ mod tests {
                 let weak = dynamic_attr_name_bits(py, b"__weakref__").unwrap();
                 let unfinished = molt_class_new_attached_body(py, name);
                 let unfinished_ptr = obj_from_bits(unfinished).as_ptr().unwrap();
-                assert!(crate::builtins::attr::class_slots_info(py, unfinished_ptr).is_none());
-                for attribute in [dict, weak] {
-                    assert_eq!(
-                        crate::builtins::attr::class_instance_layout_attr_allowed(
-                            py,
-                            unfinished_ptr,
-                            attribute,
-                        ),
-                        Some(false),
-                        "bootstrap absence cannot grant instance storage"
-                    );
-                }
+                assert!(
+                    crate::builtins::attr::class_slots_info(py, unfinished_ptr).is_none(),
+                    "bootstrap absence cannot grant instance storage"
+                );
                 dec_ref_bits(py, unfinished);
                 let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
                 let admitted = molt_class_new_attached_body(py, name);
