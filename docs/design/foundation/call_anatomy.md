@@ -24,23 +24,108 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
 | 7 TIR inlining | not started | - | - | HF-773 |
 
-Outside the call path, three contained runtime-library costs dominate the worst cells (measured
-2026-11-09 against the same baseline, symbolized `sample` profiles):
+Outside the call path, contained runtime-library costs dominate some of the worst cells (measured
+2026-11-09 against the same baseline, symbolized `sample` profiles; each attribution checked against
+the benchmark's source and a self-time breakdown by module):
 
 - The cycle collector tracks containers in sharded, address-keyed `HashMap`s behind mutexes
   (`object/gc.rs`). Every container allocation and free takes a shard lock and a hash insert or
-  remove (`gc_admit_membership`, `gc_untrack`: top frames of `struct`), and every young collection
+  remove (`gc_admit_membership`, `gc_untrack`). In `bench_struct`, a `Point(0, 0)` construction
+  loop at 0.09x, the `gc` module holds 11% of self samples and mutex lock/unlock another 10%
+  (callers not yet attributed); allocation and release hold about 30%. Every young collection
   copies the whole registry to filter by generation (`snapshot_registry`: most of `gc_pressure`,
-  0.03x; quadratic in live containers). CPython keeps one intrusive list per generation.
-- Weak references live in one global `Mutex<HashMap>` registry (`state/runtime_state.rs`;
-  `weakref_native` 0.05x); CPython keeps a list head in each object (`tp_weaklistoffset`).
-- `struct` re-parses its format and converts integers through the C-API bridge on every call
-  (`molt-runtime-serial/src/structs.rs`; `struct` 0.09x); CPython caches compiled formats.
+  0.03x). HF-816 (b5e597ede) now keeps each generation's exact member list beside the registry,
+  as CPython keeps one list per generation: `bench_gc_pressure` 12.8-13.6 s to 3.5-4.1 s
+  (interleaved A/B, user time); the rest is the collection itself (HF-671). The per-allocation
+  shard lock and hash remain.
+- `weakref_native` (0.05x) is not a registry cost: its symbolized profile spends 19% of self
+  samples in native-call binding (`call::bind`) plus descriptor binding, thread-local reads and an
+  allocation per call; the global weak-reference registry is under 4%. It belongs to stages 3 and 4.
+  HF-817.
+- The `struct` module re-parses its format and converts integers through the C-API bridge on
+  every call (`molt-runtime-serial/src/structs.rs`; `struct.pack("<ii", i, i + 1)` costs 44,669
+  instructions against 1,627, section 0); CPython caches compiled formats. HF-818.
 
-Each needs its own fix; none waits for a stage. Inside the call path the same profiles show frame
+The collector and `struct` costs need their own fixes and wait for no stage. Inside the call path the same profiles show frame
 push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top of method-heavy
 code (stage 1) and traceback location decoding (`LocationRows`) at the top of `exception_heavy`
 (stage 5).
+
+## Why Molt is slow: five causes and their owners (2026-11-09)
+
+1. Generated code is call-threaded: every operation enters the runtime. Stages 1-7 below.
+2. Correctness and custody hardening made each runtime entry heavier before inline fast paths
+   existed to skip it. Stages 2-5 (HF-198, HF-205).
+3. Three backends hand-write the same fast paths, so each stage costs three implementations and
+   the backends drift. Shared fast-path lowering, below (HF-821).
+4. Effort went to process: in one measured week, 82 of 656 commits touched the compiler, runtime
+   or differential tests. Family S owns presubmit cost (HF-801 and the consumer gate).
+5. Nothing tracked performance per landing, so regressions such as the cycle collector's landed
+   unseen. Family E (HF-222, HF-185, HF-616).
+
+## Backend lowering: what is shared, what is not, and the order to fix it
+
+The TIR, the SimpleIR passes, the module phase, the runtime, the refcount algorithm and the
+generated ABI tables are shared. Op lowering is not: Cranelift (57k lines) and WASM (100k) lower a
+SimpleIR copy rebuilt from TIR; LLVM (27k) lowers TIR. Each writes its own guarded call, NaN-box
+integer helpers, truthiness, poll, exception check, frame enter and location store. LLVM has no
+guarded direct call and no tag-check integer lane, so it runs 17-28% slower than Cranelift on calls
+(`bench_fib` 0.30 against 0.235 s, interleaved, release, macOS arm64). Evidence:
+logs/agents/backend-sharing-survey.md; design: logs/agents/shared-lowering/design.md; row HF-821.
+
+End state (2026-11-09 re-plan, owner: engineer for the optimal end state, no transitional debt):
+final typed TIR is every backend's input (doc 77 section B). A late lowering stage of TIR itself, in
+the same graph, is the single place that chooses representation (stage 6) and expands every fast
+path (stages 1-5) into typed primitive ops plus cold `CallRuntime(RuntimeFn)` edges, so SCCP and
+value facts remove repeated tag tests and hoist invariant checks. Each backend only selects
+instructions; NaN-box primitives come from one shared primitive generator in molt-codegen-abi. The
+SimpleIR rebuild, the re-lift sites and the name-keyed representation plan that Cranelift and the
+WASM op loop read are deleted as each backend moves.
+
+Order: (0) typed runtime calls: one generated `RuntimeFn` per runtime entry (done); (A) land the
+finished slices; (B) design the late lowering stage of TIR; (C) the integer lane through late TIR on LLVM and
+WASM, measured; (D) the remaining fast paths as late-TIR expansions, deleting backend copies, with
+Cranelift moving to final TIR; (E) stages 4, 6 and 7 on TIR only.
+
+## Whole-pipeline structure (mapped 2026-11-10)
+
+The backend view above understates the problem. One function passes through these stages
+(VERIFIED by file:line reading; the evidence map is in logs/agents/pipeline-map/):
+
+    Python: discover (parse 1) -> parse 2 -> sema -> visit -> Python mid-end -> serialize to
+      SimpleIR (identity = variable-name strings) -> msgpack lease
+    Rust:   9 SimpleIR passes -> lift to TIR -> 27 TIR passes -> module phase ->
+      project back to SimpleIR (Cranelift, WASM, Luau) | TIR (LLVM) | SimpleIR only, no TIR (Rust)
+
+Structural defects, each with its owner:
+1. Three optimizers for one fact family: the Python mid-end, nine Rust SimpleIR passes and the
+   TIR passes. Constants fold in four places, check_exception is removed in three, megafunctions
+   split in Python and twice in Rust. Owner HF-773 (retire the Python mid-end, then the SimpleIR
+   passes into TIR).
+2. Round trips instead of one IR: TIR is lowered back to SimpleIR at four sites and re-lifted at
+   three; the representation plan lifts again and reruns the whole TIR pipeline on a clone
+   (representation_plan.rs:360-383), so a function with a try block is optimized twice. Owner
+   HF-821: final TIR as every backend's input deletes the projections.
+3. Identity spelled as strings: a value is its variable name on the wire and in the Python
+   mid-end; TIR ops carry `_simple_out`, `_var` and `_type_hint` string attrs; the representation
+   plan is keyed by name and drops a fact when two values share one; the WASM LIR lane is chosen by
+   a function-name substring; Cranelift names 380 runtime entries by string (329 already in
+   RuntimeFn). Owners: HF-822 (front end emits TIR with typed ids), HF-821 (backends on final TIR).
+4. Build choices do not reach codegen: `TargetInfo.profile` is always ReleaseFast
+   (target_info.rs:349); LLVM is always O3; the Cranelift opt-level branch that the profile should
+   select can never run; `molt run` defaults to dev while `molt build` defaults to release; choices
+   cross into Rust as environment variables (757 of 765 registered variables affect output). Owner:
+   a typed build plan carried to every consumer (new row).
+5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only Luau and Rust use the
+   early, diagnosed target admission. Owner: one admission for every backend (new row).
+6. Facts lost between stages: Python's exact_class is never serialized; escape analysis's
+   stack_eligible is set before the lift and the Cranelift reader sees the projected op (INFERRED
+   lost; verify). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
+
+What an Astral-grade design does instead, and where Molt is going: parse once (Ruff), one semantic
+model (ty), emit typed IR with dense typed ids, optimize once in Rust, and lower once to machine
+code without a round trip. Every row above retires a piece of the current chain; none adds a
+stage.
 
 ## 0. Summary
 
