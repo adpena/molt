@@ -185,40 +185,67 @@ fn ensure_i64_with_builder<'ctx>(
     }
 }
 
-/// Whether a raw signed `i64` fits the 47-bit inline integer payload.
+/// LLVM's one spelling of 64-bit word instructions. Every NaN-box primitive
+/// and reference-count transition comes from the shared generators in
+/// molt-codegen-abi through this builder; no encoding constant is spelled here.
 #[cfg(feature = "llvm")]
-fn inline_int_fits_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    raw: inkwell::values::IntValue<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    let bias = i64_ty.const_int(nanbox::INLINE_INT_BIAS as u64, false);
-    let biased = builder.build_int_add(raw, bias, "int_inline_bias").unwrap();
-    let limit = i64_ty.const_int(nanbox::INLINE_INT_LIMIT as u64, false);
-    builder
-        .build_int_compare(inkwell::IntPredicate::ULT, biased, limit, "int_fits_inline")
-        .unwrap()
+#[derive(Clone, Copy)]
+pub(super) struct LlvmWords<'a, 'ctx> {
+    pub(super) context: &'ctx inkwell::context::Context,
+    pub(super) builder: &'a inkwell::builder::Builder<'ctx>,
 }
 
-/// The inline NaN-box of a raw `i64` that fits the payload window.
 #[cfg(feature = "llvm")]
-fn inline_int_box_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    raw: inkwell::values::IntValue<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    let masked = builder
-        .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
-        .unwrap();
-    builder
-        .build_or(
-            masked,
-            i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
-            "box_i64",
-        )
-        .unwrap()
+impl<'ctx> nanbox::word::WordBuilder for LlvmWords<'_, 'ctx> {
+    type Word = inkwell::values::IntValue<'ctx>;
+    type Predicate = inkwell::values::IntValue<'ctx>;
+    fn constant(&mut self, value: u64) -> Self::Word {
+        self.context.i64_type().const_int(value, false)
+    }
+    fn and(&mut self, value: Self::Word, mask: u64) -> Self::Word {
+        let mask = self.constant(mask);
+        self.builder.build_and(value, mask, "word_and").unwrap()
+    }
+    fn or(&mut self, value: Self::Word, bits: u64) -> Self::Word {
+        let bits = self.constant(bits);
+        self.builder.build_or(value, bits, "word_or").unwrap()
+    }
+    fn shift_left(&mut self, value: Self::Word, amount: u32) -> Self::Word {
+        let amount = self.constant(u64::from(amount));
+        self.builder
+            .build_left_shift(value, amount, "word_shl")
+            .unwrap()
+    }
+    fn shift_right_arithmetic(&mut self, value: Self::Word, amount: u32) -> Self::Word {
+        let amount = self.constant(u64::from(amount));
+        self.builder
+            .build_right_shift(value, amount, true, "word_sar")
+            .unwrap()
+    }
+    fn add_immediate(&mut self, value: Self::Word, delta: i64) -> Self::Word {
+        let delta = self.constant(delta as u64);
+        self.builder
+            .build_int_add(value, delta, "word_add")
+            .unwrap()
+    }
+    fn compare(
+        &mut self,
+        comparison: nanbox::word::WordComparison,
+        left: Self::Word,
+        right: Self::Word,
+    ) -> Self::Predicate {
+        let predicate = match comparison {
+            nanbox::word::WordComparison::Equal => inkwell::IntPredicate::EQ,
+            nanbox::word::WordComparison::NotEqual => inkwell::IntPredicate::NE,
+            nanbox::word::WordComparison::UnsignedLessThan => inkwell::IntPredicate::ULT,
+        };
+        self.builder
+            .build_int_compare(predicate, left, right, "word_test")
+            .unwrap()
+    }
+    fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate {
+        self.builder.build_and(left, right, "word_both").unwrap()
+    }
 }
 
 /// Full-range runtime integer boxing (`molt_int_from_i64`): the inline box when
@@ -266,7 +293,8 @@ fn box_i64_overflow_safe_with_builder<'ctx>(
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
     let i64_ty = context.i64_type();
-    let fits = inline_int_fits_with_builder(builder, context, raw);
+    let fits =
+        nanbox::boxed_word::generate_inline_int_fits(&mut LlvmWords { context, builder }, raw);
 
     let inline_bb = context.append_basic_block(current_fn, "box_int_inline");
     let bigint_bb = context.append_basic_block(current_fn, "box_int_bigint");
@@ -276,7 +304,8 @@ fn box_i64_overflow_safe_with_builder<'ctx>(
         .unwrap();
 
     builder.position_at_end(inline_bb);
-    let inline_boxed = inline_int_box_with_builder(builder, context, raw);
+    let inline_boxed =
+        nanbox::boxed_word::generate_box_inline_int(&mut LlvmWords { context, builder }, raw);
     builder.build_unconditional_branch(merge_bb).unwrap();
 
     builder.position_at_end(bigint_bb);
@@ -895,6 +924,15 @@ pub fn declare_extern_tir_function<'ctx>(
 
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    /// The word builder at the current insertion point, for the shared
+    /// NaN-box generators.
+    pub(super) fn words(&self) -> LlvmWords<'_, 'ctx> {
+        LlvmWords {
+            context: self.backend.context,
+            builder: &self.backend.builder,
+        }
+    }
+
     fn record_fatal(&self, message: impl Into<String>) {
         self.diagnostics
             .borrow_mut()

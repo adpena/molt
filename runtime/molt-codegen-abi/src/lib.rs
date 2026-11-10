@@ -21,8 +21,10 @@ pub use heap_kinds_generated::*;
 mod attached_context_generated;
 pub use attached_context_generated::*;
 
+pub mod boxed_word;
 pub mod c_width;
 pub mod inline_refcount;
+pub mod word;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperatingSystem {

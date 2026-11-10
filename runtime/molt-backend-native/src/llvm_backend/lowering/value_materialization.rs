@@ -312,7 +312,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> inkwell::values::IntValue<'ctx> {
         let raw = self.ensure_i64(self.resolve(operand));
         let context = self.backend.context;
-        let fits = inline_int_fits_with_builder(&self.backend.builder, context, raw);
+        let fits = nanbox::boxed_word::generate_inline_int_fits(&mut self.words(), raw);
         let suffix = self.borrowed_operands_suffix(custody);
         let inline_bb = context.append_basic_block(self.llvm_fn, "box_int_inline");
         let heap_bb = context.append_basic_block(self.llvm_fn, "box_int_bigint");
@@ -330,7 +330,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_llvm_edge(source, heap_bb);
 
         self.backend.builder.position_at_end(inline_bb);
-        let inline = inline_int_box_with_builder(&self.backend.builder, context, raw);
+        let inline = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw);
         self.backend
             .builder
             .build_unconditional_branch(boxed_bb)
@@ -826,10 +826,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             (nanbox::INT_MIN_INLINE..=nanbox::INT_MAX_INLINE).contains(&value),
             "compile-time integer word {value} does not fit the inline payload"
         );
-        self.backend.context.i64_type().const_int(
-            (value as u64 & nanbox::INT_MASK) | nanbox::QNAN | nanbox::TAG_INT,
-            false,
-        )
+        self.backend
+            .context
+            .i64_type()
+            .const_int(nanbox::box_int_bits(value) as u64, false)
     }
 
     // ── Representation authority ──
@@ -926,9 +926,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let value = self.resolve(operand);
         let ty = self.value_types.get(&operand).unwrap_or(&TirType::DynBox);
         if *ty == TirType::I64 && self.repr_facts.is_inline_safe_int(operand) {
-            return inline_int_box_with_builder(
-                &self.backend.builder,
-                self.backend.context,
+            return nanbox::boxed_word::generate_box_inline_int(
+                &mut self.words(),
                 self.ensure_i64(value),
             );
         }
@@ -1755,8 +1754,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             if matches!(source_tir_ty, TirType::I64) {
                 let raw = self.ensure_i64(val);
                 if source_id.is_some_and(|id| self.repr_facts.is_inline_safe_int(id)) {
-                    inline_int_box_with_builder(&self.backend.builder, self.backend.context, raw)
-                        .into()
+                    nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw).into()
                 } else {
                     self.box_i64_branchless(raw).into()
                 }

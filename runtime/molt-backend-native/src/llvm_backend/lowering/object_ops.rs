@@ -8,25 +8,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &self,
         bits: inkwell::values::IntValue<'ctx>,
     ) -> inkwell::values::IntValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        let tag = self
-            .backend
-            .builder
-            .build_and(
-                bits,
-                i64_ty.const_int(nanbox::QNAN_TAG_MASK_I64 as u64, false),
-                "field_tag",
-            )
-            .unwrap();
-        self.backend
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::EQ,
-                tag,
-                i64_ty.const_int(nanbox::QNAN_TAG_PTR_I64 as u64, false),
-                "field_is_ptr",
-            )
-            .unwrap()
+        nanbox::boxed_word::generate_has_tag(
+            &mut self.words(),
+            bits,
+            nanbox::boxed_word::BoxTag::Ptr,
+        )
     }
 
     /// The caller must have admitted the receiver before this header read.

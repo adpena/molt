@@ -1,6 +1,13 @@
 use super::*;
 use molt_ir::OpKind;
 
+/// True iff `ir` holds the shared pointer-tag test (`generate_has_tag` with
+/// `BoxTag::Ptr`): the masked tag field compared with QNAN | TAG_PTR.
+fn has_pointer_tag_test(ir: &str) -> bool {
+    let pointer_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_PTR);
+    ir.contains_execution("icmp eq i64 %word_and") && ir.contains_execution(&pointer_tag)
+}
+
 #[test]
 fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
     for kind in [OpKind::GuardedFieldGet, OpKind::GuardedFieldSet] {
@@ -113,7 +120,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
             entry_ir.push_str(&current.print_to_string().to_string());
             instruction = current.get_next_instruction();
         }
-        assert!(entry_ir.contains_execution("field_is_ptr"), "{ir}");
+        assert!(has_pointer_tag_test(&entry_ir), "{ir}");
         assert!(
             !entry_ir.contains_execution("field_ptr = getelementptr")
                 && !entry_ir.contains_execution("field_flags_ptr")
@@ -194,7 +201,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
                 "{ir}"
             );
             assert!(
-                payload_ir.contains_execution("field_is_ptr"),
+                has_pointer_tag_test(&payload_ir),
                 "missing sentinel must not escape clear-header inline loads: {ir}"
             );
             let payload_branch = payload

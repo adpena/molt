@@ -212,7 +212,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> inkwell::values::IntValue<'ctx> {
         let context = self.backend.context;
         let i64_ty = context.i64_type();
-        let fits = inline_int_fits_with_builder(&self.backend.builder, context, raw);
+        let fits = nanbox::boxed_word::generate_inline_int_fits(&mut self.words(), raw);
         let inline_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_inline");
         let slow_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_slow");
         let done_bb = context.append_basic_block(self.llvm_fn, "frame_home_boxed");
@@ -226,7 +226,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_llvm_edge(origin, slow_bb);
 
         self.backend.builder.position_at_end(inline_bb);
-        let inline = inline_int_box_with_builder(&self.backend.builder, context, raw);
+        let inline = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw);
         self.backend.builder.build_store(bits_ptr, inline).unwrap();
         self.backend
             .builder

@@ -13,8 +13,9 @@ use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use molt_codegen_abi::inline_refcount::{
-    RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
+    RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
 };
+use molt_codegen_abi::word::{WordBuilder, WordComparison};
 use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
 /// Body parameters: the attached context, word, and invocation's admission snapshot.
@@ -206,12 +207,9 @@ impl WasmRefcountBuilder<'_, '_> {
     }
 }
 
-impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
+impl WordBuilder for WasmRefcountBuilder<'_, '_> {
     type Word = u32;
     type Predicate = u32;
-    fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
-        molt_codegen_abi::PointerWidth::Bits32
-    }
     fn constant(&mut self, value: u64) -> u32 {
         self.sink.push(Instruction::I64Const(value as i64));
         self.word()
@@ -222,19 +220,37 @@ impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
         self.sink.push(Instruction::I64And);
         self.word()
     }
-    fn add(&mut self, value: u32, delta: i64) -> u32 {
+    fn or(&mut self, value: u32, bits: u64) -> u32 {
+        self.get(value);
+        self.sink.push(Instruction::I64Const(bits as i64));
+        self.sink.push(Instruction::I64Or);
+        self.word()
+    }
+    fn shift_left(&mut self, value: u32, amount: u32) -> u32 {
+        self.get(value);
+        self.sink.push(Instruction::I64Const(i64::from(amount)));
+        self.sink.push(Instruction::I64Shl);
+        self.word()
+    }
+    fn shift_right_arithmetic(&mut self, value: u32, amount: u32) -> u32 {
+        self.get(value);
+        self.sink.push(Instruction::I64Const(i64::from(amount)));
+        self.sink.push(Instruction::I64ShrS);
+        self.word()
+    }
+    fn add_immediate(&mut self, value: u32, delta: i64) -> u32 {
         self.get(value);
         self.sink.push(Instruction::I64Const(delta));
         self.sink.push(Instruction::I64Add);
         self.word()
     }
-    fn compare(&mut self, comparison: RefcountComparison, left: u32, right: u32) -> u32 {
+    fn compare(&mut self, comparison: WordComparison, left: u32, right: u32) -> u32 {
         self.get(left);
         self.get(right);
         self.sink.push(match comparison {
-            RefcountComparison::Equal => Instruction::I64Eq,
-            RefcountComparison::NotEqual => Instruction::I64Ne,
-            RefcountComparison::UnsignedLessThan => Instruction::I64LtU,
+            WordComparison::Equal => Instruction::I64Eq,
+            WordComparison::NotEqual => Instruction::I64Ne,
+            WordComparison::UnsignedLessThan => Instruction::I64LtU,
         });
         self.predicate()
     }
@@ -243,6 +259,12 @@ impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
         self.get(right);
         self.sink.push(Instruction::I32And);
         self.predicate()
+    }
+}
+
+impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
+    fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
+        molt_codegen_abi::PointerWidth::Bits32
     }
     fn load_header_u32(&mut self, pointer: u32, offset: i32) -> u32 {
         self.address(pointer, offset);

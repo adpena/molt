@@ -1,4 +1,5 @@
 use super::*;
+use crate::word::{WordBuilder, WordComparison};
 use crate::{
     PointerWidth, REFCOUNT_OWNER_LIMIT, REFCOUNT_RUNTIME_CUSTODY, refcount_word_owners,
     release_transition, retain_next,
@@ -29,30 +30,42 @@ impl Model {
     }
 }
 
-impl RefcountBuilder for Model {
+impl WordBuilder for Model {
     type Word = u64;
     type Predicate = bool;
-    fn pointer_width(&self) -> PointerWidth {
-        self.width
-    }
     fn constant(&mut self, value: u64) -> u64 {
         value
     }
     fn and(&mut self, value: u64, mask: u64) -> u64 {
         value & mask
     }
-    fn add(&mut self, value: u64, delta: i64) -> u64 {
+    fn or(&mut self, value: u64, bits: u64) -> u64 {
+        value | bits
+    }
+    fn shift_left(&mut self, value: u64, amount: u32) -> u64 {
+        value << amount
+    }
+    fn shift_right_arithmetic(&mut self, value: u64, amount: u32) -> u64 {
+        ((value as i64) >> amount) as u64
+    }
+    fn add_immediate(&mut self, value: u64, delta: i64) -> u64 {
         value.wrapping_add_signed(delta)
     }
-    fn compare(&mut self, comparison: RefcountComparison, left: u64, right: u64) -> bool {
+    fn compare(&mut self, comparison: WordComparison, left: u64, right: u64) -> bool {
         match comparison {
-            RefcountComparison::Equal => left == right,
-            RefcountComparison::NotEqual => left != right,
-            RefcountComparison::UnsignedLessThan => left < right,
+            WordComparison::Equal => left == right,
+            WordComparison::NotEqual => left != right,
+            WordComparison::UnsignedLessThan => left < right,
         }
     }
     fn both(&mut self, left: bool, right: bool) -> bool {
         left && right
+    }
+}
+
+impl RefcountBuilder for Model {
+    fn pointer_width(&self) -> PointerWidth {
+        self.width
     }
     fn load_header_u32(&mut self, pointer: u64, offset: i32) -> u64 {
         assert_eq!(

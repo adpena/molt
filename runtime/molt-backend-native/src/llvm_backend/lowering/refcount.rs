@@ -8,8 +8,9 @@ use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::builder::Builder;
 use inkwell::values::IntValue;
 use molt_codegen_abi::inline_refcount::{
-    RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
+    RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
 };
+use molt_codegen_abi::word::WordBuilder;
 
 #[derive(Clone, Copy)]
 pub(super) struct LlvmRefcountSite<'ctx> {
@@ -99,8 +100,11 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             RefcountOperation::Release => RuntimeFn::DecRefObj,
         });
         let mut emitter = LlvmRefcountBuilder {
+            words: LlvmWords {
+                context: self.backend.context,
+                builder: &builder,
+            },
             backend: self.backend,
-            builder: &builder,
             function,
             slow_block: None,
         };
@@ -124,8 +128,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 }
 
 struct LlvmRefcountBuilder<'a, 'ctx> {
+    words: LlvmWords<'a, 'ctx>,
     backend: &'a LlvmBackend<'ctx>,
-    builder: &'a Builder<'ctx>,
     function: FunctionValue<'ctx>,
     slow_block: Option<BasicBlock<'ctx>>,
 }
@@ -133,6 +137,7 @@ struct LlvmRefcountBuilder<'a, 'ctx> {
 impl<'ctx> LlvmRefcountBuilder<'_, 'ctx> {
     fn address(&self, pointer: IntValue<'ctx>, offset: i32) -> inkwell::values::PointerValue<'ctx> {
         let address = self
+            .words
             .builder
             .build_int_add(
                 pointer,
@@ -143,7 +148,8 @@ impl<'ctx> LlvmRefcountBuilder<'_, 'ctx> {
                 "rc_address",
             )
             .unwrap();
-        self.builder
+        self.words
+            .builder
             .build_int_to_ptr(
                 address,
                 self.backend
@@ -155,43 +161,17 @@ impl<'ctx> LlvmRefcountBuilder<'_, 'ctx> {
     }
 }
 
+impl<'a, 'ctx> WordBuilder for LlvmRefcountBuilder<'a, 'ctx> {
+    molt_codegen_abi::forward_word_builder!(words: LlvmWords<'a, 'ctx>);
+}
+
 impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
-    type Word = IntValue<'ctx>;
-    type Predicate = IntValue<'ctx>;
     fn pointer_width(&self) -> nanbox::PointerWidth {
         nanbox::PointerWidth::Bits64
     }
-    fn constant(&mut self, value: u64) -> Self::Word {
-        self.backend.context.i64_type().const_int(value, false)
-    }
-    fn and(&mut self, value: Self::Word, mask: u64) -> Self::Word {
-        let mask = self.constant(mask);
-        self.builder.build_and(value, mask, "rc_mask").unwrap()
-    }
-    fn add(&mut self, value: Self::Word, delta: i64) -> Self::Word {
-        let delta = self.constant(delta as u64);
-        self.builder.build_int_add(value, delta, "rc_add").unwrap()
-    }
-    fn compare(
-        &mut self,
-        comparison: RefcountComparison,
-        left: Self::Word,
-        right: Self::Word,
-    ) -> Self::Predicate {
-        let comparison = match comparison {
-            RefcountComparison::Equal => inkwell::IntPredicate::EQ,
-            RefcountComparison::NotEqual => inkwell::IntPredicate::NE,
-            RefcountComparison::UnsignedLessThan => inkwell::IntPredicate::ULT,
-        };
-        self.builder
-            .build_int_compare(comparison, left, right, "rc_test")
-            .unwrap()
-    }
-    fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate {
-        self.builder.build_and(left, right, "rc_both").unwrap()
-    }
     fn load_header_u32(&mut self, pointer: Self::Word, offset: i32) -> Self::Word {
         let value = self
+            .words
             .builder
             .build_load(
                 self.backend.context.i32_type(),
@@ -199,7 +179,8 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
                 "rc_word",
             )
             .unwrap();
-        self.builder
+        self.words
+            .builder
             .build_int_z_extend(
                 value.into_int_value(),
                 self.backend.context.i64_type(),
@@ -209,10 +190,12 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
     }
     fn store_header_u32(&mut self, pointer: Self::Word, offset: i32, value: Self::Word) {
         let value = self
+            .words
             .builder
             .build_int_truncate(value, self.backend.context.i32_type(), "rc_count")
             .unwrap();
-        self.builder
+        self.words
+            .builder
             .build_store(self.address(pointer, offset), value)
             .unwrap();
     }
@@ -222,7 +205,10 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
                 .context
                 .append_basic_block(self.function, "rc_slow")
         });
-        self.builder.build_unconditional_branch(block).unwrap();
+        self.words
+            .builder
+            .build_unconditional_branch(block)
+            .unwrap();
     }
     fn if_else(
         &mut self,
@@ -242,35 +228,40 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
             .backend
             .context
             .append_basic_block(self.function, "rc_continue");
-        self.builder
+        self.words
+            .builder
             .build_conditional_branch(condition, yes_block, no_block)
             .unwrap();
-        self.builder.position_at_end(yes_block);
+        self.words.builder.position_at_end(yes_block);
         yes(self);
         if self
+            .words
             .builder
             .get_insert_block()
             .unwrap()
             .get_terminator()
             .is_none()
         {
-            self.builder
+            self.words
+                .builder
                 .build_unconditional_branch(continuation)
                 .unwrap();
         }
-        self.builder.position_at_end(no_block);
+        self.words.builder.position_at_end(no_block);
         no(self);
         if self
+            .words
             .builder
             .get_insert_block()
             .unwrap()
             .get_terminator()
             .is_none()
         {
-            self.builder
+            self.words
+                .builder
                 .build_unconditional_branch(continuation)
                 .unwrap();
         }
-        self.builder.position_at_end(continuation);
+        self.words.builder.position_at_end(continuation);
     }
 }
