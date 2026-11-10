@@ -124,33 +124,70 @@ fn the_slow_arm_keeps_the_ops_attributes_and_span() {
     assert_eq!(call.origin, None);
 }
 
-#[test]
-fn raw_or_mixed_operands_keep_their_current_lowering() {
-    // A small constant is a raw inline-safe carrier, not a boxed word.
+/// `return x + c` over one boxed parameter and the constant `c`.
+fn add_constant(c: i64) -> (TirFunction, ValueId, ValueId) {
     let mut func = TirFunction::new(
         "f".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let one = func.fresh_value();
+    let constant = func.fresh_value();
     let result = func.fresh_value();
-    func.value_types.insert(one, TirType::I64);
+    func.value_types.insert(constant, TirType::I64);
     func.value_types.insert(result, TirType::DynBox);
     let entry = func.entry_block;
     let block = func.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(1))]),
-        ..TirOp::new(OpCode::ConstInt, vec![], vec![one])
+        attrs: AttrDict::from([("value".into(), AttrValue::Int(c))]),
+        ..TirOp::new(OpCode::ConstInt, vec![], vec![constant])
     });
-    block
-        .ops
-        .push(TirOp::new(OpCode::Add, vec![ValueId(0), one], vec![result]));
+    block.ops.push(TirOp::new(
+        OpCode::Add,
+        vec![ValueId(0), constant],
+        vec![result],
+    ));
     block.terminator = Terminator::Return {
         values: vec![result],
     };
-    let stats = run(&mut func);
-    assert_eq!(stats.values_changed, 0);
+    (func, constant, result)
+}
+
+#[test]
+fn a_boxed_plus_inline_safe_constant_tests_only_the_boxed_operand() {
+    let (mut func, constant, _) = add_constant(1);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    let tests = ops(&func, OpCode::IsInlineInt);
+    assert_eq!(tests.len(), 1);
+    assert_eq!(tests[0].1.operands, [ValueId(0)]);
+    let (_, sum) = &ops(&func, OpCode::Add)[0];
+    assert_eq!(
+        sum.operands[1], constant,
+        "the raw constant feeds the fast arm"
+    );
+    assert_eq!(ops(&func, OpCode::UnboxInlineInt).len(), 1);
+    // The runtime entry takes boxed words: the slow arm boxes the constant.
+    let (slow, call) = &ops(&func, OpCode::CallRuntime)[0];
+    let boxes: Vec<_> = func.blocks[slow]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::BoxVal)
+        .collect();
+    assert_eq!(boxes.len(), 1);
+    assert_eq!(boxes[0].operands, [constant]);
+    assert_eq!(call.operands, [ValueId(0), boxes[0].results[0]]);
+    let vr = crate::representation_facts::value_range_for(&func);
+    let repr = crate::representation_facts::repr_by_value_for(&func, Some(&vr));
+    assert_eq!(repr[&sum.results[0]], Repr::RawI64FullDeopt);
+}
+
+#[test]
+fn a_constant_outside_the_inline_window_keeps_its_lowering() {
+    // 2**46 is past the inline payload: the sum need not be exact in i64 terms
+    // of two 47-bit values, so the op keeps its current lowering.
+    let (mut func, _, _) = add_constant(1 << 46);
+    assert_eq!(run(&mut func).values_changed, 0);
     assert_eq!(func.blocks.len(), 1);
 }
 

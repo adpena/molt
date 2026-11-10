@@ -18,6 +18,10 @@
 //! ^join(%r):  the rest of the block, then its terminator
 //! ```
 //!
+//! One operand may instead be a raw value in the inline window (`RawI64Safe`,
+//! such as the literal in `n - 1`). It needs no tag test and feeds the fast arm
+//! as it is; the slow arm boxes it for the runtime entry, which takes words.
+//!
 //! Truthiness, `Bool` on a boxed word:
 //!
 //! ```text
@@ -76,7 +80,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         };
         let split = split(func, block, index);
         let join = match expansion {
-            Expansion::IntArith { fast } => expand_int_arith(func, block, split, fast),
+            Expansion::IntArith { fast, operands } => {
+                expand_int_arith(func, block, split, fast, operands)
+            }
             Expansion::Truthiness => expand_truthiness(func, block, split),
         };
         stats.ops_added += 6;
@@ -94,8 +100,18 @@ enum Expansion {
     /// Integer add or subtract; in-place forms share the binary fast arm.
     IntArith {
         fast: OpCode,
+        operands: [IntOperand; 2],
     },
     Truthiness,
+}
+
+/// How an integer operand reaches the fast arm: a boxed word is tag-tested
+/// and unboxed; an inline-safe raw value is used as it is. Two values in the
+/// inline window sum exactly in i64.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IntOperand {
+    Boxed,
+    InlineSafe,
 }
 
 fn is_boxed_word(repr: &HashMap<ValueId, Repr>, value: ValueId) -> bool {
@@ -105,28 +121,37 @@ fn is_boxed_word(repr: &HashMap<ValueId, Repr>, value: ValueId) -> bool {
     )
 }
 
+fn int_operand(repr: &HashMap<ValueId, Repr>, value: ValueId) -> Option<IntOperand> {
+    if is_boxed_word(repr, value) {
+        Some(IntOperand::Boxed)
+    } else if repr.get(&value) == Some(&Repr::RawI64Safe) {
+        Some(IntOperand::InlineSafe)
+    } else {
+        None
+    }
+}
+
 fn expansion_of(op: &TirOp, repr: &HashMap<ValueId, Repr>) -> Option<Expansion> {
-    if !op.has_valid_shape()
-        || op.results.len() != 1
-        || !op
-            .operands
-            .iter()
-            .all(|&operand| is_boxed_word(repr, operand))
-    {
+    if !op.has_valid_shape() || op.results.len() != 1 {
         return None;
     }
     let int_arith = |fast| {
-        (op.operands.len() == 2
+        let [lhs, rhs] = op.operands[..] else {
+            return None;
+        };
+        let operands = [int_operand(repr, lhs)?, int_operand(repr, rhs)?];
+        // Two raw operands are the backend's raw lane, not a boxed fast path.
+        (operands.contains(&IntOperand::Boxed)
             && is_boxed_word(repr, op.results[0])
             && op.numeric_runtime().is_some())
-        .then_some(Expansion::IntArith { fast })
+        .then_some(Expansion::IntArith { fast, operands })
     };
     match opcode_fast_path_expansion_rule_table(op.opcode) {
         FastPathExpansionRule::IntAdd => int_arith(OpCode::Add),
         FastPathExpansionRule::IntSub => int_arith(OpCode::Sub),
-        FastPathExpansionRule::Truthiness => {
-            (op.operands.len() == 1).then_some(Expansion::Truthiness)
-        }
+        FastPathExpansionRule::Truthiness => (op.operands.len() == 1
+            && is_boxed_word(repr, op.operands[0]))
+        .then_some(Expansion::Truthiness),
         FastPathExpansionRule::None => None,
     }
 }
@@ -240,73 +265,103 @@ fn finish(
     }
 }
 
-fn expand_int_arith(func: &mut TirFunction, block: BlockId, split: Split, fast: OpCode) -> BlockId {
+fn expand_int_arith(
+    func: &mut TirFunction,
+    block: BlockId,
+    split: Split,
+    fast: OpCode,
+    kinds: [IntOperand; 2],
+) -> BlockId {
     let Split {
         op,
         rest,
         terminator,
     } = split;
-    let [lhs, rhs] = op.operands[..] else {
-        unreachable!("integer arithmetic is binary")
-    };
+    let operands = [op.operands[0], op.operands[1]];
     let result = op.results[0];
     let span = op.source_span;
     let runtime = op
         .numeric_runtime()
         .expect("eligible ops have a runtime entry");
+    let boxed: Vec<ValueId> = (0..2)
+        .filter(|&i| kinds[i] == IntOperand::Boxed)
+        .map(|i| operands[i])
+        .collect();
 
-    let check_rhs = func.fresh_block();
     let fast_block = func.fresh_block();
     let slow = func.fresh_block();
     let join = func.fresh_block();
-    let lhs_is_int = fresh_typed(func, TirType::Bool);
-    let rhs_is_int = fresh_typed(func, TirType::Bool);
-    let lhs_payload = fresh_typed(func, TirType::I64);
-    let rhs_payload = fresh_typed(func, TirType::I64);
+    // One tag test per boxed operand: the first ends the original block, a
+    // second gets its own block; every false edge goes to the slow arm.
+    let checks: Vec<BlockId> = std::iter::once(block)
+        .chain((1..boxed.len()).map(|_| func.fresh_block()))
+        .collect();
+    for (k, &operand) in boxed.iter().enumerate() {
+        let is_int = fresh_typed(func, TirType::Bool);
+        let next = checks.get(k + 1).copied().unwrap_or(fast_block);
+        let test = vec![new_op(
+            OpCode::IsInlineInt,
+            vec![operand],
+            vec![is_int],
+            span,
+        )];
+        let check_end = cond_branch(is_int, next, slow);
+        if k == 0 {
+            end_block(func, block, test, check_end);
+        } else {
+            func.blocks
+                .insert(checks[k], new_block(checks[k], test, check_end));
+        }
+    }
+
+    let mut fast_ops = Vec::new();
+    let mut payloads = operands;
+    for i in 0..2 {
+        if kinds[i] == IntOperand::Boxed {
+            payloads[i] = fresh_typed(func, TirType::I64);
+            fast_ops.push(new_op(
+                OpCode::UnboxInlineInt,
+                vec![operands[i]],
+                vec![payloads[i]],
+                span,
+            ));
+        }
+    }
     let sum = fresh_typed(func, TirType::I64);
     let fast_result = fresh_typed(func, TirType::DynBox);
-    let slow_result = fresh_typed(func, TirType::DynBox);
-
-    end_block(
-        func,
-        block,
-        vec![new_op(
-            OpCode::IsInlineInt,
-            vec![lhs],
-            vec![lhs_is_int],
-            span,
-        )],
-        cond_branch(lhs_is_int, check_rhs, slow),
-    );
-    let check = vec![new_op(
-        OpCode::IsInlineInt,
-        vec![rhs],
-        vec![rhs_is_int],
-        span,
-    )];
-    func.blocks.insert(
-        check_rhs,
-        new_block(check_rhs, check, cond_branch(rhs_is_int, fast_block, slow)),
-    );
-    let fast_ops = vec![
-        new_op(OpCode::UnboxInlineInt, vec![lhs], vec![lhs_payload], span),
-        new_op(OpCode::UnboxInlineInt, vec![rhs], vec![rhs_payload], span),
-        new_op(fast, vec![lhs_payload, rhs_payload], vec![sum], span),
-        new_op(OpCode::BoxVal, vec![sum], vec![fast_result], span),
-    ];
+    fast_ops.push(new_op(fast, payloads.to_vec(), vec![sum], span));
+    fast_ops.push(new_op(OpCode::BoxVal, vec![sum], vec![fast_result], span));
     func.blocks.insert(
         fast_block,
         new_block(fast_block, fast_ops, branch(join, fast_result)),
     );
+
     // The slow arm is the original op's semantics: it keeps its attributes
-    // (exception source, location) and calls the op's typed runtime entry.
+    // (exception source, location) and calls the op's typed runtime entry,
+    // which takes boxed words, so an inline-safe operand is boxed first.
+    let mut slow_ops = Vec::new();
+    let mut words = operands;
+    for i in 0..2 {
+        if kinds[i] == IntOperand::InlineSafe {
+            words[i] = fresh_typed(func, TirType::DynBox);
+            slow_ops.push(new_op(
+                OpCode::BoxVal,
+                vec![operands[i]],
+                vec![words[i]],
+                span,
+            ));
+        }
+    }
+    let slow_result = fresh_typed(func, TirType::DynBox);
     let mut call = op;
     call.opcode = OpCode::CallRuntime;
     call.origin = None;
     call.runtime = Some(runtime);
+    call.operands = words.to_vec();
     call.results = vec![slow_result];
+    slow_ops.push(call);
     func.blocks
-        .insert(slow, new_block(slow, vec![call], branch(join, slow_result)));
+        .insert(slow, new_block(slow, slow_ops, branch(join, slow_result)));
     finish(func, block, join, result, rest, terminator);
     join
 }
