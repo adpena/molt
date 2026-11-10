@@ -37,9 +37,12 @@ the trigger is follow-up F1 under HF-222.
 
 **One run.** The cell (`[[scheduled_family]] instruction_signal`, executor
 `farm`) runs `perf_scoreboard.py instructions run --tier hourly|nightly`. The
-registry `workloads()` holds the empty witness, 16 primitives and the 57 light
-core benchmarks hourly (74), and the five stdlib-heavy benchmarks nightly
-(every compiler change rebuilds their stdlib objects). Each workload builds once
+registry `workloads()` holds the empty witness and the 16 primitives hourly
+(33 axes) and the 62 core benchmarks nightly. An hourly run must fit 10
+minutes through trunk_loop's real path; on molt-gate the path costs 287 s and
+a compiler change rebuilds the runtime crates in 229 s, so the full 79-program
+set took 875 s cold and only the primitives fit (measured 2026-11-10, recorded
+in the tool's tier comment). Each workload builds once
 (release, native `release-output`), at most `compile_max_slots` at once
 (`resource_pressure`, 8 slots of 2 GB), longest first by the base record's
 seconds (`shard_partition.lpt_shards`), and runs 5 times per axis: primitives at

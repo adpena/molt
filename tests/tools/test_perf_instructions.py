@@ -114,9 +114,9 @@ def test_a_measured_program_has_a_positive_count(tmp_path: Path) -> None:
 
 def test_registry_partitions_every_program_into_one_tier() -> None:
     hourly, nightly = pi.workloads(pi.Tier.HOURLY), pi.workloads(pi.Tier.NIGHTLY)
-    assert (len(hourly), len(nightly)) == (74, 5)
-    assert pi.NIGHTLY_BENCHMARKS <= set(BENCHMARKS)
-    assert {w.bench for w in nightly} == pi.NIGHTLY_BENCHMARKS
+    # Decision 4: the primitives fit an hourly cold run; benchmarks run nightly.
+    assert {w.name for w in hourly} == {"empty", *(p.name for p in pi.PRIMITIVES)}
+    assert [w.bench for w in nightly] == list(BENCHMARKS)
     names = [w.name for w in (*hourly, *nightly)]
     assert len(names) == len(set(names)) == 1 + len(pi.PRIMITIVES) + len(BENCHMARKS)
     assert per_op_axes() == tuple(f"{p.name}/per_op" for p in pi.PRIMITIVES)
@@ -251,7 +251,7 @@ def test_only_compiler_failures_become_build_failed_axes(
         phase="build", status=status, returncode=2, timed_out=False, elapsed_s=0.1
     )
     monkeypatch.setattr(pi.bench, "prepare_molt_binary", lambda *a, **k: failure)
-    workload = next(w for w in pi.workloads(pi.Tier.HOURLY) if w.name == "bench_sum")
+    workload = next(w for w in pi.workloads(pi.Tier.NIGHTLY) if w.name == "bench_sum")
     ctx = {
         "counter": pi.Counter.PERF.value,
         "scratch": str(tmp_path),

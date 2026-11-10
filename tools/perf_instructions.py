@@ -102,17 +102,13 @@ INSTRUMENT = (
     "tools/resource_pressure.py",
     "tools/shard_partition.py",
 )
-# The stdlib-heavy programs: every compiler change rebuilds their stdlib
-# objects, 1,878 s of build work together after a landing (design section 2).
-NIGHTLY_BENCHMARKS = frozenset(
-    {
-        "tests/benchmarks/bench_async_await.py",
-        "tests/benchmarks/bench_itertools_tee.py",
-        "tests/benchmarks/bench_parse_msgpack.py",
-        "tests/benchmarks/bench_channel_throughput.py",
-        "tests/benchmarks/bench_counter_words.py",
-    }
-)
+# Tiers (decision 4: an hourly run fits 10 minutes through trunk_loop's real
+# path). Measured on molt-gate, 2026-11-10: the path itself costs 287 s
+# (probe and retirement 43 s, staging 89 s, provisioning 88 s, collection 67 s)
+# and a compiler change rebuilds the runtime crates in 229 s, so a cold hourly
+# cell has about 84 s left. The 74-workload set took 875 s end to end cold
+# (63696ad10f) and 559 s warm (6678b0d0c3). The primitives (443 s of cold build
+# and run work on 8 slots) fit; every core benchmark runs nightly.
 
 
 class Tier(StrEnum):
@@ -190,12 +186,7 @@ def workloads(tier: Tier) -> tuple[Workload, ...]:
     """The one registry (design invariant 1)."""
     rows = [Workload(p.name, Tier.HOURLY, primitive=p) for p in (EMPTY, *PRIMITIVES)]
     rows.extend(
-        Workload(
-            Path(script).stem,
-            Tier.NIGHTLY if script in NIGHTLY_BENCHMARKS else Tier.HOURLY,
-            bench=script,
-        )
-        for script in BENCHMARKS
+        Workload(Path(script).stem, Tier.NIGHTLY, bench=script) for script in BENCHMARKS
     )
     return tuple(row for row in rows if row.tier is tier)
 
