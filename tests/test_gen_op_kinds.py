@@ -1729,6 +1729,37 @@ def test_type_refine_result_type_rule_validation_rejects_drift() -> None:
         raise AssertionError("unknown type-refine attr opcode was accepted")
 
 
+def test_negated_predicates_render_one_exhaustive_table() -> None:
+    """Each negating predicate maps to the predicate it negates, and only those."""
+    from tools.op_kinds.validate import _validate_negated_predicates
+
+    gen = _gen()
+    data = gen.load_table()
+    assert {row["opcode"]: row["negates"] for row in data["negated_predicates"]} == {
+        "IsNot": "Is",
+        "Ne": "Eq",
+        "NotIn": "In",
+        "Not": "Bool",
+    }
+    rendered = gen.render_rs(data)
+    table = rendered.split("fn opcode_negated_predicate_table", maxsplit=1)[1].split(
+        "\n}\n", maxsplit=1
+    )[0]
+    assert "OpCode::IsNot => Some(OpCode::Is)," in table
+    assert "OpCode::Not => Some(OpCode::Bool)," in table
+    assert "OpCode::Is => None," in table
+    assert "OpCode::Add => None," in table
+    for broken in (
+        [{"opcode": "IsNot", "negates": "Is"}, {"opcode": "Is", "negates": "Eq"}],
+        [{"opcode": "Not", "negates": "Eq"}],
+        [{"opcode": "IsNot", "negates": "Missing"}],
+    ):
+        with pytest.raises(gen.OpKindTableError, match="negated_predicates"):
+            _validate_negated_predicates(
+                dict(data, negated_predicates=broken), data["opcode"]
+            )
+
+
 def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
     """SCCP owns fold semantics; op_kinds.toml owns foldable opcode membership."""
     gen = _gen()
@@ -1753,6 +1784,8 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
         "Pow": "pow",
         "Eq": "eq",
         "Ne": "ne",
+        "Is": "is",
+        "IsNot": "is_not",
         "Lt": "lt",
         "Le": "le",
         "Gt": "gt",
@@ -1786,6 +1819,8 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
         "pow": "Pow",
         "eq": "Eq",
         "ne": "Ne",
+        "is": "Is",
+        "is_not": "IsNot",
         "lt": "Lt",
         "le": "Le",
         "gt": "Gt",

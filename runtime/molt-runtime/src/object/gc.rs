@@ -89,6 +89,9 @@ use crate::{
 };
 use molt_cpython_abi::{NativeGcEdge, NativeGcEdgeKind};
 
+mod registry;
+use registry::{Generation, TrackedRegistryShard};
+
 pub(crate) const NUM_GENERATIONS: usize = 3;
 pub(crate) const OLDEST_GENERATION: u8 = (NUM_GENERATIONS - 1) as u8;
 pub(crate) const PERMANENT_GENERATION: u8 = NUM_GENERATIONS as u8;
@@ -647,37 +650,18 @@ pub(crate) fn gc_clear_api_roots(py: &PyToken<'_>) -> bool {
     crate::runtime_state(py).gc.clear_api_roots(py)
 }
 
-/// Side registry of live cycle-capable objects (CPython's three gc-tracked
-/// generations). Each pointer receives a
-/// monotonic allocation ordinal, and collection snapshots sort by that ordinal;
-/// allocator addresses and hash iteration therefore cannot change
-/// finalizer/clear order across identical runs. Populated at allocation of a
-/// non-GREEN object and removed at free. GREEN/atomic objects are never inserted.
-///
-/// This is its OWN structure, not the provenance pointer registry — the latter is
-/// populated only in debug builds (`from_ptr` skips `register_ptr` in release), so
-/// it cannot enumerate live objects in the shipped profile.
-///
-/// CPython links each tracked object into a generation list through a 16-byte
-/// `PyGC_Head` before the object, so track and untrack are four pointer
-/// writes. Molt's 24-byte header has no free word or flag bit, and
-/// `docs/design/foundation/rc_gc_redesign.md` keeps both the GC head and
-/// registry identity out of the header and its aux word. The registry is
-/// therefore keyed by address, and both maps hash that address with one folded
-/// multiply ([`RegistryAddressHasher`]) instead of keyed SipHash.
-struct TrackedRegistryShard {
-    entries: HashMap<PtrSlot, TrackedEntry, RegistryAddressHash>,
-    native_nodes: HashMap<usize, NativeTrackedEntry, RegistryAddressHash>,
-}
-
-impl TrackedRegistryShard {
-    const fn new() -> Self {
-        Self {
-            entries: HashMap::with_hasher(RegistryAddressHash::new()),
-            native_nodes: HashMap::with_hasher(RegistryAddressHash::new()),
-        }
-    }
-}
+// Side registry of live cycle-capable objects (CPython's three gc-tracked
+// generations). Each pointer receives a
+// monotonic allocation ordinal, and collection snapshots sort by that ordinal;
+// allocator addresses and hash iteration therefore cannot change
+// finalizer/clear order across identical runs. Populated at allocation of a
+// non-GREEN object and removed at free. GREEN/atomic objects are never inserted.
+//
+// This is its OWN structure, not the provenance pointer registry — the latter is
+// populated only in debug builds (`from_ptr` skips `register_ptr` in release), so
+// it cannot enumerate live objects in the shipped profile. Each shard
+// ([`registry::TrackedRegistryShard`]) also keeps the exact member list of
+// every generation, so a young collection visits only young objects.
 
 /// Registry keys are heap addresses that the allocator, not the program,
 /// chooses, so the maps need no keyed (HashDoS-resistant) hash. SwissTable
@@ -717,13 +701,6 @@ fn address_word_hash(word: u64) -> u64 {
     const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
     let product = u128::from(word) * u128::from(MULTIPLIER);
     (product as u64) ^ ((product >> 64) as u64)
-}
-
-#[derive(Clone, Copy)]
-struct TrackedEntry {
-    runtime_owner: usize,
-    allocation_id: u64,
-    generation: u8,
 }
 
 /// Runtime-owned lifecycle metadata for a native CPython GC node.
@@ -864,9 +841,8 @@ impl IsolateGcOwner {
             let shard = lock_tracked_registry_shard(index);
             assert!(
                 shard
-                    .entries
-                    .values()
-                    .all(|entry| entry.runtime_owner != self.identity)
+                    .entries()
+                    .all(|(_, entry)| entry.runtime_owner != self.identity)
                     && shard
                         .native_nodes
                         .values()
@@ -991,7 +967,7 @@ pub(crate) fn may_form_cycle(type_id: u32) -> bool {
 /// The sole runtime-object membership insertion. Every admitted identity owns
 /// the one-shot allocation claim, including explicit tracking and promotion.
 /// Existing dictionary allocation claims are preserved without recounting.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GcMembershipAdmission {
     Inserted,
     AlreadyTracked,
@@ -1023,28 +999,12 @@ fn gc_admit_membership(py: &PyToken<'_>, ptr: *mut u8) -> GcMembershipAdmission 
     let owner = state.identity();
     let shard_index = tracked_registry_shard_index(ptr);
     let mut shard = lock_tracked_registry_shard(shard_index);
-    let admission = match shard.entries.entry(PtrSlot(ptr)) {
-        Entry::Vacant(entry) => {
-            if immortal_root {
-                return GcMembershipAdmission::ImmortalRoot;
-            }
-            entry.insert(TrackedEntry {
-                runtime_owner: owner,
-                allocation_id: next_allocation_ordinal(),
-                generation: 0,
-            });
-            profile_gc_track();
-            GcMembershipAdmission::Inserted
-        }
-        Entry::Occupied(entry) => {
-            assert_eq!(
-                entry.get().runtime_owner,
-                owner,
-                "tracked object crossed runtime ownership"
-            );
-            GcMembershipAdmission::AlreadyTracked
-        }
-    };
+    let admission = shard.admit(PtrSlot(ptr), owner, immortal_root, next_allocation_ordinal);
+    match admission {
+        GcMembershipAdmission::ImmortalRoot => return admission,
+        GcMembershipAdmission::Inserted => profile_gc_track(),
+        GcMembershipAdmission::AlreadyTracked => {}
+    }
     drop(shard);
     unsafe { gc_account_allocation(state, ptr) };
     admission
@@ -1263,26 +1223,19 @@ pub(crate) unsafe fn gc_untrack(
     let state = crate::runtime_state(py);
     let shard_index = tracked_registry_shard_index(ptr);
     let mut shard = lock_tracked_registry_shard(shard_index);
-    let entry = shard.entries.entry(PtrSlot(ptr));
-    if let Entry::Occupied(entry) = &entry {
-        assert_eq!(
-            entry.get().runtime_owner,
-            state.identity(),
-            "GC deallocation/untracking crossed runtime ownership"
-        );
-    }
     if reason == GcUntrackReason::Deallocation
         && header.fetch_and_flags(!HEADER_FLAG_GC_ACCOUNTED) & HEADER_FLAG_GC_ACCOUNTED == 0
     {
         return;
     }
-    let removed = match entry {
-        Entry::Occupied(entry) => {
-            entry.remove();
-            true
-        }
-        Entry::Vacant(_) => false,
-    };
+    let removed = shard.remove(PtrSlot(ptr)).is_some_and(|entry| {
+        assert_eq!(
+            entry.runtime_owner,
+            state.identity(),
+            "GC deallocation/untracking crossed runtime ownership"
+        );
+        true
+    });
     if removed {
         profile_gc_untrack(1);
     }
@@ -1314,9 +1267,7 @@ pub(crate) unsafe fn gc_is_finalized(ptr: *mut u8) -> bool {
 /// # Safety
 /// `ptr` is treated as an opaque key; not dereferenced.
 pub(crate) unsafe fn gc_is_tracked(ptr: *mut u8) -> bool {
-    lock_tracked_registry_shard(tracked_registry_shard_index(ptr))
-        .entries
-        .contains_key(&PtrSlot(ptr))
+    lock_tracked_registry_shard(tracked_registry_shard_index(ptr)).contains(&PtrSlot(ptr))
 }
 
 /// Admit one ABI-owned native allocation into the runtime's shared GC
@@ -1673,14 +1624,13 @@ pub(crate) fn gc_reset_registry(state: &crate::RuntimeState) {
     );
     assert!(
         shards.iter().all(|shard| shard
-            .entries
-            .values()
-            .all(|entry| entry.runtime_owner == identity)),
+            .entries()
+            .all(|(_, entry)| entry.runtime_owner == identity)),
         "GC registry reset would discard another runtime's managed membership"
     );
     let mut removed = 0u64;
     for shard in &mut shards {
-        removed = removed.saturating_add(shard.entries.len() as u64);
+        removed = removed.saturating_add(shard.len() as u64);
         // Full embedded-runtime teardown must release peak registry capacity;
         // `HashMap::clear` would pin the largest prior heap in this static.
         **shard = TrackedRegistryShard::new();
@@ -1719,6 +1669,11 @@ impl RegistrySelection {
             Self::All => true,
         }
     }
+
+    /// The generations whose member lists this selection reads.
+    fn generations(self) -> impl Iterator<Item = Generation> {
+        Generation::all().filter(move |generation| self.contains(generation.raw()))
+    }
 }
 
 fn snapshot_registry(
@@ -1737,13 +1692,11 @@ fn snapshot_registry(
     let entry_count = shards
         .iter()
         .map(|shard| {
-            let runtime = shard
-                .entries
-                .values()
-                .filter(|entry| {
-                    entry.runtime_owner == owner && selection.contains(entry.generation)
-                })
-                .count();
+            // An upper bound: other runtimes' members are filtered below.
+            let runtime = selection
+                .generations()
+                .map(|generation| shard.members(generation).len())
+                .sum::<usize>();
             let native = shard
                 .native_nodes
                 .values()
@@ -1761,18 +1714,23 @@ fn snapshot_registry(
         return false;
     }
     for shard in &shards {
-        candidates.extend(shard.entries.iter().filter_map(|(slot, entry)| {
-            if entry.runtime_owner != owner || !selection.contains(entry.generation) {
-                return None;
-            }
-            // Acquire pairs with constructor publication. A concurrent
-            // collector may observe registry insertion first, but never
-            // traverses a partially initialized payload.
-            unsafe { (*header_from_obj_ptr(slot.0)).gc_is_published() }.then_some(GcCandidate {
-                allocation_id: entry.allocation_id,
-                node: GcNode::Runtime(*slot),
-            })
-        }));
+        // Only the selected generations' member lists: a young collection
+        // visits young objects alone.
+        for generation in selection.generations() {
+            candidates.extend(shard.members(generation).iter().filter_map(|slot| {
+                let entry = shard.get(slot).expect("generation member is tracked");
+                if entry.runtime_owner != owner {
+                    return None;
+                }
+                // Acquire pairs with constructor publication. A concurrent
+                // collector may observe registry insertion first, but never
+                // traverses a partially initialized payload.
+                unsafe { (*header_from_obj_ptr(slot.0)).gc_is_published() }.then_some(GcCandidate {
+                    allocation_id: entry.allocation_id,
+                    node: GcNode::Runtime(*slot),
+                })
+            }));
+        }
         candidates.extend(shard.native_nodes.iter().filter_map(|(&address, entry)| {
             (entry.runtime_owner == owner && entry.tracked && selection.contains(entry.generation))
                 .then_some(GcCandidate {
@@ -1783,6 +1741,13 @@ fn snapshot_registry(
     }
     drop(shards);
     candidates.sort_unstable_by_key(|candidate| candidate.allocation_id);
+    // A repeated candidate would subtract its references twice.
+    debug_assert!(
+        candidates
+            .windows(2)
+            .all(|pair| pair[0].allocation_id != pair[1].allocation_id),
+        "GC snapshot repeated a candidate"
+    );
     true
 }
 
@@ -1802,10 +1767,17 @@ pub(crate) fn freeze_tracked_registry(py: &PyToken<'_>) {
     let mut shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     for shard in &mut shards {
-        for entry in shard.entries.values_mut() {
-            if entry.runtime_owner == owner && entry.generation < PERMANENT_GENERATION {
-                entry.generation = PERMANENT_GENERATION;
-            }
+        let ordinary: Vec<PtrSlot> = Generation::all()
+            .filter(|generation| *generation != Generation::PERMANENT)
+            .flat_map(|generation| shard.members(generation).iter().copied())
+            .filter(|slot| {
+                shard
+                    .get(slot)
+                    .is_some_and(|entry| entry.runtime_owner == owner)
+            })
+            .collect();
+        for slot in ordinary {
+            shard.set_generation(slot, Generation::PERMANENT);
         }
         for entry in shard.native_nodes.values_mut() {
             if entry.runtime_owner == owner
@@ -1823,10 +1795,18 @@ pub(crate) fn unfreeze_tracked_registry(py: &PyToken<'_>) {
     let mut shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     for shard in &mut shards {
-        for entry in shard.entries.values_mut() {
-            if entry.runtime_owner == owner && entry.generation == PERMANENT_GENERATION {
-                entry.generation = OLDEST_GENERATION;
-            }
+        let frozen: Vec<PtrSlot> = shard
+            .members(Generation::PERMANENT)
+            .iter()
+            .copied()
+            .filter(|slot| {
+                shard
+                    .get(slot)
+                    .is_some_and(|entry| entry.runtime_owner == owner)
+            })
+            .collect();
+        for slot in frozen {
+            shard.set_generation(slot, Generation::new(OLDEST_GENERATION));
         }
         for entry in shard.native_nodes.values_mut() {
             if entry.runtime_owner == owner
@@ -1847,10 +1827,12 @@ pub(crate) fn permanent_generation_count(py: &PyToken<'_>) -> usize {
         .iter()
         .map(|shard| {
             let runtime = shard
-                .entries
-                .values()
-                .filter(|entry| {
-                    entry.runtime_owner == owner && entry.generation == PERMANENT_GENERATION
+                .members(Generation::PERMANENT)
+                .iter()
+                .filter(|slot| {
+                    shard
+                        .get(slot)
+                        .is_some_and(|entry| entry.runtime_owner == owner)
                 })
                 .count();
             let native = shard
@@ -1886,11 +1868,9 @@ fn promote_marked_candidates(
         match candidate.node {
             GcNode::Runtime(ptr) => {
                 let shard_index = tracked_registry_shard_index(ptr.0);
-                let Some(entry) = shards[shard_index].entries.get_mut(&ptr) else {
-                    continue;
-                };
-                entry.generation = target_generation;
-                promoted += 1;
+                if shards[shard_index].set_generation(ptr, Generation::new(target_generation)) {
+                    promoted += 1;
+                }
             }
             GcNode::Native(address) => {
                 let shard_index = tracked_registry_shard_index_from_address(address);
@@ -3301,7 +3281,6 @@ fn retired_unreachable_count(scratch: &GcScratch) -> usize {
             let candidate = scratch.candidates[index];
             let current = match candidate.node {
                 GcNode::Runtime(ptr) => shards[tracked_registry_shard_index(ptr.0)]
-                    .entries
                     .get(&ptr)
                     .map(|entry| entry.allocation_id),
                 GcNode::Native(address) => shards

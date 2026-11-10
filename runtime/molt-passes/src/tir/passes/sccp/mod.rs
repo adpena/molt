@@ -29,20 +29,62 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
+use super::value_identity::{canonical_predicate, copy_value_source, peel_truth_wrappers};
+use crate::tir::op_kinds_generated::{
+    opcode_is_escape_alloc_site_table, opcode_operand_independent_result_tir_type,
+};
+use crate::tir::types::TirType;
 use eval::{evaluate_builtin_call, evaluate_op};
 
-/// One SSA value's state. Descends Unknown -> Constant -> Overdefined, never back.
+/// Facts about every execution of a value that is not one constant (HF-773
+/// slice C). A fact that does not hold is `false`; with none holding, the
+/// state is `Overdefined`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ValueFacts {
+    /// Never the `None` singleton.
+    not_none: bool,
+}
+
+impl ValueFacts {
+    const NOT_NONE: ValueFacts = ValueFacts { not_none: true };
+
+    fn of_constant(constant: &ConstVal) -> Self {
+        Self {
+            not_none: !matches!(constant, ConstVal::None),
+        }
+    }
+
+    fn meet(self, other: Self) -> Self {
+        Self {
+            not_none: self.not_none && other.not_none,
+        }
+    }
+}
+
+/// One SSA value's state. Descends Unknown -> Constant -> Refined ->
+/// Overdefined, never back.
 #[derive(Debug, Clone, PartialEq)]
 enum Lattice {
     /// No execution reaching the definition has been found yet.
     Unknown,
     /// The value on every execution found so far.
     Constant(ConstVal),
-    /// Not one constant.
+    /// Not one constant; the facts hold on every execution found so far.
+    Refined(ValueFacts),
+    /// Not one constant, and no fact holds.
     Overdefined,
 }
 
 impl Lattice {
+    /// `facts` as a state; `Overdefined` when no fact holds.
+    fn refined(facts: ValueFacts) -> Lattice {
+        if facts.not_none {
+            Lattice::Refined(facts)
+        } else {
+            Lattice::Overdefined
+        }
+    }
+
     /// The greatest lower bound of `self` and `incoming`.
     fn meet(&self, incoming: Lattice) -> Lattice {
         match (self, incoming) {
@@ -53,11 +95,69 @@ impl Lattice {
                 if *current == incoming {
                     Lattice::Constant(incoming)
                 } else {
-                    Lattice::Overdefined
+                    Lattice::refined(
+                        ValueFacts::of_constant(current).meet(ValueFacts::of_constant(&incoming)),
+                    )
                 }
+            }
+            (Lattice::Constant(current), Lattice::Refined(incoming)) => {
+                Lattice::refined(ValueFacts::of_constant(current).meet(incoming))
+            }
+            (Lattice::Refined(current), Lattice::Constant(incoming)) => {
+                Lattice::refined(current.meet(ValueFacts::of_constant(&incoming)))
+            }
+            (Lattice::Refined(current), Lattice::Refined(incoming)) => {
+                Lattice::refined(current.meet(incoming))
             }
         }
     }
+
+    /// Whether the value is `None` on every execution found so far
+    /// (`Some(true)`), on none of them (`Some(false)`), or either.
+    fn nullness(&self) -> Option<bool> {
+        match self {
+            Lattice::Constant(ConstVal::None) => Some(true),
+            Lattice::Constant(_) => Some(false),
+            Lattice::Refined(facts) if facts.not_none => Some(false),
+            Lattice::Unknown | Lattice::Refined(_) | Lattice::Overdefined => None,
+        }
+    }
+
+    /// The state on a path where `value is None` is known to be `is_none`.
+    /// Only a state without a nullness answer gains one; a state that
+    /// contradicts the path describes no execution on it and stays as it is.
+    fn on_path_where_none_is(self, is_none: bool) -> Lattice {
+        match (self, is_none) {
+            (Lattice::Overdefined, true) => Lattice::Constant(ConstVal::None),
+            (Lattice::Overdefined, false) => Lattice::Refined(ValueFacts::NOT_NONE),
+            (state, _) => state,
+        }
+    }
+}
+
+/// A value whose producer guarantees it is never `None`: an allocation site,
+/// or an op whose registry result type does not depend on its operands and
+/// excludes `None`. Producers carry the fact whatever their operands are.
+fn producer_never_none(op: &TirOp) -> bool {
+    fn excludes_none(ty: &TirType) -> bool {
+        match ty {
+            TirType::None | TirType::DynBox | TirType::Union(_) | TirType::Never => false,
+            TirType::Box(inner) => excludes_none(inner),
+            _ => true,
+        }
+    }
+    op.results.len() == 1
+        && (opcode_is_escape_alloc_site_table(op.opcode)
+            || opcode_operand_independent_result_tir_type(op.opcode, 0)
+                .is_some_and(|ty| excludes_none(&ty)))
+}
+
+/// A `CondBranch` edge taken exactly when `subject is None` is `is_none`.
+/// `subject` is a value-identity root (`Solver::copy_root`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NoneTest {
+    subject: ValueId,
+    is_none: bool,
 }
 
 /// Immutable value constants carried through the flow-insensitive lattice.
@@ -299,6 +399,178 @@ struct Solver<'f> {
     edge_worklist: Vec<PendingEdge<'f>>,
     value_worklist: Vec<ValueId>,
     uses: HashMap<ValueId, Vec<Use>>,
+    /// Facts the function's `None` tests establish; empty when it has none.
+    none_tests: NoneTests<'f>,
+}
+
+/// The `None` tests of one function's `CondBranch` terminators, and the
+/// blocks each one guards (HF-773 slice C).
+///
+/// An edge refines the values it binds to its target's arguments. A block
+/// entered only through one tested edge refines every predicate in it and in
+/// the blocks it dominates (LLVM's isImpliedByDomCondition). Neither mutates
+/// the IR, and no value receives a fact that ignores where it is used.
+#[derive(Default)]
+struct NoneTests<'f> {
+    /// The defining op of each result, for value-identity roots.
+    producers: HashMap<ValueId, &'f TirOp>,
+    by_edge: HashMap<Edge, NoneTest>,
+    /// Per subject, each block entered only through an edge that tests it,
+    /// with the nullness that edge establishes there.
+    guards: HashMap<ValueId, Vec<(BlockId, bool)>>,
+    dominance: Option<dominators::DominatorTree>,
+}
+
+impl<'f> NoneTests<'f> {
+    fn new(func: &'f TirFunction, label_to_block: &HashMap<i64, BlockId>) -> Self {
+        let has_identity_test = func
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| canonical_predicate(op.opcode).0 == OpCode::Is);
+        if !has_identity_test {
+            return Self::default();
+        }
+        let mut tests = Self {
+            producers: func
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .flat_map(|op| op.results.iter().map(move |&result| (result, op)))
+                .collect(),
+            ..Self::default()
+        };
+        for (&block_id, block) in &func.blocks {
+            let Terminator::CondBranch {
+                cond,
+                then_block,
+                else_block,
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            if then_block == else_block {
+                continue;
+            }
+            let Some(test) = tests.none_test(*cond) else {
+                continue;
+            };
+            for (label, is_none) in [
+                (TerminatorEdge::Then, test.is_none),
+                (TerminatorEdge::Else, !test.is_none),
+            ] {
+                let edge = Edge {
+                    from: block_id,
+                    source: EdgeSource::Terminator(label),
+                };
+                tests.by_edge.insert(edge, NoneTest { is_none, ..test });
+            }
+        }
+        if tests.by_edge.is_empty() {
+            return tests;
+        }
+        let pred_map = dominators::build_pred_map(func);
+        for (edge, test) in &tests.by_edge {
+            let Terminator::CondBranch {
+                then_block,
+                else_block,
+                ..
+            } = &func.blocks[&edge.from].terminator
+            else {
+                continue;
+            };
+            let target = match edge.source {
+                EdgeSource::Terminator(TerminatorEdge::Then) => *then_block,
+                _ => *else_block,
+            };
+            // The tested edge must be the target's only way in: one
+            // predecessor, which reaches it through no exception transfer.
+            // The entry block is also entered by the function's invocation,
+            // which the predecessor map does not list.
+            let sole_entry = target != func.entry_block
+                && pred_map
+                    .get(&target)
+                    .is_some_and(|preds| preds[..] == [edge.from])
+                && !func.blocks[&edge.from].ops.iter().any(|op| {
+                    dominators::exception_transfer_target(op, label_to_block) == Some(target)
+                });
+            if sole_entry {
+                tests
+                    .guards
+                    .entry(test.subject)
+                    .or_default()
+                    .push((target, test.is_none));
+            }
+        }
+        if !tests.guards.is_empty() {
+            tests.dominance = Some(dominators::compute_dominator_tree(func, &pred_map));
+        }
+        tests
+    }
+
+    /// `value` through value-forwarding copies to the value they forward.
+    fn copy_root(&self, mut value: ValueId) -> ValueId {
+        for _ in 0..=self.producers.len() {
+            match self
+                .producers
+                .get(&value)
+                .and_then(|op| copy_value_source(op))
+            {
+                Some(source) => value = source,
+                None => break,
+            }
+        }
+        value
+    }
+
+    /// The `None` test a branch condition makes, after its truth wrappers:
+    /// `is_none` is the subject's nullness exactly when the condition is truthy.
+    fn none_test(&self, cond: ValueId) -> Option<NoneTest> {
+        let truth = peel_truth_wrappers(cond, self.producers.len(), |value| {
+            self.producers.get(&value).copied()
+        });
+        let op = *self.producers.get(&truth.core)?;
+        let (predicate, negated) = canonical_predicate(op.opcode);
+        if predicate != OpCode::Is {
+            return None;
+        }
+        let holds_when_identical = !negated;
+        let [left, right] = op.operands[..] else {
+            return None;
+        };
+        let is_none_constant = |value: ValueId| {
+            self.producers
+                .get(&self.copy_root(value))
+                .is_some_and(|producer| {
+                    opcode_sccp_constant_seed_rule_table(producer.opcode)
+                        == SccpConstantSeedRule::NoneSingleton
+                })
+        };
+        let subject = match (is_none_constant(left), is_none_constant(right)) {
+            (false, true) => left,
+            (true, false) => right,
+            _ => return None,
+        };
+        Some(NoneTest {
+            subject: self.copy_root(subject),
+            is_none: holds_when_identical != truth.negated,
+        })
+    }
+
+    /// Whether `value is None` holds on every execution of `block`, from the
+    /// tested edges that guard it. One check per guard of the value's root,
+    /// each O(1) on the numbered dominator tree. Guards that dominate one
+    /// block hold together; if two disagree, the block runs on no execution
+    /// and either answer is sound.
+    fn nullness_in(&self, block: BlockId, value: ValueId) -> Option<bool> {
+        let dominance = self.dominance.as_ref()?;
+        self.guards
+            .get(&self.copy_root(value))?
+            .iter()
+            .find(|&&(guarded, _)| dominance.dominates(guarded, block))
+            .map(|&(_, is_none)| is_none)
+    }
 }
 
 impl<'f> Solver<'f> {
@@ -310,6 +582,7 @@ impl<'f> Solver<'f> {
             HashSet::new()
         };
         let uses = build_uses(func, &label_to_block);
+        let none_tests = NoneTests::new(func, &label_to_block);
         Self {
             func,
             label_to_block,
@@ -320,11 +593,53 @@ impl<'f> Solver<'f> {
             edge_worklist: Vec::new(),
             value_worklist: Vec::new(),
             uses,
+            none_tests,
         }
     }
 
     fn state(&self, value: ValueId) -> &Lattice {
         self.lattice.get(&value).unwrap_or(&Lattice::Unknown)
+    }
+
+    /// The state `edge` binds when it forwards `value`: refined by the edge's
+    /// own `None` test, else by the tests that guard the edge's source block.
+    fn edge_incoming(&self, edge: Edge, value: ValueId) -> Lattice {
+        let state = self.state(value).clone();
+        let tests = &self.none_tests;
+        if let Some(test) = tests.by_edge.get(&edge)
+            && tests.copy_root(value) == test.subject
+        {
+            return state.on_path_where_none_is(test.is_none);
+        }
+        match tests.nullness_in(edge.from, value) {
+            Some(is_none) => state.on_path_where_none_is(is_none),
+            None => state,
+        }
+    }
+
+    /// `x is None` or `x is not None` in `block`, when `x`'s state or the
+    /// tests guarding `block` decide it although `x` is not one constant.
+    fn decided_by_facts(&self, block: BlockId, op: &TirOp) -> Option<Lattice> {
+        let (predicate, negated) = canonical_predicate(op.opcode);
+        if predicate != OpCode::Is {
+            return None;
+        }
+        let [left, right] = op.operands[..] else {
+            return None;
+        };
+        let none = Lattice::Constant(ConstVal::None);
+        let subject = if *self.state(right) == none {
+            left
+        } else if *self.state(left) == none {
+            right
+        } else {
+            return None;
+        };
+        let is_none = self
+            .state(subject)
+            .nullness()
+            .or_else(|| self.none_tests.nullness_in(block, subject))?;
+        Some(Lattice::Constant(ConstVal::Bool(is_none != negated)))
     }
 
     /// Meet `incoming` into `value`'s state (I-1: a state never rises).
@@ -367,9 +682,11 @@ impl<'f> Solver<'f> {
         };
         for (index, arg) in target.args.iter().enumerate() {
             let incoming = match pending.binding {
-                EdgeBinding::Args(values) => values
-                    .get(index)
-                    .map_or(Lattice::Overdefined, |value| self.state(*value).clone()),
+                EdgeBinding::Args(values) => {
+                    values.get(index).map_or(Lattice::Overdefined, |value| {
+                        self.edge_incoming(pending.edge, *value)
+                    })
+                }
                 EdgeBinding::Unbound => Lattice::Overdefined,
             };
             self.lower(arg.id, incoming);
@@ -399,7 +716,7 @@ impl<'f> Solver<'f> {
                 }
                 Use::EdgeArg { edge, target, arg } => {
                     if self.executable_edges.contains(&edge) {
-                        let incoming = self.state(value).clone();
+                        let incoming = self.edge_incoming(edge, value);
                         let func = self.func;
                         if let Some(argument) = func
                             .blocks
@@ -446,7 +763,7 @@ impl<'f> Solver<'f> {
         if op.results.is_empty() {
             return;
         }
-        let Some(state) = self.evaluate(op) else {
+        let Some(state) = self.evaluate(block_id, op) else {
             return;
         };
         for &result in &op.results {
@@ -456,7 +773,7 @@ impl<'f> Solver<'f> {
 
     /// The state an op's results take from its operands' current states, or
     /// `None` while an operand is still Unknown.
-    fn evaluate(&self, op: &TirOp) -> Option<Lattice> {
+    fn evaluate(&self, block: BlockId, op: &TirOp) -> Option<Lattice> {
         if !admits_constant_result(op) {
             // Malformed producers never seed downstream constants or branches.
             return Some(Lattice::Overdefined);
@@ -484,10 +801,23 @@ impl<'f> Solver<'f> {
         if let Some(source) = value_identity::scalar_value_source(op) {
             return self.forwarded(source, Forwarding::ImmutableScalar);
         }
+        // A result that is not one constant still carries its producer's facts.
+        let not_constant = || {
+            if producer_never_none(op) {
+                Lattice::Refined(ValueFacts::NOT_NONE)
+            } else {
+                Lattice::Overdefined
+            }
+        };
         let mut operands = Vec::with_capacity(op.operands.len());
         for operand in &op.operands {
             match self.state(*operand) {
-                Lattice::Overdefined => return Some(Lattice::Overdefined),
+                Lattice::Refined(_) | Lattice::Overdefined => {
+                    return Some(
+                        self.decided_by_facts(block, op)
+                            .unwrap_or_else(not_constant),
+                    );
+                }
                 Lattice::Unknown => return None,
                 Lattice::Constant(constant) => operands.push(Some(constant)),
             }
@@ -496,7 +826,7 @@ impl<'f> Solver<'f> {
         Some(
             evaluate_op(op.opcode, &operands)
                 .or_else(|| evaluate_builtin_call(op, &operands))
-                .map_or(Lattice::Overdefined, Lattice::Constant),
+                .map_or_else(not_constant, Lattice::Constant),
         )
     }
 

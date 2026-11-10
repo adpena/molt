@@ -39,6 +39,7 @@ from .render_rust_analysis import (
     _render_range_devirt_role,
     _render_repr_projectable_result_rules,
     _render_residual_tir_semantic_roles,
+    _render_negated_predicate,
     _render_sccp_constant_eval_rule,
     _render_sccp_constant_seed_rule,
     _render_type_refine_attr_result_type_rule,
@@ -328,6 +329,8 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_sccp_constant_seed_rule(opcodes, data))
     out.append("\n")
     out.append(_render_sccp_constant_eval_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_negated_predicate(opcodes, data))
     out.append("\n")
     out.append(_render_value_range_transfer_rule(opcodes, data))
     out.append("\n")

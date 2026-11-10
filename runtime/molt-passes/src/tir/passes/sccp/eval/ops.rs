@@ -1,9 +1,79 @@
 use super::super::{ConstVal, MAX_COMPOUND_ELEMENTS};
+use crate::repr::ScalarKind;
 use crate::tir::numeric_facts::{py_i64_floordiv, py_i64_mod, python_range_is_non_empty};
 use crate::tir::op_kinds_generated::{
     SccpConstantEvalRule, opcode_accepts_shape, opcode_sccp_constant_eval_rule_table,
 };
 use crate::tir::ops::OpCode;
+
+/// The exact builtin class of a constant; compound constants have none here.
+fn constant_class(value: &ConstVal) -> Option<ScalarKind> {
+    match value {
+        ConstVal::Int(_) => Some(ScalarKind::Int),
+        ConstVal::Float(_) => Some(ScalarKind::Float),
+        ConstVal::Bool(_) => Some(ScalarKind::Bool),
+        ConstVal::Str(_) => Some(ScalarKind::Str),
+        ConstVal::None => Some(ScalarKind::NoneValue),
+        ConstVal::Tuple(_) | ConstVal::Range { .. } => None,
+    }
+}
+
+/// The families whose builtin `==` can return True across classes:
+/// `1 == 1.0 == True`. Across families both reflected methods return
+/// NotImplemented and `==` falls back to identity.
+#[derive(PartialEq, Eq)]
+enum EqualityFamily {
+    Numeric,
+    Str,
+    NoneValue,
+}
+
+fn equality_family(kind: ScalarKind) -> EqualityFamily {
+    match kind {
+        ScalarKind::Int | ScalarKind::Bool | ScalarKind::Float => EqualityFamily::Numeric,
+        ScalarKind::Str => EqualityFamily::Str,
+        ScalarKind::NoneValue => EqualityFamily::NoneValue,
+    }
+}
+
+/// Identity and equality of two constants that their classes decide.
+///
+/// Objects of different exact classes are never one object. `None`, `True`
+/// and `False` are singletons. Builtin `==` across equality families is
+/// False, and `!=` is its negation. Two equal ints or strs may or may not be
+/// one object (small-int cache, interning), so their identity is undecided.
+fn evaluate_constants_by_class(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    let left = operands.first().copied().flatten()?;
+    let right = operands.get(1).copied().flatten()?;
+    let (left_class, right_class) = (constant_class(left)?, constant_class(right)?);
+    let rule = opcode_sccp_constant_eval_rule_table(opcode);
+    let decided = match rule {
+        SccpConstantEvalRule::Is | SccpConstantEvalRule::IsNot => {
+            let same = if left_class != right_class {
+                false
+            } else if left_class == ScalarKind::NoneValue {
+                true
+            } else if let (ConstVal::Bool(a), ConstVal::Bool(b)) = (left, right) {
+                a == b
+            } else {
+                return None;
+            };
+            same == (rule == SccpConstantEvalRule::Is)
+        }
+        SccpConstantEvalRule::Eq | SccpConstantEvalRule::Ne => {
+            let equal = if equality_family(left_class) != equality_family(right_class) {
+                false
+            } else if left_class == ScalarKind::NoneValue {
+                true
+            } else {
+                return None;
+            };
+            equal == (rule == SccpConstantEvalRule::Eq)
+        }
+        _ => return None,
+    };
+    Some(ConstVal::Bool(decided))
+}
 
 /// Try to evaluate a binary/unary op on constant operands.
 pub(in crate::tir::passes::sccp) fn evaluate_op(
@@ -38,8 +108,13 @@ pub(in crate::tir::passes::sccp) fn evaluate_op(
         SccpConstantEvalRule::Pow => eval_binary_pow(operands),
 
         // Comparisons
-        SccpConstantEvalRule::Eq => eval_cmp(operands, |a, b| a == b, |a, b| a == b, |a, b| a == b),
-        SccpConstantEvalRule::Ne => eval_cmp(operands, |a, b| a != b, |a, b| a != b, |a, b| a != b),
+        SccpConstantEvalRule::Eq => eval_cmp(operands, |a, b| a == b, |a, b| a == b, |a, b| a == b)
+            .or_else(|| evaluate_constants_by_class(opcode, operands)),
+        SccpConstantEvalRule::Ne => eval_cmp(operands, |a, b| a != b, |a, b| a != b, |a, b| a != b)
+            .or_else(|| evaluate_constants_by_class(opcode, operands)),
+        SccpConstantEvalRule::Is | SccpConstantEvalRule::IsNot => {
+            evaluate_constants_by_class(opcode, operands)
+        }
         SccpConstantEvalRule::Lt => eval_cmp(operands, |a, b| a < b, |a, b| a < b, |a, b| !a & b),
         SccpConstantEvalRule::Le => eval_cmp(operands, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b),
         SccpConstantEvalRule::Gt => eval_cmp(operands, |a, b| a > b, |a, b| a > b, |a, b| a & !b),
