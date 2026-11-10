@@ -78,7 +78,7 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
         params: vec!["arg".into()],
         ..Default::default()
     };
-    let abi = molt_backend_native::NativeFunctionLinkageAbi {
+    let abi = molt_ir::linkage_abi::NativeFunctionLinkageAbi {
         source_signature: provider.function_signature().unwrap(),
         parameter_custody: vec![molt_backend::ir::ParameterCustody::Transferred],
         param_types: vec![molt_backend::tir::types::TirType::DynBox],

@@ -59,9 +59,7 @@ pub use crate::ir::{
     validate_simple_ir,
 };
 #[cfg(feature = "native-backend")]
-pub use crate::native_backend::{
-    CompileOutput, NativeBackendModuleContext, NativeFunctionLinkageAbi, SimpleBackend,
-};
+pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
 #[cfg(feature = "native-backend")]
 pub(crate) use crate::native_backend::{
     DeferredDefine, VarValue, block_has_terminator, extend_unique_tracked, switch_to_block_tracking,

@@ -1,6 +1,7 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::*;
 use molt_ir::backend_environment::BackendEnv;
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
 type ExternFunctionSignatures = BTreeMap<String, crate::ir::ExternFunctionSignature>;
 

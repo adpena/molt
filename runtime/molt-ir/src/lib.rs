@@ -19,6 +19,7 @@ pub mod debug_artifacts;
 pub mod ir;
 pub mod ir_schema;
 pub mod json_boundary;
+pub mod linkage_abi;
 pub mod literal_payload;
 pub mod native_callable_abi;
 pub mod process_diagnostics;
