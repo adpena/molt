@@ -482,21 +482,21 @@ def compare(
 
 def _git_process(
     repo: Path, argv: Sequence[str], *, check: bool = True
-) -> harness_memory_guard.GuardedCompletedProcess[str]:
-    """One bounded Git metadata read through the harness guard."""
-    result = harness_memory_guard.guarded_completed_process(
+) -> subprocess.CompletedProcess[str]:
+    """One bounded Git metadata read: the process-guard probe, not a nested
+    memory guard (a nested guard's custody failed a farm run on 2026-11-10)."""
+    from molt.process_guard import run_completed_command
+
+    return run_completed_command(
         ["git", "-C", str(repo), *argv],
-        prefix="MOLT_BENCH",
-        timeout=120,
+        memory_guard_prefix=None,
+        capture_output=True,
         text=True,
         encoding="utf-8",
         errors="strict",
+        timeout=120,
+        check=check,
     )
-    if check and result.returncode:
-        raise subprocess.CalledProcessError(
-            result.returncode, result.args, result.stdout, result.stderr
-        )
-    return result
 
 
 def _git(repo: Path, *argv: str) -> str:
@@ -606,7 +606,7 @@ class _Git:
 
     def _run(
         self, argv: list[str], check: bool = True
-    ) -> harness_memory_guard.GuardedCompletedProcess[str]:
+    ) -> subprocess.CompletedProcess[str]:
         return _git_process(self.repo, argv, check=check)
 
 

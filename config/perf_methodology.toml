@@ -37,7 +37,7 @@ schema = "molt-perf-methodology-v1"
 # the farm against the nearest measured ancestor, CPython for output only, no
 # ratchet; the board-vs-history chain is retired (HF-222).
 version = 36
-content_sha256 = "e7757ff147b42c51bcfc09574ee6325cae7d73c9460371debb1e289b51cd8a3d"
+content_sha256 = "521fbb71f0d9070ce80db7b6d21c37e9509b946e13d674c8b988929d243dc1c7"
 
 [[methodology]]
 path = "tools/safe_run.py"
