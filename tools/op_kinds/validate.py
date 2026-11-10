@@ -983,6 +983,21 @@ def load_table(table_path: Path = TABLE) -> dict:
             "callback_free_copy_kinds requires unique registered spellings"
         )
     exact_int = data.get("exact_int_result_copy_kinds")
+    nothrow = data.get("nothrow_copy_kinds")
+    if (
+        not isinstance(nothrow, list)
+        or any(
+            not isinstance(kind, str)
+            or kind not in registered
+            or kind in mapper_opcode_by_spelling
+            and mapper_opcode_by_spelling[kind] != "Copy"
+            for kind in nothrow
+        )
+        or len(set(nothrow)) != len(nothrow)
+    ):
+        raise OpKindTableError(
+            "nothrow_copy_kinds requires unique registered Copy-carrier spellings"
+        )
     if (
         not isinstance(exact_int, list)
         or any(

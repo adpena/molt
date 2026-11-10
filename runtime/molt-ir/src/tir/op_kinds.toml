@@ -677,6 +677,12 @@ callback_free_copy_kinds = [
     "line", "missing", "nop", "print_newline",
 ]
 
+# Preserved Copy carriers that cannot introduce a pending exception. Line is
+# metadata under terminal TIR ownership. Native legacy cleanup may release at
+# this marker, but finalizers report unraisable errors and restore prior state.
+# This is not purity: keep the Copy effect-free/consistent floor unchanged.
+nothrow_copy_kinds = ["line"]
+
 # Preserved primitives whose successful result is an exact `int` of any
 # magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact
 # int on every supported target (PyNumber_Index). The exact scalar solver reads

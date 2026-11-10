@@ -1103,6 +1103,22 @@ def test_callback_effect_validation_requires_independent_explicit_fact(
         gen.load_table(table)
 
 
+@pytest.mark.parametrize("kinds", ['["unknown_marker"]', '["line", "line"]', '["add"]'])
+def test_nothrow_copy_effect_rejects_unknown_duplicate_or_typed_opcode(
+    tmp_path: Path,
+    kinds: str,
+) -> None:
+    table = tmp_path / "nothrow_copy.toml"
+    table.write_text(
+        TABLE.read_text(encoding="utf-8").replace(
+            'nothrow_copy_kinds = ["line"]', f"nothrow_copy_kinds = {kinds}"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(_gen().OpKindTableError, match="nothrow_copy_kinds"):
+        _gen().load_table(table)
+
+
 def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     """SSA attr transport owns live values; op_kinds.toml owns membership."""
     gen = _gen()

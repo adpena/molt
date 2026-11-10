@@ -301,7 +301,32 @@ so the non-raising LINE fact used by Python coalescing is not available to
 check_exception_elim. INFERRED causal owner is canonical metadata effects and
 check_exception_elim/ordering; no product counterfactual or fix is qualified.
 Asynchronous-work polling and traceback/exception custody must remain intact.
-The explicit post-(c) stop condition blocks deletion pending integrator action.
+The 09:24Z disposition requires correcting this loss before deletion. It admits
+only a generated nothrow Copy-kind fact, preserving the impure effect-free and
+consistent floors and the existing independent callback projection.
+
+VERIFIED runtime premise: molt_dec_ref_obj enters dec_ref_ptr_validated
+(runtime/molt-runtime/src/object/ops.rs:1394), whose rc-zero path calls the
+finalizer at object/mod.rs:4426. Ordinary __del__ binding/calling runs inside
+run_unraisable_with_policy (object/mod.rs:3749). The transaction reports the
+captured error, discards current raised state (builtins/exceptions/unraisable.rs:
+211), then restores the original raised/handled state at :215; take_raised
+clears the pending flag (raised_state.rs:45). Generator and async-generator
+finalizers use the same transaction (async_rt/generators.rs:982,1161).
+This prevents a new finalizer error escaping; an incoming exception is preserved.
+Cranelift's native tracking mode may release at Line outside loops, so Line is
+not pure. Its terminal TIR mode drains no native cleanup candidates
+(native_backend/simple_backend/cleanup.rs:80), and both native finalization
+modes run terminal drops before codegen (program_pipeline.rs:108-136). LLVM
+and WASM Line handlers emit no work. The fact does not authorize deleting or
+moving Line markers, weakening asynchronous polls or modifying reserved paths.
+
+The generated nothrow Copy-kind projection is now read by the existing effects
+oracle. Five effects tests, all 24 check_exception_elim tests and 249 opcode
+generator tests pass in the plain development environment. These include the
+loop-header obligation, preservation of the marker and impure floors, and
+rejection of invalid or duplicate table entries. They do not qualify the
+remaining instruction corpus or the final landing matrix.
 
 VERIFIED native bench_calls inspection products have text identical to both
 new measured arms. Their loops have 429/431 static instructions and identical

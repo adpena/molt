@@ -1413,6 +1413,7 @@ def _render_observation_kind_predicates(data: dict) -> str:
         _wire.boolean(data, name, data.get(table, []))
         for name, table in (
             ("copy_kind_is_callback_free_table", "callback_free_copy_kinds"),
+            ("copy_kind_is_nothrow_table", "nothrow_copy_kinds"),
             ("copy_kind_is_binding_release_table", "binding_release_copy_kinds"),
             ("copy_kind_has_exact_int_result_table", "exact_int_result_copy_kinds"),
             (
