@@ -5,10 +5,16 @@
 //! I64+I64), we emit native LLVM instructions; when types are dynamic
 //! (DynBox), we emit calls to the Molt runtime.
 
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 #[cfg(all(test, feature = "llvm"))]
 use molt_ir::OpKind;
 use std::{cell::RefCell, collections::HashMap};
 
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::{prepend_execution_context, runtime_execution_type};
 #[cfg(feature = "llvm")]
 use inkwell::basic_block::BasicBlock;
 #[cfg(feature = "llvm")]
@@ -18,11 +24,9 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue, PhiValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_boxed_abi_generated::{
-    RuntimeBoxedAbi, RuntimeBoxedReturn, runtime_boxed_abi,
+use molt_ir::runtime_fn_generated::{
+    RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn, runtime_boxed_abi, runtime_raw_abi,
 };
-#[cfg(feature = "llvm")]
-use molt_ir::runtime_raw_abi_generated::{RuntimeRawAbi, runtime_raw_abi};
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
@@ -34,9 +38,7 @@ use crate::llvm_backend::runtime_imports::{
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
-use crate::runtime_import_abi::{
-    MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, RuntimeImportSignature, RuntimeReturnAbi,
-};
+use crate::runtime_import_abi::RuntimeReturnAbi;
 #[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
 #[cfg(feature = "llvm")]
@@ -183,40 +185,67 @@ fn ensure_i64_with_builder<'ctx>(
     }
 }
 
-/// Whether a raw signed `i64` fits the 47-bit inline integer payload.
+/// LLVM's one spelling of 64-bit word instructions. Every NaN-box primitive
+/// and reference-count transition comes from the shared generators in
+/// molt-codegen-abi through this builder; no encoding constant is spelled here.
 #[cfg(feature = "llvm")]
-fn inline_int_fits_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    raw: inkwell::values::IntValue<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    let bias = i64_ty.const_int(nanbox::INLINE_INT_BIAS as u64, false);
-    let biased = builder.build_int_add(raw, bias, "int_inline_bias").unwrap();
-    let limit = i64_ty.const_int(nanbox::INLINE_INT_LIMIT as u64, false);
-    builder
-        .build_int_compare(inkwell::IntPredicate::ULT, biased, limit, "int_fits_inline")
-        .unwrap()
+#[derive(Clone, Copy)]
+pub(super) struct LlvmWords<'a, 'ctx> {
+    pub(super) context: &'ctx inkwell::context::Context,
+    pub(super) builder: &'a inkwell::builder::Builder<'ctx>,
 }
 
-/// The inline NaN-box of a raw `i64` that fits the payload window.
 #[cfg(feature = "llvm")]
-fn inline_int_box_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    raw: inkwell::values::IntValue<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    let masked = builder
-        .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
-        .unwrap();
-    builder
-        .build_or(
-            masked,
-            i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
-            "box_i64",
-        )
-        .unwrap()
+impl<'ctx> nanbox::word::WordBuilder for LlvmWords<'_, 'ctx> {
+    type Word = inkwell::values::IntValue<'ctx>;
+    type Predicate = inkwell::values::IntValue<'ctx>;
+    fn constant(&mut self, value: u64) -> Self::Word {
+        self.context.i64_type().const_int(value, false)
+    }
+    fn and(&mut self, value: Self::Word, mask: u64) -> Self::Word {
+        let mask = self.constant(mask);
+        self.builder.build_and(value, mask, "word_and").unwrap()
+    }
+    fn or(&mut self, value: Self::Word, bits: u64) -> Self::Word {
+        let bits = self.constant(bits);
+        self.builder.build_or(value, bits, "word_or").unwrap()
+    }
+    fn shift_left(&mut self, value: Self::Word, amount: u32) -> Self::Word {
+        let amount = self.constant(u64::from(amount));
+        self.builder
+            .build_left_shift(value, amount, "word_shl")
+            .unwrap()
+    }
+    fn shift_right_arithmetic(&mut self, value: Self::Word, amount: u32) -> Self::Word {
+        let amount = self.constant(u64::from(amount));
+        self.builder
+            .build_right_shift(value, amount, true, "word_sar")
+            .unwrap()
+    }
+    fn add_immediate(&mut self, value: Self::Word, delta: i64) -> Self::Word {
+        let delta = self.constant(delta as u64);
+        self.builder
+            .build_int_add(value, delta, "word_add")
+            .unwrap()
+    }
+    fn compare(
+        &mut self,
+        comparison: nanbox::word::WordComparison,
+        left: Self::Word,
+        right: Self::Word,
+    ) -> Self::Predicate {
+        let predicate = match comparison {
+            nanbox::word::WordComparison::Equal => inkwell::IntPredicate::EQ,
+            nanbox::word::WordComparison::NotEqual => inkwell::IntPredicate::NE,
+            nanbox::word::WordComparison::UnsignedLessThan => inkwell::IntPredicate::ULT,
+        };
+        self.builder
+            .build_int_compare(predicate, left, right, "word_test")
+            .unwrap()
+    }
+    fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate {
+        self.builder.build_and(left, right, "word_both").unwrap()
+    }
 }
 
 /// Full-range runtime integer boxing (`molt_int_from_i64`): the inline box when
@@ -229,17 +258,14 @@ fn heap_int_box_with_builder<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    let from_i64_fn = module.get_function("molt_int_from_i64").unwrap_or_else(|| {
-        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-        module.add_function(
-            "molt_int_from_i64",
-            fn_ty,
-            Some(inkwell::module::Linkage::External),
-        )
-    });
+    let from_i64_fn = module
+        .get_execution_function("molt_int_from_i64")
+        .unwrap_or_else(|| {
+            declare_fixed_runtime_function(context, module, "molt_int_from_i64")
+                .expect("integer boxer has a fixed runtime ABI")
+        });
     builder
-        .build_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+        .build_execution_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
@@ -267,7 +293,8 @@ fn box_i64_overflow_safe_with_builder<'ctx>(
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
     let i64_ty = context.i64_type();
-    let fits = inline_int_fits_with_builder(builder, context, raw);
+    let fits =
+        nanbox::boxed_word::generate_inline_int_fits(&mut LlvmWords { context, builder }, raw);
 
     let inline_bb = context.append_basic_block(current_fn, "box_int_inline");
     let bigint_bb = context.append_basic_block(current_fn, "box_int_bigint");
@@ -277,7 +304,8 @@ fn box_i64_overflow_safe_with_builder<'ctx>(
         .unwrap();
 
     builder.position_at_end(inline_bb);
-    let inline_boxed = inline_int_box_with_builder(builder, context, raw);
+    let inline_boxed =
+        nanbox::boxed_word::generate_box_inline_int(&mut LlvmWords { context, builder }, raw);
     builder.build_unconditional_branch(merge_bb).unwrap();
 
     builder.position_at_end(bigint_bb);
@@ -409,12 +437,14 @@ fn unbox_i64_with_builder<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
-    let runtime = module.get_function("molt_int_as_i64").unwrap_or_else(|| {
-        declare_fixed_runtime_function(context, module, "molt_int_as_i64")
-            .expect("integer extractor has a fixed runtime ABI")
-    });
+    let runtime = module
+        .get_execution_function("molt_int_as_i64")
+        .unwrap_or_else(|| {
+            declare_fixed_runtime_function(context, module, "molt_int_as_i64")
+                .expect("integer extractor has a fixed runtime ABI")
+        });
     builder
-        .build_call(runtime, &[raw.into()], "unbox_i64")
+        .build_execution_call(runtime, &[raw.into()], "unbox_i64")
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
@@ -807,7 +837,7 @@ pub fn declare_tir_function<'ctx>(
         .map(|ty| lower_type(backend.context, ty).into())
         .collect();
 
-    let fn_ty = match linkage_abi.return_type.as_ref() {
+    let logical_fn_ty = match linkage_abi.return_type.as_ref() {
         Some(return_type) => {
             lower_type(backend.context, return_type).fn_type(&param_llvm_types, false)
         }
@@ -816,12 +846,13 @@ pub fn declare_tir_function<'ctx>(
             .void_type()
             .fn_type(&param_llvm_types, false),
     };
+    let fn_ty = prepend_execution_context(logical_fn_ty);
     // Reuse an existing forward-declaration if present (e.g., from a prior
     // Call op that referenced this function before it was defined).
     // If not, create a new function.  This avoids LLVM appending `.1` to
     // the name when a declaration already exists.
 
-    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+    let llvm_fn = if let Some(existing) = backend.module.get_execution_function(&func.name) {
         let existing = require_llvm_function_type(&func.name, existing, fn_ty);
         // Verify it's just a declaration (no basic blocks yet).
         if existing.count_basic_blocks() == 0 {
@@ -833,7 +864,9 @@ pub fn declare_tir_function<'ctx>(
             );
         }
     } else {
-        backend.module.add_function(&func.name, fn_ty, None)
+        backend
+            .module
+            .add_compiled_function(&func.name, logical_fn_ty, None)
     };
     add_molt_nounwind_attribute(backend, llvm_fn);
     llvm_fn
@@ -859,7 +892,7 @@ pub fn declare_extern_tir_function<'ctx>(
         .iter()
         .map(|ty| lower_type(backend.context, ty).into())
         .collect();
-    let fn_ty = match linkage_abi.return_type.as_ref() {
+    let logical_fn_ty = match linkage_abi.return_type.as_ref() {
         Some(return_type) => {
             lower_type(backend.context, return_type).fn_type(&param_llvm_types, false)
         }
@@ -868,7 +901,8 @@ pub fn declare_extern_tir_function<'ctx>(
             .void_type()
             .fn_type(&param_llvm_types, false),
     };
-    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+    let fn_ty = prepend_execution_context(logical_fn_ty);
+    let llvm_fn = if let Some(existing) = backend.module.get_execution_function(&func.name) {
         let existing = require_llvm_function_type(&func.name, existing, fn_ty);
         assert_eq!(
             existing.count_basic_blocks(),
@@ -878,9 +912,11 @@ pub fn declare_extern_tir_function<'ctx>(
         );
         existing
     } else {
-        backend
-            .module
-            .add_function(&func.name, fn_ty, Some(inkwell::module::Linkage::External))
+        backend.module.add_compiled_function(
+            &func.name,
+            logical_fn_ty,
+            Some(inkwell::module::Linkage::External),
+        )
     };
     add_molt_nounwind_attribute(backend, llvm_fn);
     llvm_fn
@@ -888,6 +924,15 @@ pub fn declare_extern_tir_function<'ctx>(
 
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    /// The word builder at the current insertion point, for the shared
+    /// NaN-box generators.
+    pub(super) fn words(&self) -> LlvmWords<'_, 'ctx> {
+        LlvmWords {
+            context: self.backend.context,
+            builder: &self.backend.builder,
+        }
+    }
+
     fn record_fatal(&self, message: impl Into<String>) {
         self.diagnostics
             .borrow_mut()
@@ -934,7 +979,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // Entry block: map block args to function parameters.
         if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
             for (i, arg) in block.args.iter().enumerate() {
-                let value = self.llvm_fn.get_nth_param(i as u32).unwrap_or_else(|| {
+                let value = self.llvm_fn.get_nth_param(i as u32 + 1).unwrap_or_else(|| {
                     self.record_fatal(format!(
                         "entry block argument %{} at index {} has no corresponding function parameter",
                         arg.id.0, i

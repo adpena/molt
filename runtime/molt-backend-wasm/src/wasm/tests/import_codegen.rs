@@ -248,7 +248,8 @@ fn iterator_step_calls_iter_next_unboxed_with_an_out_word() {
         .position(|operator| operator == &call)
         .unwrap_or_else(|| panic!("missing {call}; operators={operators:?}"));
     assert!(
-        operators[call_pos - 1].starts_with("I64Const {"),
+        operators[attached_call_operands_end(&operators, call_pos, 2) - 1]
+            .starts_with("I64Const {"),
         "the second argument is the scratch word's address; operators={operators:?}"
     );
     assert!(
@@ -302,11 +303,11 @@ fn generated_runtime_call_agreement_imports_declared_wasm_function() {
         .iter()
         .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
     {
-        let abi = call.function().boxed_abi();
-        let args = (0..abi.arity)
+        let abi = call.boxed_abi();
+        let args = (0..abi.arity())
             .map(|i| format!("arg{i}"))
             .collect::<Vec<_>>();
-        let import = crate::wasm_abi_generated::wasm_runtime_import(abi.symbol).unwrap();
+        let import = crate::wasm_abi_generated::wasm_runtime_import(abi.symbol()).unwrap();
         for bound in [false, true] {
             let ir = SimpleIR {
                 functions: vec![FunctionIR {

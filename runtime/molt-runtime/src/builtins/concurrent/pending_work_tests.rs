@@ -14,7 +14,7 @@ fn stopped_pool_publication_notifies_the_actual_execution_word() {
         );
         // Stale worklist identities are real producer inputs too. The bounded
         // consumer must remove one without inventing a pool or running a callback.
-        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending();
+        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py);
         assert!(!concurrent_retirement_pending(&runtime.concurrent));
         assert_eq!(
             word.load(Ordering::Relaxed) & PendingWorkKind::PoolRetirement as u32,
@@ -46,7 +46,7 @@ fn stopped_poll_retry_republishes_the_word_after_nested_service_clears_it() {
             word.load(Ordering::Relaxed) & PendingWorkKind::PoolRetirement as u32,
             0
         );
-        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending();
+        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py);
         assert!(!concurrent_retirement_pending(state));
     });
 }

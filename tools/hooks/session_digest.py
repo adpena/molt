@@ -5,10 +5,12 @@ Claude Code injects this hook's stdout into a new session. The digest reports
 only live facts that cost little to read, and it points at the authority that
 owns everything else instead of restating it: ``AGENTS.md`` holds the rules,
 ``tools/agent_coordination.py context`` the lanes, records and claims,
-``docs/agent/V1_HANDOFF_FINDINGS.md`` the work list, and the harness loads the
-memory index itself. It reports:
+``docs/agent/V1_HANDOFF_FINDINGS.md`` the work list,
+``docs/design/foundation/call_anatomy.md`` the performance plan, and the harness
+loads the memory index itself. It reports:
 
   * where to start (those authorities);
+  * the performance anchor and its own summary line, read from the document;
   * the landing queue: pending requests and the newest results;
   * the proof queue's active runs;
   * the live worktree count against the drift gate's SPRAWL threshold.
@@ -35,6 +37,8 @@ from tools.hooks import _common  # noqa: E402
 
 
 RECENT_LANDING_RESULTS = 3
+PERF_ANCHOR = Path("docs/design/foundation/call_anatomy.md")
+PERF_SUMMARY_PREFIX = "Summary: "
 
 
 def _section_start(out: io.StringIO) -> None:
@@ -42,6 +46,26 @@ def _section_start(out: io.StringIO) -> None:
         "START: AGENTS.md; `uv run python tools/agent_coordination.py "
         "context` (lanes, records, claims); open v1.0 findings: "
         "docs/agent/V1_HANDOFF_FINDINGS.md.\n"
+    )
+
+
+def _section_perf(out: io.StringIO, root: Path) -> None:
+    # The anchor's own summary line, read, never restated here.
+    anchor = root / PERF_ANCHOR
+    summary = None
+    if anchor.is_file():
+        summary = next(
+            (
+                line.removeprefix(PERF_SUMMARY_PREFIX).strip()
+                for line in anchor.read_text(encoding="utf-8").splitlines()
+                if line.startswith(PERF_SUMMARY_PREFIX)
+            ),
+            None,
+        )
+    out.write(
+        f"PERF: read {PERF_ANCHOR.as_posix()} (stage status) before any "
+        "performance analysis, ordering or speed claim"
+        + (f"; {summary}\n" if summary else ".\n")
     )
 
 
@@ -97,6 +121,7 @@ def run() -> int:
     out.write("== molt session start ==\n")
     for name, section in (
         ("start", lambda: _section_start(out)),
+        ("perf", lambda: _section_perf(out, root)),
         ("landing queue", lambda: _section_landing_queue(out, root)),
         ("proof queue", lambda: _section_proof_queue(out, root)),
         ("worktrees", lambda: _section_worktrees(out, root)),

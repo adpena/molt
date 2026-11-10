@@ -38,11 +38,13 @@ fn builtin_materialization_scope_releases_packed_owners_on_success_and_error() {
                     let original = crate::exception_last_bits_noinc(py).unwrap();
                     drop(storage);
                     assert_eq!(crate::exception_last_bits_noinc(py), Some(original));
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 } else {
                     let bound = bound.unwrap();
                     assert_eq!(refs(value), baseline + 2);
-                    let result = molt_string_format_method(bound[0], bound[1], bound[2]);
+                    let result = crate::ops_string_format::molt_string_format_method_attached_body(
+                        py, bound[0], bound[1], bound[2],
+                    );
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
                     drop(storage);
@@ -87,7 +89,7 @@ fn builtin_materialization_print_defaults_and_binding_failure_release_arguments(
                 drop(storage);
                 assert_eq!(refs(value), baseline);
                 if invalid {
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 }
             }
             dec_ref_bits(py, value);
@@ -103,7 +105,7 @@ fn builtin_materialization_type_keywords_and_set_operands_have_scoped_custody() 
         unsafe {
             let value = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
             let key = MoltObject::from_ptr(alloc_string(py, b"custom")).bits();
-            let set = crate::molt_set_new(0);
+            let set = crate::molt_set_new_attached_body(py, 0);
             assert!(!exception_pending(py));
             let baseline = refs(value);
             let mut storage = BuiltinArgumentStorage::default();

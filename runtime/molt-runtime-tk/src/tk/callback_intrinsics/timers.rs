@@ -23,9 +23,13 @@ use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 use std::collections::HashSet;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_tk_after_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    delay_ms_bits: u64,
+    callback_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::After) {
             return bits;
         }
@@ -127,9 +131,13 @@ pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_after_idle_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    callback_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::AfterIdle) {
             return bits;
         }
@@ -224,9 +232,13 @@ pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_after_cancel_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    identifier_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::AfterCancel) {
             return bits;
         }
@@ -263,9 +275,13 @@ pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_after_info(app_bits: u64, identifier_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_after_info_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    identifier_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::AfterInfo) {
             return bits;
         }
@@ -294,3 +310,5 @@ pub extern "C" fn molt_tk_after_info(app_bits: u64, identifier_bits: u64) -> u64
         }
     })
 }
+
+include!("../../attached_exports_generated/tk/callback_intrinsics/timers.rs");

@@ -1,12 +1,13 @@
 use crate::wasm::op_loop::result_sink::store_runtime_result;
 use crate::wasm::{WasmBackend, WasmFrameLocals};
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{box_int, stable_ic_site_id};
 use crate::{FunctionIR, OpIR};
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_generic_attribute_op(
     backend: &mut WasmBackend,

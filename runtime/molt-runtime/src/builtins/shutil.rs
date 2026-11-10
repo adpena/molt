@@ -231,9 +231,12 @@ fn rmtree_recursive(path: &Path) -> std::io::Result<()> {
 
 /// `shutil.copy(src, dst)` → str
 /// Copies file data and permissions but not metadata timestamps.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_copy_attached_body(
+    _py: &crate::PyToken<'_>,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = require_operation(
             _py,
             OperationId::ShutilCopy,
@@ -268,9 +271,12 @@ pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
 
 /// `shutil.copy2(src, dst)` → str
 /// Copies file data, permissions, and timestamps.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_copy2(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_copy2_attached_body(
+    _py: &crate::PyToken<'_>,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = require_operation(
             _py,
             OperationId::ShutilCopy2,
@@ -300,13 +306,13 @@ pub extern "C" fn molt_shutil_copy2(src_bits: u64, dst_bits: u64) -> u64 {
 }
 
 /// `shutil.copymode(src, dst, follow_symlinks=True)` → None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_copymode(
+pub(crate) fn molt_shutil_copymode_attached_body(
+    _py: &crate::PyToken<'_>,
     src_bits: u64,
     dst_bits: u64,
     follow_symlinks_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = require_operation(
             _py,
             OperationId::ShutilCopymode,
@@ -331,13 +337,13 @@ pub extern "C" fn molt_shutil_copymode(
 }
 
 /// `shutil.copystat(src, dst, follow_symlinks=True)` → None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_copystat(
+pub(crate) fn molt_shutil_copystat_attached_body(
+    _py: &crate::PyToken<'_>,
     src_bits: u64,
     dst_bits: u64,
     follow_symlinks_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = require_operation(
             _py,
             OperationId::ShutilCopystat,
@@ -362,13 +368,13 @@ pub extern "C" fn molt_shutil_copystat(
 }
 
 /// `shutil.copytree(src, dst, dirs_exist_ok=False)` → str
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_copytree(
+pub(crate) fn molt_shutil_copytree_attached_body(
+    _py: &crate::PyToken<'_>,
     src_bits: u64,
     dst_bits: u64,
     dirs_exist_ok_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = require_operation(
             _py,
             OperationId::ShutilCopytree,
@@ -393,9 +399,8 @@ pub extern "C" fn molt_shutil_copytree(
 }
 
 /// `shutil.rmtree(path)` → None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_rmtree_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "shutil.rmtree",
@@ -423,9 +428,12 @@ pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
 
 /// `shutil.move(src, dst)` → str
 /// Attempts rename first; falls back to copy+delete for cross-device moves.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_move_attached_body(
+    _py: &crate::PyToken<'_>,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = require_operation(
             _py,
             OperationId::ShutilMove,
@@ -474,9 +482,11 @@ pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
 
 /// `shutil.disk_usage(path)` → tuple[int, int, int]  (total, used, free)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_disk_usage_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "shutil.disk_usage",
@@ -581,9 +591,11 @@ pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_disk_usage(_path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_disk_usage_attached_body(
+    _py: &crate::PyToken<'_>,
+    _path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "disk_usage")
     })
 }
@@ -592,9 +604,11 @@ pub extern "C" fn molt_shutil_disk_usage(_path_bits: u64) -> u64 {
 ///
 /// `fallback_bits` is a tuple[int, int] or None (default 80×24).
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_get_terminal_size_attached_body(
+    _py: &crate::PyToken<'_>,
+    fallback_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (fb_cols, fb_lines) = if obj_from_bits(fallback_bits).is_none() {
             (80i64, 24i64)
         } else if let Some(ptr) = obj_from_bits(fallback_bits).as_ptr() {
@@ -680,9 +694,11 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_get_terminal_size_attached_body(
+    _py: &crate::PyToken<'_>,
+    fallback_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // On WASM return the fallback directly.
         let (fb_cols, fb_lines) = if obj_from_bits(fallback_bits).is_none() {
             (80i64, 24i64)
@@ -723,13 +739,13 @@ pub extern "C" fn molt_shutil_get_terminal_size(fallback_bits: u64) -> u64 {
 /// Supported formats: "zip", "tar", "gztar", "bztar", "xztar".
 /// Returns the path of the created archive.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_make_archive(
+pub(crate) fn molt_shutil_make_archive_attached_body(
+    _py: &crate::PyToken<'_>,
     base_name_bits: u64,
     format_bits: u64,
     root_dir_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let base_name = match string_obj_to_owned(obj_from_bits(base_name_bits)) {
             Some(s) => s,
             None => {
@@ -855,22 +871,25 @@ fn zip_add_directory<W: std::io::Write + std::io::Seek>(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_make_archive(
+pub(crate) fn molt_shutil_make_archive_attached_body(
+    _py: &crate::PyToken<'_>,
     _base_name_bits: u64,
     _format_bits: u64,
     _root_dir_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "make_archive")
     })
 }
 
 /// `shutil.unpack_archive(filename, extract_dir=None)` → None
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_unpack_archive_attached_body(
+    _py: &crate::PyToken<'_>,
+    filename_bits: u64,
+    extract_dir_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let filename = match path_from_bits(_py, filename_bits) {
             Ok(p) => p,
             Err(error) => return error,
@@ -956,9 +975,12 @@ fn unpack_zip(archive: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_unpack_archive(_filename_bits: u64, _extract_dir_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_unpack_archive_attached_body(
+    _py: &crate::PyToken<'_>,
+    _filename_bits: u64,
+    _extract_dir_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "unpack_archive")
     })
 }
@@ -967,9 +989,13 @@ pub extern "C" fn molt_shutil_unpack_archive(_filename_bits: u64, _extract_dir_b
 ///
 /// `user_bits` / `group_bits` can be str (name) or int (uid/gid) or None.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_chown_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    user_bits: u64,
+    group_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision(
             "shutil.chown",
@@ -1069,7 +1095,7 @@ pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: 
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 fn userdb_missing_name(py: &PyToken<'_>, bits: u64, kind: &str) -> u64 {
-    let representation = crate::molt_repr_from_obj(bits);
+    let representation = crate::molt_repr_from_obj_attached_body(py, bits);
     let owner = unsafe {
         molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), representation)
     };
@@ -1123,9 +1149,13 @@ fn lookup_gid(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_chown(_path_bits: u64, _user_bits: u64, _group_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_chown_attached_body(
+    _py: &crate::PyToken<'_>,
+    _path_bits: u64,
+    _user_bits: u64,
+    _group_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "chown")
     })
 }
@@ -1138,10 +1168,11 @@ mod capability_tests {
 
     fn take_error(py: &PyToken<'_>) -> (String, String) {
         assert!(exception_pending(py), "operation must raise");
-        let raised = crate::molt_exception_last();
-        crate::molt_exception_clear();
+        let raised = crate::molt_exception_last_attached_body(py);
+        crate::molt_exception_clear_attached_body(py);
         let kind = crate::type_name(py, obj_from_bits(raised)).to_string();
-        let message_bits = crate::builtins::exceptions::molt_exception_message(raised);
+        let message_bits =
+            crate::builtins::exceptions::molt_exception_message_attached_body(py, raised);
         assert!(!exception_pending(py));
         let message = string_obj_to_owned(obj_from_bits(message_bits)).unwrap();
         dec_ref_bits(py, message_bits);
@@ -1162,31 +1193,42 @@ mod capability_tests {
     #[test]
     fn filesystem_operations_report_only_all_missing_grants_before_host_work() {
         use crate::builtins::{contextlib, functions};
-        type BinaryOperation = fn(u64, u64) -> u64;
+        type BinaryOperation = fn(&PyToken<'_>, u64, u64) -> u64;
         let cases: &[(&str, BinaryOperation)] = &[
-            ("contextlib.chdir_enter", |src, _| {
-                contextlib::molt_contextlib_chdir_enter(src)
+            ("contextlib.chdir_enter", |py, src, _| {
+                contextlib::molt_contextlib_chdir_enter_attached_body(py, src)
             }),
-            ("contextlib.chdir_exit", |src, _| {
-                contextlib::molt_contextlib_chdir_exit(src)
+            ("contextlib.chdir_exit", |py, src, _| {
+                contextlib::molt_contextlib_chdir_exit_attached_body(py, src)
             }),
-            ("shutil.copy", |src, dst| molt_shutil_copy(src, dst)),
-            ("shutil.copy2", |src, dst| molt_shutil_copy2(src, dst)),
-            ("shutil.copymode", |src, dst| {
-                molt_shutil_copymode(src, dst, MoltObject::from_bool(true).bits())
+            ("shutil.copy", |py, src, dst| {
+                molt_shutil_copy_attached_body(py, src, dst)
             }),
-            ("shutil.copystat", |src, dst| {
-                molt_shutil_copystat(src, dst, MoltObject::from_bool(true).bits())
+            ("shutil.copy2", |py, src, dst| {
+                molt_shutil_copy2_attached_body(py, src, dst)
             }),
-            ("shutil.copytree", |src, dst| {
-                molt_shutil_copytree(src, dst, MoltObject::from_bool(false).bits())
+            ("shutil.copymode", |py, src, dst| {
+                molt_shutil_copymode_attached_body(py, src, dst, MoltObject::from_bool(true).bits())
             }),
-            ("shutil.move", |src, dst| molt_shutil_move(src, dst)),
-            ("shutil.copyfile", |src, dst| {
-                functions::molt_shutil_copyfile(src, dst)
+            ("shutil.copystat", |py, src, dst| {
+                molt_shutil_copystat_attached_body(py, src, dst, MoltObject::from_bool(true).bits())
             }),
-            ("py.compile.compile", |src, dst| {
-                functions::molt_py_compile_compile(src, dst)
+            ("shutil.copytree", |py, src, dst| {
+                molt_shutil_copytree_attached_body(
+                    py,
+                    src,
+                    dst,
+                    MoltObject::from_bool(false).bits(),
+                )
+            }),
+            ("shutil.move", |py, src, dst| {
+                molt_shutil_move_attached_body(py, src, dst)
+            }),
+            ("shutil.copyfile", |py, src, dst| {
+                functions::molt_shutil_copyfile_attached_body(py, src, dst)
+            }),
+            ("py.compile.compile", |py, src, dst| {
+                functions::molt_py_compile_compile_attached_body(py, src, dst)
             }),
         ];
         for (grants, missing) in [
@@ -1205,7 +1247,7 @@ mod capability_tests {
                 let destination_bits = str_bits_local(py, &destination.to_string_lossy());
                 let cwd = std::env::current_dir().unwrap();
                 for &(operation, invoke) in cases {
-                    let _ = invoke(source_bits, destination_bits);
+                    let _ = invoke(py, source_bits, destination_bits);
                     assert_denied(py, operation, missing);
                     assert_eq!(fs::read(&source).unwrap(), b"untouched");
                     assert!(!destination.exists());
@@ -1235,12 +1277,21 @@ mod capability_tests {
                 let base = artifacts.path().join("new-archive");
                 let base_bits = str_bits_local(py, &base.to_string_lossy());
                 let format_bits = str_bits_local(py, "tar");
-                let _ = molt_shutil_make_archive(base_bits, format_bits, MoltObject::none().bits());
+                let _ = molt_shutil_make_archive_attached_body(
+                    py,
+                    base_bits,
+                    format_bits,
+                    MoltObject::none().bits(),
+                );
                 assert_denied(py, "shutil.make_archive.external", missing);
                 assert!(!base.with_extension("tar").exists());
                 let archive_bits =
                     str_bits_local(py, &base.with_extension("tar").to_string_lossy());
-                let _ = molt_shutil_unpack_archive(archive_bits, MoltObject::none().bits());
+                let _ = molt_shutil_unpack_archive_attached_body(
+                    py,
+                    archive_bits,
+                    MoltObject::none().bits(),
+                );
                 assert_denied(py, "shutil.unpack_archive.external", missing);
                 dec_ref_bits(py, archive_bits);
                 dec_ref_bits(py, format_bits);
@@ -1264,9 +1315,10 @@ mod capability_tests {
             let format_bits = str_bits_local(py, "zip");
             let source_bits = str_bits_local(py, &source.to_string_lossy());
             let destination_bits = str_bits_local(py, &destination.to_string_lossy());
-            let archive_bits = molt_shutil_make_archive(base_bits, format_bits, source_bits);
+            let archive_bits =
+                molt_shutil_make_archive_attached_body(py, base_bits, format_bits, source_bits);
             assert!(!exception_pending(py));
-            let _ = molt_shutil_unpack_archive(archive_bits, destination_bits);
+            let _ = molt_shutil_unpack_archive_attached_body(py, archive_bits, destination_bits);
             assert!(!exception_pending(py));
             assert_eq!(
                 fs::read(destination.join("payload.txt")).unwrap(),
@@ -1293,7 +1345,12 @@ mod capability_tests {
         RuntimeTestTransaction::with_explicit_capabilities("fs.read,fs.write", |py| {
             let base_bits = str_bits_local(py, "unused-archive");
             let format_bits = str_bits_local(py, "zip");
-            let _ = molt_shutil_make_archive(base_bits, format_bits, MoltObject::none().bits());
+            let _ = molt_shutil_make_archive_attached_body(
+                py,
+                base_bits,
+                format_bits,
+                MoltObject::none().bits(),
+            );
             assert_eq!(
                 take_error(py),
                 (
@@ -1308,7 +1365,7 @@ mod capability_tests {
 
     #[test]
     fn executable_lookup_requires_fs_read_before_selected_input_conversion() {
-        use crate::builtins::functions::molt_shutil_which;
+        use crate::builtins::functions::molt_shutil_which_attached_body;
         for grants in ["", "env.read", "fs.read"] {
             RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
                 let invalid = MoltObject::none().bits();
@@ -1318,7 +1375,7 @@ mod capability_tests {
                 // Exercise both invalid files and invalid directories. Admission
                 // must precede conversion, even when no files could be searched.
                 for files in [invalid, empty] {
-                    let _ = molt_shutil_which(files, invalid, invalid);
+                    let _ = molt_shutil_which_attached_body(py, files, invalid, invalid);
                     if grants == "fs.read" {
                         assert_eq!(
                             take_error(py),
@@ -1338,7 +1395,7 @@ mod capability_tests {
 
     #[test]
     fn executable_lookup_searches_selected_inputs_with_fs_read_only() {
-        use crate::builtins::functions::molt_shutil_which;
+        use crate::builtins::functions::molt_shutil_which_attached_body;
         RuntimeTestTransaction::with_explicit_capabilities("fs.read", |py| {
             let artifacts =
                 cargo_test_artifacts::CargoTestArtifacts::new("which-selected-inputs").unwrap();
@@ -1390,8 +1447,12 @@ mod capability_tests {
                     }
                 };
                 for (mode, expected) in [(0, first.join("alternate")), (1, executable)] {
-                    let result =
-                        molt_shutil_which(files, directories, MoltObject::from_int(mode).bits());
+                    let result = molt_shutil_which_attached_body(
+                        py,
+                        files,
+                        directories,
+                        MoltObject::from_int(mode).bits(),
+                    );
                     assert!(!exception_pending(py));
                     // Directory order precedes file order; an existing directory
                     // named probe is never an executable result, even for F_OK.
@@ -1402,8 +1463,12 @@ mod capability_tests {
                     dec_ref_bits(py, result);
                 }
                 let missing_files = sequence(&names[..1], tuple_files);
-                let result =
-                    molt_shutil_which(missing_files, directories, MoltObject::from_int(0).bits());
+                let result = molt_shutil_which_attached_body(
+                    py,
+                    missing_files,
+                    directories,
+                    MoltObject::from_int(0).bits(),
+                );
                 assert!(!exception_pending(py));
                 assert!(obj_from_bits(result).is_none());
                 for bits in [result, missing_files, directories, files] {
@@ -1416,3 +1481,5 @@ mod capability_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/shutil.rs");

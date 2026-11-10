@@ -2986,9 +2986,9 @@ pub(crate) unsafe fn class_set_definition(ptr: *mut u8, definition: ClassDefinit
     .is_ok()
 }
 
-/// A native iterator's `__next__` callback with the positional `(self)` ABI:
+/// A native iterator's `__next__` callback with the attached `(context, self)` ABI:
 /// an owned item, or a pending exception where StopIteration is exhaustion.
-pub(crate) type NativeNextFn = extern "C" fn(u64) -> u64;
+pub(crate) type NativeNextFn = unsafe extern "C" fn(u64, u64) -> u64;
 
 /// # Safety
 /// `ptr` must be a live class object payload that outlives the reference.
@@ -3485,6 +3485,9 @@ pub(crate) enum NativeDescriptorFlavor {
     CallableGetSet = 5,
     RootMetadata = 6,
     CallableMember = 7,
+    /// `__weakref__` of a class that adds weakref support: reads the first
+    /// registered weak reference; never writable.
+    InstanceWeakref = 8,
 }
 
 impl NativeDescriptorFlavor {
@@ -3498,6 +3501,7 @@ impl NativeDescriptorFlavor {
             5 => Some(Self::CallableGetSet),
             6 => Some(Self::RootMetadata),
             7 => Some(Self::CallableMember),
+            8 => Some(Self::InstanceWeakref),
             _ => None,
         }
     }
@@ -4201,7 +4205,7 @@ mod tests {
                                 ],
                             );
                             let metadata_bits = MoltObject::from_ptr(metadata).bits();
-                            crate::builtins::functions::molt_function_init_metadata_packed(
+                            crate::builtins::functions::molt_function_init_metadata_packed_attached_body(py,
                                 function_bits,
                                 metadata_bits,
                                 code_bits,
@@ -4209,7 +4213,8 @@ mod tests {
                             );
                             dec_ref_bits(py, metadata_bits);
                         } else {
-                            crate::builtins::functions::molt_function_init_metadata(
+                            crate::builtins::functions::molt_function_init_metadata_attached_body(
+                                py,
                                 function_bits,
                                 name_bits,
                                 name_bits,

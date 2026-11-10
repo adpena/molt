@@ -2947,7 +2947,7 @@ cache_domain = "pytest"
 # WASM CI provisions the attested host SDK before running this family.
 dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
-pytest = ["tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission", "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication", "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths", "tests/test_wasm_link_validation.py::test_existing_alias_binding_controls_actual_llvm_resolution"]
+pytest = ["tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission", "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication", "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths"]
 toolchains = ["python", "uv", "wasm-ld"]
 
 [[command]]

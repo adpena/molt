@@ -29,6 +29,7 @@ import os
 import sys
 import tempfile
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +147,50 @@ def run_static_gates(root: Path, commands: list[str]) -> list[str]:
     return failed
 
 
+def landing_built_tests(
+    root: Path, importers: Sequence[str]
+) -> dict[str, tuple[str, ...]]:
+    """Importer test files whose proof-plan command needs a compiler build first.
+
+    A pytest command consumes what its dependency closure in
+    tools/proof_plan.toml produces. Only a compiler build (resource class
+    `compiler-build-resource`, for example the checkout's WASM runtime pair)
+    makes an artifact that a pre-commit run cannot provide: the proof executor
+    builds it from the committed tree, so the landing runs these tests.
+    Ordering dependencies on checks keep a test in the pre-commit run. A
+    checkout with no proof plan declares no builds.
+    """
+    from tools.proof_plan import ProofPlan
+
+    manifest = root / "tools" / "proof_plan.toml"
+    if not manifest.is_file():
+        return {}
+    commands = {command.id: command for command in ProofPlan.load(manifest).commands}
+
+    def builds(command_id: str) -> tuple[str, ...]:
+        found: list[str] = []
+        pending = list(commands[command_id].dependencies)
+        seen: set[str] = set()
+        while pending:
+            dependency = pending.pop()
+            if dependency in seen:
+                continue
+            seen.add(dependency)
+            if commands[dependency].data["resource_class"] == "compiler-build-resource":
+                found.append(dependency)
+            pending.extend(commands[dependency].dependencies)
+        return tuple(sorted(found))
+
+    owners: dict[str, tuple[str, ...]] = {}
+    for command in commands.values():
+        needed = builds(command.id) if command.pytest_targets else ()
+        if not needed:
+            continue
+        for target in command.pytest_targets:
+            owners.setdefault(target.split("::", 1)[0], needed)
+    return {test: owners[test] for test in importers if test in owners}
+
+
 def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
     from tools.test_dependency_graph import load_graph
 
@@ -162,17 +207,23 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
         )
         return 1
     readers = load_graph(root).direct_readers(changed)
+    landing_built = landing_built_tests(root, readers.importers)
+    run_now = [test for test in readers.importers if test not in landing_built]
     print(f"consumer-gate: {len(changed)} changed path(s), tree {tree[:12]}")
     for label, tests in (
-        ("importers (run now)", readers.importers),
+        ("importers (run now)", run_now),
+        (
+            "importers that need landing-built artifacts (the landing runs them)",
+            [f"{test} <- {', '.join(deps)}" for test, deps in landing_built.items()],
+        ),
         ("data readers (review; postsubmit runs them)", readers.data_readers),
     ):
         print(f"# {label}: {len(tests)}")
         for test in tests:
             print(f"  {test}")
-    if readers.importers:
+    if run_now:
         argv = [sys.executable, "-m", "pytest", "-q", *pytest_args]
-        argv += list(readers.importers)
+        argv += run_now
         print("consumer-gate: " + " ".join(argv), flush=True)
         if _COMMANDS.run(argv, cwd=root).returncode != 0:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
@@ -187,7 +238,10 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
         "tree": tree,
         "changed": changed,
         "static_gates": statics,
-        "importers": list(readers.importers),
+        "importers": run_now,
+        "landing_built_importers": {
+            test: list(deps) for test, deps in landing_built.items()
+        },
         "data_readers": list(readers.data_readers),
     }
     path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")

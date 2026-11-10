@@ -35,9 +35,8 @@ use molt_runtime_core::OwnedRuntimeValue;
 
 /// Module construction declares array's physical buffer producer once. Public
 /// eligibility follows the resulting semantic slots, never an instance field.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_declare_buffer(class: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_declare_buffer_attached_body(_py: &crate::PyToken<'_>, class: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe {
             let owner = crate::object::foreign::NativeObjectOwner::from_owned(
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class),
@@ -758,9 +757,8 @@ fn typecode_from_obj(
 // Public intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_new(typecode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_array_new_attached_body(_py: &crate::PyToken<'_>, typecode_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let tc = match typecode_from_obj(_py, typecode_bits, true) {
             Ok(tc) => tc,
             Err(exc) => return exc,
@@ -769,9 +767,12 @@ pub extern "C" fn molt_array_new(typecode_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_from_list_attached_body(
+    _py: &crate::PyToken<'_>,
+    typecode_bits: u64,
+    items_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let tc = match typecode_from_obj(py, typecode_bits, false) {
             Ok(tc) => tc,
             Err(error) => return error,
@@ -806,9 +807,12 @@ pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_append(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_append_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -835,9 +839,12 @@ pub extern "C" fn molt_array_append(handle_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_extend_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    items_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -892,9 +899,12 @@ pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_repeat(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_repeat_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -928,9 +938,12 @@ pub extern "C" fn molt_array_repeat(handle_bits: u64, count_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_repeat_in_place(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_repeat_in_place_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -971,9 +984,12 @@ pub extern "C" fn molt_array_repeat_in_place(handle_bits: u64, count_bits: u64) 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1035,9 +1051,13 @@ pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_setitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    index_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1130,9 +1150,12 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_delitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1194,9 +1217,8 @@ pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_len_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1209,9 +1231,8 @@ pub extern "C" fn molt_array_len(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_typecode(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_typecode_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1230,9 +1251,8 @@ pub extern "C" fn molt_array_typecode(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_itemsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_itemsize_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1245,9 +1265,8 @@ pub extern "C" fn molt_array_itemsize(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_tobytes(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_tobytes_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1267,9 +1286,12 @@ pub extern "C" fn molt_array_tobytes(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_frombytes(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_frombytes_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1305,9 +1327,8 @@ pub extern "C" fn molt_array_frombytes(handle_bits: u64, data_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_tolist(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_tolist_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1348,9 +1369,11 @@ pub extern "C" fn molt_array_tolist(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_buffer_info(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_buffer_info_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1379,9 +1402,12 @@ pub extern "C" fn molt_array_buffer_info(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_pop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1441,9 +1467,13 @@ pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_insert(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_insert_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    index_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1481,9 +1511,12 @@ pub extern "C" fn molt_array_insert(handle_bits: u64, index_bits: u64, value_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_remove(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_remove_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1525,9 +1558,8 @@ pub extern "C" fn molt_array_remove(handle_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_reverse(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_reverse_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1552,9 +1584,12 @@ pub extern "C" fn molt_array_reverse(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_count_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1612,9 +1647,12 @@ pub extern "C" fn molt_array_count(handle_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_array_index_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let cell = match array_cell(py, handle_bits) {
             Ok(cell) => cell,
             Err(error) => return error,
@@ -1685,3 +1723,5 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../attached_exports_generated/builtins/array_mod.rs");

@@ -47,7 +47,10 @@ fn call_test_app_startup(
     application: &wasmtime::Instance,
     runtime: &wasmtime::Instance,
 ) -> wasmtime::Result<GuestTermination> {
-    super::entrypoint::call_molt_application_entrypoint(store, application, runtime)
+    let context = runtime
+        .get_typed_func::<(), i64>(&mut *store, "molt_attached_context")?
+        .call(&mut *store, ())?;
+    super::entrypoint::call_molt_application_entrypoint(store, application, runtime, context)
 }
 
 fn execute_test_guest(
@@ -561,12 +564,12 @@ fn explicit_wasi_command_cannot_import_molt_without_current_manifest() {
     ] {
         let module = Module::new(
             &engine,
-            format!(
+            crate::execution_fixture::render(format!(
                 r#"(module
                 (import "{namespace}" "{name}" (func))
                 (func $unreachable_start unreachable) (start $unreachable_start)
                 (func (export "_start")))"#
-            ),
+            )),
         )
         .unwrap();
         let error = execute_test_guest(
@@ -602,17 +605,17 @@ fn command_indirect_dispatch_cannot_admit_manifest_bound_services() {
     ] {
         let module = Module::new(
             &engine,
-            format!(
+            crate::execution_fixture::render(format!(
                 r#"(module
-                (import "env" "molt_call_indirect0"
-                  (func $dispatch (param i64) (result i64)))
+                (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@"
+                  (func $dispatch (param i64) (param i64) (result i64)))
                 (import "{namespace}" "{name}" (func))
                 (table (export "__indirect_function_table") 2 funcref)
-                (func $target (result i64) i64.const 42)
+                (func $target (param i64) (result i64) i64.const 42)
                 (elem (i32.const 1) $target)
                 (func $unreachable_start unreachable) (start $unreachable_start)
-                (func (export "_start") i64.const 1 call $dispatch drop))"#
-            ),
+                (func (export "_start") i64.const 32768 i64.const 1 call $dispatch drop))"#
+            )),
         )
         .expect("valid indirect dispatch and service import fixture");
         let error = execute_test_guest(
@@ -755,12 +758,16 @@ fn execution_kind_rejects_runtime_import_drift() {
     let engine = build_engine().expect("production host engine");
     let standalone = Module::new(
         &engine,
-        r#"(module (import "wasi_snapshot_preview1" "proc_exit" (func (param i32))))"#,
+        crate::execution_fixture::render(
+            r#"(module (import "wasi_snapshot_preview1" "proc_exit" (func (param i32))))"#,
+        ),
     )
     .expect("valid standalone import fixture");
     let split = Module::new(
         &engine,
-        r#"(module (import "molt_runtime" "anchor" (func)))"#,
+        crate::execution_fixture::render(
+            r#"(module (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64))))"#,
+        ),
     )
     .expect("valid runtime import fixture");
     assert!(
@@ -835,44 +842,64 @@ fn isolate_host_imports_are_registered_with_runtime_abi_shapes() {
     define_isolate_host_imports(&mut linker, &mut store, &engine).unwrap();
 
     let bootstrap = linker
-        .get(&mut store, "env", "molt_isolate_bootstrap")
+        .get(
+            &mut store,
+            "env",
+            &super::compiled_execution_symbol("molt_isolate_bootstrap"),
+        )
         .expect("molt_isolate_bootstrap env linker item")
         .into_func()
         .expect("molt_isolate_bootstrap env import");
     let bootstrap_ty = bootstrap.ty(&store);
     let mut bootstrap_params = bootstrap_ty.params();
+    assert!(matches!(bootstrap_params.next(), Some(ValType::I64)));
     assert!(bootstrap_params.next().is_none());
     let mut bootstrap_results = bootstrap_ty.results();
     assert!(matches!(bootstrap_results.next(), Some(ValType::I64)));
     assert!(bootstrap_results.next().is_none());
 
     let isolate_import = linker
-        .get(&mut store, "env", "molt_isolate_import")
+        .get(
+            &mut store,
+            "env",
+            &super::compiled_execution_symbol("molt_isolate_import"),
+        )
         .expect("molt_isolate_import env linker item")
         .into_func()
         .expect("molt_isolate_import env import");
     let import_ty = isolate_import.ty(&store);
     let mut import_params = import_ty.params();
     assert!(matches!(import_params.next(), Some(ValType::I64)));
+    assert!(matches!(import_params.next(), Some(ValType::I64)));
     assert!(import_params.next().is_none());
     let mut import_results = import_ty.results();
     assert!(matches!(import_results.next(), Some(ValType::I64)));
     assert!(import_results.next().is_none());
 
-    let exported_bootstrap = Func::wrap(&mut store, || -> i64 { 41 });
-    let exported_import = Func::wrap(&mut store, |name_bits: i64| -> i64 { name_bits + 1 });
+    let exported_bootstrap = Func::wrap(&mut store, |context: i64| -> i64 {
+        assert_eq!(context, 32768);
+        41
+    });
+    let exported_import = Func::wrap(&mut store, |context: i64, name_bits: i64| -> i64 {
+        assert_eq!(context, 32768);
+        name_bits + 1
+    });
     store.data_mut().isolate_bootstrap_export = Some(exported_bootstrap);
     store.data_mut().isolate_import_export = Some(exported_import);
 
     let mut bootstrap_results = [Val::I64(0)];
     bootstrap
-        .call(&mut store, &[], &mut bootstrap_results)
+        .call(&mut store, &[Val::I64(32768)], &mut bootstrap_results)
         .expect("bootstrap bridge call");
     assert!(matches!(bootstrap_results[0], Val::I64(41)));
 
     let mut import_results = [Val::I64(0)];
     isolate_import
-        .call(&mut store, &[Val::I64(41)], &mut import_results)
+        .call(
+            &mut store,
+            &[Val::I64(32768), Val::I64(41)],
+            &mut import_results,
+        )
         .expect("import bridge call");
     assert!(matches!(import_results[0], Val::I64(42)));
 }
@@ -882,12 +909,14 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
     let engine = build_engine().expect("production host engine");
     let command = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(
+            r#"
         (module
           (func $initialize unreachable)
           (start $initialize)
           (func (export "_start") (result i32) i32.const 0))
     "#,
+        ),
     )
     .unwrap();
     let error = execute_test_guest(
@@ -909,45 +938,85 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
     for (malformed_export, definitions) in [
         (
             "molt_main",
-            r#"(func (export "molt_main"))
-               (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-               (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+            r#"(func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)
+               (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+               (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
                (func (export "molt_main_exit_status") (result i64) i64.const 0)
-               (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
+               (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)"#,
         ),
         (
             "molt_isolate_bootstrap",
-            r#"(func (export "molt_main") (result i64) i64.const 0)
-               (func (export "molt_isolate_bootstrap"))
-               (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+            r#"(func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+               (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)
+               (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
                (func (export "molt_main_exit_status") (result i64) i64.const 0)
-               (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
+               (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)"#,
         ),
         (
             "molt_isolate_import",
-            r#"(func (export "molt_main") (result i64) i64.const 0)
-               (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-               (func (export "molt_isolate_import") (param i32) (result i64) i64.const 0)
+            r#"(func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+               (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+               (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i32) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
                (func (export "molt_main_exit_status") (result i64) i64.const 0)
-               (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
+               (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)"#,
         ),
         (
             "molt_exception_pending",
-            r#"(func (export "molt_main") (result i64) i64.const 0)
-               (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-               (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+            r#"(func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+               (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+               (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
                (func (export "molt_main_exit_status") (result i64) i64.const 0)
-               (func (export "molt_exception_pending") (result i32) i32.const 0)"#,
+               (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i32)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i32.const 0)
+(func (export "molt_exception_pending_detached") (result i32)
+ i32.const 0)"#,
         ),
     ] {
         let application = Module::new(
             &engine,
-            format!(
+            crate::execution_fixture::render(format!(
                 r#"(module
                       (func $initialize unreachable)
                       (start $initialize)
                       {definitions})"#
-            ),
+            )),
         )
         .unwrap();
         let error = execute_test_guest(
@@ -970,21 +1039,45 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
 
     let application = Module::new(
         &engine,
-        r#"(module
-              (import "molt_runtime" "anchor" (func))
-              (func (export "molt_main") (result i64) i64.const 0)
-              (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-              (func (export "molt_isolate_import") (param i64) (result i64) local.get 0))"#,
+        crate::execution_fixture::render(r#"(module
+              (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))
+              (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+              (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+              (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)"#),
     )
     .unwrap();
     let runtime = Module::new(
         &engine,
-        r#"(module
+        crate::execution_fixture::render(r#"(module
               (func $initialize unreachable)
               (start $initialize)
-              (func (export "molt_anchor"))
+              (func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)
               (func (export "molt_main_exit_status") (result i64) i64.const 0)
-              (func (export "molt_exception_pending") (result i32) i32.const 0))"#,
+              (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i32)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i32.const 0)
+(func (export "molt_exception_pending_detached") (result i32)
+ i32.const 0)
+ (func (export "molt_attached_context") (result i64) i64.const 32768)
+)"#),
     )
     .unwrap();
     let error = execute_test_guest(
@@ -1012,7 +1105,11 @@ fn module_entrypoint_abis_reject_missing_parameters_and_result_drift() {
         r#"(func (export "_start") (param i32))"#,
         r#"(func (export "_start") (result i32) i32.const 0)"#,
     ] {
-        let command = Module::new(&engine, format!("(module {definition})")).unwrap();
+        let command = Module::new(
+            &engine,
+            crate::execution_fixture::render(format!("(module {definition})")),
+        )
+        .unwrap();
         assert!(
             validate_guest_module_entrypoint(GuestModuleEntrypoint::WasiCommand {
                 command: &command,
@@ -1023,18 +1120,30 @@ fn module_entrypoint_abis_reject_missing_parameters_and_result_drift() {
 
     for definition in [
         "",
-        r#"(func (export "molt_main"))"#,
-        r#"(func (export "molt_main") (param i64) (result i64) i64.const 0)"#,
-        r#"(func (export "molt_main") (result i32) i32.const 0)"#,
+        r#"(func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)"#,
+        r#"(func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)"#,
+        r#"(func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i32)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i32.const 0)"#,
     ] {
         let application = Module::new(
             &engine,
-            format!(
+            crate::execution_fixture::render(format!(
                 r#"(module
                     {definition}
                     (func (export "molt_main_exit_status") (result i64) i64.const 0)
-                    (func (export "molt_exception_pending") (result i64) i64.const 0))"#
-            ),
+                    (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+ (func (export "molt_attached_context") (result i64) i64.const 32768)
+)"#
+            )),
         )
         .unwrap();
         assert!(
@@ -1052,11 +1161,23 @@ fn command_execution_calls_only_typed_start() {
     let engine = build_engine().expect("production host engine");
     let module = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
         (module
-          (func (export "molt_main") (result i64) unreachable)
-          (func (export "_start")))
-    "#,
+          (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+          (func (export "_start"))
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)
+    "#),
     )
     .unwrap();
     assert_eq!(
@@ -1076,8 +1197,11 @@ fn command_execution_calls_only_typed_start() {
 #[test]
 fn command_entrypoint_preserves_wasm_traps() {
     let engine = build_engine().expect("production host engine");
-    let trap_module =
-        Module::new(&engine, r#"(module (func (export "_start") unreachable))"#).unwrap();
+    let trap_module = Module::new(
+        &engine,
+        crate::execution_fixture::render(r#"(module (func (export "_start") unreachable))"#),
+    )
+    .unwrap();
     let trap = execute_test_guest(
         &engine,
         &trap_module,
@@ -1128,12 +1252,12 @@ fn wasi_proc_exit_command(engine: &Engine, site: WasiProcExitSite, status: i32) 
     };
     Module::new(
         engine,
-        format!(
+        crate::execution_fixture::render(format!(
             r#"(module
                   (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
                   (memory (export "memory") 1)
                   {entrypoints})"#
-        ),
+        )),
     )
     .unwrap()
 }
@@ -1218,10 +1342,12 @@ fn command_core_start_non_exit_trap_keeps_instantiation_context() {
     let engine = build_engine().expect("production host engine");
     let module = Module::new(
         &engine,
-        r#"(module
+        crate::execution_fixture::render(
+            r#"(module
               (func $initialize unreachable)
               (start $initialize)
               (func (export "_start")))"#,
+        ),
     )
     .unwrap();
     let error = execute_test_guest(
@@ -1246,7 +1372,8 @@ fn wasi_argv_is_explicit_even_without_a_guest_tail() {
     let engine = build_engine().expect("production host engine");
     let module = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(
+            r#"
         (module
           (import "wasi_snapshot_preview1" "args_sizes_get"
             (func $args_sizes_get (param i32 i32) (result i32)))
@@ -1262,6 +1389,7 @@ fn wasi_argv_is_explicit_even_without_a_guest_tail() {
             i32.ne
             if unreachable end))
     "#,
+        ),
     )
     .unwrap();
     assert_eq!(
@@ -1283,7 +1411,8 @@ fn command_mode_never_configures_molt_table_base() {
     let engine = build_engine().expect("production host engine");
     let module = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(
+            r#"
         (module
           (table 1 funcref)
           (func $target)
@@ -1291,6 +1420,7 @@ fn command_mode_never_configures_molt_table_base() {
           (func (export "molt_set_wasm_table_base") (param i64) unreachable)
           (func (export "_start")))
     "#,
+        ),
     )
     .unwrap();
     assert_eq!(
@@ -1315,12 +1445,14 @@ fn standalone_command_memory_and_table_imports_need_no_runtime_module() {
     let engine = build_engine().expect("production host engine");
     let module = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(
+            r#"
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
           (func (export "_start")))
     "#,
+        ),
     )
     .unwrap();
     assert_eq!(
@@ -1342,17 +1474,37 @@ fn loaded_guest_primitive_executes_linked_application_contract() {
     let engine = build_engine().expect("production host engine");
     let application = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
         (module
-          (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-          (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+          (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+          (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
           (func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_exception_pending") (result i64) i64.const 0)
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
           (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
           (func (export "molt_runtime_execution_leave") (param i64))
           (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
-          (func (export "molt_main") (result i64) i64.const 0))
-    "#,
+          (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)
+    "#),
     )
     .unwrap();
     assert_eq!(
@@ -1374,27 +1526,61 @@ fn loaded_guest_primitive_executes_split_application_contract() {
     let engine = build_engine().expect("production host engine");
     let runtime = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
         (module
-          (func (export "molt_anchor"))
+          (import "env" "memory" (memory 1))
+          (func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)
           (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
           (func (export "molt_runtime_execution_leave") (param i64))
           (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
           (func (export "molt_main_exit_status") (result i64) i64.const 7)
-          (func (export "molt_exception_pending") (result i64) i64.const 0))
-    "#,
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+)
+    "#),
     )
     .unwrap();
     let application = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
         (module
-          (import "molt_runtime" "anchor" (func $anchor))
-          (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-          (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+          (import "env" "memory" (memory 1))
+          (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func $anchor (param i64)))
+          (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+          (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
           (func (export "molt_main_exit_status") (result i64) unreachable)
-          (func (export "molt_main") (result i64) call $anchor i64.const 0))
-    "#,
+          (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get $context call $anchor i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+)
+    "#),
     )
     .unwrap();
     assert_eq!(
@@ -1425,7 +1611,7 @@ fn execute_split_import_fixture(
     };
     let runtime = Module::new(
         engine,
-        format!(
+        crate::execution_fixture::render(format!(
             r#"(module
                 {runtime_fields}
                 {core_start}
@@ -1433,8 +1619,19 @@ fn execute_split_import_fixture(
                 (func (export "molt_runtime_execution_leave") (param i64))
                 (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                 (func (export "molt_main_exit_status") (result i64) i64.const 0)
-                (func (export "molt_exception_pending") (result i64) i64.const 0))"#
-        ),
+                (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param i64) (result i64)
+            local.get 0 i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param i64 i64)
+            local.get 0 i64.const 32768 i64.ne if unreachable end
+            local.get 1 i64.const 1 i64.ne if unreachable end))"#
+        )),
     )
     .expect("valid runtime fixture");
     // Every member of this fixture family is a real split-runtime application,
@@ -1443,18 +1640,34 @@ fn execute_split_import_fixture(
     // protocol admission cannot mask the particular import error under test.
     let application = Module::new(
         engine,
-        format!(
+        crate::execution_fixture::render(format!(
             r#"(module
-                (import "molt_runtime" "exception_pending"
-                    (func $fixture_exception_pending (result i64)))
+                (import "molt_runtime" "molt_exception_pending@CONTEXT_SUFFIX@"
+                    (func $fixture_exception_pending (param i64) (result i64)))
                 {application_fields}
                 {core_start}
-                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
-                (func (export "molt_main") (result i64)
-                    call $fixture_exception_pending drop
-                    {main_body}))"#
-        ),
+                (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+                (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
+                (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                    local.get $context call $fixture_exception_pending drop
+                    {main_body})
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+)"#
+        )),
     )
     .expect("valid application fixture");
     validate_execution_imports(
@@ -1479,44 +1692,50 @@ fn split_runtime_imports_are_admitted_before_either_core_start() {
     for (runtime_fields, application_fields, diagnostic) in [
         (
             "",
-            r#"(import "molt_runtime" "anchor" (func))"#,
-            "missing runtime export molt_anchor",
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
+            "missing runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
-            r#"(memory (export "molt_anchor") 1)"#,
-            r#"(import "molt_runtime" "anchor" (func))"#,
-            "malformed runtime export molt_anchor",
+            r#"(memory (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") 1)"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
+            "malformed runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
-            r#"(global (export "molt_anchor") i64 (i64.const 0))"#,
-            r#"(import "molt_runtime" "anchor" (func))"#,
-            "malformed runtime export molt_anchor",
+            r#"(global (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") i64 (i64.const 0))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
+            "malformed runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
-            r#"(table (export "molt_anchor") 1 funcref)"#,
-            r#"(import "molt_runtime" "anchor" (func))"#,
-            "malformed runtime export molt_anchor",
+            r#"(table (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") 1 funcref)"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
+            "malformed runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
-            r#"(func (export "molt_anchor") (param i64))"#,
-            r#"(import "molt_runtime" "anchor" (func (param i32)))"#,
-            "runtime export molt_anchor signature mismatch",
+            r#"(func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64) (param i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64) (param i32)))"#,
+            "runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@ signature mismatch",
         ),
         (
-            r#"(func (export "molt_anchor") (result i32) i32.const 0)"#,
-            r#"(import "molt_runtime" "anchor" (func (result i64)))"#,
-            "runtime export molt_anchor signature mismatch",
+            r#"(func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64) (result i32)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i32.const 0)"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64) (result i64)))"#,
+            "runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@ signature mismatch",
         ),
         (
-            r#"(memory (export "molt_anchor") 1)"#,
-            r#"(import "molt_runtime" "anchor" (memory 1))"#,
-            "malformed molt_runtime::anchor import",
+            r#"(memory (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") 1)"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (memory 1))"#,
+            "malformed molt_runtime::molt_recursion_exit_fast@CONTEXT_SUFFIX@ import",
         ),
         (
-            r#"(func (export "molt_anchor"))"#,
-            r#"(import "molt_runtime" "anchor" (func))
-               (import "molt_runtime" "anchor" (func (param i64)))"#,
-            "runtime export molt_anchor signature mismatch",
+            r#"(func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))
+               (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64) (param i64)))"#,
+            "runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@ signature mismatch",
         ),
     ] {
         let error = execute_split_import_fixture(
@@ -1527,7 +1746,12 @@ fn split_runtime_imports_are_admitted_before_either_core_start() {
             true,
         )
         .expect_err("invalid runtime mapping must fail before either core start");
-        assert!(error.to_string().contains(diagnostic), "{error:#}");
+        assert!(
+            error
+                .to_string()
+                .contains(&crate::execution_fixture::render(diagnostic)),
+            "{error:#}"
+        );
         assert!(
             error.downcast_ref::<wasmtime::Trap>().is_none(),
             "runtime mapping admission executed a guest core start: {error:#}"
@@ -1540,27 +1764,35 @@ fn split_runtime_import_plan_preserves_subtypes_and_duplicate_imports() {
     let engine = build_engine().expect("production host engine");
     for (runtime_fields, application_fields) in [
         (
-            r#"(func (export "molt_answer") (result i64) i64.const 42)"#,
-            r#"(import "molt_runtime" "answer" (func $first (result i64)))
-               (import "molt_runtime" "answer" (func $second (result i64)))"#,
+            r#"(func (export "molt_exception_last@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 42)"#,
+            r#"(import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $first (param i64) (result i64)))
+               (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $second (param i64) (result i64)))"#,
         ),
         (
-            r#"(type $base (sub (func (result i64))))
-               (type $derived (sub $base (func (result i64))))
-               (func (export "molt_answer") (type $derived) i64.const 42)"#,
-            r#"(type $base (sub (func (result i64))))
-               (type $derived (sub $base (func (result i64))))
-               (import "molt_runtime" "answer" (func $first (type $base)))
-               (import "molt_runtime" "answer" (func $second (type $derived)))"#,
+            r#"(type $base (sub (func (param i64) (result i64))))
+               (type $derived (sub $base (func (param i64) (result i64))))
+               (func (export "molt_exception_last@CONTEXT_SUFFIX@") (type $derived) (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 42)"#,
+            r#"(type $base (sub (func (param i64) (result i64))))
+               (type $derived (sub $base (func (param i64) (result i64))))
+               (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $first (type $base) (param i64) (result i64)))
+               (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $second (type $derived) (param i64) (result i64)))"#,
         ),
     ] {
+        // Successful split fixtures explicitly share the context's memory.
+        let runtime_fields = format!("(import \"env\" \"memory\" (memory 1))\n{runtime_fields}");
+        let application_fields =
+            format!("(import \"env\" \"memory\" (memory 1))\n{application_fields}");
         assert_eq!(
             execute_split_import_fixture(
                 &engine,
-                runtime_fields,
-                application_fields,
-                "call $first i64.const 42 i64.ne if unreachable end
-                 call $second i64.const 42 i64.ne if unreachable end i64.const 0",
+                &runtime_fields,
+                &application_fields,
+                "local.get $context call $first i64.const 42 i64.ne if unreachable end
+                 local.get $context call $second i64.const 42 i64.ne if unreachable end i64.const 0",
                 false,
             )
             .unwrap(),
@@ -1616,7 +1848,12 @@ fn split_application_host_imports_are_admitted_before_runtime_core_start() {
         let error =
             execute_split_import_fixture(&engine, "", application_fields, "i64.const 0", true)
                 .expect_err("invalid application host import must fail before runtime core start");
-        assert!(error.to_string().contains(diagnostic), "{error:#}");
+        assert!(
+            error
+                .to_string()
+                .contains(&crate::execution_fixture::render(diagnostic)),
+            "{error:#}"
+        );
         assert!(
             error.downcast_ref::<wasmtime::Trap>().is_none(),
             "{error:#}"
@@ -1655,15 +1892,17 @@ fn split_runtime_admission_accepts_shared_host_definitions_and_preserves_start_t
     let runtime_fields = r#"
         (import "env" "memory" (memory 2 4))
         (import "env" "__indirect_function_table" (table 2 4 funcref))
-        (func (export "molt_anchor") (result i64) i64.const 42)"#;
+        (func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 42)"#;
     let application_fields = r#"
         (import "env" "memory" (memory 1 5))
         (import "env" "__indirect_function_table" (table 1 5 funcref))
         (import "env" "molt_getpid_host" (func $getpid (result i64)))
         (import "wasi_snapshot_preview1" "proc_exit" (func (param i32)))
-        (import "molt_runtime" "anchor" (func $anchor (result i64)))"#;
+        (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func $anchor (param i64) (result i64)))"#;
     let main_body = "call $getpid drop
-        call $anchor i64.const 42 i64.ne if unreachable end
+        local.get $context call $anchor i64.const 42 i64.ne if unreachable end
         memory.size i32.const 2 i32.ne if unreachable end
         table.size 0 i32.const 2 i32.ne if unreachable end i64.const 0";
     assert_eq!(
@@ -1726,26 +1965,47 @@ fn app_startup_calls_only_molt_main_wrapper() {
         .unwrap();
     let module = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
             (module
               (import "env" "mark_bootstrap" (func $mark_bootstrap))
               (import "env" "mark_main" (func $mark_main))
               (import "env" "mark_start" (func $mark_start))
               (import "env" "mark_report" (func $mark_report))
-              (func (export "molt_isolate_bootstrap") (result i64)
+              (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
                 call $mark_bootstrap
                 i64.const 0)
-              (func (export "molt_isolate_import") (param i64) (result i64)
-                local.get 0)
+              (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                local.get 1)
               (func (export "molt_main_exit_status") (result i64) call $mark_report i64.const 0)
-              (func (export "molt_exception_pending") (result i64)
+              (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
                 i64.const 0)
-              (func (export "molt_main") (result i64)
+(func (export "molt_exception_pending_detached") (result i64)
+
+                i64.const 0)
+              (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
                 call $mark_main
                 i64.const 0)
               (func (export "_start")
-                call $mark_start))
-            "#,
+                call $mark_start)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)
+            "#),
     )
     .unwrap();
     let instance = linker.instantiate(&mut store, &module).unwrap();
@@ -1761,17 +2021,33 @@ fn app_startup_reports_and_consumes_pending_runtime_failure() {
     let mut store = Store::new(&engine, test_host_state());
     let module = Module::new(
         &engine,
-        r#"(module
+        crate::execution_fixture::render(r#"(module
         (global $pending (mut i64) (i64.const 0))
         (global $reports (mut i64) (i64.const 0))
-        (func (export "molt_main") (result i64)
+        (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
             i64.const 1 global.set $pending i64.const 0)
-        (func (export "molt_exception_pending") (result i64) global.get $pending)
+        (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ global.get $pending)
+(func (export "molt_exception_pending_detached") (result i64)
+ global.get $pending)
         (func (export "reports") (result i64) global.get $reports)
         (func (export "molt_main_exit_status") (result i64)
             global.get $pending i64.const 1 i64.ne if unreachable end
             global.get $reports i64.const 1 i64.add global.set $reports
-            i64.const 0 global.set $pending i64.const 7))"#,
+            i64.const 0 global.set $pending i64.const 7)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)"#),
     )
     .unwrap();
     let instance = Linker::new(&engine)
@@ -1781,7 +2057,7 @@ fn app_startup_reports_and_consumes_pending_runtime_failure() {
         call_test_app_startup(&mut store, &instance, &instance).unwrap(),
         GuestTermination::ApplicationExit(7)
     );
-    for (name, expected) in [("molt_exception_pending", 0), ("reports", 1)] {
+    for (name, expected) in [("molt_exception_pending_detached", 0), ("reports", 1)] {
         let observed = instance
             .get_typed_func::<(), i64>(&mut store, name)
             .unwrap();
@@ -1794,26 +2070,46 @@ fn app_startup_resolves_status_before_executing_main() {
     for status_export in [
         "",
         r#"(func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_exception_pending") (result i32) i32.const 0)"#,
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i32)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i32.const 0)
+(func (export "molt_exception_pending_detached") (result i32)
+ i32.const 0)"#,
         r#"(func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_exception_pending") (result i64) i64.const 2)"#,
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 2)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 2)"#,
     ] {
         let engine = build_engine().expect("production host engine");
         let mut store = Store::new(&engine, test_host_state());
         let module = Module::new(
             &engine,
-            format!(
+            crate::execution_fixture::render(format!(
                 r#"
             (module
               (global $calls (mut i64) (i64.const 0))
-              (func (export "molt_main") (result i64)
+              (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
                 i64.const 1
                 global.set $calls
                 i64.const 0)
               (func (export "calls") (result i64) global.get $calls)
-              {status_export})
+              {status_export}
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)
         "#
-            ),
+            )),
         )
         .unwrap();
         let instance = Linker::new(&engine)
@@ -1835,18 +2131,28 @@ fn split_startup_reads_runtime_instance_status_not_application_shadow() {
     let mut store = Store::new(&engine, test_host_state());
     let runtime = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(
+            r#"
         (module (func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_exception_pending") (result i64) i64.const 1))
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 1)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 1)
+ (func (export "molt_attached_context") (result i64) i64.const 32768)
+)
     "#,
+        ),
     )
     .unwrap();
     let app = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
         (module
           (global $calls (mut i64) (i64.const 0))
-          (func (export "molt_main") (result i64)
+          (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
             global.get $calls
             i64.const 1
             i64.add
@@ -1854,8 +2160,22 @@ fn split_startup_reads_runtime_instance_status_not_application_shadow() {
             i64.const 0)
           (func (export "calls") (result i64) global.get $calls)
           (func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_exception_pending") (result i64) i64.const 0))
-    "#,
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)
+    "#),
     )
     .unwrap();
     let linker = Linker::new(&engine);
@@ -1881,10 +2201,12 @@ fn linked_startup_rejects_preexisting_failure_before_main() {
     let mut store = Store::new(&engine, test_host_state());
     let module = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
         (module
           (global $calls (mut i64) (i64.const 0))
-          (func (export "molt_main") (result i64)
+          (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
             global.get $calls
             i64.const 1
             i64.add
@@ -1892,8 +2214,22 @@ fn linked_startup_rejects_preexisting_failure_before_main() {
             i64.const 0)
           (func (export "calls") (result i64) global.get $calls)
           (func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_exception_pending") (result i64) i64.const 1))
-    "#,
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 1)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 1)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)
+    "#),
     )
     .unwrap();
     let instance = Linker::new(&engine)
@@ -1921,12 +2257,28 @@ fn app_startup_preserves_wasm_trap_failure() {
     let mut store = Store::new(&engine, test_host_state());
     let module = Module::new(
         &engine,
-        r#"
+        crate::execution_fixture::render(r#"
         (module
-          (func (export "molt_main") (result i64) unreachable)
+          (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
           (func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_exception_pending") (result i64) i64.const 0))
-    "#,
+          (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)
+    "#),
     )
     .unwrap();
     let instance = Linker::new(&engine)
@@ -1943,14 +2295,26 @@ fn app_startup_preserves_wasm_trap_failure() {
 #[test]
 fn isolate_export_registration_validates_both_abis_before_publication() {
     for definitions in [
-        r#"(func (export "molt_isolate_bootstrap"))
-           (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)"#,
-        r#"(func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-           (func (export "molt_isolate_import") (param i32) (result i64) i64.const 0)"#,
+        r#"(func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)
+           (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)"#,
+        r#"(func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+           (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i32) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)"#,
     ] {
         let engine = build_engine().expect("production host engine");
         let mut store = Store::new(&engine, test_host_state());
-        let module = Module::new(&engine, format!("(module {definitions})")).unwrap();
+        let module = Module::new(
+            &engine,
+            crate::execution_fixture::render(format!("(module {definitions})")),
+        )
+        .unwrap();
         let instance = Linker::new(&engine)
             .instantiate(&mut store, &module)
             .unwrap();
@@ -2045,7 +2409,9 @@ fn manifest_command_captures_source_and_cannot_admit_an_unrelated_module() {
     );
     let unrelated = Module::new(
         &engine,
-        r#"(module (func $s unreachable) (start $s) (func (export "_start")))"#,
+        crate::execution_fixture::render(
+            r#"(module (func $s unreachable) (start $s) (func (export "_start")))"#,
+        ),
     )
     .unwrap();
     let error = execute_test_guest(
@@ -2075,27 +2441,61 @@ fn split_reporter_admission_rejects_runtime_defect_despite_valid_app_shadow() {
     ] {
         let runtime = Module::new(
             &engine,
-            format!(
+            crate::execution_fixture::render(format!(
                 r#"(module
+          (import "env" "memory" (memory 1))
             (func $start unreachable) (start $start)
-            (func (export "molt_anchor"))
-            (func (export "molt_exception_pending") (result i64) i64.const 0)
+            (func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+)
+            (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
             (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
             (func (export "molt_runtime_execution_leave") (param i64))
             (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
-            {reporter})"#
-            ),
+            {reporter}
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+)"#
+            )),
         )
         .unwrap();
         let app = Module::new(
             &engine,
-            r#"(module
-            (import "molt_runtime" "anchor" (func))
+            crate::execution_fixture::render(r#"(module
+          (import "env" "memory" (memory 1))
+            (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))
             (func $start unreachable) (start $start)
-            (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-            (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+            (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+            (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
             (func (export "molt_main_exit_status") (result i64) i64.const 0)
-            (func (export "molt_main") (result i64) unreachable))"#,
+            (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+)"#),
         )
         .unwrap();
         let error = execute_test_guest(

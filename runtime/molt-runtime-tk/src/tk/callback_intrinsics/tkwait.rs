@@ -6,9 +6,12 @@ use super::super::state::{
     TkOperation, parse_app_handle, raise_invalid_handle_error, require_tk_operation,
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_tkwait_variable(app_bits: u64, variable_name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_tk_tkwait_variable_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    variable_name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -25,9 +28,13 @@ pub extern "C" fn molt_tk_tkwait_variable(app_bits: u64, variable_name_bits: u64
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_tkwait_window(app_bits: u64, target_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_tkwait_window_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -44,9 +51,13 @@ pub extern "C" fn molt_tk_tkwait_window(app_bits: u64, target_bits: u64) -> u64 
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_tkwait_visibility(app_bits: u64, target_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_tkwait_visibility_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -63,3 +74,5 @@ pub extern "C" fn molt_tk_tkwait_visibility(app_bits: u64, target_bits: u64) -> 
         }
     })
 }
+
+include!("../../attached_exports_generated/tk/callback_intrinsics/tkwait.rs");

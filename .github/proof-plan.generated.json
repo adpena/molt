@@ -4512,8 +4512,7 @@
       "pytest": [
         "tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission",
         "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication",
-        "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths",
-        "tests/test_wasm_link_validation.py::test_existing_alias_binding_controls_actual_llvm_resolution"
+        "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths"
       ],
       "resource_class": "python-tests",
       "tiers": [

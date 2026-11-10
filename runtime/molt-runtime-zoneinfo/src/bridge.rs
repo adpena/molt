@@ -12,7 +12,13 @@ use molt_runtime_core::prelude::*;
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_zoneinfo_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_zoneinfo_raise_exception")]
+    fn __molt_zoneinfo_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -21,7 +27,12 @@ pub fn raise_exception<T: ExceptionSentinel>(
     msg: &str,
 ) -> T {
     let bits = unsafe {
-        __molt_zoneinfo_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len())
+        __molt_zoneinfo_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
     };
     T::from_bits(bits)
 }
@@ -55,16 +66,28 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_zoneinfo_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_zoneinfo_alloc_set_with_entries(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_zoneinfo_alloc_string")]
+    fn __molt_zoneinfo_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_zoneinfo_alloc_set_with_entries")]
+    fn __molt_zoneinfo_alloc_set_with_entries(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_zoneinfo_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_zoneinfo_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_set_with_entries(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_zoneinfo_alloc_set_with_entries(elems.as_ptr(), elems.len()) }
+    unsafe {
+        __molt_zoneinfo_alloc_set_with_entries(_py.attached_context(), elems.as_ptr(), elems.len())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +129,9 @@ pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_zoneinfo_seq_snapshot")]
     fn __molt_zoneinfo_seq_snapshot(
+        __molt_context: u64,
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
@@ -116,15 +141,17 @@ unsafe extern "C" {
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { __molt_zoneinfo_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_zoneinfo_seq_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +160,8 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 
 unsafe extern "C" {
     fn __molt_zoneinfo_to_i64(bits: u64, out: *mut i64) -> i32;
-    fn __molt_zoneinfo_int_bits_from_i64(val: i64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_zoneinfo_int_bits_from_i64")]
+    fn __molt_zoneinfo_int_bits_from_i64(__molt_context: u64, val: i64) -> u64;
 }
 
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -143,5 +171,5 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
 }
 
 pub fn int_bits_from_i64(_py: &CoreGilToken, val: i64) -> u64 {
-    unsafe { __molt_zoneinfo_int_bits_from_i64(val) }
+    unsafe { __molt_zoneinfo_int_bits_from_i64(_py.attached_context(), val) }
 }

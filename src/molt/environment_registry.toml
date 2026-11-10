@@ -2714,6 +2714,14 @@ owner = "src/molt/default_paths.py"
 summary = "Mutable payload store for admitted installed native and WASM runtime cells; a relative path resolves against the current directory, unset uses <MOLT_HOME>/installed-runtime, and the store must remain outside the immutable installation without changing the prepared frontend home."
 
 [[variable]]
+name = "MOLT_IO_HOOK_RETURN_CUSTODY_CHILD"
+audience = "internal"
+kind = "string"
+default = ""
+owner = "runtime/molt-runtime/src/async_rt/channels/stream.rs"
+summary = "The IO return-custody unit test selects the transport, operation and restore mode in its owned child process."
+
+[[variable]]
 name = "MOLT_IO_MODE"
 audience = "user"
 kind = "enum"

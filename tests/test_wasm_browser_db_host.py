@@ -149,10 +149,12 @@ def test_browser_host_manifest_module_integrity_is_fail_closed(tmp_path: Path) -
         pytest.skip("node is required for browser module-integrity proof")
     root = Path(__file__).resolve().parents[1]
     browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+    runtime_fixture_uri = (root / "tests" / "wasm_runtime_fixture.js").as_uri()
     script = tmp_path / "verify_browser_module_integrity.mjs"
     script.write_text(
         f"""
 import {{ webcrypto }} from 'node:crypto';
+import runtimeFixture from '{runtime_fixture_uri}';
 import {{
   decodeOwnedExportResult,
   loadMoltWasm,
@@ -160,6 +162,7 @@ import {{
   tryDecodeListIntBits,
   verifyManifestModuleBytes,
 }} from '{browser_host_uri}';
+const {{createAttachedRuntimeFixture}} = runtimeFixture;
 
 const original = new TextEncoder().encode('canonical module bytes');
 const bytes = original.buffer.slice(
@@ -192,19 +195,17 @@ const rejected = async (operation, pattern) => {{
 }};
 const fakeMemory = new WebAssembly.Memory({{ initial: 1 }});
 const releasedItems = [];
-const nonIntRuntime = {{
-  exports: {{
+const {{instance: nonIntRuntime}} = createAttachedRuntimeFixture({{
     molt_int_from_i64: (value) => {{
       if (value !== 0n) throw new Error('unexpected list index');
       return 0x7ff9000000000000n;
     }},
     molt_exception_pending_fast: () => 0n,
-    molt_exception_pending: () => 0n,
+    molt_exception_pending_detached: () => 0n,
     molt_len: () => 0x7ff9000000000001n,
     molt_index: () => 0x1234n,
     molt_dec_ref_obj: (bits) => releasedItems.push(bits),
-  }},
-}};
+}});
 if (tryDecodeListIntBits(nonIntRuntime, fakeMemory, 0x4444n) !== null) {{
   throw new Error('non-int list item unexpectedly decoded');
 }}
@@ -213,13 +214,12 @@ if (releasedItems.length !== 2 || releasedItems[0] !== 0x7ff9000000000000n ||
   throw new Error('temporary index and owned non-int result were not released exactly once');
 }}
 let lenFailureObserved = false;
+const {{instance: lenFailureRuntime}} = createAttachedRuntimeFixture({{
+  molt_len: () => {{ throw new Error('len exploded'); }},
+  molt_index: () => 0n,
+}});
 try {{
-  tryDecodeListIntBits({{
-    exports: {{
-      molt_len: () => {{ throw new Error('len exploded'); }},
-      molt_index: () => 0n,
-    }},
-  }}, fakeMemory, 0x4444n);
+  tryDecodeListIntBits(lenFailureRuntime, fakeMemory, 0x4444n);
 }} catch (error) {{
   if (!/len exploded/.test(String(error?.message || error))) throw error;
   lenFailureObserved = true;
@@ -227,15 +227,14 @@ try {{
 if (!lenFailureObserved) throw new Error('molt_len failure was suppressed');
 const releasedResults = [];
 let decodeFailureObserved = false;
+const {{instance: decodeFailureRuntime}} = createAttachedRuntimeFixture({{
+  molt_type_tag_of_bits: () => 99,
+  molt_exception_pending_detached: () => 0n,
+  molt_object_repr: () => {{ throw new Error('repr exploded'); }},
+  molt_dec_ref_obj: (bits) => releasedResults.push(bits),
+}});
 try {{
-  decodeOwnedExportResult({{
-    exports: {{
-      molt_type_tag_of_bits: () => 99,
-      molt_exception_pending: () => 0n,
-      molt_object_repr: () => {{ throw new Error('repr exploded'); }},
-      molt_dec_ref_obj: (bits) => releasedResults.push(bits),
-    }},
-  }}, fakeMemory, 0x5678n, 'adversarial');
+  decodeOwnedExportResult(decodeFailureRuntime, fakeMemory, 0x5678n, 'adversarial');
 }} catch (error) {{
   if (!/repr exploded/.test(String(error?.message || error))) throw error;
   decodeFailureObserved = true;

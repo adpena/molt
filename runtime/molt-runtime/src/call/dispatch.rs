@@ -6,8 +6,8 @@ use crate::{
     MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION,
     TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE, call_builtin_type_if_needed, call_function_obj_vec,
     class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits, exception_pending,
-    generic_alias_origin_bits, molt_call_bind, obj_from_bits, object_type_id, ptr_from_bits,
-    raise_exception, raise_not_callable,
+    generic_alias_origin_bits, molt_call_bind_attached_body, obj_from_bits, object_type_id,
+    ptr_from_bits, raise_exception, raise_not_callable,
 };
 
 #[inline]
@@ -66,13 +66,16 @@ unsafe fn call_staticmethod_if_needed(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_call_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    builder_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             // The call consumes the builder on every path. Until binding takes
             // it, a failure releases it as the value stack of the failed call.
-            let mut builder_owner = PtrDropGuard::new(ptr_from_bits(builder_bits));
+            let mut builder_owner = PtrDropGuard::new(_py, ptr_from_bits(builder_bits));
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -117,7 +120,7 @@ pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
 }
 
 unsafe fn bind_owned_callable(_py: &PyToken<'_>, callable_bits: u64, builder_bits: u64) -> u64 {
-    let result = molt_call_bind(callable_bits, builder_bits);
+    let result = molt_call_bind_attached_body(_py, callable_bits, builder_bits);
     dec_ref_bits(_py, callable_bits);
     result
 }
@@ -291,14 +294,23 @@ pub(crate) unsafe fn call_callable3(
     }
 }
 
+include!("../attached_exports_generated/call/dispatch.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{molt_callargs_new, molt_callargs_push_pos};
+    use crate::{molt_callargs_new_attached_body, molt_callargs_push_pos_attached_body};
 
-    extern "C" fn len_trampoline(_closure: u64, argv: u64, argc: u64) -> i64 {
+    extern "C" fn len_trampoline(__context: u64, _closure: u64, argv: u64, argc: u64) -> i64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         assert_eq!(argc, 1);
-        crate::molt_len(unsafe { *(argv as *const u64) }) as i64
+        crate::molt_len_attached_body(__py, unsafe { *(argv as *const u64) }) as i64
     }
     fn object_ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits)
@@ -318,9 +330,9 @@ mod tests {
                 .unwrap();
             let baseline = object_ref_count(callable);
             let argument = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-            let builder = molt_callargs_new(1, 0);
-            unsafe { molt_callargs_push_pos(builder, argument) };
-            let result = molt_call_builtin(name, builder);
+            let builder = molt_callargs_new_attached_body(py, 1, 0);
+            unsafe { molt_callargs_push_pos_attached_body(py, builder, argument) };
+            let result = molt_call_builtin_attached_body(py, name, builder);
             assert!(!exception_pending(py));
             assert_eq!(crate::to_i64(obj_from_bits(result)), Some(0));
             assert_eq!(object_ref_count(callable), baseline);
@@ -345,19 +357,20 @@ mod tests {
             // callable exists; the consumed builder must still release its
             // argument rather than leak it with the builder.
             for name_bits in [unknown_bits, MoltObject::from_int(7).bits()] {
-                let builder_bits = molt_callargs_new(1, 0);
+                let builder_bits = molt_callargs_new_attached_body(_py, 1, 0);
                 assert!(!obj_from_bits(builder_bits).is_none());
-                let pushed = unsafe { molt_callargs_push_pos(builder_bits, arg_bits) };
+                let pushed =
+                    unsafe { molt_callargs_push_pos_attached_body(_py, builder_bits, arg_bits) };
                 assert!(obj_from_bits(pushed).is_none());
                 assert_eq!(object_ref_count(arg_bits), baseline + 1);
 
-                let result_bits = molt_call_builtin(name_bits, builder_bits);
+                let result_bits = molt_call_builtin_attached_body(_py, name_bits, builder_bits);
                 assert!(obj_from_bits(result_bits).is_none());
                 assert!(
                     exception_pending(_py),
                     "a failed builtin resolution must raise"
                 );
-                let _ = crate::molt_exception_clear();
+                let _ = crate::molt_exception_clear_attached_body(_py);
                 assert_eq!(
                     object_ref_count(arg_bits),
                     baseline,
@@ -408,11 +421,11 @@ mod tests {
             crate::inc_ref_bits(py, captured);
             crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured, 0);
             for name in [public_name, custom_name] {
-                let builder = molt_callargs_new(1, 0);
+                let builder = molt_callargs_new_attached_body(py, 1, 0);
                 unsafe {
-                    molt_callargs_push_pos(builder, argument);
+                    molt_callargs_push_pos_attached_body(py, builder, argument);
                 }
-                let value = molt_call_builtin(name, builder);
+                let value = molt_call_builtin_attached_body(py, name, builder);
                 assert!(!exception_pending(py));
                 assert_eq!(crate::to_i64(obj_from_bits(value)), Some(0));
                 crate::dec_ref_bits(py, value);
@@ -425,11 +438,11 @@ mod tests {
             for name in [public_name, runtime_name] {
                 // len is absent; molt_len is a present non-callable. Neither
                 // case may select the builtin/intrinsic behind this namespace.
-                let builder = molt_callargs_new(1, 0);
+                let builder = molt_callargs_new_attached_body(py, 1, 0);
                 unsafe {
-                    molt_callargs_push_pos(builder, argument);
+                    molt_callargs_push_pos_attached_body(py, builder, argument);
                 }
-                let result = molt_call_builtin(name, builder);
+                let result = molt_call_builtin_attached_body(py, name, builder);
                 assert!(exception_pending(py));
                 let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
                 let expected = if name == public_name {
@@ -444,8 +457,13 @@ mod tests {
                 crate::dec_ref_bits(py, result);
                 assert_eq!(object_ref_count(argument), baseline);
             }
-            let missing =
-                crate::molt_func_new_builtin_named(public_name, fn_addr!(crate::molt_len), 0, 1);
+            let missing = crate::molt_func_new_builtin_named_attached_body(
+                py,
+                public_name,
+                fn_addr!(crate::molt_len),
+                0,
+                1,
+            );
             assert!(exception_pending(py));
             let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
             assert!(crate::builtins::exceptions::exception_matches_kind(
@@ -457,7 +475,8 @@ mod tests {
             crate::dec_ref_bits(py, missing);
             // The constructor's canonical runtime symbol is declarative and
             // must not read the same-spelled active public binding (37).
-            let intrinsic = crate::molt_func_new_builtin_named(
+            let intrinsic = crate::molt_func_new_builtin_named_attached_body(
+                py,
                 runtime_name,
                 fn_addr!(crate::molt_len),
                 fn_addr!(len_trampoline),

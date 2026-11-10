@@ -64,7 +64,14 @@ fn namespace_catalog_preserves_portion_order_without_body_or_file_provenance() {
 #[test]
 fn compiled_spec_projects_alias_provider_without_running_initializers() {
     static INITIALIZER_CALLS: AtomicUsize = AtomicUsize::new(0);
-    extern "C" fn forbidden_initializer() -> u64 {
+    extern "C" fn forbidden_initializer(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         INITIALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
         0
     }
@@ -158,7 +165,14 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
 #[cfg(not(target_arch = "wasm32"))]
 fn selected_body_availability_uses_source_provider_role_including_alias_metadata() {
     static BODY_CALLS: AtomicUsize = AtomicUsize::new(0);
-    extern "C" fn body() -> u64 {
+    extern "C" fn body(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         BODY_CALLS.fetch_add(1, Ordering::SeqCst);
         0
     }
@@ -196,7 +210,7 @@ fn selected_body_availability_uses_source_provider_role_including_alias_metadata
                         assert_eq!(BODY_CALLS.load(Ordering::SeqCst), before);
                         let error = crate::builtins::exceptions::ExceptionValue::adopt(
                             py,
-                            crate::molt_exception_last_pending(),
+                            crate::molt_exception_last_pending_attached_body(py),
                         );
                         assert!(crate::builtins::exceptions::exception_matches_kind(
                             py,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.compilation_target import admit_target
 
 import hashlib
@@ -4252,7 +4253,7 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         ],
     )
     wasm_function_imports = (
-        "molt_alloc",
+        compiled_execution_symbol("molt_alloc"),
         "molt_cpython_abi_date_from_date",
         c_api_import,
         "malloc",
@@ -4316,7 +4317,7 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         assert not (out_dir / "extension_manifest.json").exists()
         assert not (out_dir / "demoext.molt.wasm").exists()
         return
-    assert rc == 0
+    assert rc == 0, payload
     assert payload["data"]["target_triple"] == "wasm32-wasip1"
     assert payload["data"]["runtime_linkage"] == "static_link"
     assert payload["data"]["artifact_kind"] == "wasm_relocatable_object"
@@ -4332,6 +4333,15 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     artifact_path = out_dir / "demoext.molt.wasm"
     assert artifact_path.exists()
     assert artifact_path.read_bytes() == wasm_bytes
+    interface = wasm_artifact.parse_wasm_relocatable_object_interface(
+        wasm_bytes, signature_import_names=None
+    )
+    assert (
+        "env",
+        compiled_execution_symbol("molt_alloc"),
+        ("i64", "i64"),
+        "i64",
+    ) in interface.function_import_signatures
     assert [
         export.name
         for export in wasm_artifact.read_wasm_function_exports(artifact_path)
@@ -6023,8 +6033,9 @@ def _write_auditable_static_link_manifest(
     out_dir = tmp_path / "dist"
     artifact_dir = out_dir / "nativepkg"
     artifact_dir.mkdir(parents=True)
+    allocator_symbol = compiled_execution_symbol("molt_alloc")
     artifact_bytes = _wasm_exporting_i64_unary_symbol(
-        "PyInit__native", imports=("molt_alloc",)
+        "PyInit__native", imports=(allocator_symbol,)
     )
     artifact_path = artifact_dir / "_native.molt.wasm"
     artifact_path.write_bytes(artifact_bytes)
@@ -6060,7 +6071,7 @@ def _write_auditable_static_link_manifest(
                 {
                     "object": "0_native.o",
                     "defined_symbols": ["PyInit__native"],
-                    "undefined_symbols": ["molt_alloc"],
+                    "undefined_symbols": [allocator_symbol],
                     "required_c_api_symbols": ["PyLong_FromLong"],
                     "required_capsules": [
                         "numpy.core._multiarray_umath._ARRAY_API",
@@ -6298,7 +6309,7 @@ def test_extension_audit_compares_required_artifact_symbol_closure(
     )
     replacement = _wasm_exporting_i64_unary_symbol(
         "PyInit_other",
-        imports=("molt_alloc",),
+        imports=(compiled_execution_symbol("molt_alloc"),),
     )
     artifact_path.write_bytes(replacement)
     manifest["extension_sha256"] = hashlib.sha256(replacement).hexdigest()

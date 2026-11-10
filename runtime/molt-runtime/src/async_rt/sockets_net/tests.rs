@@ -3,17 +3,19 @@ use crate::BuiltinExc;
 
 fn assert_pending_error(py: &PyToken<'_>, expected_class: crate::BuiltinExc, expected_errno: i64) {
     assert!(exception_pending(py));
-    let error = crate::molt_exception_last_pending();
+    let error = crate::molt_exception_last_pending_attached_body(py);
     let class = crate::builtins::exceptions::exception_class(py, error).unwrap();
     assert_eq!(class.bits(), exception_class_bits(py, expected_class));
     clear_exception(py);
     let name = crate::dynamic_attr_name_bits(py, b"errno").unwrap();
-    let code = crate::molt_getattr_builtin(error, name, MoltObject::none().bits());
+    let code =
+        crate::molt_getattr_builtin_attached_body(py, error, name, MoltObject::none().bits());
     assert_eq!(to_i64(obj_from_bits(code)), Some(expected_errno));
     dec_ref_bits(py, name);
     dec_ref_bits(py, code);
     let name = crate::dynamic_attr_name_bits(py, b"strerror").unwrap();
-    let message = crate::molt_getattr_builtin(error, name, MoltObject::none().bits());
+    let message =
+        crate::molt_getattr_builtin_attached_body(py, error, name, MoltObject::none().bits());
     assert!(string_obj_to_owned(obj_from_bits(message)).is_some());
     dec_ref_bits(py, name);
     dec_ref_bits(py, message);
@@ -51,7 +53,7 @@ fn resolver_host_status_preserves_overlapping_domains_and_capacity() {
         );
         for (malformed, length) in [(11, 0), (123456, 0), (-123456, 0), (i32::MIN, 0), (0, 8192)] {
             assert!(getaddrinfo_host_status(py, malformed, length, 4096).is_err());
-            let error = crate::molt_exception_last_pending();
+            let error = crate::molt_exception_last_pending_attached_body(py);
             let class = crate::builtins::exceptions::exception_class(py, error).unwrap();
             assert_eq!(
                 class.bits(),
@@ -107,7 +109,7 @@ fn resolver_reverse_lookup_converts_only_resolver_errors() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         raise_os_error_errno::<u64>(py, libc::EBADF as i64, "native system failure");
-        let original = crate::molt_exception_last_pending();
+        let original = crate::molt_exception_last_pending_attached_body(py);
         assert_eq!(reverse_lookup_error(py), MoltObject::none().bits());
         assert_eq!(exception_last_bits_noinc(py), Some(original));
         assert_pending_error(py, crate::BuiltinExc::OSError, libc::EBADF as i64);
@@ -115,7 +117,7 @@ fn resolver_reverse_lookup_converts_only_resolver_errors() {
 
         raise_gaierror(py, libc::EAI_NONAME as i64, "resolver failure");
         assert_eq!(reverse_lookup_error(py), MoltObject::none().bits());
-        let error = crate::molt_exception_last_pending();
+        let error = crate::molt_exception_last_pending_attached_body(py);
         let class = crate::builtins::exceptions::exception_class(py, error).unwrap();
         assert_eq!(
             class.bits(),
@@ -123,7 +125,8 @@ fn resolver_reverse_lookup_converts_only_resolver_errors() {
         );
         clear_exception(py);
         let name = crate::dynamic_attr_name_bits(py, b"errno").unwrap();
-        let code = crate::molt_getattr_builtin(error, name, MoltObject::none().bits());
+        let code =
+            crate::molt_getattr_builtin_attached_body(py, error, name, MoltObject::none().bits());
         assert!(obj_from_bits(code).is_none(), "no invented legacy h_errno");
         dec_ref_bits(py, name);
         dec_ref_bits(py, code);

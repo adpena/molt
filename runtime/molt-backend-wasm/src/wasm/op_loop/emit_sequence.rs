@@ -11,9 +11,9 @@ use super::object_attr_ops::emit_object_attr_op;
 use super::out_param::WasmOutParam;
 use super::runtime_service_ops::{RuntimeServiceOpContext, emit_runtime_service_op};
 use crate::OpIR;
+use crate::wasm_binary::Function;
 use molt_tir::tir::simple_def_use::visit_simple_ir_defined_names;
 use std::collections::BTreeMap;
-use wasm_encoder::Function;
 
 impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
     pub(in crate::wasm) fn emit_ops(

@@ -259,7 +259,7 @@ pub(crate) fn clinic_input<'py>(
     let input = byte_input(py, bits)?;
     // 3.13+ Clinic relies on the SIMPLE exporter contract; 3.12 explicitly
     // rejects a malformed provider's noncontiguous descriptor after acquire.
-    if !rt_target_at_least(3, 13) && !input.is_c_contiguous() {
+    if !rt_target_at_least(py, 3, 13) && !input.is_c_contiguous() {
         return Err(raise_exception::<u64>(
             py,
             BuiltinExc::TypeError,
@@ -413,7 +413,7 @@ fn hash_options<'py>(
     names
         .iter()
         .map(|name| {
-            let key = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(name)) };
+            let key = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(py, name)) };
             if exception_pending(py) {
                 return Err(MoltObject::none().bits());
             }
@@ -495,7 +495,7 @@ fn parse_blake2_options<'py>(
             .unwrap_or(&[])
     };
     if digest_size < 1 || digest_size as usize > max_digest {
-        let message = if rt_target_at_least(3, 14) {
+        let message = if rt_target_at_least(py, 3, 14) {
             format!(
                 "digest_size for {} must be between 1 and {max_digest} bytes, here it is {digest_size}",
                 if max_digest == 64 {
@@ -780,14 +780,15 @@ pub fn build_hash_handle<'py>(
         }),
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hash_new(
+
+pub fn molt_hash_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     name_bits: u64,
     data_bits: u64,
     options_bits: u64,
     unsupported_error_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         // Retain the declared completion class before option/exporter callbacks.
         let unsupported_error = OwnedRuntimeValue::retain(_py, unsupported_error_bits);
         let unsupported_class = (!obj_from_bits(unsupported_error.bits()).is_none())
@@ -799,7 +800,7 @@ pub extern "C" fn molt_hash_new(
         // validates the name. BLAKE's public named constructors have their own
         // option protocol; private EVP BLAKE still follows EVP's ordering.
         let provider_role = unsupported_class.is_some() || !blake;
-        let legacy_provider = !rt_target_at_least(3, 13) && provider_role;
+        let legacy_provider = !rt_target_at_least(_py, 3, 13) && provider_role;
         let early_options = if legacy_provider {
             let values = match hash_options(_py, options_bits, &["usedforsecurity"]) {
                 Ok(values) => values,
@@ -892,11 +893,12 @@ pub extern "C" fn molt_hash_new(
         let name = handle.name;
         let digest_size = handle.digest_size;
         let block_size = handle.block_size;
-        let handle = unsafe { OwnedRuntimeValue::from_owned_bits(_py, new_hash_owner(handle)) };
+        let handle =
+            unsafe { OwnedRuntimeValue::from_owned_bits(_py, new_hash_owner(_py, handle)) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let name = unsafe { OwnedRuntimeValue::from_owned_bits(_py, rt_string_from(name)) };
+        let name = unsafe { OwnedRuntimeValue::from_owned_bits(_py, rt_string_from(_py, name)) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -912,13 +914,20 @@ pub extern "C" fn molt_hash_new(
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        rt_tuple(&[handle.bits(), name.bits(), size.bits(), block_size.bits()])
+        rt_tuple(
+            _py,
+            &[handle.bits(), name.bits(), size.bits(), block_size.bits()],
+        )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(owner) = hash_owner(handle_bits) else {
+
+pub fn molt_hash_update_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(owner) = hash_owner(_py, handle_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hash handle");
         };
         let data = match hash_input(_py, data_bits) {
@@ -932,23 +941,27 @@ pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hash_copy(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(owner) = hash_owner(handle_bits) else {
+
+pub fn molt_hash_copy_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(owner) = hash_owner(_py, handle_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hash handle");
         };
         let copy = owner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
-        new_hash_owner(copy)
+        new_hash_owner(_py, copy)
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(owner) = hash_owner(handle_bits) else {
+
+pub fn molt_hash_digest_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    length_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(owner) = hash_owner(_py, handle_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hash handle");
         };
         let length_obj = obj_from_bits(length_bits);
@@ -1040,8 +1053,8 @@ fn checked_input_length(py: &PyToken, input: &ByteInput<'_>, name: &str) -> Resu
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pbkdf2_hmac(
+pub fn molt_pbkdf2_hmac_attached_body(
+    _py: &molt_runtime_core::PyToken,
     name_bits: u64,
     password_bits: u64,
     salt_bits: u64,
@@ -1049,7 +1062,7 @@ pub extern "C" fn molt_pbkdf2_hmac(
     dklen_bits: u64,
     unsupported_error_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let unsupported_error = OwnedRuntimeValue::retain(_py, unsupported_error_bits);
         let name_obj = obj_from_bits(name_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
@@ -1199,8 +1212,12 @@ fn scrypt_legacy_unsigned(py: &PyToken, bits: u64, name: &str) -> Result<u64, u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_scrypt(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_scrypt_attached_body(
+    _py: &molt_runtime_core::PyToken,
     password_bits: u64,
     salt_bits: u64,
     n_bits: u64,
@@ -1209,7 +1226,7 @@ pub extern "C" fn molt_scrypt(
     maxmem_bits: u64,
     dklen_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut inputs = [None, None];
         for (index, bits) in [password_bits, salt_bits].into_iter().enumerate() {
             inputs[index] = Some(
@@ -1219,7 +1236,7 @@ pub extern "C" fn molt_scrypt(
                 },
             );
         }
-        let modern = rt_target_at_least(3, 14);
+        let modern = rt_target_at_least(_py, 3, 14);
         let mut nrp = [0u64; 3];
         for (index, (bits, name)) in [(n_bits, "n"), (r_bits, "r"), (p_bits, "p")]
             .into_iter()
@@ -1367,6 +1384,8 @@ pub extern "C" fn molt_scrypt(
         MoltObject::from_ptr(ptr).bits()
     })
 }
+
+include!("attached_exports_generated/hashlib.rs");
 
 #[cfg(test)]
 mod name_admission_tests {

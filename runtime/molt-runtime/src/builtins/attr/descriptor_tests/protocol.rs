@@ -25,49 +25,110 @@ fn reset_hook_args() {
 }
 
 extern "C" fn protocol_static_get(
+    __context: u64,
     descriptor_bits: u64,
     instance_bits: u64,
     owner_bits: u64,
 ) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(descriptor_bits, Ordering::SeqCst);
     HOOK_B.store(instance_bits, Ordering::SeqCst);
     HOOK_C.store(owner_bits, Ordering::SeqCst);
     MoltObject::from_int(101).bits()
 }
 
-extern "C" fn protocol_static_set(instance_bits: u64, value_bits: u64) -> u64 {
+extern "C" fn protocol_static_set(__context: u64, instance_bits: u64, value_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(instance_bits, Ordering::SeqCst);
     HOOK_B.store(value_bits, Ordering::SeqCst);
     MoltObject::none().bits()
 }
 
-extern "C" fn protocol_static_delete(instance_bits: u64) -> u64 {
+extern "C" fn protocol_static_delete(__context: u64, instance_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(instance_bits, Ordering::SeqCst);
     MoltObject::none().bits()
 }
 
-extern "C" fn protocol_class_get(class_bits: u64, instance_bits: u64, owner_bits: u64) -> u64 {
+extern "C" fn protocol_class_get(
+    __context: u64,
+    class_bits: u64,
+    instance_bits: u64,
+    owner_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(class_bits, Ordering::SeqCst);
     HOOK_B.store(instance_bits, Ordering::SeqCst);
     HOOK_C.store(owner_bits, Ordering::SeqCst);
     MoltObject::from_int(102).bits()
 }
 
-extern "C" fn protocol_class_set(class_bits: u64, instance_bits: u64, value_bits: u64) -> u64 {
+extern "C" fn protocol_class_set(
+    __context: u64,
+    class_bits: u64,
+    instance_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(class_bits, Ordering::SeqCst);
     HOOK_B.store(instance_bits, Ordering::SeqCst);
     HOOK_C.store(value_bits, Ordering::SeqCst);
     MoltObject::none().bits()
 }
 
-extern "C" fn protocol_class_delete(class_bits: u64, instance_bits: u64) -> u64 {
+extern "C" fn protocol_class_delete(__context: u64, class_bits: u64, instance_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(class_bits, Ordering::SeqCst);
     HOOK_B.store(instance_bits, Ordering::SeqCst);
     MoltObject::none().bits()
 }
 
-extern "C" fn protocol_property_returns_callable(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_property_returns_callable(__context: u64, self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         BIND_A.store(self_bits, Ordering::SeqCst);
         let callable_bits = INDIRECT_RETURN_CALLABLE.load(Ordering::SeqCst);
         if callable_bits == 0 {
@@ -79,11 +140,24 @@ extern "C" fn protocol_property_returns_callable(self_bits: u64) -> u64 {
         }
         inc_ref_bits(_py, callable_bits);
         callable_bits
-    })
+    }
 }
 
-extern "C" fn protocol_custom_hook_get(self_bits: u64, instance_bits: u64, owner_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_custom_hook_get(
+    __context: u64,
+    self_bits: u64,
+    instance_bits: u64,
+    owner_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         BIND_A.store(self_bits, Ordering::SeqCst);
         BIND_B.store(instance_bits, Ordering::SeqCst);
         BIND_C.store(owner_bits, Ordering::SeqCst);
@@ -97,59 +171,131 @@ extern "C" fn protocol_custom_hook_get(self_bits: u64, instance_bits: u64, owner
         }
         inc_ref_bits(_py, callable_bits);
         callable_bits
-    })
+    }
 }
 
-extern "C" fn protocol_indirect_set(instance_bits: u64, value_bits: u64) -> u64 {
+extern "C" fn protocol_indirect_set(__context: u64, instance_bits: u64, value_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(instance_bits, Ordering::SeqCst);
     HOOK_B.store(value_bits, Ordering::SeqCst);
     MoltObject::none().bits()
 }
 
-extern "C" fn protocol_indirect_delete(instance_bits: u64) -> u64 {
+extern "C" fn protocol_indirect_delete(__context: u64, instance_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(instance_bits, Ordering::SeqCst);
     MoltObject::none().bits()
 }
 
-extern "C" fn protocol_standalone_call0() -> u64 {
+extern "C" fn protocol_standalone_call0(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(200).bits()
 }
 
-extern "C" fn protocol_standalone_call1(arg_bits: u64) -> u64 {
+extern "C" fn protocol_standalone_call1(__context: u64, arg_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(arg_bits, Ordering::SeqCst);
     MoltObject::from_int(201).bits()
 }
 
-extern "C" fn protocol_standalone_call2(first_bits: u64, second_bits: u64) -> u64 {
+extern "C" fn protocol_standalone_call2(__context: u64, first_bits: u64, second_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(first_bits, Ordering::SeqCst);
     HOOK_B.store(second_bits, Ordering::SeqCst);
     MoltObject::from_int(202).bits()
 }
 
-extern "C" fn protocol_standalone_call3(first_bits: u64, second_bits: u64, third_bits: u64) -> u64 {
+extern "C" fn protocol_standalone_call3(
+    __context: u64,
+    first_bits: u64,
+    second_bits: u64,
+    third_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(first_bits, Ordering::SeqCst);
     HOOK_B.store(second_bits, Ordering::SeqCst);
     HOOK_C.store(third_bits, Ordering::SeqCst);
     MoltObject::from_int(203).bits()
 }
 
-extern "C" fn protocol_standalone_rebind_owner(arg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_standalone_rebind_owner(__context: u64, arg_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         HOOK_A.store(arg_bits, Ordering::SeqCst);
         let owner_bits = STATICMETHOD_OWNER.load(Ordering::SeqCst);
         let name_bits = string_bits(_py, b"wrapped");
-        let result = crate::molt_set_attr_name(owner_bits, name_bits, MoltObject::none().bits());
+        let result = crate::molt_set_attr_name_attached_body(
+            _py,
+            owner_bits,
+            name_bits,
+            MoltObject::none().bits(),
+        );
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             result
         } else {
             MoltObject::from_int(204).bits()
         }
-    })
+    }
 }
 
-extern "C" fn protocol_metaclass_getattribute(class_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_metaclass_getattribute(
+    __context: u64,
+    class_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         match crate::string_obj_to_owned(obj_from_bits(name_bits)).as_deref() {
             Some("controlled") => {
                 HOOK_A.store(class_bits, Ordering::SeqCst);
@@ -158,113 +304,217 @@ extern "C" fn protocol_metaclass_getattribute(class_bits: u64, name_bits: u64) -
             }
             Some("__getattribute__") => MoltObject::from_int(104).bits(),
             Some("__getattr__") => MoltObject::from_int(105).bits(),
-            _ => crate::molt_type_getattribute(class_bits, name_bits),
+            _ => crate::molt_type_getattribute_attached_body(_py, class_bits, name_bits),
         }
-    })
+    }
 }
 
-extern "C" fn protocol_mutating_getattribute(_self_bits: u64, _name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_mutating_getattribute(
+    __context: u64,
+    _self_bits: u64,
+    _name_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         let class_bits = FALLBACK_CLASS.load(Ordering::SeqCst);
         let replacement_bits = FALLBACK_REPLACEMENT.load(Ordering::SeqCst);
         let getattr_name = string_bits(_py, b"__getattr__");
-        let _ = crate::molt_set_attr_name(class_bits, getattr_name, replacement_bits);
+        let _ = crate::molt_set_attr_name_attached_body(
+            _py,
+            class_bits,
+            getattr_name,
+            replacement_bits,
+        );
         dec_ref_bits(_py, getattr_name);
         if exception_pending(_py) {
             MoltObject::none().bits()
         } else {
             raise_exception::<u64>(_py, BuiltinExc::AttributeError, "primary miss")
         }
-    })
+    }
 }
 
-extern "C" fn protocol_original_getattr(self_bits: u64, name_bits: u64) -> u64 {
+extern "C" fn protocol_original_getattr(__context: u64, self_bits: u64, name_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HOOK_A.store(self_bits, Ordering::SeqCst);
     HOOK_B.store(name_bits, Ordering::SeqCst);
     FALLBACK_ORIGINAL_CALLS.fetch_add(1, Ordering::SeqCst);
     MoltObject::from_int(301).bits()
 }
 
-extern "C" fn protocol_fresh_getattr(_self_bits: u64, _name_bits: u64) -> u64 {
+extern "C" fn protocol_fresh_getattr(__context: u64, _self_bits: u64, _name_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     FALLBACK_FRESH_CALLS.fetch_add(1, Ordering::SeqCst);
     MoltObject::from_int(302).bits()
 }
 
-extern "C" fn protocol_literal_getattribute(_self_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_literal_getattribute(
+    __context: u64,
+    _self_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         match crate::string_obj_to_owned(obj_from_bits(name_bits)).as_deref() {
             Some("__getattribute__") => MoltObject::from_int(303).bits(),
             Some("__getattr__") => MoltObject::from_int(304).bits(),
             _ => raise_exception::<u64>(_py, BuiltinExc::AttributeError, "literal test miss"),
         }
-    })
+    }
 }
 
-extern "C" fn protocol_call_property_attribute_error(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_call_property_attribute_error(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(
             _py,
             BuiltinExc::AttributeError,
             "property call bind failure",
         )
-    })
+    }
 }
 
-extern "C" fn protocol_call_property_runtime_error(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_call_property_runtime_error(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "property call bind failure")
-    })
+    }
 }
 
 extern "C" fn protocol_call_descriptor_attribute_error(
+    __context: u64,
     _self_bits: u64,
     _instance_bits: u64,
     _owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(
             _py,
             BuiltinExc::AttributeError,
             "descriptor call bind failure",
         )
-    })
+    }
 }
 
 extern "C" fn protocol_call_descriptor_runtime_error(
+    __context: u64,
     _self_bits: u64,
     _instance_bits: u64,
     _owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
             "descriptor call bind failure",
         )
-    })
+    }
 }
 
-extern "C" fn protocol_error_set(_self_bits: u64, _instance_bits: u64, _value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn protocol_error_set(
+    __context: u64,
+    _self_bits: u64,
+    _instance_bits: u64,
+    _value_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "protocol set failure")
-    })
+    }
 }
 
 extern "C" fn protocol_self_replacing_set(
+    __context: u64,
     self_bits: u64,
     instance_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         HOOK_A.store(self_bits, Ordering::SeqCst);
         HOOK_B.store(instance_bits, Ordering::SeqCst);
         HOOK_C.store(value_bits, Ordering::SeqCst);
         let class_bits = type_of_bits(_py, self_bits);
         let name_bits = string_bits(_py, b"__set__");
-        let _ = crate::molt_set_attr_name(class_bits, name_bits, MoltObject::none().bits());
+        let _ = crate::molt_set_attr_name_attached_body(
+            _py,
+            class_bits,
+            name_bits,
+            MoltObject::none().bits(),
+        );
         dec_ref_bits(_py, name_bits);
         MoltObject::none().bits()
-    })
+    }
 }
 
 fn wrapped_bits(_py: &PyToken<'_>, function_bits: u64, classmethod: bool) -> u64 {
@@ -295,17 +545,23 @@ fn test_type_bits(
     attrs: &[(&[u8], u64)],
 ) -> u64 {
     let name_bits = string_bits(_py, name);
-    let namespace_bits = crate::molt_dict_new(attrs.len() as u64);
+    let namespace_bits = crate::molt_dict_new_attached_body(_py, attrs.len() as u64);
     assert!(!obj_from_bits(namespace_bits).is_none());
     for &(attr_name, value_bits) in attrs {
         let attr_bits = string_bits(_py, attr_name);
         assert_eq!(
-            crate::c_api::molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+            crate::c_api::molt_mapping_setitem_attached_body(
+                _py,
+                namespace_bits,
+                attr_bits,
+                value_bits
+            ),
             0
         );
         dec_ref_bits(_py, attr_bits);
     }
-    let class_bits = crate::builtins::types::molt_type_new(
+    let class_bits = crate::builtins::types::molt_type_new_attached_body(
+        _py,
         metaclass_bits,
         name_bits,
         base_bits,
@@ -321,11 +577,11 @@ fn test_type_bits(
 
 fn assert_and_clear_error(_py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(_py));
-    let error_bits = crate::builtins::exceptions::molt_exception_last_pending();
+    let error_bits = crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         _py, error_bits, expected
     ));
-    crate::molt_exception_clear();
+    crate::molt_exception_clear_attached_body(_py);
     dec_ref_bits(_py, error_bits);
 }
 
@@ -366,13 +622,18 @@ fn assert_call_binding_error(_py: &PyToken<'_>, callable_bits: u64, expected: cr
     assert_and_clear_error(_py, expected);
 
     let keyword_name = string_bits(_py, b"probe");
-    let builder_bits = crate::molt_callargs_new(0, 1);
+    let builder_bits = crate::molt_callargs_new_attached_body(_py, 0, 1);
     let _ = unsafe {
-        crate::molt_callargs_push_kw(builder_bits, keyword_name, MoltObject::from_int(1).bits())
+        crate::molt_callargs_push_kw_attached_body(
+            _py,
+            builder_bits,
+            keyword_name,
+            MoltObject::from_int(1).bits(),
+        )
     };
     assert!(!exception_pending(_py));
     assert_eq!(
-        crate::molt_call_bind(callable_bits, builder_bits),
+        crate::molt_call_bind_attached_body(_py, callable_bits, builder_bits),
         MoltObject::none().bits()
     );
     assert_and_clear_error(_py, expected);
@@ -396,11 +657,16 @@ fn assert_mutation_binding_errors(_py: &PyToken<'_>, hook_bits: u64, expected: c
     let setter_bits = unsafe { crate::alloc_instance_for_class(_py, setter_class_ptr) };
     assert!(!obj_from_bits(setter_bits).is_none());
     assert_eq!(
-        crate::molt_set_attr_name(setter_bits, target_name, MoltObject::from_int(99).bits(),),
+        crate::molt_set_attr_name_attached_body(
+            _py,
+            setter_bits,
+            target_name,
+            MoltObject::from_int(99).bits(),
+        ),
         MoltObject::none().bits()
     );
     assert_and_clear_error(_py, expected);
-    let unshadowed = crate::molt_get_attr_name(setter_bits, target_name);
+    let unshadowed = crate::molt_get_attr_name_attached_body(_py, setter_bits, target_name);
     assert_eq!(unshadowed, MoltObject::from_int(88).bits());
     dec_ref_bits(_py, unshadowed);
     dec_ref_bits(_py, setter_bits);
@@ -418,16 +684,21 @@ fn assert_mutation_binding_errors(_py: &PyToken<'_>, hook_bits: u64, expected: c
     let deleter_bits = unsafe { crate::alloc_instance_for_class(_py, deleter_class_ptr) };
     assert!(!obj_from_bits(deleter_bits).is_none());
     assert_eq!(
-        crate::molt_set_attr_name(deleter_bits, target_name, MoltObject::from_int(77).bits(),),
+        crate::molt_set_attr_name_attached_body(
+            _py,
+            deleter_bits,
+            target_name,
+            MoltObject::from_int(77).bits(),
+        ),
         MoltObject::none().bits()
     );
     assert!(!exception_pending(_py));
     assert_eq!(
-        crate::molt_del_attr_name(deleter_bits, target_name),
+        crate::molt_del_attr_name_attached_body(_py, deleter_bits, target_name),
         MoltObject::none().bits()
     );
     assert_and_clear_error(_py, expected);
-    let preserved = crate::molt_get_attr_name(deleter_bits, target_name);
+    let preserved = crate::molt_get_attr_name_attached_body(_py, deleter_bits, target_name);
     assert_eq!(preserved, MoltObject::from_int(77).bits());
     dec_ref_bits(_py, preserved);
     dec_ref_bits(_py, deleter_bits);
@@ -713,16 +984,26 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
 
         reset_hook_args();
         let second_name = string_bits(_py, b"second");
-        let builder_bits = crate::molt_callargs_new(1, 1);
+        let builder_bits = crate::molt_callargs_new_attached_body(_py, 1, 1);
         assert_ne!(builder_bits, 0);
-        let _ =
-            unsafe { crate::molt_callargs_push_pos(builder_bits, MoltObject::from_int(41).bits()) };
         let _ = unsafe {
-            crate::molt_callargs_push_kw(builder_bits, second_name, MoltObject::from_int(42).bits())
+            crate::molt_callargs_push_pos_attached_body(
+                _py,
+                builder_bits,
+                MoltObject::from_int(41).bits(),
+            )
+        };
+        let _ = unsafe {
+            crate::molt_callargs_push_kw_attached_body(
+                _py,
+                builder_bits,
+                second_name,
+                MoltObject::from_int(42).bits(),
+            )
         };
         assert!(!exception_pending(_py));
         assert_eq!(
-            crate::molt_call_bind(wrapper2, builder_bits),
+            crate::molt_call_bind_attached_body(_py, wrapper2, builder_bits),
             MoltObject::from_int(202).bits()
         );
         assert_eq!(
@@ -737,22 +1018,31 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
 
         reset_hook_args();
         let unexpected_name = string_bits(_py, b"unexpected");
-        let unknown_builder = crate::molt_callargs_new(2, 1);
+        let unknown_builder = crate::molt_callargs_new_attached_body(_py, 2, 1);
         let _ = unsafe {
-            crate::molt_callargs_push_pos(unknown_builder, MoltObject::from_int(43).bits())
+            crate::molt_callargs_push_pos_attached_body(
+                _py,
+                unknown_builder,
+                MoltObject::from_int(43).bits(),
+            )
         };
         let _ = unsafe {
-            crate::molt_callargs_push_pos(unknown_builder, MoltObject::from_int(44).bits())
+            crate::molt_callargs_push_pos_attached_body(
+                _py,
+                unknown_builder,
+                MoltObject::from_int(44).bits(),
+            )
         };
         let _ = unsafe {
-            crate::molt_callargs_push_kw(
+            crate::molt_callargs_push_kw_attached_body(
+                _py,
                 unknown_builder,
                 unexpected_name,
                 MoltObject::from_int(45).bits(),
             )
         };
         assert_eq!(
-            crate::molt_call_bind(wrapper2, unknown_builder),
+            crate::molt_call_bind_attached_body(_py, wrapper2, unknown_builder),
             MoltObject::none().bits()
         );
         assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
@@ -760,19 +1050,24 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
         dec_ref_bits(_py, unexpected_name);
 
         let first_name = string_bits(_py, b"first");
-        let duplicate_builder = crate::molt_callargs_new(1, 1);
+        let duplicate_builder = crate::molt_callargs_new_attached_body(_py, 1, 1);
         let _ = unsafe {
-            crate::molt_callargs_push_pos(duplicate_builder, MoltObject::from_int(46).bits())
+            crate::molt_callargs_push_pos_attached_body(
+                _py,
+                duplicate_builder,
+                MoltObject::from_int(46).bits(),
+            )
         };
         let _ = unsafe {
-            crate::molt_callargs_push_kw(
+            crate::molt_callargs_push_kw_attached_body(
+                _py,
                 duplicate_builder,
                 first_name,
                 MoltObject::from_int(47).bits(),
             )
         };
         assert_eq!(
-            crate::molt_call_bind(wrapper2, duplicate_builder),
+            crate::molt_call_bind_attached_body(_py, wrapper2, duplicate_builder),
             MoltObject::none().bits()
         );
         assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
@@ -840,7 +1135,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
         );
         assert!(!exception_pending(_py));
         let wrapped_name = string_bits(_py, b"wrapped");
-        let replacement = crate::molt_get_attr_name(owner_bits, wrapped_name);
+        let replacement = crate::molt_get_attr_name_attached_body(_py, owner_bits, wrapped_name);
         assert_eq!(replacement, MoltObject::none().bits());
         dec_ref_bits(_py, replacement);
         dec_ref_bits(_py, wrapped_name);
@@ -1276,7 +1571,8 @@ fn class_objects_use_metaclass_descriptor_hooks_and_ignore_class_local_lookalike
 
         let controlled_name = string_bits(_py, b"controlled");
         reset_hook_args();
-        let class_read = crate::molt_get_attr_name(class_descriptor_bits, controlled_name);
+        let class_read =
+            crate::molt_get_attr_name_attached_body(_py, class_descriptor_bits, controlled_name);
         assert_eq!(class_read, MoltObject::from_int(102).bits());
         assert_eq!(HOOK_A.load(Ordering::SeqCst), managed_descriptor_bits);
         assert_eq!(HOOK_B.load(Ordering::SeqCst), class_descriptor_bits);
@@ -1284,14 +1580,20 @@ fn class_objects_use_metaclass_descriptor_hooks_and_ignore_class_local_lookalike
         dec_ref_bits(_py, class_read);
 
         reset_hook_args();
-        let _ = crate::molt_set_attr_name(class_descriptor_bits, controlled_name, value_bits);
+        let _ = crate::molt_set_attr_name_attached_body(
+            _py,
+            class_descriptor_bits,
+            controlled_name,
+            value_bits,
+        );
         assert!(!exception_pending(_py));
         assert_eq!(HOOK_A.load(Ordering::SeqCst), managed_descriptor_bits);
         assert_eq!(HOOK_B.load(Ordering::SeqCst), class_descriptor_bits);
         assert_eq!(HOOK_C.load(Ordering::SeqCst), value_bits);
 
         reset_hook_args();
-        let _ = crate::molt_del_attr_name(class_descriptor_bits, controlled_name);
+        let _ =
+            crate::molt_del_attr_name_attached_body(_py, class_descriptor_bits, controlled_name);
         assert!(!exception_pending(_py));
         assert_eq!(HOOK_A.load(Ordering::SeqCst), managed_descriptor_bits);
         assert_eq!(HOOK_B.load(Ordering::SeqCst), class_descriptor_bits);
@@ -1366,7 +1668,7 @@ fn class_access_obeys_descriptor_and_metaclass_getattribute_authority() {
         let controlled_name = string_bits(_py, b"controlled");
 
         reset_hook_args();
-        let result = crate::molt_get_attr_name(owner_bits, controlled_name);
+        let result = crate::molt_get_attr_name_attached_body(_py, owner_bits, controlled_name);
         assert_eq!(result, MoltObject::from_int(102).bits());
         assert_eq!(HOOK_A.load(Ordering::SeqCst), descriptor_bits);
         assert_eq!(HOOK_B.load(Ordering::SeqCst), MoltObject::none().bits());
@@ -1399,7 +1701,8 @@ fn class_access_obeys_descriptor_and_metaclass_getattribute_authority() {
         );
 
         reset_hook_args();
-        let overridden = crate::molt_get_attr_name(managed_bits, controlled_name);
+        let overridden =
+            crate::molt_get_attr_name_attached_body(_py, managed_bits, controlled_name);
         assert_eq!(overridden, MoltObject::from_int(103).bits());
         assert_eq!(HOOK_A.load(Ordering::SeqCst), managed_bits);
         assert_eq!(HOOK_B.load(Ordering::SeqCst), controlled_name);
@@ -1407,11 +1710,11 @@ fn class_access_obeys_descriptor_and_metaclass_getattribute_authority() {
         let getattribute_name = string_bits(_py, b"__getattribute__");
         let getattr_name = string_bits(_py, b"__getattr__");
         assert_eq!(
-            crate::molt_get_attr_name(managed_bits, getattribute_name),
+            crate::molt_get_attr_name_attached_body(_py, managed_bits, getattribute_name),
             MoltObject::from_int(104).bits()
         );
         assert_eq!(
-            crate::molt_get_attr_name(managed_bits, getattr_name),
+            crate::molt_get_attr_name_attached_body(_py, managed_bits, getattr_name),
             MoltObject::from_int(105).bits()
         );
         dec_ref_bits(_py, getattr_name);
@@ -1467,7 +1770,7 @@ fn custom_getattribute_captures_fallback_and_observes_literal_hook_names() {
 
         reset_hook_args();
         let missing_name = string_bits(_py, b"missing");
-        let result = crate::molt_get_attr_name(instance_bits, missing_name);
+        let result = crate::molt_get_attr_name_attached_body(_py, instance_bits, missing_name);
         assert_eq!(result, MoltObject::from_int(301).bits());
         assert_eq!(FALLBACK_ORIGINAL_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(FALLBACK_FRESH_CALLS.load(Ordering::SeqCst), 0);
@@ -1510,11 +1813,11 @@ fn custom_getattribute_captures_fallback_and_observes_literal_hook_names() {
         let getattribute_name = string_bits(_py, b"__getattribute__");
         let getattr_name = string_bits(_py, b"__getattr__");
         assert_eq!(
-            crate::molt_get_attr_name(literal_instance, getattribute_name),
+            crate::molt_get_attr_name_attached_body(_py, literal_instance, getattribute_name),
             MoltObject::from_int(303).bits()
         );
         assert_eq!(
-            crate::molt_get_attr_name(literal_instance, getattr_name),
+            crate::molt_get_attr_name_attached_body(_py, literal_instance, getattr_name),
             MoltObject::from_int(304).bits()
         );
         assert!(!exception_pending(_py));

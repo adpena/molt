@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.compilation_target import Target, TargetKind
+from molt._wasm_abi_generated import compiled_execution_symbol
 
 import contextlib
 import hashlib
@@ -78,7 +79,7 @@ _is_protected_runtime_entrypoint = _function_references.is_protected_runtime_ent
 _module_symbol_name = _function_references.module_symbol_name
 reachable_function_names = _function_references.reachable_function_names
 
-_SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 2
+_SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 3
 
 
 def _record_backend_cache_stage_ms(
@@ -259,12 +260,22 @@ def _shared_stdlib_native_symbol_closure_issue(
     if partition_functions is None:
         issues.append("missing or malformed partition manifest")
     else:
-        missing_definitions = sorted(partition_functions - defined)
+        # Partition manifests describe logical IR identities. Object admission
+        # consumes the one physical attached-context ABI projection.
+        physical_functions = frozenset(
+            compiled_execution_symbol(name) for name in partition_functions
+        )
+        legacy_definitions = sorted(partition_functions & defined)
+        if legacy_definitions:
+            issues.append(
+                "legacy partition definitions: " + ", ".join(legacy_definitions[:8])
+            )
+        missing_definitions = sorted(physical_functions - defined)
         if missing_definitions:
             preview = ", ".join(missing_definitions[:8])
             suffix = "" if len(missing_definitions) <= 8 else ", ..."
             issues.append(f"missing partition definitions: {preview}{suffix}")
-        unresolved_declared = sorted(partition_functions & undefined)
+        unresolved_declared = sorted(physical_functions & undefined)
         if unresolved_declared:
             preview = ", ".join(unresolved_declared[:8])
             suffix = "" if len(unresolved_declared) <= 8 else ", ..."

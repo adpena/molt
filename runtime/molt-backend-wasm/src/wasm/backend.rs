@@ -11,6 +11,7 @@ use wasm_encoder::{
 };
 
 pub struct WasmBackend {
+    pub(in crate::wasm) execution_call_abis: std::rc::Rc<crate::wasm_binary::WasmExecutionCallAbis>,
     pub(in crate::wasm) code_slots: molt_ir::code_slots::CodeSlotBindings,
     pub(in crate::wasm) module: Module,
     pub(in crate::wasm) types: WasmFunctionTypes,
@@ -135,6 +136,7 @@ impl WasmBackend {
 
     pub fn with_options(options: WasmCompileOptions) -> Self {
         Self {
+            execution_call_abis: std::rc::Rc::default(),
             code_slots: molt_ir::code_slots::CodeSlotBindings::default(),
             module: Module::new(),
             types: WasmFunctionTypes::new(),

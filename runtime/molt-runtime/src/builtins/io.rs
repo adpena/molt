@@ -63,39 +63,67 @@ mod open;
 pub(crate) use open::dup_fd;
 #[cfg(windows)]
 use open::windows_handle_isatty;
-pub use open::{
-    molt_file_io_init, molt_file_io_new, molt_file_open, molt_file_open_ex, molt_open_builtin,
-    molt_sys_stderr, molt_sys_stdin, molt_sys_stdout,
-};
 use open::{open_arg_newline, reconfigure_arg_newline, reconfigure_arg_type};
 #[cfg(windows)]
 pub(crate) use open::{windows_crt_fd_from_handle, windows_path_from_handle};
+pub use {
+    open::molt_file_io_init, open::molt_file_io_new, open::molt_file_open, open::molt_file_open_ex,
+    open::molt_open_builtin, open::molt_sys_stderr, open::molt_sys_stdin, open::molt_sys_stdout,
+};
+pub(crate) use {
+    open::molt_sys_stderr_attached_body, open::molt_sys_stdin_attached_body,
+    open::molt_sys_stdout_attached_body,
+};
 #[path = "io/construct.rs"]
 mod construct;
 pub(crate) use construct::{buffered_reader_new_method, buffered_writer_new_method};
-pub use construct::{
-    molt_buffered_init, molt_buffered_new, molt_bytesio_init, molt_bytesio_new, molt_io_class,
-    molt_io_default_buffer_size, molt_io_text_encoding, molt_stringio_init, molt_stringio_new,
-    molt_text_io_wrapper_init, molt_text_io_wrapper_new,
+#[cfg(test)]
+pub(crate) use construct::{
+    molt_buffered_init_attached_body, molt_buffered_new_attached_body,
+    molt_bytesio_new_attached_body, molt_stringio_new_attached_body,
+};
+pub use {
+    construct::molt_buffered_init, construct::molt_buffered_new, construct::molt_bytesio_init,
+    construct::molt_bytesio_new, construct::molt_io_class, construct::molt_io_default_buffer_size,
+    construct::molt_io_text_encoding, construct::molt_stringio_init, construct::molt_stringio_new,
+    construct::molt_text_io_wrapper_init, construct::molt_text_io_wrapper_new,
 };
 #[path = "io/read.rs"]
 mod read;
-pub use read::{
-    molt_file_getbuffer, molt_file_getvalue, molt_file_peek, molt_file_read, molt_file_read1,
-    molt_file_readall, molt_file_readinto, molt_file_readinto1, molt_file_readline,
-    molt_file_readlines,
+#[cfg(test)]
+pub(crate) use read::{
+    molt_file_getbuffer_attached_body, molt_file_getvalue_attached_body,
+    molt_file_readinto_attached_body,
 };
+pub use {
+    read::molt_file_getbuffer, read::molt_file_getvalue, read::molt_file_peek,
+    read::molt_file_read, read::molt_file_read1, read::molt_file_readall, read::molt_file_readinto,
+    read::molt_file_readinto1, read::molt_file_readline, read::molt_file_readlines,
+};
+pub(crate) use {read::molt_file_read_attached_body, read::molt_file_readline_attached_body};
 #[path = "io/write.rs"]
 mod write;
+#[cfg(test)]
+pub(crate) use write::molt_file_close_attached_body;
 pub(crate) use write::{io_base_close, io_base_flush};
-pub use write::{molt_file_close, molt_file_flush, molt_file_write, molt_file_writelines};
+pub use {
+    write::molt_file_close, write::molt_file_flush, write::molt_file_write,
+    write::molt_file_writelines,
+};
+pub(crate) use {write::molt_file_flush_attached_body, write::molt_file_write_attached_body};
 #[path = "io/control.rs"]
 mod control;
 pub(crate) use control::{io_base_check_closed, io_base_exit, io_base_finalize};
-pub use control::{
-    molt_file_detach, molt_file_enter, molt_file_exit, molt_file_exit_method, molt_file_fileno,
-    molt_file_isatty, molt_file_iter, molt_file_next, molt_file_readable, molt_file_reconfigure,
-    molt_file_seek, molt_file_seekable, molt_file_tell, molt_file_truncate, molt_file_writable,
+#[cfg(test)]
+pub(crate) use control::{
+    molt_file_seek_attached_body, molt_file_tell_attached_body, molt_file_truncate_attached_body,
+};
+pub use {
+    control::molt_file_detach, control::molt_file_enter, control::molt_file_exit,
+    control::molt_file_exit_method, control::molt_file_fileno, control::molt_file_isatty,
+    control::molt_file_iter, control::molt_file_next, control::molt_file_readable,
+    control::molt_file_reconfigure, control::molt_file_seek, control::molt_file_seekable,
+    control::molt_file_tell, control::molt_file_truncate, control::molt_file_writable,
 };
 
 #[path = "io/attributes.rs"]
@@ -109,7 +137,7 @@ fn io_base_is_closed(py: &PyToken<'_>, object: u64) -> Result<bool, u64> {
     let Some(name) = crate::NameId::PrivateIOBaseClosed.owned_bits(py) else {
         return Err(MoltObject::none().bits());
     };
-    let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+    let _name = PtrDropGuard::new(py, obj_from_bits(name).as_ptr().unwrap());
     let value = crate::builtins::platform::getattr_optional_bits(py, object, name)?;
     if let Some(value) = value {
         dec_ref_bits(py, value);
@@ -125,9 +153,11 @@ fn io_call_noargs(py: &PyToken<'_>, object: u64, name: crate::NameId) -> u64 {
     let Some(name) = name.owned_bits(py) else {
         return MoltObject::none().bits();
     };
-    let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
-    let callable = molt_getattr_builtin(object, name, missing_bits(py));
-    let _callable = obj_from_bits(callable).as_ptr().map(PtrDropGuard::new);
+    let _name = PtrDropGuard::new(py, obj_from_bits(name).as_ptr().unwrap());
+    let callable = molt_getattr_builtin_attached_body(py, object, name, missing_bits(py));
+    let _callable = obj_from_bits(callable)
+        .as_ptr()
+        .map(|__ptr| PtrDropGuard::new(py, __ptr));
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
@@ -213,7 +243,7 @@ pub(crate) fn io_clear_runtime_state(
     // can publish a replacement for the next shutdown fixed-point pass.
     for bits in handles {
         if bits != 0 && !obj_from_bits(bits).is_none() {
-            let _ = molt_file_flush(bits);
+            let _ = molt_file_flush_attached_body(_py, bits);
             if exception_pending(_py) {
                 clear_exception(_py);
             }

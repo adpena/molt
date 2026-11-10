@@ -15,15 +15,15 @@ use crate::bridge::{dec_ref_bits, inc_ref_bits, raise_exception_u64, string_obj_
 use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_bind_callback_register(
+pub fn molt_tk_bind_callback_register_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     target_bits: u64,
     sequence_bits: u64,
     callback_bits: u64,
     add_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -38,7 +38,7 @@ pub extern "C" fn molt_tk_bind_callback_register(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,
@@ -95,14 +95,15 @@ pub extern "C" fn molt_tk_bind_callback_register(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_bind_callback_unregister(
+
+pub fn molt_tk_bind_callback_unregister_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     target_bits: u64,
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -129,7 +130,8 @@ pub extern "C" fn molt_tk_bind_callback_unregister(
             Err(bits) => return bits,
         };
         let current_script =
-            unsafe { string_obj_to_owned(obj_from_bits(current_script_bits)) }.unwrap_or_default();
+            unsafe { string_obj_to_owned(_py, obj_from_bits(current_script_bits)) }
+                .unwrap_or_default();
         release_result_bits(_py, current_script_bits);
         let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
 
@@ -149,8 +151,9 @@ pub extern "C" fn molt_tk_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_widget_bind_callback_register(
+
+pub fn molt_tk_widget_bind_callback_register_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     widget_path_bits: u64,
     bind_target_bits: u64,
@@ -158,7 +161,7 @@ pub extern "C" fn molt_tk_widget_bind_callback_register(
     callback_bits: u64,
     add_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -178,7 +181,7 @@ pub extern "C" fn molt_tk_widget_bind_callback_register(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,
@@ -241,15 +244,16 @@ pub extern "C" fn molt_tk_widget_bind_callback_register(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_widget_bind_callback_unregister(
+
+pub fn molt_tk_widget_bind_callback_unregister_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     widget_path_bits: u64,
     bind_target_bits: u64,
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -286,7 +290,8 @@ pub extern "C" fn molt_tk_widget_bind_callback_unregister(
             Err(bits) => return bits,
         };
         let current_script =
-            unsafe { string_obj_to_owned(obj_from_bits(current_script_bits)) }.unwrap_or_default();
+            unsafe { string_obj_to_owned(_py, obj_from_bits(current_script_bits)) }
+                .unwrap_or_default();
         release_result_bits(_py, current_script_bits);
         let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
 
@@ -312,8 +317,9 @@ pub extern "C" fn molt_tk_widget_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_text_tag_bind_callback_register(
+
+pub fn molt_tk_text_tag_bind_callback_register_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     widget_path_bits: u64,
     tagname_bits: u64,
@@ -321,7 +327,7 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_register(
     callback_bits: u64,
     add_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -340,7 +346,7 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_register(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,
@@ -404,15 +410,16 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_register(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_text_tag_bind_callback_unregister(
+
+pub fn molt_tk_text_tag_bind_callback_unregister_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     widget_path_bits: u64,
     tagname_bits: u64,
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -449,7 +456,8 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_unregister(
             Err(bits) => return bits,
         };
         let current_script =
-            unsafe { string_obj_to_owned(obj_from_bits(current_script_bits)) }.unwrap_or_default();
+            unsafe { string_obj_to_owned(_py, obj_from_bits(current_script_bits)) }
+                .unwrap_or_default();
         release_result_bits(_py, current_script_bits);
         let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
 
@@ -476,15 +484,16 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_treeview_tag_bind_callback_register(
+
+pub fn molt_tk_treeview_tag_bind_callback_register_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     widget_path_bits: u64,
     tagname_bits: u64,
     sequence_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -505,7 +514,7 @@ pub extern "C" fn molt_tk_treeview_tag_bind_callback_register(
                 Ok(value) => value,
                 Err(bits) => return bits,
             };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,
@@ -561,15 +570,16 @@ pub extern "C" fn molt_tk_treeview_tag_bind_callback_register(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_treeview_tag_bind_callback_unregister(
+
+pub fn molt_tk_treeview_tag_bind_callback_unregister_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     widget_path_bits: u64,
     tagname_bits: u64,
     sequence_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -612,7 +622,8 @@ pub extern "C" fn molt_tk_treeview_tag_bind_callback_unregister(
             Err(bits) => return bits,
         };
         let current_script =
-            unsafe { string_obj_to_owned(obj_from_bits(current_script_bits)) }.unwrap_or_default();
+            unsafe { string_obj_to_owned(_py, obj_from_bits(current_script_bits)) }
+                .unwrap_or_default();
         release_result_bits(_py, current_script_bits);
         let replacement = remove_bind_script_command_invocations(&current_script, &command_name);
 
@@ -639,16 +650,21 @@ pub extern "C" fn molt_tk_treeview_tag_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_bind_command(app_bits: u64, name_bits: u64, callback_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_bind_command_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    name_bits: u64,
+    callback_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::BindCommand) {
             return bits;
         }
         let Ok(handle) = parse_app_handle(_py, app_bits) else {
             return raise_invalid_handle_error(_py);
         };
-        let Some(name) = (unsafe { string_obj_to_owned(obj_from_bits(name_bits)) }) else {
+        let Some(name) = (unsafe { string_obj_to_owned(_py, obj_from_bits(name_bits)) }) else {
             return raise_tcl_for_handle(_py, handle, "bind command name must be str");
         };
         let mut registry = tk_registry().lock().unwrap();
@@ -671,16 +687,20 @@ pub extern "C" fn molt_tk_bind_command(app_bits: u64, name_bits: u64, callback_b
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_unbind_command(app_bits: u64, name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_unbind_command_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::UnbindCommand) {
             return bits;
         }
         let Ok(handle) = parse_app_handle(_py, app_bits) else {
             return raise_invalid_handle_error(_py);
         };
-        let Some(name) = (unsafe { string_obj_to_owned(obj_from_bits(name_bits)) }) else {
+        let Some(name) = (unsafe { string_obj_to_owned(_py, obj_from_bits(name_bits)) }) else {
             return raise_tcl_for_handle(_py, handle, "unbind command name must be str");
         };
         let mut registry = tk_registry().lock().unwrap();
@@ -704,16 +724,18 @@ pub extern "C" fn molt_tk_unbind_command(app_bits: u64, name_bits: u64) -> u64 {
         app_tcl_error_locked(_py, app, format!("invalid command name \"{name}\""))
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_bind_script_remove_command(
+
+pub fn molt_tk_bind_script_remove_command_attached_body(
+    _py: &molt_runtime_core::PyToken,
     script_bits: u64,
     command_name_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(script) = (unsafe { string_obj_to_owned(obj_from_bits(script_bits)) }) else {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(script) = (unsafe { string_obj_to_owned(_py, obj_from_bits(script_bits)) }) else {
             return raise_exception_u64(_py, BuiltinExc::TypeError, "bind script must be str");
         };
-        let Some(command_name) = (unsafe { string_obj_to_owned(obj_from_bits(command_name_bits)) })
+        let Some(command_name) =
+            (unsafe { string_obj_to_owned(_py, obj_from_bits(command_name_bits)) })
         else {
             return raise_exception_u64(
                 _py,
@@ -728,3 +750,5 @@ pub extern "C" fn molt_tk_bind_script_remove_command(
         }
     })
 }
+
+include!("../../attached_exports_generated/tk/callback_intrinsics/binds.rs");

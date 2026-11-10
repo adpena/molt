@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.capability_manifest import CapabilityManifest
 from molt.cli.native_launch_abi_generated import (
     NATIVE_LAUNCH_FINISH_ENTRIES,
@@ -72,7 +73,14 @@ def test_the_aot_stub_calls_the_launch_entries_in_the_declared_order() -> None:
     positions = [main.index(f"{name}(") for name in NATIVE_LAUNCH_START_SEQUENCE]
     assert positions == sorted(positions)
     # The entry runs after the last start entry; the finish follows it.
-    assert positions[-1] < main.index("molt_main();") < main.index("molt_finish()")
+    entry = main.index(f"{compiled_execution_symbol('molt_main')}(context);")
+    assert positions[-1] < main.index("molt_attached_context()")
+    assert main.index("molt_compiled_execution_enter(context)") < entry
+    assert (
+        entry
+        < main.index("molt_compiled_execution_leave(context, scope)")
+        < main.index("molt_finish()")
+    )
     finish = _body(stub, "static int molt_finish() {")
     assert finish.index("molt_runtime_exit(") < finish.index("molt_main_exit_status()")
 

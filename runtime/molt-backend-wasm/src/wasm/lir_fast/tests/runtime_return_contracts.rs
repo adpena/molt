@@ -75,7 +75,7 @@ fn sink_body(
         entry_block: BlockId(0),
         label_id_map: HashMap::new(),
     };
-    let mut ctx = LirLowerCtx::new_with_local_base(&function, 0);
+    let mut ctx = LirLowerCtx::new_with_local_base(&function, 1);
     ctx.allocate_function_locals();
     ctx.begin_operation_owners();
     for &operand in &op.tir_op.operands {
@@ -93,9 +93,11 @@ fn sink_body(
     }
     ctx.instructions.push(Instruction::End);
     WasmBody {
-        param_types: args.iter().copied().map(machine_type).collect(),
+        param_types: std::iter::once(ValType::I64)
+            .chain(args.iter().copied().map(machine_type))
+            .collect(),
         result_types: result.map(machine_type).into_iter().collect(),
-        locals: ctx.local_declarations_after(args.len() as u32),
+        locals: ctx.local_declarations_after(args.len() as u32 + 1),
         ops: ctx.instructions.into_vec(),
     }
 }
@@ -279,7 +281,7 @@ module_new:fresh, dict_setitem:(value)=>value, int_from_i64:fresh,
   int_as_i64:()=>72n, handle_resolve:()=>1, inc_ref_obj:retain, dec_ref_obj:release, eq:()=>yes};
 function run(name, ...args) {
   const module = new WebAssembly.Module(fs.readFileSync(config.modules[name]));
-  return new WebAssembly.Instance(module, {molt_runtime:host}).exports.run(...args);
+  return new WebAssembly.Instance(module, attachedImports({molt_runtime:host})).exports.run(executionContext, ...args);
 }
 let value = run('owned_bound', none); counts(1,0,0,1); release(value); counts(1,0,1,0); reset();
 run('owned_discard', none); counts(1,0,1,0); reset();

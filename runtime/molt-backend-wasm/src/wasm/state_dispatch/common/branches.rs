@@ -3,11 +3,12 @@ use super::super::super::frame_locals::WasmDispatchFrameLocals;
 use super::super::super::op_loop::WasmFunctionEmitContext;
 use super::super::DispatchMode;
 use super::super::plan::{ControlScopeDepth, NonLinearControlPlan, StaticDispatchEdge};
+use crate::wasm_binary::Function;
 use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use crate::{FunctionIR, OpIR};
 use molt_ir::simple_verify::EdgeRole;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 pub(in crate::wasm::state_dispatch) fn emit_dispatch_if(
     func: &mut Function,

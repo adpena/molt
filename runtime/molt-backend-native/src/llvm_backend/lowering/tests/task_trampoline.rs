@@ -148,12 +148,9 @@ fn release(value: u64) {
         }
     }
 }
-#[no_mangle]
-pub extern "C" fn molt_inc_ref_obj(value: u64) { record(RETAINS); retain(value); }
-#[no_mangle]
-pub extern "C" fn molt_dec_ref_obj(value: u64) { record(RELEASES); release(value); }
-#[no_mangle]
-pub extern "C" fn molt_exception_pending() -> u64 { u64::from(count(ERROR) != 0) }
+fn molt_inc_ref_obj(value: u64)  { record(RETAINS); retain(value); }
+fn molt_dec_ref_obj(value: u64)  { record(RELEASES); release(value); }
+fn molt_exception_pending() -> u64 { u64::from(count(ERROR) != 0) }
 
 fn callable(poll: u64, entry: u64, arity: u64, closure: u64, custody: u64) -> u64 {
     assert_eq!(poll, expected(4), "the callable points at the raw-one-argument poll");
@@ -170,20 +167,17 @@ fn callable(poll: u64, entry: u64, arity: u64, closure: u64, custody: u64) -> u6
     retain(closure);
     FUNCTION
 }
-#[no_mangle]
-pub extern "C" fn molt_func_new(poll: u64, entry: u64, arity: u64, custody: u64) -> u64 {
+fn molt_func_new(poll: u64, entry: u64, arity: u64, custody: u64) -> u64 {
     assert_eq!(expected(1), 0);
     callable(poll, entry, arity, 0, custody)
 }
-#[no_mangle]
-pub extern "C" fn molt_func_new_closure(
+fn molt_func_new_closure(
     poll: u64, entry: u64, arity: u64, closure: u64, custody: u64,
 ) -> u64 {
     assert_eq!(expected(1), 1);
     callable(poll, entry, arity, closure, custody)
 }
-#[no_mangle]
-pub extern "C" fn molt_task_new(poll: u64, extent: u64, kind: u64) -> u64 {
+fn molt_task_new(poll: u64, extent: u64, kind: u64) -> u64 {
     assert_eq!(poll, expected(4));
     assert_eq!(extent, expected(3), "preserve the declared frame extent, including spare tail");
     assert_eq!(kind, if expected(0) == 1 { 2 } else { 1 });
@@ -206,8 +200,7 @@ pub extern "C" fn fixed_verify_memory(allocated: u64) {
         assert_eq!(frame_word(index), word, "unexpected frame word at {index}");
     }
 }
-#[no_mangle]
-pub extern "C" fn molt_cancel_token_get_current() -> u64 {
+fn molt_cancel_token_get_current() -> u64 {
     assert_eq!(expected(0), 1);
     assert_eq!(count(TASKS), 1);
     assert_eq!(count(ERROR), 0);
@@ -215,16 +208,14 @@ pub extern "C" fn molt_cancel_token_get_current() -> u64 {
     record(TOKENS);
     TOKEN
 }
-#[no_mangle]
-pub extern "C" fn molt_task_register_execution(object: u64, token: u64, inherited: u64) -> u64 {
+fn molt_task_register_execution(object: u64, token: u64, inherited: u64) -> u64 {
     assert_eq!((object, token, inherited), (task(), TOKEN, NONE));
     assert_eq!((count(TOKENS), count(REGISTRATIONS)), (1, 0));
     fixed_verify_memory(1);
     record(REGISTRATIONS);
     NONE
 }
-#[no_mangle]
-pub extern "C" fn molt_asyncgen_new(object: u64) -> u64 {
+fn molt_asyncgen_new(object: u64) -> u64 {
     assert_eq!(expected(0), 2);
     assert_eq!(object, task());
     assert_eq!(count(TASKS), 1);
@@ -278,9 +269,73 @@ pub extern "C" fn fixed_live() -> u64 {
         + INPUTS.iter().map(|refs| refs.load(SeqCst)).sum::<u64>()
 }
 
-// This isolated provider has no runtime execution attachment or lease.
-#[no_mangle]
-pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
+// The sole exported physical entry validates its attached execution context.
+fn molt_refcount_admission() -> u64 { 0 }
+
+// This provider owns a stable record and the token header passed through every
+// compiled/runtime entry. No TLS lookup supplies either address.
+static FIXTURE_THREAD_RECORD: [u64; 16] = [0; 16];
+fn fixture_thread_record() -> u64 { core::ptr::addr_of!(FIXTURE_THREAD_RECORD) as u64 }
+
+#[export_name = "molt_inc_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_inc_ref_obj_attached(context: u64, value: u64)  {
+    assert_eq!(context, fixed_execution_context(), "molt_inc_ref_obj forwards its attached context");
+    molt_inc_ref_obj(value)
+}
+
+#[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_dec_ref_obj_attached(context: u64, value: u64)  {
+    assert_eq!(context, fixed_execution_context(), "molt_dec_ref_obj forwards its attached context");
+    molt_dec_ref_obj(value)
+}
+
+#[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_exception_pending_attached(context: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_exception_pending forwards its attached context");
+    molt_exception_pending()
+}
+
+#[export_name = "molt_func_new@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_func_new_attached(context: u64, poll: u64, entry: u64, arity: u64, custody: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_func_new forwards its attached context");
+    molt_func_new(poll, entry, arity, custody)
+}
+
+#[export_name = "molt_func_new_closure@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_func_new_closure_attached(context: u64, poll: u64, entry: u64, arity: u64, closure: u64, custody: u64,) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_func_new_closure forwards its attached context");
+    molt_func_new_closure(poll, entry, arity, closure, custody)
+}
+
+#[export_name = "molt_task_new@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_task_new_attached(context: u64, poll: u64, extent: u64, kind: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_task_new forwards its attached context");
+    molt_task_new(poll, extent, kind)
+}
+
+#[export_name = "molt_cancel_token_get_current@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_cancel_token_get_current_attached(context: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_cancel_token_get_current forwards its attached context");
+    molt_cancel_token_get_current()
+}
+
+#[export_name = "molt_task_register_execution@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_task_register_execution_attached(context: u64, object: u64, token: u64, inherited: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_task_register_execution forwards its attached context");
+    molt_task_register_execution(object, token, inherited)
+}
+
+#[export_name = "molt_asyncgen_new@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_asyncgen_new_attached(context: u64, object: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_asyncgen_new forwards its attached context");
+    molt_asyncgen_new(object)
+}
+
+#[export_name = "molt_refcount_admission@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_refcount_admission_attached(context: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_refcount_admission forwards its attached context");
+    molt_refcount_admission()
+}
 "#;
 
 const HARNESS: &str = r#"
@@ -291,6 +346,7 @@ const SECOND: u64 = 0x7ffc000000000103;
 const FUNCTION: u64 = 0x7ffc000000000301;
 const WRAPPER: u64 = 0x7ffc000000000302;
 extern "C" {
+    fn fixed_execution_context() -> u64;
     fn fixed_reset(kind: u64, closure: u64, arity: u64, extent: u64, poll: u64, failure: u64);
     fn fixed_count(index: usize) -> u64;
     fn fixed_input(index: usize) -> u64;
@@ -300,13 +356,14 @@ extern "C" {
     fn fixed_task() -> u64;
     fn fixed_live() -> u64;
     fn fixed_verify_memory(allocated: u64);
-    fn molt_dec_ref_obj(value: u64);
+    #[link_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+    fn molt_dec_ref_obj(context: u64, value: u64);
     @DECLARATIONS@
 }
 struct Case {
     name: &'static str,
-    factory: unsafe extern "C" fn(u64) -> u64,
-    poll: unsafe extern "C" fn(u64) -> u64,
+    factory: unsafe extern "C" fn(u64, u64) -> u64,
+    poll: unsafe extern "C" fn(u64, u64) -> u64,
     kind: u64,
     closure: u64,
     arity: u64,
@@ -320,17 +377,17 @@ fn counts(expected: [u64; 8], case: &str, failure: u64) {
 fn run(case: &Case, failure: u64) {
     unsafe {
         fixed_reset(case.kind, case.closure, case.arity, case.extent, case.poll as usize as u64, failure);
-        assert_eq!((case.factory)(CLOSURE), FUNCTION, "{}", case.name);
+        assert_eq!((case.factory)(fixed_execution_context(), CLOSURE), FUNCTION, "{}", case.name);
         counts([1, 0, 0, 0, 0, 0, 0, 0], case.name, failure);
         assert_eq!(fixed_count(8), 1);
         assert_eq!(fixed_count(9) + fixed_count(10), 0);
         fixed_verify_memory(0);
-        let invoke: unsafe extern "C" fn(u64, u64, u64) -> u64 = core::mem::transmute(fixed_entry());
+        let invoke: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = core::mem::transmute(fixed_entry());
         let arguments = [FIRST, FIRST, SECOND];
         // A failed task allocation must not even read argv. Zero arguments
         // likewise need no readable range, on either success or failure.
         let argv = if failure == 1 { 1 } else if case.arity == 0 { 0 } else { arguments.as_ptr() as u64 };
-        let result = invoke(fixed_closure(), argv, case.arity);
+        let result = invoke(fixed_execution_context(), fixed_closure(), argv, case.arity);
         let allocated = u64::from(failure != 1);
         let live_task = u64::from(failure == 0);
         let coroutine = u64::from(case.kind == 1) * allocated;
@@ -350,12 +407,12 @@ fn run(case: &Case, failure: u64) {
         assert_eq!(fixed_count(11), error, "preserve the original exception identity");
         fixed_verify_memory(allocated);
         if failure == 0 {
-            assert_eq!((case.poll)(fixed_raw_task()), 0xf00d);
+            assert_eq!((case.poll)(fixed_execution_context(), fixed_raw_task()), 0xf00d);
             counts([1, 1, retains, asyncgen, coroutine, coroutine, asyncgen, 1], case.name, failure);
-            molt_dec_ref_obj(result);
+            molt_dec_ref_obj(fixed_execution_context(), result);
         }
-        molt_dec_ref_obj(FUNCTION);
-        for input in [CLOSURE, FIRST, SECOND] { molt_dec_ref_obj(input); }
+        molt_dec_ref_obj(fixed_execution_context(), FUNCTION);
+        for input in [CLOSURE, FIRST, SECOND] { molt_dec_ref_obj(fixed_execution_context(), input); }
         assert_eq!(fixed_live(), 0, "{}/{failure}: every owner released", case.name);
         assert_eq!(fixed_count(11), error, "cleanup preserves the original exception");
     }
@@ -395,10 +452,10 @@ fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
                     &backend,
                 );
                 provider.push_str(&format!(
-                    "\n#[no_mangle]\npub extern \"C\" fn {poll}(frame: u64) -> u64 {{ poll(frame) }}\n"
+                    "\n#[export_name = \"{poll}@EXECUTION_SUFFIX@\"]\npub extern \"C\" fn {poll}(context: u64, frame: u64) -> u64 {{ assert_eq!(context, fixed_execution_context()); poll(frame) }}\n"
                 ));
                 declarations.push_str(&format!(
-                    "fn {name}(closure: u64) -> u64;\nfn {poll}(frame: u64) -> u64;\n"
+                    "#[link_name = \"{name}@EXECUTION_SUFFIX@\"]\nfn {name}(context: u64, closure: u64) -> u64;\n#[link_name = \"{poll}@EXECUTION_SUFFIX@\"]\nfn {poll}(context: u64, frame: u64) -> u64;\n"
                 ));
                 cases.push_str(&format!(
                     "Case {{ name: \"{name}\", factory: {name}, poll: {poll}, kind: {kind_id}, closure: {}, arity: {arity}, extent: {extent} }},\n",
@@ -422,6 +479,10 @@ fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
         .replace("@ABI@", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)
         .replace("@NONE@", &none)
         .replace("@PTR@", &(nanbox::QNAN | nanbox::TAG_PTR).to_string());
+    let provider = format!(
+        "{provider}\n{}",
+        native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+    );
     let harness = HARNESS
         .replace("@NONE@", &none)
         .replace("@DECLARATIONS@", &declarations)
@@ -488,6 +549,9 @@ fn task_constructor_metadata_rejects_partial_unknown_negative_and_undersized_fra
                     .or_else(|| payload.downcast_ref::<&str>().map(|text| (*text).into()))
                     .expect("task metadata rejection must explain the violated contract"),
             };
-        assert!(message.contains(diagnostic), "{kind:?}/{size:?}: {message}");
+        assert!(
+            message.contains_execution(diagnostic),
+            "{kind:?}/{size:?}: {message}"
+        );
     }
 }

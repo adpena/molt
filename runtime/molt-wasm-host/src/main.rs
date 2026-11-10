@@ -35,6 +35,10 @@ use wasmtime_wasi::{FsPerms, WasiCtxBuilder, p1};
 mod db_host;
 mod engine;
 mod entrypoint;
+mod execution_context;
+#[cfg(test)]
+#[path = "../tests/support/execution_context.rs"]
+mod execution_fixture;
 mod indexed;
 mod isolate_host;
 #[cfg(test)]
@@ -55,6 +59,7 @@ mod websocket_host;
 use db_host::{DbWorker, PendingDbRequest, define_db_host};
 use engine::*;
 use entrypoint::*;
+use execution_context::*;
 use indexed::*;
 use isolate_host::*;
 use path_resolver::*;
@@ -512,12 +517,13 @@ fn execute_loaded_guest(
                 .context("instantiate runtime")?;
             log::debug!("runtime instantiated");
             set_memory_from_exports(&mut store, &runtime_instance);
-            // Publish before admission. Retain a setter trap until typed
-            // cleanup bindings exist so failed setup still finalizes the runtime.
-            let publication =
-                configure_wasm_table_base(&mut store, &runtime_instance, &wasm_table_admission);
             lifetime = Some(MoltRuntimeLifetime::admit(&mut store, &runtime_instance)?);
-            publication?;
+            lifetime
+                .as_mut()
+                .expect("published runtime lifetime")
+                .validate_context_schema(&mut store)?;
+            validate_instance_context_memory(&mut store, &runtime_instance)?;
+            configure_wasm_table_base(&mut store, &runtime_instance, &wasm_table_admission)?;
             runtime_imports.bind(&mut linker, &mut store, &runtime_instance)?;
             Some(runtime_instance)
         } else {
@@ -546,14 +552,17 @@ fn execute_loaded_guest(
                 .with_context(|| format!("instantiate {output_label}"))?
         };
         log::debug!("{output_label} instantiated");
+        if runtime_instance.is_some() {
+            validate_instance_context_memory(&mut store, &output_instance)?;
+        }
         set_memory_from_exports(&mut store, &output_instance);
         if !is_wasi_command && runtime_instance.is_none() {
-            // Publish before admission. Retain a setter trap until typed
-            // cleanup bindings exist so failed setup still finalizes the runtime.
-            let publication =
-                configure_wasm_table_base(&mut store, &output_instance, &wasm_table_admission);
             lifetime = Some(MoltRuntimeLifetime::admit(&mut store, &output_instance)?);
-            publication?;
+            lifetime
+                .as_mut()
+                .expect("published runtime lifetime")
+                .validate_context_schema(&mut store)?;
+            configure_wasm_table_base(&mut store, &output_instance, &wasm_table_admission)?;
         }
         if !is_wasi_command {
             register_isolate_exports(&mut store, &output_instance)?;
@@ -728,6 +737,9 @@ fn run() -> Result<GuestTermination> {
         admit_wasm_table(&main_source, runtime_source.as_ref(), table_config)?
     };
 
+    if !is_wasi_command {
+        validate_application_context_source(&main_source, runtime_source.as_ref())?;
+    }
     let engine = build_engine()?;
     let output_module = load_or_compile_module(&engine, &main_source, ModuleRole::Main)?;
     let main_path = main_source.path();

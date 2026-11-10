@@ -5,13 +5,15 @@ use crate::wasm::test_execution::{
 };
 use crate::wasm::{WasmBackend, WasmCompileOptions};
 use crate::wasm_abi::RUNTIME_IMPORT_MODULE;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::add_reloc_sections;
 use crate::wasm_data::WasmDataSegments;
 use serde_json::json;
 use std::{fs, path::PathBuf, process::Command};
+use wasm_encoder::FunctionSection;
 use wasm_encoder::{
-    CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    Instruction, MemoryType, Module, TypeSection, ValType,
+    CodeSection, EntityType, ExportKind, ExportSection, ImportSection, Instruction, MemoryType,
+    Module, TypeSection, ValType,
 };
 
 #[test]
@@ -38,13 +40,19 @@ fn literal_operands_preserve_payloads_and_output_after_linker_data_shift() {
         backend.data_segments = WasmDataSegments::new(64);
         let scratch = backend.add_data_segment_mutable(reloc, &[0; 8]);
         let mut types = TypeSection::new();
+        types.ty().function(
+            [ValType::I64, ValType::I32, ValType::I64, ValType::I32],
+            [ValType::I32],
+        );
         types
             .ty()
-            .function([ValType::I32, ValType::I64, ValType::I32], [ValType::I32]);
-        types
-            .ty()
-            .function([ValType::I32, ValType::I64], [ValType::I64]);
-        types.ty().function([], [ValType::I64]);
+            .function([ValType::I64, ValType::I32, ValType::I64], [ValType::I64]);
+        types.ty().function([ValType::I64], [ValType::I64]);
+        let mut call_abis = crate::wasm_binary::WasmExecutionCallAbis::default();
+        call_abis.register_attached(0, &[ValType::I32, ValType::I64, ValType::I32]);
+        call_abis.register_attached(1, &[ValType::I32, ValType::I64, ValType::I32]);
+        call_abis.register_attached(2, &[ValType::I32, ValType::I64]);
+        let call_abis = std::rc::Rc::new(call_abis);
         let mut imports = ImportSection::new();
         for (name, ty) in [
             ("string_from_bytes", 0),
@@ -75,13 +83,14 @@ fn literal_operands_preserve_payloads_and_output_after_linker_data_shift() {
             };
             let policy = WasmConstOpPolicy::for_op(&op).unwrap();
             let mut function = Function::new([(1, ValType::I64)]);
+            function.attach_context(1, call_abis.clone());
             let import = match *kind {
                 molt_ir::OpKind::ConstStr => 0,
                 molt_ir::OpKind::ConstBytes => 1,
                 molt_ir::OpKind::ConstBigint => 2,
                 _ => unreachable!(),
             };
-            policy.simple_ir_materialization_into(&op, 0).emit(
+            policy.simple_ir_materialization_into(&op, 1).emit(
                 &mut backend,
                 &mut function,
                 index as u32 + 3,
@@ -89,11 +98,13 @@ fn literal_operands_preserve_payloads_and_output_after_linker_data_shift() {
                 import,
                 scratch,
             );
-            function.instruction(&Instruction::LocalGet(0));
+            function.instruction(&Instruction::LocalGet(1));
             function.instruction(&Instruction::End);
             functions.function(2);
             exports.export(
-                &format!("literal_{index}"),
+                &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(&format!(
+                    "literal_{index}"
+                )),
                 ExportKind::Func,
                 index as u32 + 3,
             );
@@ -174,16 +185,16 @@ for (const test of config.modules) {
   const imports={};
   for (const imp of WebAssembly.Module.imports(module)) {
     imports[imp.module]??={};
-    imports[imp.module][imp.name]=imp.kind==='memory' ? memory : runtime[imp.name];
+    imports[imp.module][imp.name]=imp.kind==='memory' ? memory : runtime[runtimeImportName(imp.name)];
     assert.ok(imports[imp.module][imp.name], 'unexpected import '+imp.name);
   }
-  const app=new WebAssembly.Instance(module,imports).exports;
+  const app=new WebAssembly.Instance(module, attachedImports(imports)).exports;
   for (let index=0;index<config.cases.length;index++) {
     expected=config.cases[index];
     if(output!==null) view().setBigUint64(output,0xdeadn,true);
-    const fn=app['literal_'+index]??app['__molt_output_export_'+index];
+    const fn=app[compiledSymbol('literal_'+index)];
     assert.equal(typeof fn,'function');
-    assert.equal(fn(),0x123400000000n+BigInt(index+1), 'must reload fresh output, preserving full i64');
+    assert.equal(fn(executionContext),0x123400000000n+BigInt(index+1), 'must reload fresh output, preserving full i64');
   }
   assert.equal(calls,config.cases.length);
 }

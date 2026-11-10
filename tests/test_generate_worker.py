@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 from molt._wasm_abi_generated import (
+    compiled_execution_symbol,
+    runtime_execution_abi,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
     WASM_DEFAULT_APP_TABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
@@ -52,11 +55,18 @@ def test_worker_generators_reject_incompatible_receiver_before_module_read(
         )
 
 
+def _runtime_symbol(logical: str) -> str:
+    abi = runtime_execution_abi(logical)
+    if abi is None:
+        raise ValueError(f"unregistered worker runtime fixture {logical}")
+    return abi.physical_symbol
+
+
 def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
     return [
         {
             "index": index,
-            "runtime_export": runtime_name,
+            "runtime_export": _runtime_symbol(runtime_name),
             "import_name": import_name,
             "arity": arity,
             "dispatch": dispatch,
@@ -445,12 +455,15 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         shared_table_base=32,
     )
 
-    assert 'const callIndirectImportNames = ["molt_call_indirect0"' in content
-    assert "const reservedRuntimeCallables = [" in content
+    assert (
+        f'const callIndirectImportNames = ["{compiled_execution_symbol("molt_call_indirect0")}"'
+        in content
+    )
+    assert "reservedRuntimeCallablesFromManifest(deploymentManifest)" in content
     assert "appOwnsReservedTrampoline" not in content
-    assert '"runtime_export":"molt_object_init_subclass"' in content.replace(" ", "")
+    assert _runtime_symbol("molt_object_init_subclass") in content
     assert "for (const indirectName of callIndirectImportNames) {" in content
-    assert "hostEnv[indirectName] = (fnIndex, ...args) => {" in content
+    assert "hostEnv[indirectName] = (context, fnIndex, ...args) => {" in content
     assert "const idx = Number(fnIndex);" in content
     assert "const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);" in content
     assert "const reservedDispatch = planReservedRuntimeDispatch({" in content
@@ -467,7 +480,10 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         in content
     )
     assert 'if (typeof tableFn === "function" && directSignature) {' in content
-    assert "return callWithSignature(tableFn, directSignature, args);" in content
+    assert (
+        "return callWithSignature(tableFn, directSignature, [context, ...args]);"
+        in content
+    )
     assert "has no callable signature authority" in content
     assert "appDirectFn" not in content
     assert "rtDirectFn" not in content
@@ -517,7 +533,7 @@ def test_static_browser_runners_use_the_generated_reserved_callable_layout() -> 
     assert layout["reservedRuntimeCallables"] == [
         {
             "index": index,
-            "runtimeExport": runtime_name,
+            "runtimeExport": _runtime_symbol(runtime_name),
             "importName": import_name,
             "arity": arity,
             "dispatch": dispatch,
@@ -670,9 +686,9 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         shared_table_base=32,
         runtime_import_names={"function_set_builtin", "string_from_bytes"},
         runtime_export_signatures={
-            "function_set_builtin": {"params": ["i64"], "result": "i64"},
+            "function_set_builtin": {"params": ["i64", "i64"], "result": "i64"},
             "string_from_bytes": {
-                "params": ["i64", "i64", "i64"],
+                "params": ["i64", "i64", "i64", "i64"],
                 "result": "i64",
             },
         },
@@ -697,22 +713,33 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     exports = declaration("runtimeImportExportNames")
     assert result_kinds["function_set_builtin"] == "i64"
     assert result_kinds["string_from_bytes"] == "i32"
-    assert signatures["function_set_builtin"] == {"params": ["i64"], "result": "i64"}
+    assert signatures["function_set_builtin"] == {
+        "params": ["i64", "i64"],
+        "result": "i64",
+    }
     assert signatures["string_from_bytes"] == {
-        "params": ["i32", "i64", "i32"],
+        "params": ["i64", "i32", "i64", "i32"],
         "result": "i32",
     }
     assert exports == {
-        "function_set_builtin": "molt_function_set_builtin",
-        "string_from_bytes": "molt_string_from_bytes",
+        "function_set_builtin": _runtime_symbol("molt_function_set_builtin"),
+        "string_from_bytes": _runtime_symbol("molt_string_from_bytes"),
         "runtime_execution_enter": "molt_runtime_execution_enter",
         "runtime_execution_leave": "molt_runtime_execution_leave",
         "runtime_shutdown": "molt_runtime_shutdown",
+        "attached_context": "molt_attached_context",
+        "compiled_execution_enter": "molt_compiled_execution_enter",
+        "compiled_execution_leave": "molt_compiled_execution_leave",
         "molt_set_wasm_table_base": "molt_set_wasm_table_base",
     }
-    assert result_kinds.keys() == signatures.keys() == exports.keys()
+    assert result_kinds.keys() == signatures.keys()
+    assert exports.keys() == result_kinds.keys() | {
+        "attached_context",
+        "compiled_execution_enter",
+        "compiled_execution_leave",
+    }
     assert (
-        'const runtimeExportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i64", "i64", "i64"], "result": "i64"}};'
+        'const runtimeExportSignatures = {"function_set_builtin": {"params": ["i64", "i64"], "result": "i64"}, "string_from_bytes": {"params": ["i64", "i64", "i64", "i64"], "result": "i64"}};'
         in content
     )
     assert "bindRuntimeFunctionImports" in content
@@ -753,23 +780,25 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert "const callWithSignature = (fn, signature, args) => {" in content
     assert "value === undefined || value === null" in content
     assert "? NONE_BITS" in content
-    assert "const callIsolateImportExport = (fn, args) => {" in content
-    assert "molt_isolate_import expects one i64 handle" in content
+    assert "callIsolateImportExport," in content
     assert (
-        "return callIsolateImportExport(appInstance.exports.molt_isolate_import, args);"
+        'return callIsolateImportExport(appInstance.exports[compiledExecutionSymbol("molt_isolate_import")], args);'
         in content
     )
     assert "molt_runtime: buildRuntimeImports(appModule, rtInstance)," in content
     assert "const runtimeAbiExports = (exports) => {" not in content
 
 
-def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
+def test_static_js_isolate_import_bridges_use_context_and_single_i64_handle() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     bridge = (root / "wasm/loader_bridge.js").read_text(encoding="utf-8")
     assert "const callIsolateImportExport = (fn, args) => {" in bridge
-    assert "normalizeI64BridgeValue(fn(handle), 'molt_isolate_import result')" in bridge
+    assert (
+        "normalizeI64BridgeValue(fn(context, handle), 'molt_isolate_import result')"
+        in bridge
+    )
     shared_loader_surfaces = {
         "wasm/browser_embed.js": "globalThis.MoltWasmLoaderBridge",
         "wasm/browser_host.js": "globalThis.MoltWasmLoaderBridge",
@@ -790,9 +819,8 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
             assert needle not in content
     for rel, helper in generated_surfaces.items():
         content = (root / rel).read_text(encoding="utf-8")
-        assert "const callIsolateImportExport = (fn, args) => {" in content
+        assert "callIsolateImportExport," in content
         assert helper in content
-        assert "molt_isolate_import expects one i64 handle" in content
         for needle in forbidden:
             assert needle not in content
     browser_embed = (root / "wasm/browser_embed.js").read_text(encoding="utf-8")
@@ -832,7 +860,7 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         in run_wasm
     )
     assert "bindRuntimeFunctionImports," in run_wasm
-    assert "let runtimeImportExportNames = runtimeExportByImport;" in run_wasm
+    assert "let runtimeImportExportNames = defaultRuntimeImportExportNames;" in run_wasm
     assert (
         "const manifestRuntimeImportExportNames = manifestRuntimeImports.export_names || null;"
         in run_wasm
@@ -840,10 +868,10 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     assert (
         "runtimeImportExportNames = manifestRuntimeImportExportNames\n"
         "    ? {\n"
-        "        ...runtimeExportByImport,\n"
+        "        ...defaultRuntimeImportExportNames,\n"
         "        ...manifestRuntimeImportExportNames,\n"
         "      }\n"
-        "    : runtimeExportByImport;" in run_wasm
+        "    : defaultRuntimeImportExportNames;" in run_wasm
     )
     assert "generatedRuntimeExportByImport" not in run_wasm
     assert run_wasm.count("const runtimeExportNameForImport =") == 1
@@ -1148,9 +1176,9 @@ def _signature_fixture_wasm() -> bytes:
 
     type_payload = _wasm_vec(
         [
-            _wasm_function_type([0x7E], [0x7E]),
-            _wasm_function_type([0x7F, 0x7E, 0x7F], [0x7F]),
-            _wasm_function_type([], []),
+            _wasm_function_type([0x7E, 0x7E], [0x7E]),
+            _wasm_function_type([0x7E, 0x7F, 0x7E, 0x7F], [0x7F]),
+            _wasm_function_type([0x7E, 0x7E], [0x7E]),
         ]
     )
     import_payload = _wasm_vec(
@@ -1178,6 +1206,7 @@ def _signature_fixture_wasm() -> bytes:
             (2, import_payload),
             (3, function_payload),
             (7, export_payload),
+            (10, _wasm_vec([b"\x04\x00\x42\x00\x0b", b"\x04\x00\x41\x00\x0b"])),
         ]
     )
 
@@ -1216,23 +1245,23 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
         "string_from_bytes": "i32",
     }
     assert _runtime_import_signatures_from_manifest(import_names) == {
-        "abc_bootstrap": {"params": [], "result": "i64"},
-        "socket_drop": {"params": ["i64"], "result": "i64"},
-        "function_set_builtin": {"params": ["i64"], "result": "i64"},
-        "molt_abc_bootstrap": {"params": [], "result": "i64"},
+        "abc_bootstrap": {"params": ["i64"], "result": "i64"},
+        "socket_drop": {"params": ["i64", "i64"], "result": "i64"},
+        "function_set_builtin": {"params": ["i64", "i64"], "result": "i64"},
+        "molt_abc_bootstrap": {"params": ["i64"], "result": "i64"},
         "molt_importlib_import_transaction": {
-            "params": ["i64", "i64", "i64", "i64", "i64"],
+            "params": ["i64", "i64", "i64", "i64", "i64", "i64"],
             "result": "i64",
         },
-        "molt_socket_drop": {"params": ["i64"], "result": "i64"},
-        "molt_add": {"params": ["i64", "i64"], "result": "i64"},
+        "molt_socket_drop": {"params": ["i64", "i64"], "result": "i64"},
+        "molt_add": {"params": ["i64", "i64", "i64"], "result": "i64"},
         "molt_bool_from_i32": {"params": ["i32"], "result": "i64"},
         "molt_buffer_acquire": {"params": ["i64", "i32"], "result": "i32"},
         "molt_string_from_bytes": {
-            "params": ["i32", "i64", "i32"],
+            "params": ["i64", "i32", "i64", "i32"],
             "result": "i32",
         },
-        "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
+        "string_from_bytes": {"params": ["i64", "i32", "i64", "i32"], "result": "i32"},
     }
 
 
@@ -1356,7 +1385,10 @@ def test_runtime_export_signatures_use_cpython_abi_split_export_names(
                 "params": ["i32", "i32", "i32"],
                 "result": "i32",
             },
-            "molt_socket_drop": {"params": ["i64"], "result": "i64"},
+            _runtime_symbol("molt_socket_drop"): {
+                "params": ["i64", "i64"],
+                "result": "i64",
+            },
         }
 
     monkeypatch.setattr(
@@ -1370,9 +1402,12 @@ def test_runtime_export_signatures_use_cpython_abi_split_export_names(
         {"PyArg_ParseTuple", "socket_drop"},
     ) == {
         "PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"},
-        "socket_drop": {"params": ["i64"], "result": "i64"},
+        "socket_drop": {"params": ["i64", "i64"], "result": "i64"},
     }
-    assert requested["export_names"] == {"molt_PyArg_ParseTuple", "molt_socket_drop"}
+    assert requested["export_names"] == {
+        "molt_PyArg_ParseTuple",
+        _runtime_symbol("molt_socket_drop"),
+    }
     assert non_native_output._runtime_export_signatures_for_imports(
         Path("runtime.wasm"),
         {"molt_PyArg_ParseTuple"},
@@ -1408,7 +1443,7 @@ def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:
 
     assert _wasm_export_function_signatures(wasm_path, export_names={"callable_8"}) == {
         "callable_8": {
-            "params": ["i32", "i64", "i32"],
+            "params": ["i64", "i32", "i64", "i32"],
             "result": "i32",
         },
     }
@@ -1707,6 +1742,21 @@ def _worker_fetch_fixture_wasm() -> bytes:
             code += b"\x42" + bytes([result])
         return b"\x00" + code + b"\x0b"
 
+    def signed_leb(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 127
+            value >>= 7
+            done = (value == 0 and byte & 64 == 0) or (value == -1 and byte & 64 != 0)
+            out.append(byte if done else byte | 128)
+            if done:
+                return bytes(out)
+
+    context_check = b"\x20\x00\x42" + signed_leb(32768) + b"\x52\x04\x40\x00\x0b"
+    fingerprint = ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT
+    signed_fingerprint = (
+        fingerprint if fingerprint < 1 << 63 else fingerprint - (1 << 64)
+    )
     bodies = [
         # print(ptr,len): publish one iovec, call the actual WASI fd_write,
         # and trap if the host reports failure.
@@ -1714,11 +1764,15 @@ def _worker_fetch_fixture_wasm() -> bytes:
         b"\x41\x04\x20\x01\x36\x02\x00"
         b"\x41\x01\x41\x00\x41\x01\x41\x08\x10\x00\x04\x40\x00\x0b\x0b",
         body(0, 1, 0, 1),
-        body(1, 2, 1),
+        b"\x00" + context_check + body(1, 2, 1)[1:],
         body(2, 2, 2, 0),
         body(2, 3, 3),
         body(3, 4, 4, 1),
         b"\x00\x42\x00\x0b",
+        b"\x00\x42" + signed_leb(32768) + b"\x0b",
+        b"\x00" + context_check + b"\x42\x01\x0b",
+        b"\x00" + context_check + b"\x20\x01\x42\x01\x52\x04\x40\x00\x0b\x0b",
+        b"\x00\x42" + signed_leb(signed_fingerprint) + b"\x0b",
     ]
     types = [
         _wasm_function_type([0x7F] * 4, [0x7F]),
@@ -1726,6 +1780,8 @@ def _worker_fetch_fixture_wasm() -> bytes:
         _wasm_function_type([0x7E], []),
         _wasm_function_type([], []),
         _wasm_function_type([0x7F, 0x7F], []),
+        _wasm_function_type([0x7E], [0x7E]),
+        _wasm_function_type([0x7E, 0x7E], []),
     ]
     exports = [
         wasm_artifact._write_wasm_string("memory") + b"\x02\x00",
@@ -1733,11 +1789,15 @@ def _worker_fetch_fixture_wasm() -> bytes:
             _wasm_function_export(name, index)
             for name, index in [
                 ("molt_runtime_execution_enter", 2),
-                ("molt_main", 3),
+                (compiled_execution_symbol("molt_main"), 3),
                 ("molt_main_exit_status", 4),
                 ("molt_runtime_execution_leave", 5),
                 ("molt_runtime_shutdown", 6),
-                ("molt_exception_pending", 7),
+                ("molt_exception_pending_detached", 7),
+                ("molt_attached_context", 8),
+                ("molt_compiled_execution_enter", 9),
+                ("molt_compiled_execution_leave", 10),
+                ("molt_attached_context_abi_fingerprint", 11),
             ]
         ],
     ]
@@ -1752,7 +1812,12 @@ def _worker_fetch_fixture_wasm() -> bytes:
                         [_wasm_function_import("wasi_snapshot_preview1", "fd_write", 0)]
                     ),
                 ),
-                (3, _wasm_vec([bytes([kind]) for kind in [4, 1, 3, 1, 2, 1, 1]])),
+                (
+                    3,
+                    _wasm_vec(
+                        [bytes([kind]) for kind in [4, 1, 2, 1, 2, 1, 1, 1, 5, 6, 1]]
+                    ),
+                ),
                 (5, b"\x01\x00\x01"),
                 (6, b"\x01\x7f\x01\x41\x00\x0b"),
                 (7, _wasm_vec(exports)),

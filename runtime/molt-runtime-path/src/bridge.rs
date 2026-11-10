@@ -13,11 +13,20 @@ use molt_runtime_core::prelude::*;
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_path_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_raise_exception")]
+    fn __molt_path_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 
-    fn __molt_path_exception_pending() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_exception_pending")]
+    fn __molt_path_exception_pending(__molt_context: u64) -> i32;
 
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_raise_os_error")]
     fn __molt_path_raise_os_error(
+        __molt_context: u64,
         raw_error: i64,
         err_msg_ptr: *const u8,
         err_msg_len: usize,
@@ -25,7 +34,13 @@ unsafe extern "C" {
         ctx_len: usize,
     ) -> u64;
 
-    fn __molt_path_raise_os_error_errno(errno: i64, ctx_ptr: *const u8, ctx_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_raise_os_error_errno")]
+    fn __molt_path_raise_os_error_errno(
+        __molt_context: u64,
+        errno: i64,
+        ctx_ptr: *const u8,
+        ctx_len: usize,
+    ) -> u64;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -33,13 +48,19 @@ pub fn raise_exception<T: ExceptionSentinel>(
     type_name: impl Into<ExcKind>,
     msg: &str,
 ) -> T {
-    let bits =
-        unsafe { __molt_path_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len()) };
+    let bits = unsafe {
+        __molt_path_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
     T::from_bits(bits)
 }
 
 pub fn exception_pending(_py: &CoreGilToken) -> bool {
-    unsafe { __molt_path_exception_pending() != 0 }
+    unsafe { __molt_path_exception_pending(_py.attached_context()) != 0 }
 }
 
 pub fn raise_os_error<T: ExceptionSentinel>(
@@ -50,13 +71,22 @@ pub fn raise_os_error<T: ExceptionSentinel>(
     let raw_error = err.raw_os_error().map(i64::from).unwrap_or(i64::MIN);
     let msg = err.to_string();
     let bits = unsafe {
-        __molt_path_raise_os_error(raw_error, msg.as_ptr(), msg.len(), ctx.as_ptr(), ctx.len())
+        __molt_path_raise_os_error(
+            _py.attached_context(),
+            raw_error,
+            msg.as_ptr(),
+            msg.len(),
+            ctx.as_ptr(),
+            ctx.len(),
+        )
     };
     T::from_bits(bits)
 }
 
 pub fn raise_os_error_errno<T: ExceptionSentinel>(_py: &CoreGilToken, errno: i64, ctx: &str) -> T {
-    let bits = unsafe { __molt_path_raise_os_error_errno(errno, ctx.as_ptr(), ctx.len()) };
+    let bits = unsafe {
+        __molt_path_raise_os_error_errno(_py.attached_context(), errno, ctx.as_ptr(), ctx.len())
+    };
     T::from_bits(bits)
 }
 
@@ -89,31 +119,58 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_path_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_path_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_path_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_path_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_path_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_alloc_tuple")]
+    fn __molt_path_alloc_tuple(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_alloc_list")]
+    fn __molt_path_alloc_list(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_alloc_string")]
+    fn __molt_path_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_alloc_bytes")]
+    fn __molt_path_alloc_bytes(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_alloc_dict_with_pairs")]
+    fn __molt_path_alloc_dict_with_pairs(
+        __molt_context: u64,
+        pairs_ptr: *const u64,
+        pairs_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_tuple(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_path_alloc_tuple(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_path_alloc_tuple(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_list(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_path_alloc_list(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_path_alloc_list(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_path_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_path_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_bytes(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_path_alloc_bytes(data.as_ptr(), data.len()) }
+    unsafe { __molt_path_alloc_bytes(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_dict_with_pairs(_py: &CoreGilToken, pairs: &[u64]) -> *mut u8 {
-    unsafe { __molt_path_alloc_dict_with_pairs(pairs.as_ptr(), pairs.len()) }
+    unsafe {
+        __molt_path_alloc_dict_with_pairs(_py.attached_context(), pairs.as_ptr(), pairs.len())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +184,8 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_path_is_truthy(bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_is_truthy")]
+    fn __molt_path_is_truthy(__molt_context: u64, bits: u64) -> i32;
     fn __molt_path_bytes_like_slice(
         ptr: *mut u8,
         out_ptr: *mut *const u8,
@@ -162,7 +220,7 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 }
 
 pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
-    unsafe { __molt_path_is_truthy(obj.bits()) != 0 }
+    unsafe { __molt_path_is_truthy(_py.attached_context(), obj.bits()) != 0 }
 }
 
 /// # Safety
@@ -185,16 +243,18 @@ pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_path_dec_ref_bits(bits: u64);
-    fn __molt_path_inc_ref_bits(bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_dec_ref_bits")]
+    fn __molt_path_dec_ref_bits(__molt_context: u64, bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_inc_ref_bits")]
+    fn __molt_path_inc_ref_bits(__molt_context: u64, bits: u64);
 }
 
 pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_path_dec_ref_bits(bits) }
+    unsafe { __molt_path_dec_ref_bits(_py.attached_context(), bits) }
 }
 
 pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_path_inc_ref_bits(bits) }
+    unsafe { __molt_path_inc_ref_bits(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,13 +267,15 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i32;
-    fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_index_c_int")]
+    fn __molt_path_index_c_int(__molt_context: u64, bits: u64, out: *mut i32) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_index_i64")]
+    fn __molt_path_index_i64(__molt_context: u64, bits: u64, out: *mut i64) -> i32;
 }
 
 pub fn index_c_int_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i32> {
     let mut value = 0;
-    if unsafe { __molt_path_index_c_int(bits, &mut value) } != 0 {
+    if unsafe { __molt_path_index_c_int(_py.attached_context(), bits, &mut value) } != 0 {
         Some(value)
     } else {
         None
@@ -223,7 +285,7 @@ pub fn index_c_int_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i32> {
 /// CPython's `Py_off_t` argument converter (lseek pos, truncate length).
 pub fn index_off_t_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
     let mut value = 0;
-    if unsafe { __molt_path_index_i64(bits, &mut value) } != 0 {
+    if unsafe { __molt_path_index_i64(_py.attached_context(), bits, &mut value) } != 0 {
         Some(value)
     } else {
         None
@@ -248,22 +310,29 @@ pub fn to_f64(obj: MoltObject) -> Option<f64> {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_path_seq_snapshot(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize)
-    -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_seq_snapshot")]
+    fn __molt_path_seq_snapshot(
+        __molt_context: u64,
+        ptr: *mut u8,
+        out_ptr: *mut *const u64,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { __molt_path_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_path_seq_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +340,9 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_require_operation")]
     fn __molt_path_require_operation(
+        __molt_context: u64,
         operation_ptr: *const u8,
         operation_len: usize,
         arg_kind: u32,
@@ -296,6 +367,7 @@ pub fn require_operation(_py: &CoreGilToken, operation: &str, arg: AuditArg) -> 
     let mut error_bits = MoltObject::none().bits();
     let allowed = unsafe {
         __molt_path_require_operation(
+            _py.attached_context(),
             operation.as_ptr(),
             operation.len(),
             arg_kind,
@@ -316,11 +388,12 @@ pub fn require_operation(_py: &CoreGilToken, operation: &str, arg: AuditArg) -> 
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_path_molt_object_hash(bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_molt_object_hash")]
+    fn __molt_path_molt_object_hash(__molt_context: u64, bits: u64) -> u64;
 }
 
-pub fn molt_object_hash(bits: u64) -> u64 {
-    unsafe { __molt_path_molt_object_hash(bits) }
+pub fn molt_object_hash(_py: &PyToken, bits: u64) -> u64 {
+    unsafe { __molt_path_molt_object_hash(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -328,16 +401,31 @@ pub fn molt_object_hash(bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_path_from_bits")]
     fn __molt_path_path_from_bits(
+        __molt_context: u64,
         bits: u64,
         out_ptr: *mut *const u8,
         out_len: *mut usize,
         out_bytes: *mut bool,
     ) -> i32;
-    fn __molt_path_path_result(data: *const u8, len: usize, bytes: bool) -> u64;
-    fn __molt_path_fspath_bits(bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_path_result")]
+    fn __molt_path_path_result(
+        __molt_context: u64,
+        data: *const u8,
+        len: usize,
+        bytes: bool,
+    ) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_fspath_bits")]
+    fn __molt_path_fspath_bits(__molt_context: u64, bits: u64) -> u64;
 
-    fn __molt_path_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_type_name")]
+    fn __molt_path_type_name(
+        __molt_context: u64,
+        bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 pub fn path_from_bits(py: &CoreGilToken, bits: u64) -> Result<std::path::PathBuf, u64> {
@@ -351,8 +439,15 @@ pub fn path_from_bits_with_flavor(
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let mut bytes_flavor = false;
-    let ok =
-        unsafe { __molt_path_path_from_bits(bits, &mut out_ptr, &mut out_len, &mut bytes_flavor) };
+    let ok = unsafe {
+        __molt_path_path_from_bits(
+            _py.attached_context(),
+            bits,
+            &mut out_ptr,
+            &mut out_len,
+            &mut bytes_flavor,
+        )
+    };
     if ok == 0 {
         return Err(MoltObject::none().bits());
     }
@@ -365,17 +460,24 @@ pub fn path_from_bits_with_flavor(
 
 pub fn path_result(_py: &CoreGilToken, value: &std::path::Path, bytes: bool) -> u64 {
     let raw = value.as_os_str().as_encoded_bytes();
-    unsafe { __molt_path_path_result(raw.as_ptr(), raw.len(), bytes) }
+    unsafe { __molt_path_path_result(_py.attached_context(), raw.as_ptr(), raw.len(), bytes) }
 }
 
-pub fn fspath_bits(bits: u64) -> u64 {
-    unsafe { __molt_path_fspath_bits(bits) }
+pub fn fspath_bits(_py: &PyToken, bits: u64) -> u64 {
+    unsafe { __molt_path_fspath_bits(_py.attached_context(), bits) }
 }
 
 pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_path_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_path_type_name(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() && out_len > 0 {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         String::from_utf8_lossy(&boxed).into_owned()
@@ -385,7 +487,9 @@ pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
 }
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_metadata")]
     fn __molt_path_metadata(
+        __molt_context: u64,
         path: *const u8,
         len: usize,
         follow: bool,
@@ -393,8 +497,11 @@ unsafe extern "C" {
         suppress: bool,
         out: *mut molt_runtime_platform::stat_support::PathMetadata,
     ) -> i32;
-    fn __molt_path_readlink(path: *const u8, len: usize, bytes: bool) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_readlink")]
+    fn __molt_path_readlink(__molt_context: u64, path: *const u8, len: usize, bytes: bool) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_path_samefile")]
     fn __molt_path_samefile(
+        __molt_context: u64,
         left: *const u8,
         left_len: usize,
         right: *const u8,
@@ -414,6 +521,7 @@ pub fn path_metadata(
     let mut out = std::mem::MaybeUninit::uninit();
     match unsafe {
         __molt_path_metadata(
+            _py.attached_context(),
             raw.as_ptr(),
             raw.len(),
             follow,
@@ -438,6 +546,7 @@ pub fn paths_same_file(
     let right = right.as_os_str().as_encoded_bytes();
     unsafe {
         __molt_path_samefile(
+            _py.attached_context(),
             left.as_ptr(),
             left.len(),
             right.as_ptr(),
@@ -450,5 +559,5 @@ pub fn paths_same_file(
 /// Return the canonical metadata-route readlink result in the caller's flavor.
 pub fn path_read_link(_py: &CoreGilToken, path: &std::path::Path, bytes: bool) -> u64 {
     let raw = path.as_os_str().as_encoded_bytes();
-    unsafe { __molt_path_readlink(raw.as_ptr(), raw.len(), bytes) }
+    unsafe { __molt_path_readlink(_py.attached_context(), raw.as_ptr(), raw.len(), bytes) }
 }

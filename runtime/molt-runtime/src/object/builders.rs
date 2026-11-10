@@ -10,16 +10,14 @@ use crate::object::{ClassEdgeOwnership, MoltAuxWord, object_init_class_edge_unpu
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_header_size() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
+pub(crate) fn molt_header_size_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { std::mem::size_of::<MoltHeader>() as u64 })
 }
 
-#[unsafe(no_mangle)]
 /// Allocate compiler-owned boxed fields, not arbitrary raw bytes. The same
 /// generated shape owns field traversal, cycle detachment and terminal release.
-pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_alloc_attached_body(_py: &crate::PyToken<'_>, size_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(total_size) = crate::object::boxed_object_total_size(_py, size_bits) else {
             return MoltObject::none().bits();
         };
@@ -40,9 +38,12 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_alloc_class_attached_body(
+    _py: &crate::PyToken<'_>,
+    size_bits: u64,
+    class_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // The ABI carries a raw byte extent, never a boxed Python integer.
         let Some(size) = usize_from_bits(size_bits) else {
             return MoltObject::none().bits();
@@ -51,9 +52,11 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_object_publish_initialized(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_object_publish_initialized_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = obj_from_bits(obj_bits).as_ptr() else {
             return obj_bits;
         };
@@ -414,9 +417,11 @@ fn trace_callargs_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALLARGS)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_builder_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    capacity_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -467,15 +472,17 @@ pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
     })
 }
 
-pub(crate) struct PtrDropGuard {
+pub(crate) struct PtrDropGuard<'py> {
+    py: &'py PyToken<'py>,
     ptr: *mut u8,
     active: bool,
     preserve_error: bool,
 }
 
-impl PtrDropGuard {
-    pub(crate) fn new(ptr: *mut u8) -> Self {
+impl<'py> PtrDropGuard<'py> {
+    pub(crate) fn new(py: &'py PyToken<'py>, ptr: *mut u8) -> Self {
         Self {
+            py,
             ptr,
             active: !ptr.is_null(),
             preserve_error: false,
@@ -485,8 +492,8 @@ impl PtrDropGuard {
     /// Explicitly suppress release-time errors for projection rollback or
     /// cleanup. Ordinary semantic owners use `new` so native deallocators
     /// can observe the active exception.
-    pub(crate) fn preserving(ptr: *mut u8) -> Self {
-        let mut guard = Self::new(ptr);
+    pub(crate) fn preserving(py: &'py PyToken<'py>, ptr: *mut u8) -> Self {
+        let mut guard = Self::new(py, ptr);
         guard.preserve_error = true;
         guard
     }
@@ -496,7 +503,7 @@ impl PtrDropGuard {
     }
 }
 
-impl Drop for PtrDropGuard {
+impl Drop for PtrDropGuard<'_> {
     fn drop(&mut self) {
         if self.active && !self.ptr.is_null() {
             let release = || unsafe {
@@ -507,7 +514,7 @@ impl Drop for PtrDropGuard {
                         self.ptr as usize, args_ptr as usize,
                     );
                 }
-                molt_dec_ref(self.ptr);
+                molt_dec_ref_attached_body(self.py, self.ptr);
             };
             if self.preserve_error {
                 molt_cpython_abi::api::errors::with_preserved_error(release);
@@ -518,15 +525,18 @@ impl Drop for PtrDropGuard {
     }
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` points to a live list builder. `val` is
 /// borrowed. Return 0 after retaining it into owned storage, or 1 on failure
 /// without retaining it. A pending exception must abort the builder, not publish
 /// its partial contents.
-pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) -> i32 {
+pub(crate) unsafe fn molt_list_builder_append_attached_body(
+    _py: &crate::PyToken<'_>,
+    builder_bits: u64,
+    val: u64,
+) -> i32 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if exception_pending(_py) {
                 return 1;
             }
@@ -552,13 +562,15 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) -
     }
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must transfer one live list-builder owner. Success transfers all
 /// retained elements into the list; failure releases them and returns None.
-pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_list_builder_finish_attached_body(
+    _py: &crate::PyToken<'_>,
+    builder_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             finish_sequence_builder(_py, builder_bits, |py, values, capacity| {
                 alloc_list_with_capacity_owned(py, values, capacity.max(MAX_SMALL_LIST))
             })
@@ -582,7 +594,7 @@ unsafe fn finish_sequence_builder(
             }
             return MoltObject::none().bits();
         }
-        let _guard = PtrDropGuard::new(builder_ptr);
+        let _guard = PtrDropGuard::new(py, builder_ptr);
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -662,9 +674,12 @@ unsafe fn sequence_from_values(
 /// Construct a tuple by copying and retaining a borrowed word range.
 /// # Safety
 /// The address must encode `len` initialized, live NaN-boxed words, or null for zero length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) unsafe fn molt_tuple_from_values_attached_body(
+    _py: &crate::PyToken<'_>,
+    address: u64,
+    len: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe { sequence_from_values(py, address, len, FixedSequenceKind::Tuple) }
     })
 }
@@ -672,9 +687,12 @@ pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
 /// Construct a fresh mutable list by copying and retaining a borrowed word range.
 /// # Safety
 /// The address must encode `len` initialized, live NaN-boxed words, or null for zero length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_list_from_values(address: u64, len: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) unsafe fn molt_list_from_values_attached_body(
+    _py: &crate::PyToken<'_>,
+    address: u64,
+    len: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe { sequence_from_values(py, address, len, FixedSequenceKind::List) }
     })
 }
@@ -963,7 +981,7 @@ pub(crate) fn alloc_list_int_from_repeated_raw_slice(
     }
     // Materialize source occurrences once, then repeat their retained owners.
     let source = alloc_list_int_from_raw_slice(py, elems)?;
-    let guard = PtrDropGuard::new(source);
+    let guard = PtrDropGuard::new(py, source);
     let count = match i64::try_from(times) {
         Ok(count) => count,
         Err(_) => {
@@ -1021,7 +1039,7 @@ where
             continue;
         }
         let ptr = unsafe { alloc_list_int_with_storage(py, storage_ptr)? };
-        let mut guard = PtrDropGuard::new(ptr);
+        let mut guard = PtrDropGuard::new(py, ptr);
         unsafe { crate::object::ops_list::promote_list_int_to_list(py, ptr) };
         if exception_pending(py) {
             return Err(none);
@@ -1265,7 +1283,7 @@ fn canonical_singleton(
     if ptr.is_null() {
         return ptr;
     }
-    let mut candidate = PtrDropGuard::new(ptr);
+    let mut candidate = PtrDropGuard::new(py, ptr);
     {
         let _init = runtime_state(py)
             .canonical_objects
@@ -2319,7 +2337,7 @@ pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
     if ptr.is_null() {
         return ptr;
     }
-    let mut candidate = PtrDropGuard::new(ptr);
+    let mut candidate = PtrDropGuard::new(_py, ptr);
     unsafe {
         std::ptr::copy_nonoverlapping(
             bytes.as_ptr(),
@@ -2643,8 +2661,8 @@ impl PinnedMemoryViewOwner<'_, '_> {
 pub(crate) struct PinnedMemoryViewStorage<'a, 'py> {
     py: &'a PyToken<'py>,
     storage: crate::object::memoryview::TypedStridedStorage,
-    base_guard: PtrDropGuard,
-    format_guard: PtrDropGuard,
+    base_guard: PtrDropGuard<'a>,
+    format_guard: PtrDropGuard<'a>,
     owner: Option<PinnedMemoryViewOwner<'a, 'py>>,
 }
 
@@ -2665,12 +2683,14 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
         }
         inc_ref_bits(py, storage.base_bits);
         let base_guard = PtrDropGuard::new(
+            py,
             obj_from_bits(storage.base_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
         );
         inc_ref_bits(py, storage.format_bits);
         let format_guard = PtrDropGuard::preserving(
+            py,
             obj_from_bits(storage.format_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -2869,13 +2889,13 @@ mod sequence_builder_tests {
         crate::with_gil_entry_nopanic!(py, {
             let classes = builtin_classes(py);
             let name = bits_from_ptr(alloc_string(py, b"NamespaceWithSlot"));
-            let subtype = crate::molt_class_new(name);
+            let subtype = crate::molt_class_new_attached_body(py, name);
             dec_ref_bits(py, name);
-            crate::molt_class_set_base(subtype, classes.module);
+            crate::molt_class_set_base_attached_body(py, subtype, classes.module);
             let field = bits_from_ptr(alloc_string(py, b"field"));
             let slots = bits_from_ptr(alloc_tuple(py, &[field]));
             let key = dynamic_attr_name_bits(py, b"__slots__").unwrap();
-            crate::molt_set_attr_name(subtype, key, slots);
+            crate::molt_set_attr_name_attached_body(py, subtype, key, slots);
             for bits in [key, slots, field] {
                 dec_ref_bits(py, bits);
             }
@@ -3021,7 +3041,8 @@ mod sequence_builder_tests {
                     drop(budget);
                     let _ =
                         raise_exception::<u64>(py, BuiltinExc::ValueError, "keep the caller error");
-                    let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                    let pending =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     let budget = deny_allocations();
                     assert!(allocate(size).is_null());
                     assert_ne!(crate::exception_last_bits_noinc(py), Some(pending));
@@ -3149,7 +3170,7 @@ mod sequence_builder_tests {
                 );
                 let original = crate::builtins::exceptions::ExceptionValue::adopt(
                     py,
-                    crate::builtins::exceptions::molt_exception_last_pending(),
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
                 );
                 let ptr = construct();
                 assert!(!ptr.is_null(), "type={type_id}");
@@ -3162,7 +3183,7 @@ mod sequence_builder_tests {
                 );
                 let observed = crate::builtins::exceptions::ExceptionValue::adopt(
                     py,
-                    crate::builtins::exceptions::molt_exception_last_pending(),
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
                 );
                 assert_eq!(observed.bits(), original.bits());
                 drop(observed);
@@ -3199,7 +3220,8 @@ mod sequence_builder_tests {
                         BuiltinExc::ValueError,
                         "original allocation caller error",
                     );
-                    let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                    let pending =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     let budget = deny_allocations();
                     assert!(alloc_hash_aggregate_unpublished(py, capacity, type_id).is_null());
                     assert_ne!(crate::exception_last_bits_noinc(py), Some(pending));
@@ -3244,7 +3266,8 @@ mod sequence_builder_tests {
                 assert!(!exception_pending(py));
             }
             raise_exception::<()>(py, BuiltinExc::ValueError, "original presize caller error");
-            let pending = crate::builtins::exceptions::molt_exception_last_pending();
+            let pending =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             let budget = deny_allocations();
             assert!(alloc_hash_aggregate_unpublished(py, usize::MAX, TYPE_ID_DICT).is_null());
             assert_ne!(crate::exception_last_bits_noinc(py), Some(pending));
@@ -3264,21 +3287,31 @@ mod sequence_builder_tests {
                 let baseline = refs(item);
                 let invalid = bits_from_ptr(alloc_list(py, &[]));
                 let aggregate = if dict {
-                    molt_dict_new(2)
+                    molt_dict_new_attached_body(py, 2)
                 } else {
-                    molt_set_new(2)
+                    molt_set_new_attached_body(py, 2)
                 };
                 assert!(!obj_from_bits(aggregate).is_none());
                 if dict {
-                    molt_dict_set(aggregate, MoltObject::from_int(1).bits(), item);
-                    molt_dict_set(aggregate, MoltObject::from_int(2).bits(), item);
+                    molt_dict_set_attached_body(
+                        py,
+                        aggregate,
+                        MoltObject::from_int(1).bits(),
+                        item,
+                    );
+                    molt_dict_set_attached_body(
+                        py,
+                        aggregate,
+                        MoltObject::from_int(2).bits(),
+                        item,
+                    );
                     assert_eq!(refs(item), baseline + 2);
-                    molt_dict_set(aggregate, invalid, item);
+                    molt_dict_set_attached_body(py, aggregate, invalid, item);
                 } else {
-                    molt_set_add(aggregate, item);
-                    molt_set_add(aggregate, item);
+                    molt_set_add_attached_body(py, aggregate, item);
+                    molt_set_add_attached_body(py, aggregate, item);
                     assert_eq!(refs(item), baseline + 1);
-                    molt_set_add(aggregate, invalid);
+                    molt_set_add_attached_body(py, aggregate, invalid);
                 }
                 assert!(exception_pending(py));
                 dec_ref_bits(py, aggregate);
@@ -3314,7 +3347,7 @@ mod sequence_builder_tests {
                 ));
                 let source = bits_from_ptr(alloc_list(py, &[first, second]));
                 let baseline = refs(item);
-                let result = molt_dict_from_obj(source);
+                let result = molt_dict_from_obj_attached_body(py, source);
                 assert!(obj_from_bits(result).is_none());
                 assert!(exception_pending(py));
                 assert_eq!(
@@ -3337,20 +3370,24 @@ mod sequence_builder_tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for (constructor, capacity) in [
-                (molt_dict_new as extern "C" fn(u64) -> u64, 1),
+                (molt_dict_new as unsafe extern "C" fn(u64, u64) -> u64, 1),
                 (molt_set_new, 1),
                 (molt_frozenset_new, 1),
             ] {
                 let budget = deny_allocations();
-                assert!(obj_from_bits(constructor(capacity)).is_none());
+                assert!(
+                    obj_from_bits(unsafe { constructor(py.attached_context(), capacity) })
+                        .is_none()
+                );
                 drop(budget);
                 assert!(exception_pending(py));
                 let pending = crate::builtins::exceptions::ExceptionValue::adopt(
                     py,
-                    crate::builtins::exceptions::molt_exception_last_pending(),
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
                 );
-                let result =
-                    crate::builtins::exceptions::ExceptionValue::adopt(py, constructor(capacity));
+                let result = crate::builtins::exceptions::ExceptionValue::adopt(py, unsafe {
+                    constructor(py.attached_context(), capacity)
+                });
                 let ptr = obj_from_bits(result.bits())
                     .as_ptr()
                     .expect("a prior error is not allocation failure");
@@ -3358,7 +3395,7 @@ mod sequence_builder_tests {
                 drop(result);
                 let still_pending = crate::builtins::exceptions::ExceptionValue::adopt(
                     py,
-                    crate::builtins::exceptions::molt_exception_last_pending(),
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
                 );
                 assert_eq!(
                     still_pending.bits(),
@@ -3401,12 +3438,14 @@ mod sequence_builder_tests {
                 assert!(exception_pending(py));
                 assert_eq!(refs(item), baseline);
                 assert_eq!(refs(invalid), 1);
-                let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                let pending =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert!(
                     construct().is_null(),
                     "the new hash failure rejects construction"
                 );
-                let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
+                let still_pending =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert_ne!(
                     still_pending, pending,
                     "the second operation selects its own TypeError"
@@ -3432,11 +3471,11 @@ mod sequence_builder_tests {
         crate::with_gil_entry_nopanic!(py, {
             let item = bits_from_ptr(alloc_string(py, b"builder-abort-owner"));
             let baseline = refs(item);
-            let builder = molt_list_builder_new(MoltObject::from_int(2).bits());
+            let builder = molt_list_builder_new_attached_body(py, MoltObject::from_int(2).bits());
             assert!(!obj_from_bits(builder).is_none());
             unsafe {
-                assert_eq!(molt_list_builder_append(builder, item), 0);
-                assert_eq!(molt_list_builder_append(builder, item), 0);
+                assert_eq!(molt_list_builder_append_attached_body(py, builder, item), 0);
+                assert_eq!(molt_list_builder_append_attached_body(py, builder, item), 0);
             }
             assert_eq!(refs(item), baseline + 2);
             dec_ref_bits(py, builder);
@@ -3455,14 +3494,20 @@ mod sequence_builder_tests {
         crate::with_gil_entry_nopanic!(py, {
             let item = bits_from_ptr(alloc_string(py, b"builder-rejected-owner"));
             let baseline = refs(item);
-            let builder = molt_list_builder_new(MoltObject::from_int(0).bits());
+            let builder = molt_list_builder_new_attached_body(py, MoltObject::from_int(0).bits());
             assert!(!obj_from_bits(builder).is_none());
             let budget = deny_allocations();
-            assert_eq!(unsafe { molt_list_builder_append(builder, item) }, 1);
+            assert_eq!(
+                unsafe { molt_list_builder_append_attached_body(py, builder, item) },
+                1
+            );
             drop(budget);
             assert!(exception_pending(py));
             assert_eq!(refs(item), baseline);
-            assert_eq!(unsafe { molt_list_builder_append(builder, item) }, 1);
+            assert_eq!(
+                unsafe { molt_list_builder_append_attached_body(py, builder, item) },
+                1
+            );
             assert_eq!(
                 refs(item),
                 baseline,
@@ -3481,15 +3526,19 @@ mod sequence_builder_tests {
             for failure in ["none", "pending", "allocation"] {
                 let item = bits_from_ptr(alloc_string(py, b"builder-finish-owner"));
                 let baseline = refs(item);
-                let builder = molt_list_builder_new(MoltObject::from_int(1).bits());
+                let builder =
+                    molt_list_builder_new_attached_body(py, MoltObject::from_int(1).bits());
                 assert!(!obj_from_bits(builder).is_none());
-                assert_eq!(unsafe { molt_list_builder_append(builder, item) }, 0);
+                assert_eq!(
+                    unsafe { molt_list_builder_append_attached_body(py, builder, item) },
+                    0
+                );
                 assert_eq!(refs(item), baseline + 1);
                 if failure == "pending" {
                     crate::record_memory_error_without_allocation(py);
                 }
                 let budget = (failure == "allocation").then(deny_allocations);
-                let result = unsafe { molt_list_builder_finish(builder) };
+                let result = unsafe { molt_list_builder_finish_attached_body(py, builder) };
                 drop(budget);
                 if failure == "none" {
                     assert!(!obj_from_bits(result).is_none());
@@ -3520,7 +3569,7 @@ mod sequence_builder_tests {
             let address = crate::provenance::abi::expose_address(words.as_ptr());
             let len = words.len() as u64;
 
-            let tuple = unsafe { molt_tuple_from_values(address, len) };
+            let tuple = unsafe { molt_tuple_from_values_attached_body(py, address, len) };
             assert!(!obj_from_bits(tuple).is_none());
             assert_eq!(
                 refs(item),
@@ -3536,7 +3585,7 @@ mod sequence_builder_tests {
             assert_eq!(refs(item), baseline);
 
             // An empty range needs no address and yields the canonical singleton.
-            let empty = unsafe { molt_tuple_from_values(0, 0) };
+            let empty = unsafe { molt_tuple_from_values_attached_body(py, 0, 0) };
             assert_eq!(empty, bits_from_ptr(alloc_tuple(py, &[])));
             assert!(!exception_pending(py));
 
@@ -3546,7 +3595,7 @@ mod sequence_builder_tests {
                 }
                 let budget = (failure == "allocation").then(deny_allocations);
                 let address = if failure == "null_range" { 0 } else { address };
-                let result = unsafe { molt_tuple_from_values(address, len) };
+                let result = unsafe { molt_tuple_from_values_attached_body(py, address, len) };
                 drop(budget);
                 assert!(obj_from_bits(result).is_none(), "failure={failure}");
                 assert!(
@@ -3568,7 +3617,8 @@ mod sequence_builder_tests {
             let baseline = refs(item);
             let words = [item, MoltObject::from_int(7).bits(), item];
             let address = crate::provenance::abi::expose_address(words.as_ptr());
-            let list = unsafe { molt_list_from_values(address, words.len() as u64) };
+            let list =
+                unsafe { molt_list_from_values_attached_body(py, address, words.len() as u64) };
             assert!(!obj_from_bits(list).is_none());
             assert_eq!(refs(item), baseline + 2);
             {
@@ -3580,8 +3630,8 @@ mod sequence_builder_tests {
             }
             dec_ref_bits(py, list);
             assert_eq!(refs(item), baseline);
-            let empty = unsafe { molt_list_from_values(0, 0) };
-            let another = unsafe { molt_list_from_values(0, 0) };
+            let empty = unsafe { molt_list_from_values_attached_body(py, 0, 0) };
+            let another = unsafe { molt_list_from_values_attached_body(py, 0, 0) };
             assert!(!obj_from_bits(empty).is_none() && !obj_from_bits(another).is_none());
             assert_ne!(
                 empty, another,
@@ -3595,7 +3645,8 @@ mod sequence_builder_tests {
                 }
                 let budget = (failure == "allocation").then(deny_allocations);
                 let pointer = if failure == "null_range" { 0 } else { address };
-                let result = unsafe { molt_list_from_values(pointer, words.len() as u64) };
+                let result =
+                    unsafe { molt_list_from_values_attached_body(py, pointer, words.len() as u64) };
                 drop(budget);
                 assert!(obj_from_bits(result).is_none(), "failure={failure}");
                 assert!(exception_pending(py), "failure={failure}");
@@ -3628,7 +3679,14 @@ mod tests {
     };
     use molt_obj_model::MoltObject;
 
-    extern "C" fn allocator_inert_function_target() -> u64 {
+    extern "C" fn allocator_inert_function_target(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
 
@@ -3641,7 +3699,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let name = crate::builtins::attr::dynamic_attr_name_bits(py, b"HeapClassRef")
                 .expect("class name");
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             dec_ref_bits(py, name);
             let class_ptr = MoltObject::from_bits(class).as_ptr().expect("heap class");
             unsafe { crate::object::class_finish_definition(py, class_ptr) }.expect("seal class");
@@ -3650,10 +3708,10 @@ mod tests {
             let refs = || unsafe { (*crate::header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
             let before = refs();
 
-            let object = super::molt_alloc_class(size as u64, class);
+            let object = super::molt_alloc_class_attached_body(py, size as u64, class);
             assert_ne!(object, MoltObject::none().bits());
             assert_eq!(refs(), before + 1);
-            let actual_type = crate::molt_type_of(object);
+            let actual_type = crate::molt_type_of_attached_body(py, object);
             assert_eq!(actual_type, class);
             dec_ref_bits(py, actual_type);
             assert_eq!(refs(), before + 1);
@@ -3674,7 +3732,7 @@ mod tests {
                 let bits = MoltObject::from_ptr(ptr).bits();
                 crate::inc_ref_bits(py, bits);
                 let count = || unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() };
-                let guard = make_guard(ptr);
+                let guard = make_guard(py, ptr);
                 assert_eq!(
                     count(),
                     2,
@@ -3683,13 +3741,13 @@ mod tests {
                 drop(guard);
                 assert_eq!(count(), 1, "scope exit must retire exactly one reference");
                 crate::inc_ref_bits(py, bits);
-                let mut guard = make_guard(ptr);
+                let mut guard = make_guard(py, ptr);
                 guard.release();
                 drop(guard);
                 assert_eq!(count(), 2, "released custody belongs to the caller");
                 dec_ref_bits(py, bits);
                 dec_ref_bits(py, bits);
-                drop(make_guard(std::ptr::null_mut()));
+                drop(make_guard(py, std::ptr::null_mut()));
             }
         });
     }
@@ -3701,9 +3759,9 @@ mod tests {
             let name = alloc_string(py, b"clone_lexical");
             let freevar = alloc_string(py, b"captured");
             let cellvar = alloc_string(py, b"local_cell");
-            let _name_owner = super::PtrDropGuard::preserving(name);
-            let _freevar_owner = super::PtrDropGuard::preserving(freevar);
-            let _cellvar_owner = super::PtrDropGuard::preserving(cellvar);
+            let _name_owner = super::PtrDropGuard::preserving(py, name);
+            let _freevar_owner = super::PtrDropGuard::preserving(py, freevar);
+            let _cellvar_owner = super::PtrDropGuard::preserving(py, cellvar);
             assert!(!name.is_null() && !freevar.is_null() && !cellvar.is_null());
             let name_bits = MoltObject::from_ptr(name).bits();
             let freevar_bits = MoltObject::from_ptr(freevar).bits();
@@ -3711,9 +3769,9 @@ mod tests {
             let empty = alloc_tuple(py, &[]);
             let freevars = alloc_tuple(py, &[freevar_bits]);
             let cellvars = alloc_tuple(py, &[cellvar_bits]);
-            let _empty_owner = super::PtrDropGuard::preserving(empty);
-            let _freevars_owner = super::PtrDropGuard::preserving(freevars);
-            let _cellvars_owner = super::PtrDropGuard::preserving(cellvars);
+            let _empty_owner = super::PtrDropGuard::preserving(py, empty);
+            let _freevars_owner = super::PtrDropGuard::preserving(py, freevars);
+            let _cellvars_owner = super::PtrDropGuard::preserving(py, cellvars);
             assert!(!empty.is_null() && !freevars.is_null() && !cellvars.is_null());
             let empty_bits = MoltObject::from_ptr(empty).bits();
             let freevars_bits = MoltObject::from_ptr(freevars).bits();
@@ -3730,7 +3788,7 @@ mod tests {
                 0,
                 0,
             );
-            let source_owner = super::PtrDropGuard::preserving(source);
+            let source_owner = super::PtrDropGuard::preserving(py, source);
             assert!(!source.is_null());
             unsafe {
                 let unpublished = clone_code_obj_with_protocol_flags(py, source, 0);
@@ -3746,11 +3804,11 @@ mod tests {
                     MoltObject::from_bits(crate::object::layout::code_doc_bits(unpublished))
                         .is_none()
                 );
-                drop(super::PtrDropGuard::preserving(unpublished));
+                drop(super::PtrDropGuard::preserving(py, unpublished));
                 let qualname = alloc_string(py, b"outer.<locals>.clone_lexical");
                 let doc = alloc_string(py, b"clone declaration doc");
-                let _qualname_owner = super::PtrDropGuard::preserving(qualname);
-                let _doc_owner = super::PtrDropGuard::preserving(doc);
+                let _qualname_owner = super::PtrDropGuard::preserving(py, qualname);
+                let _doc_owner = super::PtrDropGuard::preserving(py, doc);
                 let qualname_bits = MoltObject::from_ptr(qualname).bits();
                 let doc_bits = MoltObject::from_ptr(doc).bits();
                 crate::object::layout::code_publish_declaration_metadata(
@@ -3781,7 +3839,7 @@ mod tests {
                 assert_eq!(code_publish_callable_identity(source, identity), Ok(()));
                 let descriptor = alloc_string(py, b"{\"kind\":\"molt_gpu_kernel\"}");
                 assert!(!descriptor.is_null());
-                let descriptor_owner = super::PtrDropGuard::preserving(descriptor);
+                let descriptor_owner = super::PtrDropGuard::preserving(py, descriptor);
                 let descriptor_bits = MoltObject::from_ptr(descriptor).bits();
                 assert!(crate::object::layout::code_publish_gpu_descriptor(
                     py,
@@ -3791,7 +3849,7 @@ mod tests {
                 let refs = || (*crate::header_from_obj_ptr(descriptor)).ref_count_snapshot();
                 assert_eq!(refs(), 2);
                 let clone = clone_code_obj_with_protocol_flags(py, source, 0);
-                let clone_owner = super::PtrDropGuard::preserving(clone);
+                let clone_owner = super::PtrDropGuard::preserving(py, clone);
                 assert!(!clone.is_null());
                 assert_eq!(code_freevars_bits(clone), freevars_bits);
                 assert_eq!(code_cellvars_bits(clone), cellvars_bits);
@@ -3849,7 +3907,8 @@ mod tests {
                     // Prefix-only iteration must neither observe type nor
                     // classify the unread suffix, including terminal cleanup.
                     for _ in 0..4 {
-                        let iterator = crate::molt_iter(MoltObject::from_ptr(ptr).bits());
+                        let iterator =
+                            crate::molt_iter_attached_body(py, MoltObject::from_ptr(ptr).bits());
                         assert!(!crate::exception_pending(py));
                         assert_eq!(
                             crate::object::object_class_bits(
@@ -3857,7 +3916,11 @@ mod tests {
                             ),
                             0
                         );
-                        let first = crate::molt_next_builtin(iterator, crate::missing_bits(py));
+                        let first = crate::molt_next_builtin_attached_body(
+                            py,
+                            iterator,
+                            crate::missing_bits(py),
+                        );
                         assert!(!crate::exception_pending(py));
                         let first_ptr = crate::obj_from_bits(first).as_ptr().unwrap();
                         assert_eq!(
@@ -3902,7 +3965,8 @@ mod tests {
                     assert_eq!(StringStorage::known_ascii(ptr), Some(content.is_ascii()));
                     // Warm iterator construction and type queries reuse the same fact.
                     for _ in 0..4 {
-                        let iterator = crate::molt_iter(MoltObject::from_ptr(ptr).bits());
+                        let iterator =
+                            crate::molt_iter_attached_body(py, MoltObject::from_ptr(ptr).bits());
                         assert!(!crate::exception_pending(py));
                         let expected = if content.is_ascii() {
                             crate::builtin_classes(py).str_ascii_iterator
@@ -3923,18 +3987,26 @@ mod tests {
                 let ptr = super::alloc_string_nointern(py, "é".as_bytes());
                 assert!(!ptr.is_null());
                 let source = MoltObject::from_ptr(ptr).bits();
-                let iterator = crate::molt_iter(source);
+                let iterator = crate::molt_iter_attached_body(py, source);
                 let iter_ptr = crate::obj_from_bits(iterator).as_ptr().unwrap();
                 unsafe {
                     assert_eq!(StringStorage::known_ascii(ptr), None);
                     if clear {
                         crate::object::heap_lifecycle::clear_cycle_edges(py, iter_ptr);
                     } else {
-                        let item = crate::molt_next_builtin(iterator, crate::missing_bits(py));
+                        let item = crate::molt_next_builtin_attached_body(
+                            py,
+                            iterator,
+                            crate::missing_bits(py),
+                        );
                         assert!(!crate::exception_pending(py));
                         dec_ref_bits(py, item);
                         assert_eq!(StringStorage::known_ascii(ptr), None);
-                        let result = crate::molt_next_builtin(iterator, MoltObject::none().bits());
+                        let result = crate::molt_next_builtin_attached_body(
+                            py,
+                            iterator,
+                            MoltObject::none().bits(),
+                        );
                         assert!(!crate::exception_pending(py));
                         assert_eq!(result, MoltObject::none().bits());
                         dec_ref_bits(py, result);
@@ -4074,7 +4146,7 @@ mod tests {
             let right = alloc_string(py, &[b'x'; 256]);
             let left_bits = MoltObject::from_ptr(left).bits();
             let right_bits = MoltObject::from_ptr(right).bits();
-            let grown = crate::molt_inplace_add(left_bits, right_bits);
+            let grown = crate::molt_inplace_add_attached_body(py, left_bits, right_bits);
             assert!(!crate::exception_pending(py));
             let grown_ptr = MoltObject::from_bits(grown).as_ptr().unwrap();
             assert_ne!(
@@ -4095,7 +4167,7 @@ mod tests {
                 assert!(crate::object::layout::StringStorage::is_ascii(grown_ptr));
             }
             let suffix = MoltObject::from_ptr(alloc_string(py, "é".as_bytes())).bits();
-            let appended = crate::molt_inplace_add(grown, suffix);
+            let appended = crate::molt_inplace_add_attached_body(py, grown, suffix);
             assert!(!crate::exception_pending(py));
             assert_eq!(appended, grown, "amortized capacity is reused");
             expected.extend_from_slice("é".as_bytes());
@@ -4196,3 +4268,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/object/builders.rs");

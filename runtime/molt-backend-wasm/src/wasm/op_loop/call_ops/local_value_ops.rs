@@ -1,7 +1,8 @@
 use super::super::result_sink::store_borrowed_value;
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
-use wasm_encoder::{Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::Instruction;
 
 /// Lower representation aliases that are not ordinary local-slot moves.
 /// `local_slot_ops` is the sole store/load/copy ownership authority.

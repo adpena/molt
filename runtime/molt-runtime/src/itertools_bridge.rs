@@ -7,7 +7,7 @@ use crate::BuiltinExc;
 use crate::*;
 
 type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 // ---------------------------------------------------------------------------
@@ -19,15 +19,17 @@ type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 /// teardown (see `runtime_extension_states_clear_and_drop`), so the satellite's
 /// cached class/function handles are scoped to the interpreter exactly like the
 /// in-tree `RuntimeState.itertools` field.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_itertools_runtime_state_get_or_init"))]
 pub extern "C" fn __molt_itertools_runtime_state_get_or_init(
+    __molt_context: u64,
     key_ptr: *const u8,
     key_len: usize,
     init: RuntimeExtensionStateInit,
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         crate::state::runtime_extension_state_get_or_init(
             crate::state::runtime_state::runtime_state(_py),
@@ -36,77 +38,101 @@ pub extern "C" fn __molt_itertools_runtime_state_get_or_init(
             clear,
             drop,
         )
-    })
+    }
 }
 
 /// Release the ordinary owned reference held by an itertools satellite slot.
 /// Canonical immortal values remain owned by the runtime's canonical pool.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_release_slot_bits(bits: u64) {
+pub(crate) fn molt_itertools_release_slot_bits_attached_body(_py: &PyToken<'_>, bits: u64) {
     if bits == 0 {
         return;
     }
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::dec_ref_bits(_py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Class system helpers for itertools class setup
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_validate_constructor_class(actual: u64, expected: u64) -> bool {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_itertools_validate_constructor_class_attached_body(
+    _py: &PyToken<'_>,
+    actual: u64,
+    expected: u64,
+) -> bool {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::itertools_class::validate_constructor_class(py, actual, expected)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_constructor_repr(instance: u64, first: u64, second: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_itertools_constructor_repr_attached_body(
+    _py: &PyToken<'_>,
+    instance: u64,
+    first: u64,
+    second: u64,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::itertools_class::constructor_repr(py, instance, first, second)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_alloc_instance_for_class(class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_itertools_alloc_instance_for_class_attached_body(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         unsafe { alloc_instance_for_class(_py, class_ptr) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_call_callable1(call_bits: u64, arg0_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_itertools_call_callable1_attached_body(
+    _py: &PyToken<'_>,
+    call_bits: u64,
+    arg0_bits: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         unsafe { call_callable1(_py, call_bits, arg0_bits) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_call_callable2_bridge(
+pub(crate) fn molt_itertools_call_callable2_bridge_attached_body(
+    _py: &PyToken<'_>,
     call_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         unsafe { call_callable2(_py, call_bits, arg0_bits, arg1_bits) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_tuple_from_iter(iter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_itertools_tuple_from_iter_attached_body(
+    _py: &PyToken<'_>,
+    iter_bits: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         let bits: u64 = unsafe { tuple_from_iter_bits(_py, iter_bits) }.unwrap_or_default();
         bits // signal failure (not None — caller checks for 0)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_alloc_class(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub(crate) fn molt_itertools_alloc_class_attached_body(
+    _py: &PyToken<'_>,
     name_ptr: *const u8,
     name_len: usize,
     layout_size: i64,
@@ -118,7 +144,8 @@ pub extern "C" fn molt_itertools_alloc_class(
     defaults_ptr: *const u64,
     defaults_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -181,7 +208,7 @@ pub extern "C" fn molt_itertools_alloc_class(
             next_fn,
             constructor,
         )
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -201,23 +228,28 @@ pub extern "C" fn molt_object_type_id(ptr: *mut u8) -> u32 {
 }
 
 /// index_i64_from_obj — exposed for the itertools crate.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_index_i64_from_obj(
+pub(crate) fn molt_index_i64_from_obj_attached_body(
+    _py: &PyToken<'_>,
     obj_bits: u64,
     err_ptr: *const u8,
     err_len: usize,
 ) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         builtins::numbers::index_i64_from_obj(_py, obj_bits, err)
-    })
+    }
 }
 
 /// intern_static_name — exposed for the itertools crate.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_intern_static_name_attached_body(
+    _py: &PyToken<'_>,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         let ptr = alloc_string(_py, key);
         if ptr.is_null() {
@@ -225,11 +257,18 @@ pub extern "C" fn molt_intern_static_name(key_ptr: *const u8, key_len: usize) ->
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
-    })
+    }
 }
 
 /// raise_not_iterable — exposed for the itertools crate.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_raise_not_iterable(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { raise_not_iterable::<u64>(_py, bits) })
+pub(crate) fn molt_raise_not_iterable_attached_body(_py: &PyToken<'_>, bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        raise_not_iterable::<u64>(_py, bits)
+    }
 }
+
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/itertools_bridge.rs"
+));

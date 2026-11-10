@@ -453,7 +453,9 @@ pub(crate) fn task_waiting_on_future(_py: &PyToken<'_>, task_ptr: *mut u8) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MoltObject, dec_ref_bits, header_from_obj_ptr, molt_future_new, ptr_from_bits};
+    use crate::{
+        MoltObject, dec_ref_bits, header_from_obj_ptr, molt_future_new_attached_body, ptr_from_bits,
+    };
 
     fn ref_count(ptr: *mut u8) -> u32 {
         unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
@@ -463,8 +465,8 @@ mod tests {
     fn wake_await_waiters_releases_graph_edge_refs() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let waiter_bits = molt_future_new(0, 0);
-            let awaited_bits = molt_future_new(0, 0);
+            let waiter_bits = molt_future_new_attached_body(_py, 0, 0);
+            let awaited_bits = molt_future_new_attached_body(_py, 0, 0);
             let waiter_ptr = ptr_from_bits(waiter_bits);
             let awaited_ptr = ptr_from_bits(awaited_bits);
             assert_eq!(ref_count(waiter_ptr), 1);
@@ -495,8 +497,10 @@ mod await_chain_tests {
     fn deep_wait_chain_and_cycle_have_one_terminal_authority() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let nodes: Vec<u64> = (0..64).map(|_| crate::molt_future_new(0, 0)).collect();
-            let terminal = crate::molt_promise_new();
+            let nodes: Vec<u64> = (0..64)
+                .map(|_| crate::molt_future_new_attached_body(py, 0, 0))
+                .collect();
+            let terminal = crate::molt_promise_new_attached_body(py);
             let mut chain: Vec<*mut u8> = nodes.iter().copied().map(crate::ptr_from_bits).collect();
             chain.push(crate::ptr_from_bits(terminal));
             for pair in chain.windows(2) {

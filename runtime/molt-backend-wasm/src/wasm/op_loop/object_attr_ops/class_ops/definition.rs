@@ -3,9 +3,10 @@ use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::class_def_layout::ClassDefLayout;
 use crate::wasm::context::CompileFuncContext;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_class_def(
     func: &mut Function,

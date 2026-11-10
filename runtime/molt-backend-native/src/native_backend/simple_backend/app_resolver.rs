@@ -65,13 +65,17 @@ impl SimpleBackend {
         let mut entries: Vec<(&str, cranelift_module::FuncId)> =
             Vec::with_capacity(manifest_names.len());
         for name in manifest_names {
+            let physical_name = runtime_execution_abi(name)
+                .unwrap_or_else(|| {
+                    panic!("app resolver runtime callable `{name}` has no execution ABI")
+                })
+                .physical_symbol;
             let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
-                self.module.get_name(name)
+                self.module.get_name(physical_name)
             {
                 id
             } else {
-                self.module
-                    .declare_function(name, Linkage::Import, &canonical_sig)
+                declare_runtime_execution_function(&mut self.module, name, &canonical_sig)
                     .unwrap_or_else(|e| {
                         panic!("app resolver: failed to declare callable '{name}': {e:?}")
                     })

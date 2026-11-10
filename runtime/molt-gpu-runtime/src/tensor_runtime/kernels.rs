@@ -9,7 +9,7 @@ pub(super) fn parse_shape(_py: &PyToken, bits: u64, role: &str) -> Result<Vec<us
             &format!("{role} must be a tuple or list of ints"),
         ));
     };
-    let type_id = unsafe { object_type_id(ptr) };
+    let type_id = unsafe { object_type_id(_py, ptr) };
     if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
         return Err(raise_exception::<_>(
             _py,
@@ -22,10 +22,10 @@ pub(super) fn parse_shape(_py: &PyToken, bits: u64, role: &str) -> Result<Vec<us
         Negative,
     }
     let decoded = unsafe {
-        seq_access::with_borrowed(ptr, |dims| {
+        seq_access::with_borrowed(_py, ptr, |dims| {
             let mut out = Vec::with_capacity(dims.len());
             for &dim_bits in dims {
-                let Some(dim) = to_i64(obj_from_bits(dim_bits)) else {
+                let Some(dim) = to_i64(_py, obj_from_bits(dim_bits)) else {
                     return Err(ShapeDecodeError::NonInteger);
                 };
                 let dim = usize::try_from(dim).map_err(|_| ShapeDecodeError::Negative)?;

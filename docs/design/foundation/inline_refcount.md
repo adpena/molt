@@ -74,9 +74,10 @@ protection: neither a tag nor a valid kind establishes pointer liveness.
 
 Each dynamic RC site has one cold call. Native spells its blocks at the site.
 WASM writes the decision once per module, as one internal body per operation
-with two arguments (word and invocation admission), and every dynamic site
-calls its operation's body ([WASM transitions](#wasm-one-generated-body-per-transition)).
-LLVM generates the same internal two-argument bodies and forces them inline;
+with the attached execution context, word and invocation admission, and every
+dynamic site calls its operation's body
+([WASM transitions](#wasm-one-generated-body-per-transition-2026-11-07-hf-808)).
+LLVM generates the same internal attached bodies and forces them inline;
 its caller's TIR/phi CFG is unchanged. The
 machine-emission check must establish that the selected LLVM pipeline actually
 inlines them. A source-level `alwaysinline` attribute alone is insufficient.
@@ -336,13 +337,17 @@ same trade at a smaller ratio (+31% whole binary, table above).
 The WASM backend now declares the retain and release bodies after the
 call_indirect wrappers and the sentinel, before the callable-table layout fixes
 user function indices, and `generate_refcount` writes each body once. A dynamic
-site is `local.get $admission; call $body` with the word on the operand stack:
-about 8 object bytes instead of 208-247. Op-loop, LIR and task-trampoline sites
-use the same bodies; per-function RC scratch is the admission local alone. The
+site passes the word and admission through the attached call emitter, which
+prepends the caller's execution context. The transition body's cold runtime
+call forwards that same context. Before the attached ABI migration, the site
+was `local.get $admission; call $body`, about 8 object bytes instead of 208-247;
+that size measurement does not cover the additional context moves. Op-loop,
+LIR and task-trampoline sites use the same bodies; per-function RC scratch is
+the admission local alone. The
 algebra, window, custody encoding, cold runtime transaction, admission (one
 per-invocation local passed by value), debug `HardenedPlain` behavior, native
-and LLVM lowering, the runtime ABI and retain/release placement (HF-214) are
-unchanged.
+and LLVM lowering and retain/release placement (HF-214) are unchanged by this
+WASM placement change.
 
 Prediction (go/no-go): RC was 76-78% of code, so compiled code should fall to
 about 22% + 78% x 8/220 = 25% of its size, the linked Falcon module to about
@@ -356,9 +361,10 @@ dataclass_construction, and gates nothing while the control cannot build
 Falcon. If the bodies are not faster than the runtime call on V8, the WASM
 adapter is deleted in favor of that call.
 
-One rule can serve every backend: the generator owns one `(word, admission)`
-body per operation, every dynamic site calls it, and an inliner or a
-measurement decides where to inline. LLVM would drop `alwaysinline`; Cranelift
+One rule can serve every backend: the generator owns one decision over
+`(word, admission)` per operation, each adapter carries the attached execution
+context alongside those operands, every dynamic site calls its body, and an
+inliner or a measurement decides where to inline. LLVM would drop `alwaysinline`; Cranelift
 has no inliner, so native inlines only where a measurement on the primitives
 above and text size shows a gain. Profile-guided placement stays with HF-733.
 Downstream generic coders (Binaryen `Outlining.cpp`, LLVM MachineOutliner,

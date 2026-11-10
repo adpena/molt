@@ -39,9 +39,8 @@ fn lookup_arg_to_str(_py: &PyToken<'_>, bits: u64) -> Option<String> {
     Some(text)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_encodings_aliases_map() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_encodings_aliases_map_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut pairs = Vec::with_capacity(PYTHON_ENCODING_ALIASES.len() * 2);
         for entry in PYTHON_ENCODING_ALIASES {
             let alias_ptr = alloc_string(_py, entry.alias.as_bytes());
@@ -87,14 +86,14 @@ pub(super) fn codec_result(
     MoltObject::from_ptr(tuple).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_decode(
+pub(crate) fn molt_codecs_decode_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     encoding_bits: u64,
     errors_bits: u64,
     with_consumed_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(with_consumed) = obj_from_bits(with_consumed_bits).as_bool() else {
             return raise_exception::<_>(
                 _py,
@@ -154,14 +153,14 @@ pub extern "C" fn molt_codecs_decode(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_encode(
+pub(crate) fn molt_codecs_encode_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     encoding_bits: u64,
     errors_bits: u64,
     with_consumed_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(with_consumed) = obj_from_bits(with_consumed_bits).as_bool() else {
             return raise_exception::<_>(
                 _py,
@@ -224,9 +223,11 @@ pub extern "C" fn molt_codecs_encode(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_lookup_name(encoding_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_lookup_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    encoding_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let encoding = match lookup_arg_to_str(_py, encoding_bits) {
             Some(val) => val,
             None => return MoltObject::none().bits(),
@@ -242,6 +243,8 @@ pub extern "C" fn molt_codecs_lookup_name(encoding_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
+
+include!("../attached_exports_generated/builtins/codecs.rs");
 
 #[cfg(test)]
 mod result_count_tests {
@@ -296,11 +299,23 @@ mod result_count_tests {
                 let mode = MoltObject::from_bool(with_consumed).bits();
                 let decoded = ExceptionValue::adopt(
                     py,
-                    molt_codecs_decode(input.bits(), encoding.bits(), errors.bits(), mode),
+                    molt_codecs_decode_attached_body(
+                        py,
+                        input.bits(),
+                        encoding.bits(),
+                        errors.bits(),
+                        mode,
+                    ),
                 );
                 let encoded = ExceptionValue::adopt(
                     py,
-                    molt_codecs_encode(text.bits(), encoding.bits(), errors.bits(), mode),
+                    molt_codecs_encode_attached_body(
+                        py,
+                        text.bits(),
+                        encoding.bits(),
+                        errors.bits(),
+                        mode,
+                    ),
                 );
                 assert!(!exception_pending(py));
                 unsafe {

@@ -9,9 +9,11 @@ use crate::object::function_metadata::FunctionMetadataField as Field;
 
 /// CPython methodobject.c meth_reduce: module builtins reduce by public name;
 /// bound builtins reduce through getattr on their actual retained receiver.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_native_callable_reduce(function: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_native_callable_reduce_attached_body(
+    _py: &crate::PyToken<'_>,
+    function: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = obj_from_bits(function).as_ptr() else {
             return raise_exception::<u64>(
                 py,
@@ -415,7 +417,7 @@ pub(crate) unsafe fn configure_native_callable(
             value.and_then(|bits| {
                 obj_from_bits(bits).as_ptr().map(|ptr| {
                     inc_ref_bits(py, bits);
-                    crate::PtrDropGuard::preserving(ptr)
+                    crate::PtrDropGuard::preserving(py, ptr)
                 })
             })
         });
@@ -427,7 +429,10 @@ pub(crate) unsafe fn configure_native_callable(
             let Some(bits) = name.owned_bits(py) else {
                 return false;
             };
-            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+            Some((
+                bits,
+                crate::PtrDropGuard::preserving(py, ptr_from_bits(bits)),
+            ))
         } else {
             None
         };
@@ -435,7 +440,10 @@ pub(crate) unsafe fn configure_native_callable(
             let Some(bits) = identity.qualname.owned_bits(py) else {
                 return false;
             };
-            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+            Some((
+                bits,
+                crate::PtrDropGuard::preserving(py, ptr_from_bits(bits)),
+            ))
         } else if let Some(name) = spec.name {
             let mut bytes = if let Some(owner) = spec.owner {
                 let Ok(mut bytes) = owner_qualname_bytes(py, owner) else {
@@ -450,7 +458,10 @@ pub(crate) unsafe fn configure_native_callable(
             let Some(bits) = dynamic_attr_name_bits(py, &bytes) else {
                 return false;
             };
-            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+            Some((
+                bits,
+                crate::PtrDropGuard::preserving(py, ptr_from_bits(bits)),
+            ))
         } else {
             None
         };
@@ -458,7 +469,10 @@ pub(crate) unsafe fn configure_native_callable(
             let Some(bits) = identity.module.owned_bits(py) else {
                 return false;
             };
-            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+            Some((
+                bits,
+                crate::PtrDropGuard::preserving(py, ptr_from_bits(bits)),
+            ))
         } else {
             None
         };
@@ -466,7 +480,10 @@ pub(crate) unsafe fn configure_native_callable(
             let Some(bits) = dynamic_attr_name_bits(py, signature.as_bytes()) else {
                 return false;
             };
-            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+            Some((
+                bits,
+                crate::PtrDropGuard::preserving(py, ptr_from_bits(bits)),
+            ))
         } else {
             None
         };
@@ -487,14 +504,14 @@ pub(crate) unsafe fn configure_native_callable(
             };
             inc_ref_bits(py, dictionary);
             let dictionary_ptr = ptr_from_bits(dictionary);
-            let dictionary_owner = crate::PtrDropGuard::preserving(dictionary_ptr);
+            let dictionary_owner = crate::PtrDropGuard::preserving(py, dictionary_ptr);
             if !crate::object::ops::dict_require_writable(py, dictionary_ptr) {
                 return false;
             }
             let Some(key) = crate::NameId::DunderTextSignature.owned_bits(py) else {
                 return false;
             };
-            let _key_owner = crate::PtrDropGuard::preserving(ptr_from_bits(key));
+            let _key_owner = crate::PtrDropGuard::preserving(py, ptr_from_bits(key));
             let Some(hash) = crate::object::ops::dict_key_hash(py, key) else {
                 return false;
             };
@@ -588,7 +605,7 @@ pub(crate) unsafe fn configure_native_callable(
         let old_class = object_class_bits(pointer);
         let _old_class_owner = obj_from_bits(old_class).as_ptr().map(|ptr| {
             inc_ref_bits(py, old_class);
-            crate::PtrDropGuard::preserving(ptr)
+            crate::PtrDropGuard::preserving(py, ptr)
         });
         if old_class != class
             && !object_replace_class_edge(py, pointer, class, ClassEdgeOwnership::Owned)
@@ -654,20 +671,21 @@ pub(crate) unsafe fn configure_native_callable(
 
 /// A native classmethod may create a foreign wrapper for the live native type.
 /// Hold that owner until the bound method or immediate call acquires custody.
-pub(crate) struct NativeDescriptorReceiver {
+pub(crate) struct NativeDescriptorReceiver<'guard> {
     bits: u64,
-    owner: Option<crate::PtrDropGuard>,
+    owner: Option<crate::PtrDropGuard<'guard>>,
 }
 
-impl NativeDescriptorReceiver {
+impl<'guard> NativeDescriptorReceiver<'guard> {
     pub(crate) fn borrowed(bits: u64) -> Self {
         Self { bits, owner: None }
     }
 
-    unsafe fn owned_type(bits: u64) -> Self {
+    unsafe fn owned_type(py: &'guard PyToken<'guard>, bits: u64) -> Self {
         Self {
             bits,
             owner: Some(crate::PtrDropGuard::new(
+                py,
                 obj_from_bits(bits).as_ptr().expect("owned real type"),
             )),
         }
@@ -678,7 +696,7 @@ impl NativeDescriptorReceiver {
     }
 }
 
-impl Drop for NativeDescriptorReceiver {
+impl Drop for NativeDescriptorReceiver<'_> {
     fn drop(&mut self) {
         if self.owner.is_some() {
             drop(self.owner.take());
@@ -739,7 +757,7 @@ pub(crate) unsafe fn native_function_error_name(
             value.and_then(|bits| {
                 obj_from_bits(bits).as_ptr().map(|pointer| {
                     inc_ref_bits(py, bits);
-                    crate::PtrDropGuard::preserving(pointer)
+                    crate::PtrDropGuard::preserving(py, pointer)
                 })
             })
         });
@@ -748,8 +766,8 @@ pub(crate) unsafe fn native_function_error_name(
             let Some(builtins) = crate::NameId::Builtins.owned_bits(py) else {
                 return Err(());
             };
-            let _builtins = crate::PtrDropGuard::preserving(ptr_from_bits(builtins));
-            let different = crate::molt_ne(module, builtins);
+            let _builtins = crate::PtrDropGuard::preserving(py, ptr_from_bits(builtins));
+            let different = crate::molt_ne_attached_body(py, module, builtins);
             if exception_pending(py) {
                 return Err(());
             }
@@ -759,7 +777,7 @@ pub(crate) unsafe fn native_function_error_name(
                 return Err(());
             }
             if include_module {
-                let string = crate::molt_str_from_obj(module);
+                let string = crate::molt_str_from_obj_attached_body(py, module);
                 if exception_pending(py) {
                     return Err(());
                 }
@@ -772,7 +790,7 @@ pub(crate) unsafe fn native_function_error_name(
         }
         // Public Python __qualname__ accepts Unicode subclasses before
         // promotion. Honor their string protocol, as CPython's %S does.
-        let string = crate::molt_str_from_obj(qualified);
+        let string = crate::molt_str_from_obj_attached_body(py, qualified);
         if exception_pending(py) {
             return Err(());
         }
@@ -833,7 +851,7 @@ unsafe fn descriptor_received_type_name(py: &PyToken<'_>, value: u64) -> Result<
         let class = crate::object::class_layout::real_type_bits(py, value).map_err(|()| {
             crate::cpython_abi_hooks::propagate_native_failure(py, "native receiver type");
         })?;
-        let owner = NativeDescriptorReceiver::owned_type(class);
+        let owner = NativeDescriptorReceiver::owned_type(py, class);
         descriptor_class_name(py, owner.bits())
     }
 }
@@ -959,14 +977,14 @@ unsafe fn raise_descriptor_receiver_error(
 }
 
 /// Binding and direct calls share receiver admission and public metadata.
-pub(crate) unsafe fn native_descriptor_receiver(
-    py: &PyToken<'_>,
+pub(crate) unsafe fn native_descriptor_receiver<'guard>(
+    py: &'guard PyToken<'guard>,
     pointer: *mut u8,
     kind: NativeCallableKind,
     context: NativeDescriptorContext,
     owner: Option<u64>,
     instance: Option<u64>,
-) -> Result<Option<NativeDescriptorReceiver>, ()> {
+) -> Result<Option<NativeDescriptorReceiver<'guard>>, ()> {
     unsafe {
         if !kind.is_descriptor() {
             return Ok(None);
@@ -982,7 +1000,7 @@ pub(crate) unsafe fn native_descriptor_receiver(
                             "native receiver type",
                         );
                     })?;
-                Some(NativeDescriptorReceiver::owned_type(class))
+                Some(NativeDescriptorReceiver::owned_type(py, class))
             } else {
                 None
             }
@@ -1189,7 +1207,7 @@ pub(crate) unsafe fn admit_native_noargs(
                         return Some(false);
                     }
                 };
-                NativeDescriptorReceiver::owned_type(class)
+                NativeDescriptorReceiver::owned_type(py, class)
             }
         };
         let mut message = match owner_qualname_bytes(py, owner.bits()) {
@@ -1244,3 +1262,5 @@ pub(crate) unsafe fn admit_native_callable(
         }
     }
 }
+
+include!("../../attached_exports_generated/builtins/functions/native_callable.rs");

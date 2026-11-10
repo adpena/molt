@@ -84,6 +84,7 @@ fn integer_round(py: &PyToken<'_>, value: u64, digits: u64) -> u64 {
     // Returning an unchanged heap integer transfers this owner to the caller.
     inc_ref_bits(py, payload);
     let mut owner = PtrDropGuard::preserving(
+        py,
         obj_from_bits(payload)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -109,15 +110,17 @@ fn integer_round(py: &PyToken<'_>, value: u64, digits: u64) -> u64 {
         return MoltObject::none().bits();
     }
     let _exponent_owner = PtrDropGuard::preserving(
+        py,
         obj_from_bits(exponent)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
     );
-    let power = molt_pow(MoltObject::from_int(10).bits(), exponent);
+    let power = molt_pow_attached_body(py, MoltObject::from_int(10).bits(), exponent);
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
     let _power_owner = PtrDropGuard::preserving(
+        py,
         obj_from_bits(power)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -184,10 +187,14 @@ fn float_round(py: &PyToken<'_>, value: u64, digits: u64) -> u64 {
     float_result_bits(py, rounded)
 }
 
-pub(crate) extern "C" fn int_round_slot(value: u64, digits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { integer_round(py, value, digits) })
+pub(crate) extern "C" fn int_round_slot(__context: u64, value: u64, digits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { integer_round(py, value, digits) })
 }
 
-pub(crate) extern "C" fn float_round_slot(value: u64, digits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_round(py, value, digits) })
+pub(crate) extern "C" fn float_round_slot(__context: u64, value: u64, digits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { float_round(py, value, digits) })
 }

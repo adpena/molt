@@ -36,7 +36,7 @@ fn c_api_list_new_size_getitem_setitem() {
         let bad = PyList_GetItem(list, 100);
         assert_eq!(bad, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
 
         dec_ref_bits(_py, list);
     });
@@ -49,7 +49,7 @@ fn c_api_list_new_negative_size_fails() {
         let list = PyList_New(-1);
         assert_eq!(list, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -100,12 +100,12 @@ fn c_api_dictionary_completion_preserves_an_existing_error() {
         let other = MoltObject::from_int(8).bits();
         assert_eq!(PyDict_SetItem(updates, other, value), 0);
         raise_exception::<()>(py, BuiltinExc::LookupError, "existing caller error");
-        let original = molt_exception_last_pending();
+        let original = molt_exception_last_pending_attached_body(py);
         let _original_owner = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), original)
         };
         let unchanged = || {
-            let observed = molt_exception_last_pending();
+            let observed = molt_exception_last_pending_attached_body(py);
             let _observed_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), observed)
             };
@@ -608,7 +608,7 @@ fn c_api_get_iter_on_non_iterable_fails() {
         let iter = PyObject_GetIter(int_val);
         assert_eq!(iter, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -625,7 +625,7 @@ fn c_api_list_setitem_steals_ref_on_error() {
         let rc = PyList_SetItem(dict, 0, val);
         assert_eq!(rc, -1);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, dict);
     });
 }
@@ -708,7 +708,7 @@ fn c_api_number_truedivide_by_zero() {
         let res = PyNumber_TrueDivide(a, b);
         assert_eq!(res, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -1003,16 +1003,16 @@ fn c_api_public_libmolt_iterator_dict_list_surface() {
         assert_ne!(list, 0);
         let first = MoltObject::from_int(10).bits();
         let second = MoltObject::from_int(20).bits();
-        let append_first = crate::molt_list_append(list, first);
+        let append_first = crate::molt_list_append_attached_body(_py, list, first);
         assert!(obj_from_bits(append_first).is_none());
-        let append_second = crate::molt_list_append(list, second);
+        let append_second = crate::molt_list_append_attached_body(_py, list, second);
         assert!(obj_from_bits(append_second).is_none());
         assert_eq!(PySequence_Length(list), 2);
 
         let iter = PyObject_GetIter(list);
         assert_ne!(iter, 0);
 
-        let pair1 = crate::molt_iter_next(iter);
+        let pair1 = crate::molt_iter_next_attached_body(_py, iter);
         let Some(pair1_ptr) = obj_from_bits(pair1).as_ptr() else {
             panic!("molt_iter_next should return a tuple pair");
         };
@@ -1025,7 +1025,7 @@ fn c_api_public_libmolt_iterator_dict_list_surface() {
         assert!(!is_truthy(_py, obj_from_bits(pair1_items[1])));
         dec_ref_bits(_py, pair1);
 
-        let pair2 = crate::molt_iter_next(iter);
+        let pair2 = crate::molt_iter_next_attached_body(_py, iter);
         let Some(pair2_ptr) = obj_from_bits(pair2).as_ptr() else {
             panic!("molt_iter_next should return a tuple pair");
         };
@@ -1037,7 +1037,7 @@ fn c_api_public_libmolt_iterator_dict_list_surface() {
         assert!(!is_truthy(_py, obj_from_bits(pair2_items[1])));
         dec_ref_bits(_py, pair2);
 
-        let pair3 = crate::molt_iter_next(iter);
+        let pair3 = crate::molt_iter_next_attached_body(_py, iter);
         let Some(pair3_ptr) = obj_from_bits(pair3).as_ptr() else {
             panic!("molt_iter_next should return exhausted tuple pair");
         };
@@ -1055,24 +1055,28 @@ fn c_api_public_libmolt_iterator_dict_list_surface() {
         let val = MoltObject::from_int(99).bits();
         assert_eq!(PyDict_SetItem(dict, key, val), 0);
 
-        let borrowed = crate::molt_dict_getitem_borrowed(dict, key);
+        let borrowed = crate::molt_dict_getitem_borrowed_attached_body(_py, dict, key);
         assert_ne!(borrowed, 0);
         assert_eq!(to_i64(obj_from_bits(borrowed)), Some(99));
-        let missing = crate::molt_dict_getitem_borrowed(dict, MoltObject::from_int(2).bits());
+        let missing = crate::molt_dict_getitem_borrowed_attached_body(
+            _py,
+            dict,
+            MoltObject::from_int(2).bits(),
+        );
         assert_eq!(missing, 0);
         assert!(!exception_pending(_py));
 
-        let keys = crate::molt_dict_keys(dict);
+        let keys = crate::molt_dict_keys_attached_body(_py, dict);
         assert_ne!(keys, 0);
         assert_eq!(PySequence_Length(keys), 1);
         dec_ref_bits(_py, keys);
 
-        let values = crate::molt_dict_values(dict);
+        let values = crate::molt_dict_values_attached_body(_py, dict);
         assert_ne!(values, 0);
         assert_eq!(PySequence_Length(values), 1);
         dec_ref_bits(_py, values);
 
-        let items = crate::molt_dict_items(dict);
+        let items = crate::molt_dict_items_attached_body(_py, dict);
         assert_ne!(items, 0);
         assert_eq!(PySequence_Length(items), 1);
         dec_ref_bits(_py, items);
@@ -1133,7 +1137,7 @@ fn c_api_mapping_getitemstring_body() {
     assert_eq!(missing, 0);
     crate::with_gil_entry_nopanic!(_py, {
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 
     // NULL key should fail.
@@ -1141,7 +1145,7 @@ fn c_api_mapping_getitemstring_body() {
     assert_eq!(null_key, 0);
     crate::with_gil_entry_nopanic!(_py, {
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, key_bits);
         dec_ref_bits(_py, dict);
     });
@@ -1199,7 +1203,7 @@ fn c_api_sequence_getitem() {
         let bad = PySequence_GetItem(list_bits, 100);
         assert_eq!(bad, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
 
         dec_ref_bits(_py, list_bits);
     });
@@ -1299,7 +1303,7 @@ fn c_api_bytes_null_with_nonzero_len_fails() {
         let bytes = unsafe { PyBytes_FromStringAndSize(std::ptr::null(), 5) };
         assert_eq!(bytes, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -1310,7 +1314,7 @@ fn c_api_bytes_negative_len_fails() {
         let bytes = unsafe { PyBytes_FromStringAndSize(b"abc".as_ptr(), -1) };
         assert_eq!(bytes, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -1322,7 +1326,7 @@ fn c_api_bytes_asstring_type_error() {
         let ptr = PyBytes_AsString(int_val);
         assert!(ptr.is_null());
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -1334,7 +1338,7 @@ fn c_api_bytes_size_type_error() {
         let size = PyBytes_Size(int_val);
         assert_eq!(size, -1);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -1371,7 +1375,7 @@ fn c_api_unicode_from_string_null_fails() {
         let str_bits = unsafe { PyUnicode_FromString(std::ptr::null()) };
         assert_eq!(str_bits, 0);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -1383,7 +1387,7 @@ fn c_api_unicode_asutf8_type_error() {
         let ptr = PyUnicode_AsUTF8(int_val);
         assert!(ptr.is_null());
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -1611,7 +1615,7 @@ fn c_api_rich_compare() {
     assert_eq!(PyObject_RichCompareBool(a, b, 99), -1);
     crate::with_gil_entry_nopanic!(_py, {
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
     });
 
     let cmp = PyObject_RichCompare(a, b, 2);
@@ -1642,7 +1646,7 @@ fn c_api_set_protocol() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
         // Create empty set — capacity is raw u64, NOT NaN-boxed
-        let set = molt_set_new(0u64);
+        let set = molt_set_new_attached_body(_py, 0u64);
         assert!(!obj_from_bits(set).is_none());
 
         // PySet_Check / PyFrozenSet_Check
@@ -1652,12 +1656,12 @@ fn c_api_set_protocol() {
         // Add elements via runtime directly
         let k1 = MoltObject::from_int(10).bits();
         let k2 = MoltObject::from_int(20).bits();
-        let add_res1 = molt_set_add(set, k1);
+        let add_res1 = molt_set_add_attached_body(_py, set, k1);
         assert!(!exception_pending(_py));
         if !obj_from_bits(add_res1).is_none() {
             dec_ref_bits(_py, add_res1);
         }
-        let add_res2 = molt_set_add(set, k2);
+        let add_res2 = molt_set_add_attached_body(_py, set, k2);
         if !obj_from_bits(add_res2).is_none() {
             dec_ref_bits(_py, add_res2);
         }
@@ -1670,7 +1674,7 @@ fn c_api_set_protocol() {
         assert_eq!(PySet_Contains(set, MoltObject::from_int(99).bits()), 0);
 
         // Discard
-        let disc_res = molt_set_discard(set, k1);
+        let disc_res = molt_set_discard_attached_body(_py, set, k1);
         if !obj_from_bits(disc_res).is_none() {
             dec_ref_bits(_py, disc_res);
         }
@@ -1690,7 +1694,7 @@ fn c_api_set_protocol() {
         }
 
         // Clear
-        let add_res3 = molt_set_add(set, k1);
+        let add_res3 = molt_set_add_attached_body(_py, set, k1);
         if !obj_from_bits(add_res3).is_none() {
             dec_ref_bits(_py, add_res3);
         }
@@ -1723,7 +1727,7 @@ fn c_api_dict_extended_operations() {
         let rc = PyDict_DelItem(dict, k1);
         assert_eq!(rc, -1);
         assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear_attached_body(_py);
 
         assert_eq!(PyDict_SetItem(dict, k1, v1), 0);
         let keys = PyDict_Keys(dict);
@@ -1925,28 +1929,28 @@ fn dictionary_snapshot_materialization_components() {
                 (
                     "keys",
                     PyDict_Keys as extern "C" fn(u64) -> u64,
-                    molt_dict_keys as extern "C" fn(u64) -> u64,
+                    molt_dict_keys as unsafe extern "C" fn(u64, u64) -> u64,
                 ),
                 (
                     "values",
                     PyDict_Values as extern "C" fn(u64) -> u64,
-                    molt_dict_values as extern "C" fn(u64) -> u64,
+                    molt_dict_values as unsafe extern "C" fn(u64, u64) -> u64,
                 ),
                 (
                     "items",
                     PyDict_Items as extern "C" fn(u64) -> u64,
-                    molt_dict_items as extern "C" fn(u64) -> u64,
+                    molt_dict_items as unsafe extern "C" fn(u64, u64) -> u64,
                 ),
             ] {
                 let materialize = || unsafe {
-                    let source = view(dict);
+                    let source = view(py.attached_context(), dict);
                     let result = list_from_iter_bits(py, source).unwrap();
                     dec_ref_bits(py, source);
                     result
                 };
                 let expected = materialize();
                 let actual = direct(dict);
-                let equal = crate::molt_eq(actual, expected);
+                let equal = crate::molt_eq_attached_body(py, actual, expected);
                 assert_eq!(equal, MoltObject::from_bool(true).bits());
                 assert_eq!(PyList_Size(actual), size as isize);
                 dec_ref_bits(py, actual);
@@ -2231,319 +2235,329 @@ unsafe extern "C" fn test_c_heap_undersized_scalar_buffer_exporter(
 #[test]
 fn c_heap_buffer_lease_export_roundtrip() {
     let _guard = CApiTestGuard::new();
-    const TYPE_KIND: u32 = 0x4e505401;
-    const OBJECT_KIND: u32 = 0x4e504101;
-    const WRONG_OBJECT_KIND: u32 = 0x4e504102;
+    crate::with_gil_entry_nopanic!(_py, {
+        const TYPE_KIND: u32 = 0x4e505401;
+        const OBJECT_KIND: u32 = 0x4e504101;
+        const WRONG_OBJECT_KIND: u32 = 0x4e504102;
 
-    let type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: TYPE_KIND,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
-    type_header.type_ptr = type_ptr;
-    assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
-    assert_eq!(molt_c_heap_contains(type_ptr), 1);
+        let type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: TYPE_KIND,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+        type_header.type_ptr = type_ptr;
+        assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
+        assert_eq!(molt_c_heap_contains(type_ptr), 1);
 
-    let mut object_header = TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: 1,
-        kind: OBJECT_KIND,
-        type_ptr,
-        dealloc: 0,
-    };
-    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
-    assert_eq!(molt_c_heap_register(object_ptr), 0);
-    assert_eq!(molt_c_heap_contains(object_ptr), 1);
+        let mut object_header = TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: 1,
+            kind: OBJECT_KIND,
+            type_ptr,
+            dealloc: 0,
+        };
+        let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
+        assert_eq!(molt_c_heap_register(object_ptr), 0);
+        assert_eq!(molt_c_heap_contains(object_ptr), 1);
 
-    // Exporter registration is idempotent for the same (kind, type) and rejects
-    // a conflicting type binding.
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_buffer_exporter)
-        ),
-        0
-    );
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_buffer_exporter)
-        ),
-        0
-    );
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_conflicting_exporter)
-        ),
-        0
-    );
+        // Exporter registration is idempotent for the same (kind, type) and rejects
+        // a conflicting type binding.
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_buffer_exporter)
+            ),
+            0
+        );
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_buffer_exporter)
+            ),
+            0
+        );
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_conflicting_exporter)
+            ),
+            0
+        );
 
-    // A releaser must name a kind whose exporter was registered.
-    assert_eq!(
-        molt_c_heap_register_buffer_releaser(
-            WRONG_OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_buffer_releaser)
-        ),
-        -1
-    );
-    assert_eq!(
-        molt_c_heap_register_buffer_releaser(
-            OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_buffer_releaser)
-        ),
-        0
-    );
-    // Releaser registration is idempotent and pinned to the first binding.
-    assert_eq!(
-        molt_c_heap_register_buffer_releaser(
-            OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_conflicting_releaser)
-        ),
-        0
-    );
+        // A releaser must name a kind whose exporter was registered.
+        assert_eq!(
+            molt_c_heap_register_buffer_releaser(
+                WRONG_OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_buffer_releaser)
+            ),
+            -1
+        );
+        assert_eq!(
+            molt_c_heap_register_buffer_releaser(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_buffer_releaser)
+            ),
+            0
+        );
+        // Releaser registration is idempotent and pinned to the first binding.
+        assert_eq!(
+            molt_c_heap_register_buffer_releaser(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_conflicting_releaser)
+            ),
+            0
+        );
 
-    let mut view = MoltBufferView::default();
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
-        0
-    );
-    assert_eq!(view.data, TEST_C_HEAP_BUFFER.as_ptr().cast_mut());
-    assert_eq!(view.len, TEST_C_HEAP_BUFFER.len() as u64);
-    assert_eq!(view.backing_capacity, TEST_C_HEAP_BUFFER.len() as u64);
-    assert_eq!(view.owner, 0);
-    assert_eq!(view.base, 0);
-    assert_eq!(view.shape[0], TEST_C_HEAP_BUFFER.len() as isize);
-    assert_eq!(view.strides[0], 1);
+        let mut view = MoltBufferView::default();
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut view) },
+            0
+        );
+        assert_eq!(view.data, TEST_C_HEAP_BUFFER.as_ptr().cast_mut());
+        assert_eq!(view.len, TEST_C_HEAP_BUFFER.len() as u64);
+        assert_eq!(view.backing_capacity, TEST_C_HEAP_BUFFER.len() as u64);
+        assert_eq!(view.owner, 0);
+        assert_eq!(view.base, 0);
+        assert_eq!(view.shape[0], TEST_C_HEAP_BUFFER.len() as isize);
+        assert_eq!(view.strides[0], 1);
 
-    TEST_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
-    assert_eq!(
-        unsafe { molt_c_heap_release_buffer(object_ptr, &mut view) },
-        0
-    );
-    assert_eq!(TEST_C_HEAP_RELEASES.load(Ordering::SeqCst), 1);
-    assert!(view.data.is_null());
-    assert_eq!(view.len, 0);
-    assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+        TEST_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
+        assert_eq!(
+            unsafe { molt_c_heap_release_buffer_attached_body(_py, object_ptr, &mut view) },
+            0
+        );
+        assert_eq!(TEST_C_HEAP_RELEASES.load(Ordering::SeqCst), 1);
+        assert!(view.data.is_null());
+        assert_eq!(view.len, 0);
+        assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+    });
 }
 
 #[test]
 fn c_heap_exporter_rejects_invalid_buffer_descriptor() {
     let _guard = CApiTestGuard::new();
-    const TYPE_KIND: u32 = 0x4d545401;
-    const OBJECT_KIND: u32 = 0x4d544101;
+    crate::with_gil_entry_nopanic!(_py, {
+        const TYPE_KIND: u32 = 0x4d545401;
+        const OBJECT_KIND: u32 = 0x4d544101;
 
-    let type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: TYPE_KIND,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
-    type_header.type_ptr = type_ptr;
-    assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
+        let type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: TYPE_KIND,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+        type_header.type_ptr = type_ptr;
+        assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
 
-    let mut object_header = TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: 1,
-        kind: OBJECT_KIND,
-        type_ptr,
-        dealloc: 0,
-    };
-    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
-    assert_eq!(molt_c_heap_register(object_ptr), 0);
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
+        let mut object_header = TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: 1,
+            kind: OBJECT_KIND,
             type_ptr,
-            Some(test_c_heap_leased_invalid_buffer_exporter)
-        ),
-        0
-    );
-    assert_eq!(
-        molt_c_heap_register_buffer_releaser(
-            OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_buffer_releaser)
-        ),
-        0
-    );
+            dealloc: 0,
+        };
+        let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
+        assert_eq!(molt_c_heap_register(object_ptr), 0);
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_leased_invalid_buffer_exporter)
+            ),
+            0
+        );
+        assert_eq!(
+            molt_c_heap_register_buffer_releaser(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_buffer_releaser)
+            ),
+            0
+        );
 
-    TEST_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
-    let mut view = MoltBufferView {
-        data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
-        len: 99,
-        backing_capacity: 99,
-        ..MoltBufferView::default()
-    };
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
-        -1
-    );
-    assert_eq!(view.len, 0);
-    assert!(view.data.is_null());
-    assert_eq!(TEST_C_HEAP_RELEASES.load(Ordering::SeqCst), 2);
-    assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+        TEST_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
+        let mut view = MoltBufferView {
+            data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
+            len: 99,
+            backing_capacity: 99,
+            ..MoltBufferView::default()
+        };
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut view) },
+            -1
+        );
+        assert_eq!(view.len, 0);
+        assert!(view.data.is_null());
+        assert_eq!(TEST_C_HEAP_RELEASES.load(Ordering::SeqCst), 2);
+        assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+    });
 }
 
 #[test]
 fn c_heap_exporter_rejects_overflowing_buffer_span() {
     let _guard = CApiTestGuard::new();
-    const TYPE_KIND: u32 = 0x4d555401;
-    const OBJECT_KIND: u32 = 0x4d554101;
+    crate::with_gil_entry_nopanic!(_py, {
+        const TYPE_KIND: u32 = 0x4d555401;
+        const OBJECT_KIND: u32 = 0x4d554101;
 
-    let type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: TYPE_KIND,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
-    type_header.type_ptr = type_ptr;
-    assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
+        let type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: TYPE_KIND,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+        type_header.type_ptr = type_ptr;
+        assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
 
-    let mut object_header = TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: 1,
-        kind: OBJECT_KIND,
-        type_ptr,
-        dealloc: 0,
-    };
-    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
-    assert_eq!(molt_c_heap_register(object_ptr), 0);
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
+        let mut object_header = TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: 1,
+            kind: OBJECT_KIND,
             type_ptr,
-            Some(test_c_heap_overflow_buffer_exporter)
-        ),
-        0
-    );
+            dealloc: 0,
+        };
+        let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
+        assert_eq!(molt_c_heap_register(object_ptr), 0);
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_overflow_buffer_exporter)
+            ),
+            0
+        );
 
-    let mut view = MoltBufferView {
-        data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
-        len: 99,
-        backing_capacity: 99,
-        ..MoltBufferView::default()
-    };
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
-        -1
-    );
-    assert_eq!(view.len, 0);
-    assert!(view.data.is_null());
-    assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+        let mut view = MoltBufferView {
+            data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
+            len: 99,
+            backing_capacity: 99,
+            ..MoltBufferView::default()
+        };
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut view) },
+            -1
+        );
+        assert_eq!(view.len, 0);
+        assert!(view.data.is_null());
+        assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+    });
 }
 
 #[test]
 fn c_heap_exporter_rejects_len_shape_mismatch() {
     let _guard = CApiTestGuard::new();
-    const TYPE_KIND: u32 = 0x4d565401;
-    const OBJECT_KIND: u32 = 0x4d564101;
+    crate::with_gil_entry_nopanic!(_py, {
+        const TYPE_KIND: u32 = 0x4d565401;
+        const OBJECT_KIND: u32 = 0x4d564101;
 
-    let type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: TYPE_KIND,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
-    type_header.type_ptr = type_ptr;
-    assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
+        let type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: TYPE_KIND,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+        type_header.type_ptr = type_ptr;
+        assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
 
-    let mut object_header = TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: 1,
-        kind: OBJECT_KIND,
-        type_ptr,
-        dealloc: 0,
-    };
-    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
-    assert_eq!(molt_c_heap_register(object_ptr), 0);
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
+        let mut object_header = TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: 1,
+            kind: OBJECT_KIND,
             type_ptr,
-            Some(test_c_heap_len_mismatch_buffer_exporter)
-        ),
-        0
-    );
+            dealloc: 0,
+        };
+        let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
+        assert_eq!(molt_c_heap_register(object_ptr), 0);
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_len_mismatch_buffer_exporter)
+            ),
+            0
+        );
 
-    let mut view = MoltBufferView {
-        data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
-        len: 99,
-        backing_capacity: 99,
-        ..MoltBufferView::default()
-    };
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
-        -1
-    );
-    assert_eq!(view.len, 0);
-    assert!(view.data.is_null());
-    assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+        let mut view = MoltBufferView {
+            data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
+            len: 99,
+            backing_capacity: 99,
+            ..MoltBufferView::default()
+        };
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut view) },
+            -1
+        );
+        assert_eq!(view.len, 0);
+        assert!(view.data.is_null());
+        assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+    });
 }
 
 #[test]
 fn c_heap_exporter_rejects_undersized_scalar_buffer() {
     let _guard = CApiTestGuard::new();
-    const TYPE_KIND: u32 = 0x4d575401;
-    const OBJECT_KIND: u32 = 0x4d574101;
+    crate::with_gil_entry_nopanic!(_py, {
+        const TYPE_KIND: u32 = 0x4d575401;
+        const OBJECT_KIND: u32 = 0x4d574101;
 
-    let type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: TYPE_KIND,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
-    type_header.type_ptr = type_ptr;
-    assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
+        let type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: TYPE_KIND,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+        type_header.type_ptr = type_ptr;
+        assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
 
-    let mut object_header = TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: 1,
-        kind: OBJECT_KIND,
-        type_ptr,
-        dealloc: 0,
-    };
-    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
-    assert_eq!(molt_c_heap_register(object_ptr), 0);
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
+        let mut object_header = TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: 1,
+            kind: OBJECT_KIND,
             type_ptr,
-            Some(test_c_heap_undersized_scalar_buffer_exporter)
-        ),
-        0
-    );
+            dealloc: 0,
+        };
+        let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
+        assert_eq!(molt_c_heap_register(object_ptr), 0);
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_undersized_scalar_buffer_exporter)
+            ),
+            0
+        );
 
-    let mut view = MoltBufferView {
-        data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
-        len: 99,
-        backing_capacity: 99,
-        ..MoltBufferView::default()
-    };
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
-        -1
-    );
-    assert_eq!(view.len, 0);
-    assert!(view.data.is_null());
-    assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+        let mut view = MoltBufferView {
+            data: TEST_C_HEAP_BUFFER.as_ptr().cast_mut(),
+            len: 99,
+            backing_capacity: 99,
+            ..MoltBufferView::default()
+        };
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut view) },
+            -1
+        );
+        assert_eq!(view.len, 0);
+        assert!(view.data.is_null());
+        assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+    });
 }
 
 // Derived from PR #31 "Revoke C-heap buffer hooks on type unregister", adapted
@@ -2554,87 +2568,89 @@ fn c_heap_exporter_rejects_undersized_scalar_buffer() {
 #[test]
 fn c_heap_unregister_revokes_type_owned_buffer_hooks_and_canonical_type() {
     let _guard = CApiTestGuard::new();
-    const TYPE_KIND: u32 = 0x5251_5401;
-    const OBJECT_KIND: u32 = 0x5251_4101;
+    crate::with_gil_entry_nopanic!(_py, {
+        const TYPE_KIND: u32 = 0x5251_5401;
+        const OBJECT_KIND: u32 = 0x5251_4101;
 
-    let type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: TYPE_KIND,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
-    type_header.type_ptr = type_ptr;
+        let type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: TYPE_KIND,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+        type_header.type_ptr = type_ptr;
 
-    let next_type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: TYPE_KIND,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let next_type_ptr = (next_type_header as *mut TestCHeapHeader) as usize;
-    next_type_header.type_ptr = next_type_ptr;
+        let next_type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: TYPE_KIND,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let next_type_ptr = (next_type_header as *mut TestCHeapHeader) as usize;
+        next_type_header.type_ptr = next_type_ptr;
 
-    let mut object_header = TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: 1,
-        kind: OBJECT_KIND,
-        type_ptr,
-        dealloc: 0,
-    };
-    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
-
-    assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
-    assert_eq!(molt_c_heap_register(object_ptr), 0);
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(
-            OBJECT_KIND,
+        let mut object_header = TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: 1,
+            kind: OBJECT_KIND,
             type_ptr,
-            Some(test_c_heap_buffer_exporter),
-        ),
-        0
-    );
-    assert_eq!(
-        molt_c_heap_register_buffer_releaser(
-            OBJECT_KIND,
-            type_ptr,
-            Some(test_c_heap_buffer_releaser),
-        ),
-        0
-    );
+            dealloc: 0,
+        };
+        let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
 
-    // The lease works before unregister.
-    let mut view = MoltBufferView::default();
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
-        0
-    );
-    assert_eq!(
-        unsafe { molt_c_heap_release_buffer(object_ptr, &mut view) },
-        0
-    );
+        assert_eq!(molt_c_heap_type_canonicalize(TYPE_KIND, type_ptr), type_ptr);
+        assert_eq!(molt_c_heap_register(object_ptr), 0);
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_buffer_exporter),
+            ),
+            0
+        );
+        assert_eq!(
+            molt_c_heap_register_buffer_releaser(
+                OBJECT_KIND,
+                type_ptr,
+                Some(test_c_heap_buffer_releaser),
+            ),
+            0
+        );
 
-    // Unregistering the type pointer revokes its canonical mapping and hooks.
-    assert_eq!(molt_c_heap_unregister(type_ptr), 0);
-    assert_eq!(molt_c_heap_contains(type_ptr), 0);
+        // The lease works before unregister.
+        let mut view = MoltBufferView::default();
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut view) },
+            0
+        );
+        assert_eq!(
+            unsafe { molt_c_heap_release_buffer_attached_body(_py, object_ptr, &mut view) },
+            0
+        );
 
-    // A stale type's exporter must no longer fire for its objects.
-    let mut stale_view = MoltBufferView::default();
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut stale_view) },
-        -1
-    );
+        // Unregistering the type pointer revokes its canonical mapping and hooks.
+        assert_eq!(molt_c_heap_unregister(type_ptr), 0);
+        assert_eq!(molt_c_heap_contains(type_ptr), 0);
 
-    // The freed kind can canonicalize to a fresh type pointer.
-    assert_eq!(
-        molt_c_heap_type_canonicalize(TYPE_KIND, next_type_ptr),
-        next_type_ptr
-    );
+        // A stale type's exporter must no longer fire for its objects.
+        let mut stale_view = MoltBufferView::default();
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut stale_view) },
+            -1
+        );
 
-    let _ = molt_c_heap_unregister(object_ptr);
-    let _ = molt_c_heap_unregister(next_type_ptr);
+        // The freed kind can canonicalize to a fresh type pointer.
+        assert_eq!(
+            molt_c_heap_type_canonicalize(TYPE_KIND, next_type_ptr),
+            next_type_ptr
+        );
+
+        let _ = molt_c_heap_unregister(object_ptr);
+        let _ = molt_c_heap_unregister(next_type_ptr);
+    });
 }
 
 // Derived from PR #44 "Validate C-heap buffer formats" + "Reject noncanonical
@@ -2715,49 +2731,51 @@ fn assert_c_heap_exporter_rejects_and_releases(
     exporter: unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32,
 ) {
     let _guard = CApiTestGuard::new();
-    let type_header = Box::leak(Box::new(TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
-        kind: type_kind,
-        type_ptr: 0,
-        dealloc: 0,
-    }));
-    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
-    type_header.type_ptr = type_ptr;
-    assert_eq!(molt_c_heap_type_canonicalize(type_kind, type_ptr), type_ptr);
+    crate::with_gil_entry_nopanic!(_py, {
+        let type_header = Box::leak(Box::new(TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: molt_codegen_abi::IMMORTAL_REFCOUNT,
+            kind: type_kind,
+            type_ptr: 0,
+            dealloc: 0,
+        }));
+        let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+        type_header.type_ptr = type_ptr;
+        assert_eq!(molt_c_heap_type_canonicalize(type_kind, type_ptr), type_ptr);
 
-    let mut object_header = TestCHeapHeader {
-        magic: TEST_C_HEAP_MAGIC,
-        refcnt: 1,
-        kind: object_kind,
-        type_ptr,
-        dealloc: 0,
-    };
-    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
-    assert_eq!(molt_c_heap_register(object_ptr), 0);
-    assert_eq!(
-        molt_c_heap_register_buffer_exporter(object_kind, type_ptr, Some(exporter)),
-        0
-    );
-    assert_eq!(
-        molt_c_heap_register_buffer_releaser(
-            object_kind,
+        let mut object_header = TestCHeapHeader {
+            magic: TEST_C_HEAP_MAGIC,
+            refcnt: 1,
+            kind: object_kind,
             type_ptr,
-            Some(test_c_heap_buffer_releaser)
-        ),
-        0
-    );
+            dealloc: 0,
+        };
+        let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
+        assert_eq!(molt_c_heap_register(object_ptr), 0);
+        assert_eq!(
+            molt_c_heap_register_buffer_exporter(object_kind, type_ptr, Some(exporter)),
+            0
+        );
+        assert_eq!(
+            molt_c_heap_register_buffer_releaser(
+                object_kind,
+                type_ptr,
+                Some(test_c_heap_buffer_releaser)
+            ),
+            0
+        );
 
-    TEST_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
-    let mut view = MoltBufferView::default();
-    assert_eq!(
-        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
-        -1
-    );
-    assert_eq!(view.len, 0);
-    assert!(view.data.is_null());
-    assert_eq!(TEST_C_HEAP_RELEASES.load(Ordering::SeqCst), 1);
-    assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+        TEST_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
+        let mut view = MoltBufferView::default();
+        assert_eq!(
+            unsafe { molt_c_heap_export_buffer_attached_body(_py, object_ptr, &mut view) },
+            -1
+        );
+        assert_eq!(view.len, 0);
+        assert!(view.data.is_null());
+        assert_eq!(TEST_C_HEAP_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+    });
 }
 
 #[test]
@@ -2803,7 +2821,9 @@ fn memoryview_from_c_buffer_rejects_invalid_readonly_flag() {
         source.strides[0] = 1;
         source.format[0] = b'B';
 
-        let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
+        let view_bits = unsafe {
+            molt_memoryview_from_buffer_attached_body(_py, &source as *const MoltBufferView)
+        };
         assert_none_with_exception_class(_py, view_bits, crate::BuiltinExc::BufferError);
     });
 }
@@ -2891,7 +2911,7 @@ fn c_api_dict_update_rejects_pairs_but_python_update_accepts_them() {
         let pairs = alloc_list(py, &[pair]);
         let pairs = MoltObject::from_ptr(pairs).bits();
         assert_eq!(PyDict_Update(target, pairs), -1);
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
             error,
@@ -2900,8 +2920,8 @@ fn c_api_dict_update_rejects_pairs_but_python_update_accepts_them() {
         dec_ref_bits(py, error);
         clear_exception(py);
         assert_eq!(PyDict_Size(target), 0);
-        crate::object::ops_dict::molt_dict_unpack(target, pairs);
-        let error = molt_exception_last_pending();
+        crate::object::ops_dict::molt_dict_unpack_attached_body(py, target, pairs);
+        let error = molt_exception_last_pending_attached_body(py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
             error,
@@ -2910,7 +2930,7 @@ fn c_api_dict_update_rejects_pairs_but_python_update_accepts_them() {
         dec_ref_bits(py, error);
         clear_exception(py);
         assert_eq!(PyDict_Size(target), 0);
-        crate::object::ops_dict::molt_dict_update(target, pairs);
+        crate::object::ops_dict::molt_dict_update_attached_body(py, target, pairs);
         assert!(!exception_pending(py));
         assert_eq!(PyDict_Size(target), 1);
         assert_eq!(

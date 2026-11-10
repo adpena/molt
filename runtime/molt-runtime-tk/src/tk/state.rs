@@ -619,7 +619,7 @@ pub(super) fn raise_tcl_error(py: &PyToken, message: &str) -> u64 {
 
 pub(super) fn alloc_string_bits(py: &PyToken, value: &str) -> Result<u64, u64> {
     let _ = py;
-    alloc_string_result(value, "failed to allocate tkinter string")
+    alloc_string_result(py, value, "failed to allocate tkinter string")
 }
 
 pub(super) fn app_tcl_error_locked(

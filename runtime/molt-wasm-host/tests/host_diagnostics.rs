@@ -1,5 +1,7 @@
 //! Exercise the actual CLI logger: unit-test binaries do not run host main().
 
+#[path = "support/execution_context.rs"]
+mod execution_fixture;
 #[path = "support/mod.rs"]
 mod support;
 
@@ -259,7 +261,7 @@ fn actual_manifest_command_sdk_and_indirect_dispatch_keep_command_exit_semantics
     let fixture = ArtifactFixture::new();
     let bytes = br#"(module
       (import "env" "molt_os_close_host" (func $close (param i64) (result i32)))
-      (import "env" "molt_call_indirect0" (func $dispatch (param i64) (result i64)))
+      (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $dispatch (param i64) (param i64) (result i64)))
       (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
       (memory (export "memory") 1)
       (table (export "__indirect_function_table") 2 funcref)
@@ -511,7 +513,7 @@ fn actual_application_reports_runtime_exit_status_and_finishes_lifetime() {
         let fixture = ArtifactFixture::new();
         // The guest asserts the finite protocol independently: entered, main,
         // reporter, leave, shutdown. A skipped/repeated/reordered call traps.
-        let program = wat::parse_str(format!(
+        let program = execution_fixture::application_bytes(format!(
             r#"(module
             (import "wasi_snapshot_preview1" "fd_write"
                 (func $write (param i32 i32 i32 i32) (result i32)))
@@ -523,16 +525,26 @@ fn actual_application_reports_runtime_exit_status_and_finishes_lifetime() {
             (func $advance (param $before i32) (param $after i32)
                 global.get $phase local.get $before i32.ne if unreachable end
                 local.get $after global.set $phase)
-            (func (export "molt_isolate_bootstrap") (result i64) unreachable)
-            (func (export "molt_isolate_import") (param i64) (result i64) unreachable)
-            (func (export "molt_exception_pending") (result i64) global.get $pending)
+            (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ global.get $pending)
+(func (export "molt_exception_pending_detached") (result i64)
+ global.get $pending)
             (func (export "molt_runtime_execution_enter") (result i64)
                 i32.const 0 i32.const 1 call $advance i64.const 41)
-            (func (export "molt_main") (result i64)
-                i32.const 1 i32.const 2 call $advance
+            (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                i32.const 2 i32.const 3 call $advance
                 i64.const 1 global.set $pending i64.const 0)
             (func (export "molt_main_exit_status") (result i64)
-                i32.const 2 i32.const 3 call $advance
+                i32.const 3 i32.const 4 call $advance
                 global.get $pending i64.const 1 i64.ne if unreachable end
                 i64.const 0 global.set $pending
                 i32.const 0 i32.const 32 i32.store
@@ -542,16 +554,25 @@ fn actual_application_reports_runtime_exit_status_and_finishes_lifetime() {
                 i64.const {status})
             (func (export "molt_runtime_execution_leave") (param i64)
                 local.get 0 i64.const 41 i64.ne if unreachable end
-                i32.const 3 i32.const 4 call $advance)
+                i32.const 5 i32.const 6 call $advance)
             (func (export "molt_runtime_shutdown") (result i64)
-                i32.const 4 i32.const 5 call $advance
+                i32.const 6 i32.const 7 call $advance
                 i32.const 0 i32.const 48 i32.store
                 i32.const 4 i32.const 9 i32.store
                 i32.const 2 i32.const 0 i32.const 1 i32.const 16 call $write
                 if unreachable end
-                i64.const 1))"#
-        ))
-        .unwrap();
+                i64.const 1)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            i32.const 1 i32.const 2 call $advance i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end
+            i32.const 4 i32.const 5 call $advance)
+)"#
+        ));
         let program = molt_wasm_facts::publish_callable_table_attestation(&program, None)
             .expect("publish the application's empty callable-table attestation");
         fixture.write("application.wasm", &program);

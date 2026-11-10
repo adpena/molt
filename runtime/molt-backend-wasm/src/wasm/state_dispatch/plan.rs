@@ -8,10 +8,11 @@ use super::state_remap::{
 };
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
+use crate::wasm_binary::Function;
 use molt_ir::simple_verify::{EdgeRole, SimpleIrExecutableFlow, simple_ir_executable_flow};
 use molt_ir::tir::op_kinds_generated::{SimpleIrVerifierRegionRole, simpleir_verifier_region_role};
 use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 /// Physical labels and transfer actions projected from the shared executable
 /// operation graph. Planning creates no backend data segments or frame locals.

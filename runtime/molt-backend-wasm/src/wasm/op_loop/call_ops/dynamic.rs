@@ -17,10 +17,11 @@ use crate::wasm::WasmFrameLocals;
 use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm::module_abi::WasmNativeCallableImport;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::box_bool;
-use wasm_encoder::{BlockType, Function, Instruction, MemArg};
+use wasm_encoder::{BlockType, Instruction, MemArg};
 
 const WASM_I64_LOAD_ALIGN: u32 = 3;
 const NATIVE_FORWARD_F32_LEN_SLOT_BYTES: i64 = 8;
@@ -121,11 +122,7 @@ pub(super) fn emit_dynamic_call_op(
                 // loads and stores of the thread record's invocation word;
                 // the outer handoff goes back once the call returns.
                 let record = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[WasmRuntimeImport::ThreadRecord],
-                );
+                crate::wasm::pending_work::emit_thread_record(func);
                 func.instruction(&Instruction::LocalTee(record));
                 func.instruction(&Instruction::I32WrapI64);
                 func.instruction(&Instruction::I64Load(pending_invocation_memarg()));

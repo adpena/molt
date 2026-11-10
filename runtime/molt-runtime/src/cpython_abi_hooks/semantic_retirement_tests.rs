@@ -14,20 +14,25 @@ thread_local! {
 
 // The callback transfers its one result from this slot. Unwind before the
 // callback still retires it, so a failed fixture cannot leave a hidden owner.
-struct StoredResult<'a>(std::marker::PhantomData<&'a molt_runtime_core::PyToken>);
+struct StoredResult<'a>(&'a molt_runtime_core::PyToken);
 impl<'a> StoredResult<'a> {
-    fn new(value: ProtectedRuntimeValue<'a>) -> Self {
+    fn new(py: &'a molt_runtime_core::PyToken, value: ProtectedRuntimeValue<'a>) -> Self {
         RETURN_VALUE.with(|slot| {
             assert_eq!(slot.get(), 0);
             slot.set(value.into_bits());
         });
-        Self(std::marker::PhantomData)
+        Self(py)
     }
 }
 impl Drop for StoredResult<'_> {
     fn drop(&mut self) {
         let bits = RETURN_VALUE.with(|slot| slot.replace(0));
-        unsafe { molt_runtime_core::ffi::__molt_runtime_release_protected_value(bits) };
+        unsafe {
+            molt_runtime_core::ffi::__molt_runtime_release_protected_value(
+                self.0.attached_context(),
+                bits,
+            )
+        };
     }
 }
 
@@ -47,7 +52,14 @@ unsafe extern "C" fn native_iter(object: *mut PyObject) -> *mut PyObject {
 unsafe extern "C" fn native_next(_object: *mut PyObject) -> *mut PyObject {
     std::ptr::null_mut()
 }
-unsafe extern "C" fn return_native() -> u64 {
+unsafe extern "C" fn return_native(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     RETURN_VALUE.with(|value| value.replace(0))
 }
 
@@ -123,7 +135,7 @@ fn ordinary_runtime_and_http_owners_expose_and_complete_native_error() {
                     drop(value);
                     None
                 } else {
-                    Some(StoredResult::new(value))
+                    Some(StoredResult::new(py.core_token(), value))
                 };
                 crate::record_exception(py, obj_from_bits(error.bits()).as_ptr().unwrap());
                 match mode {
@@ -133,6 +145,7 @@ fn ordinary_runtime_and_http_owners_expose_and_complete_native_error() {
                     )),
                     #[cfg(feature = "stdlib_http")]
                     1 => crate::http_bridge::__molt_http_dec_ref_bits(
+                        py.attached_context(),
                         RETURN_VALUE.with(|slot| slot.replace(0)),
                     ),
                     _ => drop(iterator),
@@ -280,7 +293,7 @@ fn invalid_format_and_mapping_results_expose_their_type_error_to_native_retireme
                         py.core_token(),
                         MoltObject::from_ptr(method).bits(),
                     );
-                    let _stored = StoredResult::new(value);
+                    let _stored = StoredResult::new(py.core_token(), value);
                     let result = crate::object::ops_format::invoke_format_method(
                         py,
                         method.into_bits(),
@@ -355,11 +368,15 @@ fn renderer_string_subclass_owners_expose_error_to_native_fields() {
             let name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), name);
             let class = ProtectedRuntimeValue::from_owned_bits(
                 py.core_token(),
-                crate::molt_class_new(name.bits()),
+                crate::molt_class_new_attached_body(py, name.bits()),
             );
             dec_ref_bits(
                 py,
-                crate::molt_class_set_base(class.bits(), crate::builtin_classes(py).str),
+                crate::molt_class_set_base_attached_body(
+                    py,
+                    class.bits(),
+                    crate::builtin_classes(py).str,
+                ),
             );
             crate::object::class_finish_definition(
                 py,
@@ -389,7 +406,12 @@ fn renderer_string_subclass_owners_expose_error_to_native_fields() {
                 assert_eq!(crate::type_of_bits(py, instance.bits()), class.bits());
                 dec_ref_bits(
                     py,
-                    crate::molt_set_attr_name(instance.bits(), field.bits(), value.bits()),
+                    crate::molt_set_attr_name_attached_body(
+                        py,
+                        instance.bits(),
+                        field.bits(),
+                        value.bits(),
+                    ),
                 );
                 assert!(!exception_pending(py));
                 drop(value);
@@ -480,11 +502,11 @@ fn protocol_update(update: impl FnOnce(&mut ProtocolObservation)) {
         slot.set(state);
     });
 }
-struct ProtocolReset;
-impl Drop for ProtocolReset {
+struct ProtocolReset<'py>(&'py PyToken<'py>);
+impl Drop for ProtocolReset<'_> {
     fn drop(&mut self) {
         PROTOCOL.with(|slot| slot.set(ProtocolObservation::EMPTY));
-        crate::molt_warnings_resetwarnings();
+        crate::molt_warnings_resetwarnings_attached_body(self.0);
     }
 }
 unsafe fn protocol_drop(value: *mut PyObject, kind: u8) {
@@ -634,7 +656,7 @@ unsafe fn protocol_receiver<'a, 'py>(
     let class = unsafe {
         ProtectedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::molt_class_new(class_name.bits()),
+            crate::molt_class_new_attached_body(py, class_name.bits()),
         )
     };
     // Arm before publishing the first native edge, including every unwind path.
@@ -646,7 +668,11 @@ unsafe fn protocol_receiver<'a, 'py>(
     assert!(!obj_from_bits(class.class.bits()).is_none());
     dec_ref_bits(
         py,
-        crate::molt_class_set_base(class.class.bits(), crate::builtin_classes(py).object),
+        crate::molt_class_set_base_attached_body(
+            py,
+            class.class.bits(),
+            crate::builtin_classes(py).object,
+        ),
     );
     let name = unsafe {
         ProtectedRuntimeValue::from_owned_bits(
@@ -656,7 +682,7 @@ unsafe fn protocol_receiver<'a, 'py>(
     };
     dec_ref_bits(
         py,
-        crate::molt_set_attr_name(class.class.bits(), name.bits(), descriptor),
+        crate::molt_set_attr_name_attached_body(py, class.class.bits(), name.bits(), descriptor),
     );
     assert!(!exception_pending(py));
     unsafe {
@@ -752,7 +778,8 @@ fn protocol_warning_policy(py: &PyToken<'_>, action: &[u8]) {
     };
     dec_ref_bits(
         py,
-        crate::molt_warnings_simplefilter(
+        crate::molt_warnings_simplefilter_attached_body(
+            py,
             action.bits(),
             crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::DeprecationWarning),
             MoltObject::from_int(0).bits(),
@@ -849,7 +876,7 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
                 errors::PyException_SetTraceback(failure.as_ptr(), traceback.as_ptr()),
                 0
             );
-            let _reset = ProtocolReset;
+            let _reset = ProtocolReset(py);
             protocol_update(|state| {
                 state.callable = &raw mut *callable;
                 state.result = &raw mut *result;
@@ -1032,7 +1059,7 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
                         if route == 2 {
                             protocol_start(0);
                             let default = protocol_value(py, &raw mut *indexed);
-                            let result = crate::builtins::operator::molt_operator_length_hint(
+                            let result = crate::builtins::operator::molt_operator_length_hint_attached_body(py,
                                 receiver.bits(),
                                 default.bits(),
                             );
@@ -1050,7 +1077,7 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
                             protocol_update(|state| state.index_fails = true);
                             let failed = ProtectedRuntimeValue::from_owned_bits(
                                 py.core_token(),
-                                crate::builtins::operator::molt_operator_length_hint(
+                                crate::builtins::operator::molt_operator_length_hint_attached_body(py,
                                     receiver.bits(),
                                     default.bits(),
                                 ),
@@ -1070,7 +1097,7 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
                             });
                             let negative_default = ProtectedRuntimeValue::from_owned_bits(
                                 py.core_token(),
-                                crate::builtins::operator::molt_operator_length_hint(
+                                crate::builtins::operator::molt_operator_length_hint_attached_body(py,
                                     receiver.bits(),
                                     default.bits(),
                                 ),
@@ -1101,7 +1128,7 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
                         protocol_receiver(py, b"__bool__", MoltObject::none().bits());
                     let len_declaration = protocol_value(py, &raw mut *descriptor);
                     let len_name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), crate::dynamic_attr_name_bits(py, b"__len__").unwrap());
-                    dec_ref_bits(py, crate::molt_set_attr_name(none_class.class.bits(), len_name.bits(), len_declaration.bits()));
+                    dec_ref_bits(py, crate::molt_set_attr_name_attached_body(py, none_class.class.bits(), len_name.bits(), len_declaration.bits()));
                     assert!(!exception_pending(py));
                     drop(len_declaration);
                     protocol_start(5);

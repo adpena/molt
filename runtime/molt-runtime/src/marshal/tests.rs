@@ -5,7 +5,7 @@ fn decoded<'a>(py: &'a PyToken<'_>, bytes: &[u8]) -> Value<'a> {
 }
 
 pub(super) fn assert_pending(py: &PyToken<'_>, kind: BuiltinExc, message: &str) {
-    let exception = molt_exception_last_pending();
+    let exception = molt_exception_last_pending_attached_body(py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         py, exception, kind
     ));
@@ -187,8 +187,8 @@ fn heap_references_and_private_tuple_cycles_keep_original_identity() {
             Some(again.bits())
         );
         // Break both test-owned cycles, then let normal guards retire them.
-        molt_list_clear(list_bits);
-        molt_list_clear(child);
+        molt_list_clear_attached_body(py, list_bits);
+        molt_list_clear_attached_body(py, child);
     });
 }
 
@@ -209,7 +209,7 @@ fn malformed_references_and_constructing_tuple_keys_fail_before_hashing() {
             );
             let error = owned(py, MoltObject::none().bits());
             assert!(error.is_err());
-            let exception = molt_exception_last_pending();
+            let exception = molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
@@ -235,7 +235,7 @@ fn admitted_target_facts_select_slice_version_and_aot_errors() {
         for minor in 12..=14 {
             transaction.with_target_python_minor(py, minor, || {
                 assert_eq!(
-                    obj_from_bits(molt_marshal_version()).as_int(),
+                    obj_from_bits(molt_marshal_version_attached_body(py)).as_int(),
                     Some(if minor >= 14 { 5 } else { 4 })
                 );
                 if minor >= 14 {
@@ -247,7 +247,7 @@ fn admitted_target_facts_select_slice_version_and_aot_errors() {
                 }
                 clear_exception(py);
                 assert!(read::decode(py, read::Source::memory(b"c")).is_err());
-                let exception = molt_exception_last_pending();
+                let exception = molt_exception_last_pending_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,

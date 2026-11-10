@@ -46,14 +46,14 @@ pub(super) fn next_callback_command_name(app: &mut TkAppState, prefix: &str) -> 
     }
 }
 
-pub(super) fn callback_is_callable(callback_bits: u64) -> bool {
+pub(super) fn callback_is_callable(py: &PyToken, callback_bits: u64) -> bool {
     // Use the shared bridge's decode-free callability oracle (single source of
     // truth shared with Python `callable()`). The previous
     // `to_i64(molt_is_callable(..)) == Some(1)` decode was wrong:
     // `molt_is_callable` returns a Python `bool` (TAG_BOOL) and `as_int()`
     // rejects bools, so the check was always `false` for genuine callables —
     // the root cause of `bind callback must be callable` on plain functions.
-    is_callable_bits(callback_bits)
+    is_callable_bits(py, callback_bits)
 }
 
 pub(super) fn register_callback_command(
@@ -168,7 +168,7 @@ pub(super) fn normalize_bind_add_prefix(py: &PyToken, add_bits: u64) -> Result<S
             )),
         };
     }
-    if let Some(value) = unsafe { string_obj_to_owned(add_obj) } {
+    if let Some(value) = unsafe { string_obj_to_owned(py, add_obj) } {
         return match value.as_str() {
             "" => Ok(String::new()),
             "+" => Ok("+".to_string()),

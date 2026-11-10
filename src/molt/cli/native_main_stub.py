@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli.native_launch_abi_generated import NATIVE_LAUNCH_C_DECLARATIONS
 from molt.cli.native_launch_plan import NativeLaunchPlan
@@ -197,13 +198,10 @@ static void molt_set_runtime_module_roots() {{
 #endif
 /* The launch ABI (runtime/native_launch_abi.toml). */
 /* MOLT_NATIVE_LAUNCH_DECLARATIONS */
-extern unsigned long long molt_runtime_shutdown();
 #ifdef _WIN32
 extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
 #endif
-extern void molt_main();
-extern void molt_dec_ref(unsigned long long bits);
-extern unsigned long long molt_get_attr_generic(void* obj, const char* attr, unsigned long long len);
+extern void MOLT_COMPILED_MAIN(unsigned long long context);
 
 /* Per-app callable resolver: the backend emits molt_app_resolve_callable into
  * the user object for the native app-callable manifest, and WASM emits the
@@ -240,7 +238,10 @@ int wmain(int argc, wchar_t** argv) {
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
-    molt_main();
+    unsigned long long context = molt_attached_context();
+    unsigned long long scope = molt_compiled_execution_enter(context);
+    MOLT_COMPILED_MAIN(context);
+    molt_compiled_execution_leave(context, scope);
     return molt_finish();
 }
 #else
@@ -253,11 +254,17 @@ int main(int argc, char** argv) {
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv(argc, (const char**)argv);
-    molt_main();
+    unsigned long long context = molt_attached_context();
+    unsigned long long scope = molt_compiled_execution_enter(context);
+    MOLT_COMPILED_MAIN(context);
+    molt_compiled_execution_leave(context, scope);
     return molt_finish();
 }
 #endif
 """
+    main_c_content = main_c_content.replace(
+        "MOLT_COMPILED_MAIN", compiled_execution_symbol("molt_main")
+    )
     main_c_content = main_c_content.replace(
         "/* MOLT_NATIVE_LAUNCH_DECLARATIONS */", NATIVE_LAUNCH_C_DECLARATIONS
     )

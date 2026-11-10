@@ -2235,8 +2235,10 @@ pub(crate) fn object_state_fetch_or(data_ptr: *mut u8, bits: i64) -> i64 {
 
 /// Read the generator/coroutine state for the object at `data_ptr`.
 /// Returns the state value (0 if the selected aux representation has no state lane).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_obj_get_state(data_ptr_bits: u64) -> i64 {
+pub(crate) fn molt_obj_get_state_attached_body(
+    _py: &crate::PyToken<'_>,
+    data_ptr_bits: u64,
+) -> i64 {
     let Some(data_ptr) = crate::provenance::abi::mut_ptr::<u8>(data_ptr_bits) else {
         return 0;
     };
@@ -2254,8 +2256,11 @@ pub extern "C" fn molt_obj_get_state(data_ptr_bits: u64) -> i64 {
 }
 
 /// Write the generator/coroutine state for the object at `data_ptr`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_obj_set_state(data_ptr_bits: u64, state: i64) {
+pub(crate) fn molt_obj_set_state_attached_body(
+    _py: &crate::PyToken<'_>,
+    data_ptr_bits: u64,
+    state: i64,
+) {
     let Some(data_ptr) = crate::provenance::abi::mut_ptr::<u8>(data_ptr_bits) else {
         return;
     };
@@ -2287,23 +2292,23 @@ pub extern "C" fn molt_obj_set_state(data_ptr_bits: u64, state: i64) {
 /// valid until every owner, including cyclic/internal owners, has been released
 /// and terminal cleanup has completed. Neither returning a boxed reference nor
 /// dropping only the caller's initial reference establishes that condition.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_init_stack(
+pub(crate) unsafe fn molt_object_init_stack_attached_body(
+    _py: &crate::PyToken<'_>,
     header_ptr: *mut u8,
     cls_bits: u64,
     payload_size_bytes: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if header_ptr.is_null() {
             return MoltObject::none().bits();
         }
         let cls_ptr = match obj_from_bits(cls_bits).as_ptr() {
             Some(p) => p,
-            None => return crate::molt_object_new_bound(cls_bits),
+            None => return crate::molt_object_new_bound_attached_body(_py, cls_bits),
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return crate::molt_object_new_bound(cls_bits);
+                return crate::molt_object_new_bound_attached_body(_py, cls_bits);
             }
             let Some(payload) = crate::usize_from_bits(payload_size_bytes) else {
                 return MoltObject::none().bits();
@@ -2316,7 +2321,7 @@ pub unsafe extern "C" fn molt_object_init_stack(
                 || layout::class_cached_layout_size(cls_ptr) != Some(payload)
                 || !class_has_stable_nonfinalizing_mro(_py, cls_ptr)
             {
-                return crate::molt_object_new_bound(cls_bits);
+                return crate::molt_object_new_bound_attached_body(_py, cls_bits);
             }
             let Some(total) = std::mem::size_of::<MoltHeader>().checked_add(payload) else {
                 return MoltObject::none().bits();
@@ -3420,10 +3425,9 @@ pub(crate) fn bits_from_ptr(ptr: *mut u8) -> u64 {
 
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
+pub(crate) unsafe fn molt_inc_ref_attached_body(_py: &crate::PyToken<'_>, ptr: *mut u8) {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             inc_ref_ptr(_py, ptr);
         })
     }
@@ -3431,10 +3435,9 @@ pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
 
 /// # Safety
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
+pub(crate) unsafe fn molt_dec_ref_attached_body(_py: &crate::PyToken<'_>, ptr: *mut u8) {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             dec_ref_ptr(_py, ptr);
         })
     }
@@ -3745,7 +3748,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
     // The finalizer may replace/delete its own class attribute. Retain the raw
     // callable across the call and post-failure policy repr/context reporting.
     let raw_del_context_bits = std::cell::Cell::new(0_u64);
-    let raw_del_owner = std::cell::RefCell::new(None::<crate::PtrDropGuard>);
+    let raw_del_owner = std::cell::RefCell::new(None::<crate::PtrDropGuard<'_>>);
     crate::builtins::exceptions::run_unraisable_with_policy(
         py,
         || {
@@ -3769,7 +3772,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
             };
             let _del_name_owner = obj_from_bits(del_name_bits)
                 .as_ptr()
-                .map(crate::PtrDropGuard::new);
+                .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
             let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 return;
             };
@@ -3783,7 +3786,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
                 raw_del_owner.replace(
                     obj_from_bits(raw_del_bits)
                         .as_ptr()
-                        .map(crate::PtrDropGuard::new),
+                        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr)),
                 ),
             );
             raw_del_context_bits.set(raw_del_bits);
@@ -3812,7 +3815,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
             let _del_owner = (del_bits != 0)
                 .then(|| obj_from_bits(del_bits).as_ptr())
                 .flatten()
-                .map(crate::PtrDropGuard::new);
+                .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
             #[cfg(test)]
             run_finalizer_resource_test_hook(
                 py,
@@ -3825,7 +3828,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
                 let _result_owner = (!obj_from_bits(result_bits).is_none())
                     .then(|| obj_from_bits(result_bits).as_ptr())
                     .flatten()
-                    .map(crate::PtrDropGuard::new);
+                    .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
             }
         },
     );
@@ -4730,6 +4733,8 @@ unsafe fn dec_ref_ptr_terminal_body(
     }
 }
 
+include!("../attached_exports_generated/object/mod.rs");
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4808,9 +4813,12 @@ mod tests {
         unsafe { molt_cpython_abi::api::refcount::Py_INCREF(ptr) };
     }
 
-    fn with_builtin_object_finalizer_flag<R>(run: impl FnOnce(u64) -> R) -> R {
-        let object_bits = crate::molt_object_new();
-        crate::with_gil_entry_nopanic!(_py, {
+    fn with_builtin_object_finalizer_flag<R>(
+        py: &crate::PyToken<'_>,
+        run: impl FnOnce(u64) -> R,
+    ) -> R {
+        let object_bits = crate::molt_object_new_attached_body(py);
+        crate::with_attached_entry_nopanic!(py, _py, {
             let class_ptr = crate::obj_from_bits(crate::builtin_classes(_py).object)
                 .as_ptr()
                 .expect("builtin object class");
@@ -4828,8 +4836,11 @@ mod tests {
     #[test]
     fn finalizer_first_borrowed_abi_view_is_reconciled_and_retired() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
         FINALIZER_VIEW_PTR.store(0, Ordering::SeqCst);
-        with_builtin_object_finalizer_flag(|object_bits| {
+        with_builtin_object_finalizer_flag(py, |object_bits| {
             super::FINALIZER_WINDOW_TEST_HOOK
                 .with(|slot| slot.set(Some(publish_borrowed_abi_view)));
             crate::with_gil_entry_nopanic!(_py, {
@@ -4848,8 +4859,11 @@ mod tests {
     #[test]
     fn finalizer_first_direct_c_view_roots_until_c_decref() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
         FINALIZER_VIEW_PTR.store(0, Ordering::SeqCst);
-        with_builtin_object_finalizer_flag(|object_bits| {
+        with_builtin_object_finalizer_flag(py, |object_bits| {
             super::FINALIZER_WINDOW_TEST_HOOK.with(|slot| slot.set(Some(publish_direct_abi_view)));
             crate::with_gil_entry_nopanic!(_py, {
                 dec_ref_bits(_py, object_bits);
@@ -5145,7 +5159,10 @@ mod tests {
     #[test]
     fn bare_object_constructor_owns_class_edge_and_rejects_immutable_reassignment() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let obj_bits = crate::molt_object_new();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        let obj_bits = crate::molt_object_new_attached_body(py);
         let (class_bits, initial_class_rc) = crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = crate::obj_from_bits(obj_bits)
                 .as_ptr()
@@ -5190,11 +5207,28 @@ mod tests {
                 crate::MoltObject::from_ptr(class_ptr).bits(),
             );
             dec_ref_bits(_py, dict_name);
+            // CPython's add_weak rule: a heap class over `object` without
+            // __slots__ also gets a __weakref__ getset, which owns the class too.
+            let weakref_name = crate::dynamic_attr_name_bits(_py, b"__weakref__")
+                .expect("weakref descriptor name");
+            let weakref = unsafe { crate::dict_get_in_place(_py, namespace, weakref_name) }
+                .expect("namespace lookup succeeded")
+                .expect("sealed class owns a __weakref__ descriptor");
+            let weakref_ptr = crate::obj_from_bits(weakref).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { super::layout::native_descriptor_flavor(weakref_ptr) },
+                Some(super::layout::NativeDescriptorFlavor::InstanceWeakref),
+            );
+            assert_eq!(
+                unsafe { super::layout::native_descriptor_owner_bits(weakref_ptr) },
+                crate::MoltObject::from_ptr(class_ptr).bits(),
+            );
+            dec_ref_bits(_py, weakref_name);
             assert!(!crate::exception_pending(_py));
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                allocated_class_rc + 1,
-                "sealing publishes the descriptor's class owner before the baseline"
+                allocated_class_rc + 2,
+                "sealing publishes both descriptors' class owners before the baseline"
             );
             (crate::MoltObject::from_ptr(class_ptr).bits(), unsafe {
                 (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot()
@@ -5205,7 +5239,8 @@ mod tests {
             .as_ptr()
             .expect("bare object allocation");
         let result = unsafe {
-            crate::molt_object_set_class(
+            crate::molt_object_set_class_attached_body(
+                py,
                 crate::provenance::abi::expose_address(obj_ptr),
                 class_bits,
             )
@@ -5214,7 +5249,7 @@ mod tests {
 
         crate::with_gil_entry_nopanic!(_py, {
             assert!(crate::exception_pending(_py));
-            let exception = crate::molt_exception_last();
+            let exception = crate::molt_exception_last_attached_body(_py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 exception,
@@ -5237,7 +5272,7 @@ mod tests {
                 class_rc, initial_class_rc,
                 "rejected replacement must not acquire the candidate class edge"
             );
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
             dec_ref_bits(_py, exception);
             dec_ref_bits(_py, obj_bits);
             assert_eq!(
@@ -5256,8 +5291,8 @@ mod tests {
             unsafe { super::heap_lifecycle::clear_cycle_edges(_py, class_ptr) };
             assert_eq!(
                 unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
-                initial_class_rc - 1,
-                "fixture teardown releases the descriptor-owned class reference"
+                initial_class_rc - 2,
+                "fixture teardown releases both descriptor-owned class references"
             );
             dec_ref_bits(_py, class_bits);
             assert!(!crate::exception_pending(_py));

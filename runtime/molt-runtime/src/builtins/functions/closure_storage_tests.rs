@@ -4,30 +4,48 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 static CALLBACK_SLOT: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_OBSERVED: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn closure_payload(_value: u64) -> u64 {
+extern "C" fn closure_payload(__context: u64, _value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits()
 }
 
-extern "C" fn closure_reentrant_release(_weak: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn closure_reentrant_release(__context: u64, _weak: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         let address = CALLBACK_SLOT.load(AtomicOrdering::SeqCst);
         let slot = crate::provenance::abi::mut_ptr::<u64>(address)
             .expect("registered closure slot address");
         assert!(!slot.is_null());
         CALLBACK_OBSERVED.store(unsafe { *slot }, AtomicOrdering::SeqCst);
-        unsafe { molt_closure_store(address, 0, MoltObject::from_int(77).bits()) }
-    })
+        unsafe {
+            molt_closure_store_attached_body(_py, address, 0, MoltObject::from_int(77).bits())
+        }
+    }
 }
 
-fn callable(_py: &PyToken<'_>, name: &str, target: extern "C" fn(u64) -> u64) -> u64 {
+fn callable(_py: &PyToken<'_>, name: &str, target: extern "C" fn(u64, u64) -> u64) -> u64 {
     let ptr = alloc_runtime_function_obj(_py, runtime_fn_addr(name, target as *const ()), 1);
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
 }
 
 fn watch(_py: &PyToken<'_>, target: u64, callback: u64) -> u64 {
-    let class = crate::molt_weakref_reference_type();
-    let weak = crate::molt_weakref_new(class, target, callback);
+    let class = crate::builtins::weakref_type::molt_weakref_reference_type_attached_body(_py);
+    let weak =
+        crate::builtins::weakref_type::molt_weakref_new_attached_body(_py, class, target, callback);
     dec_ref_bits(_py, class);
     assert!(!exception_pending(_py));
     assert!(!obj_from_bits(weak).is_none());
@@ -35,14 +53,14 @@ fn watch(_py: &PyToken<'_>, target: u64, callback: u64) -> u64 {
 }
 
 fn closure_slot(_py: &PyToken<'_>, initial: u64) -> (u64, *mut u64, u64) {
-    let storage = crate::molt_alloc(std::mem::size_of::<u64>() as u64);
+    let storage = crate::molt_alloc_attached_body(_py, std::mem::size_of::<u64>() as u64);
     let ptr = obj_from_bits(storage)
         .as_ptr()
         .expect("allocated closure payload");
     let slot = ptr.cast::<u64>();
     let address = crate::provenance::abi::expose_address(ptr);
-    unsafe { molt_closure_store(address, 0, initial) };
-    crate::molt_object_publish_initialized(storage);
+    unsafe { molt_closure_store_attached_body(_py, address, 0, initial) };
+    crate::molt_object_publish_initialized_attached_body(_py, storage);
     assert!(!exception_pending(_py));
     (storage, slot, address)
 }
@@ -54,14 +72,14 @@ fn closure_payload_terminal_release_and_cycle_clear_own_every_capture_word() {
         for cycle_clear in [false, true] {
             let value = callable(_py, "closure_payload", closure_payload);
             let weak = watch(_py, value, MoltObject::none().bits());
-            let storage = crate::molt_alloc(16);
+            let storage = crate::molt_alloc_attached_body(_py, 16);
             let ptr = obj_from_bits(storage).as_ptr().unwrap();
             let address = crate::provenance::abi::expose_address(ptr);
             unsafe {
-                molt_closure_store(address, 0, value);
-                molt_closure_store(address, 8, value);
+                molt_closure_store_attached_body(_py, address, 0, value);
+                molt_closure_store_attached_body(_py, address, 8, value);
             }
-            crate::molt_object_publish_initialized(storage);
+            crate::molt_object_publish_initialized_attached_body(_py, storage);
             let mut captured = Vec::new();
             unsafe {
                 crate::object::heap_lifecycle::visit_owned_edges(_py, ptr, &mut |child| {
@@ -78,11 +96,21 @@ fn closure_payload_terminal_release_and_cycle_clear_own_every_capture_word() {
             dec_ref_bits(_py, value);
             if cycle_clear {
                 unsafe { crate::object::heap_lifecycle::clear_cycle_edges(_py, ptr) };
-                assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+                assert!(
+                    obj_from_bits(
+                        crate::builtins::weakref_type::molt_weakref_call_attached_body(_py, weak)
+                    )
+                    .is_none()
+                );
                 unsafe { crate::object::heap_lifecycle::clear_cycle_edges(_py, ptr) };
             }
             dec_ref_bits(_py, storage);
-            assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+            assert!(
+                obj_from_bits(
+                    crate::builtins::weakref_type::molt_weakref_call_attached_body(_py, weak)
+                )
+                .is_none()
+            );
             dec_ref_bits(_py, weak);
             assert!(!exception_pending(_py));
         }
@@ -98,7 +126,7 @@ fn closure_store_self_assignment_preserves_sole_slot_owner() {
         let (storage, slot, address) = closure_slot(_py, owner);
         // Leave the real payload as the value's sole strong owner.
         dec_ref_bits(_py, owner);
-        unsafe { molt_closure_store(address, 0, owner) };
+        unsafe { molt_closure_store_attached_body(_py, address, 0, owner) };
         assert_eq!(unsafe { *slot }, owner);
         assert_ne!(
             unsafe {
@@ -107,14 +135,19 @@ fn closure_store_self_assignment_preserves_sole_slot_owner() {
             },
             0
         );
-        let observed = crate::molt_weakref_call(weak);
+        let observed = crate::builtins::weakref_type::molt_weakref_call_attached_body(_py, weak);
         assert_eq!(
             observed, owner,
             "self assignment must not finalize the slot owner"
         );
         dec_ref_bits(_py, observed);
-        unsafe { molt_closure_store(address, 0, MoltObject::none().bits()) };
-        assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+        unsafe { molt_closure_store_attached_body(_py, address, 0, MoltObject::none().bits()) };
+        assert!(
+            obj_from_bits(
+                crate::builtins::weakref_type::molt_weakref_call_attached_body(_py, weak)
+            )
+            .is_none()
+        );
         dec_ref_bits(_py, weak);
         dec_ref_bits(_py, storage);
         assert!(!exception_pending(_py));
@@ -136,11 +169,16 @@ fn closure_store_callback_observes_publication_and_keeps_reentrant_replacement()
         CALLBACK_SLOT.store(address, AtomicOrdering::SeqCst);
         CALLBACK_OBSERVED.store(0, AtomicOrdering::SeqCst);
 
-        unsafe { molt_closure_store(address, 0, incoming) };
+        unsafe { molt_closure_store_attached_body(_py, address, 0, incoming) };
 
         assert_eq!(CALLBACK_OBSERVED.load(AtomicOrdering::SeqCst), incoming);
         assert_eq!(unsafe { *slot }, MoltObject::from_int(77).bits());
-        assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+        assert!(
+            obj_from_bits(
+                crate::builtins::weakref_type::molt_weakref_call_attached_body(_py, weak)
+            )
+            .is_none()
+        );
         CALLBACK_SLOT.store(0, AtomicOrdering::SeqCst);
         dec_ref_bits(_py, incoming);
         dec_ref_bits(_py, weak);

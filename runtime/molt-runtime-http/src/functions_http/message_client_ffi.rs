@@ -1,9 +1,11 @@
 use super::*;
 use molt_runtime_core::BuiltinExc;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_parse_header_pairs(data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_parse_header_pairs_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -16,9 +18,8 @@ pub extern "C" fn molt_http_parse_header_pairs(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_new() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_message_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = http_message_store_new() else {
             return MoltObject::none().bits();
         };
@@ -26,9 +27,11 @@ pub extern "C" fn molt_http_message_new() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_parse(data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_message_parse_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -41,13 +44,13 @@ pub extern "C" fn molt_http_message_parse(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_set_raw(
+pub fn molt_http_message_set_raw_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -71,13 +74,13 @@ pub extern "C" fn molt_http_message_set_raw(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_get(
+pub fn molt_http_message_get_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -118,9 +121,12 @@ pub extern "C" fn molt_http_message_get(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_message_get_all_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -150,9 +156,11 @@ pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_items(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_message_items_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -182,9 +190,12 @@ pub extern "C" fn molt_http_message_items(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_message_contains_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -205,9 +216,11 @@ pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_len(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_message_len_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -224,9 +237,11 @@ pub extern "C" fn molt_http_message_len(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_message_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_message_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -236,8 +251,8 @@ pub extern "C" fn molt_http_message_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_new(
+pub fn molt_http_client_connection_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     host_bits: u64,
     port_bits: u64,
     timeout_bits: u64,
@@ -248,8 +263,8 @@ pub extern "C" fn molt_http_client_connection_new(
 /// Constructor for `http.client.HTTPSConnection` — same shape as
 /// `molt_http_client_connection_new` but marks the connection as TLS so that
 /// request execution dispatches over rustls.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_new_https(
+pub fn molt_http_client_connection_new_https_attached_body(
+    _py: &molt_runtime_core::PyToken,
     host_bits: u64,
     port_bits: u64,
     timeout_bits: u64,
@@ -298,13 +313,13 @@ pub(super) fn http_client_connection_new_impl(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_putrequest(
+pub fn molt_http_client_connection_putrequest_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     method_bits: u64,
     url_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(v) => v,
             Err(e) => return e,
@@ -342,9 +357,11 @@ pub extern "C" fn molt_http_client_connection_putrequest(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_validate_header_name(header_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_validate_header_name_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    header_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(bytes) = (unsafe { bytes_like_slice(header_bits) }) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "header must be bytes-like");
         };
@@ -355,9 +372,11 @@ pub extern "C" fn molt_http_client_validate_header_name(header_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_validate_header_value(value_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_validate_header_value_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(bytes) = (unsafe { bytes_like_slice(value_bits) }) else {
             return raise_exception::<_>(
                 _py,
@@ -372,9 +391,12 @@ pub extern "C" fn molt_http_client_validate_header_value(value_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_send(handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_connection_send_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(v) => v,
             Err(e) => return e,
@@ -403,9 +425,11 @@ pub extern "C" fn molt_http_client_connection_send(handle_bits: u64, data_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_connection_getresponse_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -446,9 +470,11 @@ pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_close(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_connection_close_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -466,9 +492,11 @@ pub extern "C" fn molt_http_client_connection_close(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_connection_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -478,24 +506,33 @@ pub extern "C" fn molt_http_client_connection_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_read(handle_bits: u64, size_bits: u64) -> u64 {
-    molt_urllib_request_response_read(handle_bits, size_bits)
+pub fn molt_http_client_response_read_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    size_bits: u64,
+) -> u64 {
+    molt_urllib_request_response_read_attached_body(_py, handle_bits, size_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_close(handle_bits: u64) -> u64 {
-    molt_urllib_request_response_close(handle_bits)
+pub fn molt_http_client_response_close_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_urllib_request_response_close_attached_body(_py, handle_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_drop(handle_bits: u64) -> u64 {
-    molt_urllib_request_response_drop(handle_bits)
+pub fn molt_http_client_response_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_urllib_request_response_drop_attached_body(_py, handle_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getstatus(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_response_getstatus_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -512,9 +549,11 @@ pub extern "C" fn molt_http_client_response_getstatus(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getreason(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_response_getreason_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -540,13 +579,13 @@ pub extern "C" fn molt_http_client_response_getreason(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getheader(
+pub fn molt_http_client_response_getheader_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -582,9 +621,11 @@ pub extern "C" fn molt_http_client_response_getheader(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getheaders(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_response_getheaders_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -605,9 +646,11 @@ pub extern "C" fn molt_http_client_response_getheaders(handle_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_message(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_client_response_message_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -615,3 +658,5 @@ pub extern "C" fn molt_http_client_response_message(handle_bits: u64) -> u64 {
         urllib_response_message_bits(_py, handle)
     })
 }
+
+include!("../attached_exports_generated/functions_http/message_client_ffi.rs");

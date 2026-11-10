@@ -20,8 +20,9 @@ fn new_namespace(py: &PyToken<'_>) -> *mut u8 {
     dict
 }
 
-fn guard(mask: u64) -> bool {
-    let bits = molt_guard_builtin_bindings(MoltObject::from_int(mask as i64).bits());
+fn guard(py: &PyToken<'_>, mask: u64) -> bool {
+    let bits =
+        molt_guard_builtin_bindings_attached_body(py, MoltObject::from_int(mask as i64).bits());
     obj_from_bits(bits).as_bool().expect("guard returns a bool")
 }
 
@@ -120,7 +121,7 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
         seal_builtins_namespace(py, builtins, 0);
         let globals = new_namespace(py);
         let both = bit("len") | bit("range");
-        assert!(!guard(both), "no active frame proves nothing");
+        assert!(!guard(py, both), "no active frame proves nothing");
 
         let push = |globals: *mut u8, builtins: *mut u8| {
             let globals = MoltObject::from_ptr(globals).bits();
@@ -130,28 +131,28 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
             frame_stack_push_owned(py, 0, globals, builtins, 0);
         };
         push(globals, builtins);
-        assert!(guard(both));
-        assert!(!guard(bit("print")), "an unpublished builtin fails");
+        assert!(guard(py, both));
+        assert!(!guard(py, bit("print")), "an unpublished builtin fails");
         assert_eq!(
-            molt_guard_builtin_bindings(MoltObject::from_int(-1).bits()),
+            molt_guard_builtin_bindings_attached_body(py, MoltObject::from_int(-1).bits()),
             MoltObject::from_bool(false).bits(),
             "a mask outside the table fails"
         );
         assert_eq!(
-            molt_guard_builtin_bindings(MoltObject::none().bits()),
+            molt_guard_builtin_bindings_attached_body(py, MoltObject::none().bits()),
             MoltObject::from_bool(false).bits(),
             "a mask that is not an int fails"
         );
         assert!(unsafe { dict_set_in_place(py, globals, key(py, b"len"), value) });
-        assert!(!guard(both), "the globals shadow len");
-        assert!(guard(bit("range")));
+        assert!(!guard(py, both), "the globals shadow len");
+        assert!(guard(py, bit("range")));
         frame_stack_pop(py);
 
         let unsealed = new_namespace(py);
         let fresh = new_namespace(py);
         push(fresh, unsealed);
         assert!(
-            !guard(bit("range")),
+            !guard(py, bit("range")),
             "builtins that were never sealed prove nothing"
         );
         frame_stack_pop(py);
@@ -159,7 +160,7 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
         let user_globals = alloc_dict_with_pairs(py, &[]);
         push(user_globals, builtins);
         assert!(
-            !guard(bit("range")),
+            !guard(py, bit("range")),
             "an untracked globals dict proves nothing"
         );
         frame_stack_pop(py);
@@ -173,8 +174,8 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
             )
         });
         push(fresh, builtins);
-        assert!(!guard(bit("range")), "a rebound builtin fails");
-        assert!(guard(bit("len")));
+        assert!(!guard(py, bit("range")), "a rebound builtin fails");
+        assert!(guard(py, bit("len")));
         frame_stack_pop(py);
         for dict in [builtins, globals, unsealed, fresh, user_globals] {
             dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
@@ -212,7 +213,7 @@ fn every_whole_contents_reset_path_updates_guard_state() {
 
         // `dict.clear()` and the C-API `PyDict_Clear` share `molt_dict_clear`.
         let cleared = sealed_builtins(py);
-        let result = crate::molt_dict_clear(MoltObject::from_ptr(cleared).bits());
+        let result = crate::molt_dict_clear_attached_body(py, MoltObject::from_ptr(cleared).bits());
         assert!(obj_from_bits(result).is_none() && !exception_pending(py));
         assert_eq!(guard_bits(cleared), BUILTIN_BINDING_GUARD_ALL_MASK);
 

@@ -44,6 +44,11 @@ mod tests {
             let bits = MoltObject::from_ptr(ptr).bits();
             (ptr, bits)
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(
+            !crate::concurrency::gil::gil_held(),
+            "resolve caller must be detached from the GIL"
+        );
         #[cfg(target_arch = "wasm32")]
         {
             let resolved = molt_handle_resolve(bits);

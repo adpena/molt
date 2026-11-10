@@ -59,7 +59,9 @@ unsafe extern "C" fn warnings_state_init() -> *mut u8 {
     Box::into_raw(Box::new(WarningsState::new())).cast()
 }
 
-unsafe extern "C" fn warnings_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn warnings_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     if let Some(state) = unsafe { ptr.cast::<WarningsState>().as_ref() } {
         state.clear();
     }
@@ -191,7 +193,10 @@ fn call_method1<'a, 'py>(
     let name = name
         .owned_bits(py)
         .map(|bits| ExceptionValue::adopt(py, bits))?;
-    let method = ExceptionValue::adopt(py, molt_get_attr_name(receiver, name.bits()));
+    let method = ExceptionValue::adopt(
+        py,
+        molt_get_attr_name_attached_body(py, receiver, name.bits()),
+    );
     if exception_pending(py) {
         return None;
     }
@@ -208,7 +213,7 @@ fn warnings_module_attr<'a, 'py>(
     attr: crate::NameId,
 ) -> Result<Option<ExceptionValue<'a, 'py>>, ()> {
     let name = owned_name(py, b"warnings").ok_or(())?;
-    let module = ExceptionValue::adopt(py, molt_module_cache_get(name.bits()));
+    let module = ExceptionValue::adopt(py, molt_module_cache_get_attached_body(py, name.bits()));
     if exception_pending(py) {
         return Err(());
     }
@@ -461,7 +466,7 @@ fn add_filter(py: &PyToken<'_>, fields: [u64; 5], append: u64) -> bool {
     };
     if append {
         if existing.is_none() {
-            crate::molt_list_append(filters.bits(), item.bits());
+            crate::molt_list_append_attached_body(py, filters.bits(), item.bits());
         }
     } else {
         if let Some(index) = existing
@@ -469,7 +474,12 @@ fn add_filter(py: &PyToken<'_>, fields: [u64; 5], append: u64) -> bool {
         {
             return false;
         }
-        crate::molt_list_insert(filters.bits(), MoltObject::from_int(0).bits(), item.bits());
+        crate::molt_list_insert_attached_body(
+            py,
+            filters.bits(),
+            MoltObject::from_int(0).bits(),
+            item.bits(),
+        );
     }
     if exception_pending(py) {
         return false;
@@ -611,7 +621,7 @@ fn dict_storage(py: &PyToken<'_>, mapping: u64) -> Result<Option<*mut u8>, ()> {
 /// before the `sys` module exists.
 fn sys_globals<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>> {
     let name = owned_name(py, b"sys")?;
-    let module = ExceptionValue::adopt(py, molt_module_cache_get(name.bits()));
+    let module = ExceptionValue::adopt(py, molt_module_cache_get_attached_body(py, name.bits()));
     if exception_pending(py) {
         return None;
     }
@@ -939,7 +949,7 @@ fn warn_explicit(
     // what is displayed. Constructing it may run a callback that changes the
     // filters, so it precedes the filter search even for "ignore".
     let (text, category, message) = if is_warning {
-        let text = ExceptionValue::adopt(py, molt_str_from_obj(message));
+        let text = ExceptionValue::adopt(py, molt_str_from_obj_attached_body(py, message));
         if exception_pending(py) {
             return false;
         }
@@ -978,7 +988,7 @@ fn warn_explicit(
     let action_text = string_from_bits(py, action.bits()).unwrap_or_default();
     match action_text.as_str() {
         "error" => {
-            molt_raise(message.bits());
+            molt_raise_attached_body(py, message.bits());
             return false;
         }
         "ignore" => return true,
@@ -1118,13 +1128,13 @@ pub(crate) fn emit_warning_object(
 
 /// `_warnings.warn`: validate the category, attribute the warning
 /// `stacklevel` frames above the shim's caller, then emit it.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_warn(
+pub(crate) fn molt_warnings_warn_attached_body(
+    _py: &crate::PyToken<'_>,
     message_bits: u64,
     category_bits: u64,
     stacklevel_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let stacklevel = to_i64(obj_from_bits(stacklevel_bits)).unwrap_or(1);
         if let Some(category) = get_category(_py, message_bits, category_bits)
             && let Some(location) = warning_location(_py, stacklevel, WARN_ENTRY_FRAMES)
@@ -1147,8 +1157,12 @@ pub extern "C" fn molt_warnings_warn(
 /// omitted `module` after `filename`; an explicit `None` ignores the warning.
 /// `module_globals` must be a dictionary or `None`; sources are read by file
 /// name, so its loader is not consulted.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_warn_explicit(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub(crate) fn molt_warnings_warn_explicit_attached_body(
+    _py: &crate::PyToken<'_>,
     message_bits: u64,
     category_bits: u64,
     filename_bits: u64,
@@ -1157,7 +1171,7 @@ pub extern "C" fn molt_warnings_warn_explicit(
     registry_bits: u64,
     module_globals_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if string_from_bits(_py, filename_bits).is_none() {
             let message = format!(
                 "warn_explicit() argument 3 must be str, not {}",
@@ -1200,15 +1214,15 @@ pub extern "C" fn molt_warnings_warn_explicit(
 
 /// `warnings._formatwarnmsg_impl`: the CPython warning text, with the source
 /// line read from `filename` when `line` is `None`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_formatwarning(
+pub(crate) fn molt_warnings_formatwarning_attached_body(
+    _py: &crate::PyToken<'_>,
     message_bits: u64,
     category_bits: u64,
     filename_bits: u64,
     lineno_bits: u64,
     line_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let category = display_category_name(_py, category_bits);
         match format_warning(
             _py,
@@ -1226,14 +1240,14 @@ pub extern "C" fn molt_warnings_formatwarning(
 
 /// `warnings.simplefilter` after its checks: CPython's
 /// `_add_filter(action, None, category, None, lineno, append=append)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_simplefilter(
+pub(crate) fn molt_warnings_simplefilter_attached_body(
+    _py: &crate::PyToken<'_>,
     action_bits: u64,
     category_bits: u64,
     lineno_bits: u64,
     append_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         add_filter(
             _py,
@@ -1248,8 +1262,8 @@ pub extern "C" fn molt_warnings_simplefilter(
 /// `_add_filter(action, message, category, module, lineno, append=append)`.
 /// `message` and `module` are compiled patterns or `None`; a plain `str`
 /// matches exactly, as CPython's internal default filters do.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_filterwarnings(
+pub(crate) fn molt_warnings_filterwarnings_attached_body(
+    _py: &crate::PyToken<'_>,
     action_bits: u64,
     message_bits: u64,
     category_bits: u64,
@@ -1257,7 +1271,7 @@ pub extern "C" fn molt_warnings_filterwarnings(
     lineno_bits: u64,
     append_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         add_filter(
             _py,
             [
@@ -1274,11 +1288,10 @@ pub extern "C" fn molt_warnings_filterwarnings(
 }
 
 /// `warnings.resetwarnings`: empty the filter list and age every registry.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_resetwarnings() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_warnings_resetwarnings_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(filters) = get_filters(_py) {
-            crate::molt_list_clear(filters.bits());
+            crate::molt_list_clear_attached_body(_py, filters.bits());
             if !exception_pending(_py) {
                 filters_mutated(_py);
             }
@@ -1289,30 +1302,29 @@ pub extern "C" fn molt_warnings_resetwarnings() -> u64 {
 
 /// `_warnings.filters`: the filter list the engine reads, which
 /// `warnings.filters` aliases.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_filters_get() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_warnings_filters_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         get_filters(_py).map_or_else(|| MoltObject::none().bits(), ExceptionValue::into_bits)
     })
 }
 
 /// `_warnings._onceregistry`: the registry of the "once" action for warnings
 /// emitted without a registry, which `warnings.onceregistry` aliases.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_onceregistry_get() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_warnings_onceregistry_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         get_once_registry(_py).map_or_else(|| MoltObject::none().bits(), ExceptionValue::into_bits)
     })
 }
 
 /// `_warnings._filters_mutated`: age every registry after the filters change.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_warnings_filters_mutated() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_warnings_filters_mutated_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         filters_mutated(_py);
         MoltObject::none().bits()
     })
 }
+
+include!("../attached_exports_generated/builtins/warnings_ext.rs");
 
 #[cfg(test)]
 mod tests {
@@ -1340,6 +1352,7 @@ mod tests {
     /// The fixture's `WarningMessage`: the record is the tuple of the four
     /// fields `call_show_warning` must pass, with `file` and `line` `None`.
     extern "C" fn warning_message(
+        __context: u64,
         message: u64,
         category: u64,
         filename: u64,
@@ -1347,16 +1360,32 @@ mod tests {
         file: u64,
         line: u64,
     ) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             assert!(obj_from_bits(file).is_none() && obj_from_bits(line).is_none());
             MoltObject::from_ptr(alloc_tuple(py, &[message, category, filename, lineno])).bits()
-        })
+        }
     }
 
     /// The fixture's `_showwarnmsg`: record the display, or fail with the
     /// configured error.
-    extern "C" fn show_warning_message(record: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn show_warning_message(__context: u64, record: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let fields = unsafe {
                 crate::object::seq_access::with_immutable_tuple_slice(
                     obj_from_bits(record).as_ptr().unwrap(),
@@ -1364,7 +1393,7 @@ mod tests {
                 )
             }
             .unwrap();
-            let text = ExceptionValue::adopt(py, molt_str_from_obj(fields[0]));
+            let text = ExceptionValue::adopt(py, molt_str_from_obj_attached_body(py, fields[0]));
             SHOWN.with(|value| {
                 value.borrow_mut().push((
                     string_from_bits(py, text.bits()).unwrap(),
@@ -1375,17 +1404,29 @@ mod tests {
             });
             let error = CALLBACK_ERROR.with(std::cell::Cell::get);
             if error != 0 {
-                return molt_raise(error);
+                return molt_raise_attached_body(py, error);
             }
             MoltObject::none().bits()
-        })
+        }
     }
 
-    extern "C" fn warning_init_changes_filter(_receiver: u64, _message: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn warning_init_changes_filter(
+        __context: u64,
+        _receiver: u64,
+        _message: u64,
+    ) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             set_action(py, b"error");
             MoltObject::none().bits()
-        })
+        }
     }
 
     struct ResetWarnings;
@@ -1397,12 +1438,13 @@ mod tests {
                 unsafe { errors::PyErr_Clear() };
                 clear_exception(py);
                 if let Some(name) = dynamic_attr_name_bits(py, b"warnings") {
-                    let result = crate::builtins::modules::molt_module_cache_del(name);
+                    let result =
+                        crate::builtins::modules::molt_module_cache_del_attached_body(py, name);
                     dec_ref_bits(py, result);
                     dec_ref_bits(py, name);
                 }
                 clear_exception(py);
-                molt_warnings_resetwarnings();
+                molt_warnings_resetwarnings_attached_body(py);
             });
         }
     }
@@ -1411,6 +1453,7 @@ mod tests {
     /// CPython's default filters.
     fn fresh_state(py: &PyToken<'_>) {
         crate::state::runtime_state::runtime_extension_state_clear_and_drop_key(
+            py,
             crate::state::runtime_state::runtime_state(py),
             WARNINGS_STATE_KEY,
         );
@@ -1421,9 +1464,10 @@ mod tests {
     }
 
     fn set_action(py: &PyToken<'_>, action: &[u8]) {
-        molt_warnings_resetwarnings();
+        molt_warnings_resetwarnings_attached_body(py);
         let action = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, action).unwrap());
-        let result = molt_warnings_simplefilter(
+        let result = molt_warnings_simplefilter_attached_body(
+            py,
             action.bits(),
             class(py, crate::BuiltinExc::Warning),
             MoltObject::from_int(0).bits(),
@@ -1460,7 +1504,11 @@ mod tests {
             let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
             set_module_attr(py, &module, attr, function.bits());
         }
-        let result = crate::builtins::modules::molt_module_cache_set(name.bits(), module.bits());
+        let result = crate::builtins::modules::molt_module_cache_set_attached_body(
+            py,
+            name.bits(),
+            module.bits(),
+        );
         dec_ref_bits(py, result);
         assert!(!exception_pending(py));
         module
@@ -1468,7 +1516,7 @@ mod tests {
 
     fn set_module_attr(py: &PyToken<'_>, module: &ExceptionValue<'_, '_>, attr: &[u8], value: u64) {
         let attr = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, attr).unwrap());
-        let result = crate::molt_set_attr_name(module.bits(), attr.bits(), value);
+        let result = crate::molt_set_attr_name_attached_body(py, module.bits(), attr.bits(), value);
         dec_ref_bits(py, result);
         assert!(!exception_pending(py));
     }
@@ -1518,7 +1566,7 @@ mod tests {
             let name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"warnings").unwrap());
             let module = ExceptionValue::adopt(
                 py,
-                crate::builtins::modules::molt_module_cache_get(name.bits()),
+                crate::builtins::modules::molt_module_cache_get_attached_body(py, name.bits()),
             );
             assert!(obj_from_bits(module.bits()).is_none());
             set_action(py, b"ignore");
@@ -1595,8 +1643,12 @@ mod tests {
             );
             assert!(!init.is_null());
             let init = ExceptionValue::adopt(py, MoltObject::from_ptr(init).bits());
-            let result =
-                crate::molt_set_attr_name(category_bits.bits(), init_name.bits(), init.bits());
+            let result = crate::molt_set_attr_name_attached_body(
+                py,
+                category_bits.bits(),
+                init_name.bits(),
+                init.bits(),
+            );
             dec_ref_bits(py, result);
             assert!(!exception_pending(py));
             set_action(py, b"ignore");
@@ -1776,7 +1828,7 @@ mod tests {
         let _reset = ResetWarnings;
         crate::with_gil_entry_nopanic!(py, {
             fresh_state(py);
-            let filters = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            let filters = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert!(!exception_pending(py));
             let row = |action: &str, category: &str, module: Option<&str>| {
                 (
@@ -1798,7 +1850,7 @@ mod tests {
                 ]
             );
             // One list: every read returns the same object.
-            let again = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            let again = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert_eq!(again.bits(), filters.bits());
             // DeprecationWarning shows in `__main__`, nowhere else; other
             // categories fall through to the default action.
@@ -1844,7 +1896,10 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             // Resolve the cached classes and names before memory is denied.
             fresh_state(py);
-            drop(ExceptionValue::adopt(py, molt_warnings_filters_get()));
+            drop(ExceptionValue::adopt(
+                py,
+                molt_warnings_filters_get_attached_body(py),
+            ));
             fresh_state(py);
             crate::resource::set_tracker(Box::new(crate::resource::LimitedTracker::new(
                 &crate::resource::ResourceLimits {
@@ -1853,13 +1908,13 @@ mod tests {
                 },
             )));
             let denied = RestoreTracker;
-            let result = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            let result = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert!(obj_from_bits(result.bits()).is_none());
             assert!(exception_pending(py));
             assert_eq!(warnings_state(py).filters.load(Ordering::Acquire), 0);
             drop(denied);
             clear_exception(py);
-            let filters = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            let filters = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert!(!exception_pending(py));
             assert_eq!(filter_rows(py, filters.bits()).len(), 5);
         });
@@ -1870,8 +1925,8 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let _reset = ResetWarnings;
         crate::with_gil_entry_nopanic!(py, {
-            let filters = ExceptionValue::adopt(py, molt_warnings_filters_get());
-            molt_warnings_resetwarnings();
+            let filters = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
+            molt_warnings_resetwarnings_attached_body(py);
             let start = version(py);
             let user = class(py, crate::BuiltinExc::UserWarning);
             let none = MoltObject::none().bits();
@@ -1880,7 +1935,8 @@ mod tests {
                 |text: &[u8]| ExceptionValue::adopt(py, dynamic_attr_name_bits(py, text).unwrap());
             let (ignore, error, always) = (name(b"ignore"), name(b"error"), name(b"always"));
             let simple = |action: u64, append: bool| {
-                molt_warnings_simplefilter(
+                molt_warnings_simplefilter_attached_body(
+                    py,
                     action,
                     user,
                     zero,
@@ -1912,12 +1968,13 @@ mod tests {
             // Every call ages the registries, even one that changed nothing.
             assert_eq!(version(py), start + 6);
             // `_filters_mutated` alone ages them too.
-            molt_warnings_filters_mutated();
+            molt_warnings_filters_mutated_attached_body(py);
             assert_eq!(version(py), start + 7);
             // A plain str pattern matches exactly; the list is mutated in place.
             let exact = ExceptionValue::adopt(py, alloc_string_result(py, "exact"));
             let pkg = ExceptionValue::adopt(py, alloc_string_result(py, "pkg"));
-            molt_warnings_filterwarnings(
+            molt_warnings_filterwarnings_attached_body(
+                py,
                 error.bits(),
                 exact.bits(),
                 class(py, crate::BuiltinExc::DeprecationWarning),
@@ -1926,7 +1983,7 @@ mod tests {
                 MoltObject::from_bool(false).bits(),
             );
             assert!(!exception_pending(py));
-            let again = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            let again = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert_eq!(again.bits(), filters.bits());
             let action = |category: crate::BuiltinExc, text: &str, module: &str, line: i64| {
                 let text = ExceptionValue::adopt(py, alloc_string_result(py, text));
@@ -1960,7 +2017,8 @@ mod tests {
                 action(crate::BuiltinExc::RuntimeWarning, "any", "m", 1),
                 "default"
             );
-            molt_warnings_simplefilter(
+            molt_warnings_simplefilter_attached_body(
+                py,
                 always.bits(),
                 class(py, crate::BuiltinExc::Warning),
                 zero,
@@ -1970,9 +2028,10 @@ mod tests {
                 action(crate::BuiltinExc::RuntimeWarning, "any", "m", 1),
                 "always"
             );
-            molt_warnings_resetwarnings();
+            molt_warnings_resetwarnings_attached_body(py);
             assert!(filter_rows(py, filters.bits()).is_empty());
-            let after_reset = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            let after_reset =
+                ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert_eq!(after_reset.bits(), filters.bits());
             assert!(!exception_pending(py));
         });
@@ -1995,7 +2054,8 @@ mod tests {
             );
             let none = MoltObject::none().bits();
             let warn = |line, registry: u64| {
-                let result = molt_warnings_warn_explicit(
+                let result = molt_warnings_warn_explicit_attached_body(
+                    py,
                     message.bits(),
                     category,
                     filename.bits(),
@@ -2110,10 +2170,10 @@ mod tests {
                 0
             );
             assert!(shown().is_empty());
-            let read = ExceptionValue::adopt(py, molt_warnings_filters_get());
+            let read = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert_eq!(read.bits(), module_filters.bits());
             // The module's `defaultaction` decides when no filter matches.
-            molt_warnings_resetwarnings();
+            molt_warnings_resetwarnings_attached_body(py);
             let default =
                 ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"default").unwrap());
             set_module_attr(py, &module, b"defaultaction", default.bits());

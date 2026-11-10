@@ -4,9 +4,9 @@ use crate::{MoltObject, alloc_string, builtin_classes, dec_ref_bits};
 fn list_class(py: &PyToken<'_>, slots: Option<&[&[u8]]>) -> u64 {
     let name = alloc_string(py, b"StoredList");
     let name = MoltObject::from_ptr(name).bits();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    let _ = crate::molt_class_set_base(class, builtin_classes(py).list);
+    let _ = crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).list);
     if let Some(names) = slots {
         let fields: Vec<u64> = names
             .iter()
@@ -14,7 +14,7 @@ fn list_class(py: &PyToken<'_>, slots: Option<&[&[u8]]>) -> u64 {
             .collect();
         let declaration = MoltObject::from_ptr(crate::alloc_tuple(py, &fields)).bits();
         let key = crate::dynamic_attr_name_bits(py, b"__slots__").unwrap();
-        crate::molt_set_attr_name(class, key, declaration);
+        crate::molt_set_attr_name_attached_body(py, class, key, declaration);
         dec_ref_bits(py, declaration);
         dec_ref_bits(py, key);
         for field in fields {
@@ -45,11 +45,11 @@ fn list_subclass_native_prefix_and_lifecycle_compose_all_owners() {
 
         let target = alloc_string(py, b"list owned target");
         let target_bits = MoltObject::from_ptr(target).bits();
-        crate::molt_list_append(instance, target_bits);
+        crate::molt_list_append_attached_body(py, instance, target_bits);
         let field = crate::dynamic_attr_name_bits(py, b"field").unwrap();
-        crate::molt_set_attr_name(instance, field, target_bits);
+        crate::molt_set_attr_name_attached_body(py, instance, field, target_bits);
         let extra = crate::dynamic_attr_name_bits(py, b"extra").unwrap();
-        crate::molt_set_attr_name(instance, extra, target_bits);
+        crate::molt_set_attr_name_attached_body(py, instance, extra, target_bits);
         assert!(!crate::exception_pending(py));
         dec_ref_bits(py, field);
         dec_ref_bits(py, extra);
@@ -148,9 +148,9 @@ fn exact_list_class_edge_does_not_admit_instance_state_or_reassignment() {
             assert!(!weakref::object_supports_weakrefs(py, bits));
             assert_eq!(unsafe { instance_dict_bits(ptr) }, 0);
             for target in [child, builtins.list] {
-                crate::molt_set_attr_name(bits, class_name, target);
+                crate::molt_set_attr_name_attached_body(py, bits, class_name, target);
                 assert!(crate::exception_pending(py));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(crate::type_of_bits(py, bits), builtins.list);
                 assert_eq!(unsafe { instance_dict_bits(ptr) }, 0);
             }
@@ -176,11 +176,10 @@ fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
     crate::concurrency::gil::with_gil(|py| unsafe {
         let one = MoltObject::from_int(1).bits();
         let mut shapes = vec![
-            MoltObject::from_ptr(crate::alloc_list(&py, &[one])).bits(),
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[one])).bits(),
-            MoltObject::from_ptr(builders::alloc_list_int_from_raw_slice(&py, &[1]).unwrap())
-                .bits(),
-            MoltObject::from_ptr(builders::alloc_list_bool_from_raw_slice(&py, &[1]).unwrap())
+            MoltObject::from_ptr(crate::alloc_list(py, &[one])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[one])).bits(),
+            MoltObject::from_ptr(builders::alloc_list_int_from_raw_slice(py, &[1]).unwrap()).bits(),
+            MoltObject::from_ptr(builders::alloc_list_bool_from_raw_slice(py, &[1]).unwrap())
                 .bits(),
         ];
         let native_list =
@@ -200,19 +199,20 @@ fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
             assert!(GLOBAL_BRIDGE.molt_handle_for_pyobj(native).is_none());
             shapes.push(GLOBAL_BRIDGE.molt_value_for_pyobj(native).unwrap());
         }
-        let owner = MoltObject::from_ptr(crate::alloc_bytearray(&py, b"a")).bits();
-        let view = crate::molt_memoryview_new(owner);
-        let format = MoltObject::from_ptr(crate::alloc_string(&py, b"B")).bits();
+        let owner = MoltObject::from_ptr(crate::alloc_bytearray(py, b"a")).bits();
+        let view = crate::molt_memoryview_new_attached_body(py, owner);
+        let format = MoltObject::from_ptr(crate::alloc_string(py, b"B")).bits();
         for shape in shapes {
             let original_type = object_type_id(obj_from_bits(shape).as_ptr().unwrap());
-            let cast = crate::object::ops_memoryview::molt_memoryview_cast(
+            let cast = crate::object::ops_memoryview::molt_memoryview_cast_attached_body(
+                py,
                 view,
                 format,
                 shape,
                 MoltObject::from_bool(true).bits(),
             );
             assert!(
-                !crate::exception_pending(&py),
+                !crate::exception_pending(py),
                 "shape storage {original_type}"
             );
             let cast_ptr = obj_from_bits(cast).as_ptr().unwrap();
@@ -221,13 +221,13 @@ fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
                 object_type_id(obj_from_bits(shape).as_ptr().unwrap()),
                 original_type
             );
-            crate::molt_memoryview_release(cast);
-            dec_ref_bits(&py, cast);
-            dec_ref_bits(&py, shape);
+            crate::molt_memoryview_release_attached_body(py, cast);
+            dec_ref_bits(py, cast);
+            dec_ref_bits(py, shape);
         }
-        crate::molt_memoryview_release(view);
-        dec_ref_bits(&py, format);
-        dec_ref_bits(&py, view);
-        dec_ref_bits(&py, owner);
+        crate::molt_memoryview_release_attached_body(py, view);
+        dec_ref_bits(py, format);
+        dec_ref_bits(py, view);
+        dec_ref_bits(py, owner);
     });
 }

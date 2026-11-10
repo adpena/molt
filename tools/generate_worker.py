@@ -16,6 +16,8 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt._wasm_runtime_exports import wasm_runtime_lifetime_export_names  # noqa: E402
+
 from molt.wasm_artifact import (  # noqa: E402
     require_current_wasm_execution_manifest,
     verify_wasm_execution_manifest_module,
@@ -67,13 +69,10 @@ def generate_worker(
         (wasm_root / "wasm_abi_generated.json").read_text(encoding="utf-8")
     )
     lifetime_exports = {
-        key: abi["runtime_export_by_import"][key]
-        for key in (
-            "runtime_execution_enter",
-            "runtime_execution_leave",
-            "runtime_shutdown",
-            "molt_set_wasm_table_base",
-        )
+        **wasm_runtime_lifetime_export_names(),
+        "molt_set_wasm_table_base": abi["runtime_export_by_import"][
+            "molt_set_wasm_table_base"
+        ],
     }
     if not all(c.isalnum() or c in "._-" for c in wasm_filename):
         raise ValueError(f"Invalid wasm_filename: {wasm_filename!r}")
@@ -82,6 +81,12 @@ def generate_worker(
         "{{LOADER_BRIDGE}}": bridge,
         "{{RUNTIME_LIFECYCLE}}": lifetime,
         "{{RUNTIME_LIFETIME_EXPORTS}}": json.dumps(lifetime_exports),
+        "{{RUNTIME_EXECUTION_ABI}}": json.dumps(
+            {
+                "execution_context_abi": abi["execution_context_abi"],
+                "runtime_execution_abis": abi["runtime_execution_abis"],
+            }
+        ),
         "{{SYNTHETIC_ERRNO}}": json.dumps(abi["synthetic_errno"]),
         "{{WASI_PREVIEW1_ERRNO}}": json.dumps(abi["wasi_preview1_errno"]),
         "{{TMP_QUOTA_MB}}": str(int(tmp_quota_mb)),

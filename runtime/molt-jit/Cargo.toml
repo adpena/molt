@@ -21,6 +21,9 @@ molt-runtime-core = { path = "../molt-runtime-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 
+[build-dependencies]
+molt-codegen-abi = { path = "../molt-codegen-abi" }
+
 [dev-dependencies]
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 toml = "1"

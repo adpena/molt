@@ -657,7 +657,7 @@ fn email_get_int_attr(_py: &PyToken, obj_bits: u64, name: &[u8]) -> Result<i64, 
         return Err(MoltObject::none().bits());
     };
     let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let value_bits = molt_getattr_builtin(_py, obj_bits, name_bits, missing);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -680,21 +680,20 @@ fn email_get_int_attr(_py: &PyToken, obj_bits: u64, name: &[u8]) -> Result<i64, 
     Ok(value)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_new() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_message_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let id = email_message_register(email_message_default());
         email_message_bits_from_id(_py, id)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_set(
+pub fn molt_email_message_set_attached_body(
+    _py: &molt_runtime_core::PyToken,
     message_bits: u64,
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let id = match email_message_id_from_bits(_py, message_bits) {
             Ok(id) => id,
             Err(err) => return err,
@@ -720,9 +719,12 @@ pub extern "C" fn molt_email_message_set(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_set_content(message_bits: u64, content_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_message_set_content_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    message_bits: u64,
+    content_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let id = match email_message_id_from_bits(_py, message_bits) {
             Ok(id) => id,
             Err(err) => return err,
@@ -746,13 +748,13 @@ pub extern "C" fn molt_email_message_set_content(message_bits: u64, content_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_add_alternative(
+pub fn molt_email_message_add_alternative_attached_body(
+    _py: &molt_runtime_core::PyToken,
     message_bits: u64,
     content_bits: u64,
     subtype_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let id = match email_message_id_from_bits(_py, message_bits) {
             Ok(id) => id,
             Err(err) => return err,
@@ -798,15 +800,15 @@ pub extern "C" fn molt_email_message_add_alternative(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_add_attachment(
+pub fn molt_email_message_add_attachment_attached_body(
+    _py: &molt_runtime_core::PyToken,
     message_bits: u64,
     data_bits: u64,
     maintype_bits: u64,
     subtype_bits: u64,
     filename_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let id = match email_message_id_from_bits(_py, message_bits) {
             Ok(id) => id,
             Err(err) => return err,
@@ -878,9 +880,11 @@ pub extern "C" fn molt_email_message_add_attachment(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_as_string(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_message_as_string_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    message_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let id = match email_message_id_from_bits(_py, message_bits) {
             Ok(id) => id,
             Err(err) => return err,
@@ -904,9 +908,11 @@ pub extern "C" fn molt_email_message_as_string(message_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_drop(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_message_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    message_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Ok(id) = email_message_id_from_bits(_py, message_bits) else {
             return MoltObject::none().bits();
         };
@@ -918,9 +924,11 @@ pub extern "C" fn molt_email_message_drop(message_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_utils_make_msgid(domain_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_utils_make_msgid_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    domain_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let domain = if obj_from_bits(domain_bits).is_none() {
             "localhost".to_string()
         } else {
@@ -947,9 +955,11 @@ pub extern "C" fn molt_email_utils_make_msgid(domain_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_utils_getaddresses(values_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_utils_getaddresses_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    values_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let values = match iterable_to_string_vec(_py, values_bits) {
             Ok(v) => v,
             Err(err_bits) => return err_bits,
@@ -1001,9 +1011,11 @@ pub extern "C" fn molt_email_utils_getaddresses(values_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_utils_parsedate_tz(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_utils_parsedate_tz_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "date value must be str");
         };
@@ -1039,9 +1051,11 @@ pub extern "C" fn molt_email_utils_parsedate_tz(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_utils_format_datetime(dt_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_utils_format_datetime_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    dt_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let year = match email_get_int_attr(_py, dt_bits, b"year") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1075,9 +1089,11 @@ pub extern "C" fn molt_email_utils_format_datetime(dt_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_utils_parsedate_to_datetime_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "date value must be str");
         };
@@ -1098,7 +1114,7 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
             return MoltObject::none().bits();
         }
         let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-        let module_bits = molt_module_import(module_name_bits);
+        let module_bits = molt_module_import(_py, module_name_bits);
         dec_ref_bits(_py, module_name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1113,8 +1129,10 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
             return MoltObject::none().bits();
         };
         let missing = missing_bits(_py);
-        let datetime_class_bits = molt_getattr_builtin(module_bits, datetime_name_bits, missing);
-        let timezone_class_bits = molt_getattr_builtin(module_bits, timezone_name_bits, missing);
+        let datetime_class_bits =
+            molt_getattr_builtin(_py, module_bits, datetime_name_bits, missing);
+        let timezone_class_bits =
+            molt_getattr_builtin(_py, module_bits, timezone_name_bits, missing);
         dec_ref_bits(_py, datetime_name_bits);
         dec_ref_bits(_py, timezone_name_bits);
         dec_ref_bits(_py, module_bits);
@@ -1133,7 +1151,7 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
             dec_ref_bits(_py, timezone_class_bits);
             return MoltObject::none().bits();
         };
-        let utc_bits = molt_getattr_builtin(timezone_class_bits, utc_name_bits, missing);
+        let utc_bits = molt_getattr_builtin(_py, timezone_class_bits, utc_name_bits, missing);
         dec_ref_bits(_py, utc_name_bits);
         dec_ref_bits(_py, timezone_class_bits);
         if exception_pending(_py) {
@@ -1178,9 +1196,12 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_headerregistry_value(name_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_headerregistry_value_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(_name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "header name must be str");
         };
@@ -1196,9 +1217,12 @@ pub extern "C" fn molt_email_headerregistry_value(name_bits: u64, value_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_header_encode_word(text_bits: u64, charset_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_header_encode_word_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    text_bits: u64,
+    charset_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "header text must be str");
         };
@@ -1226,9 +1250,12 @@ pub extern "C" fn molt_email_header_encode_word(text_bits: u64, charset_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_address_addr_spec(username_bits: u64, domain_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_address_addr_spec_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    username_bits: u64,
+    domain_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(username) = string_obj_to_owned(obj_from_bits(username_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "username must be str");
         };
@@ -1244,13 +1271,13 @@ pub extern "C" fn molt_email_address_addr_spec(username_bits: u64, domain_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_address_format(
+pub fn molt_email_address_format_attached_body(
+    _py: &molt_runtime_core::PyToken,
     display_name_bits: u64,
     username_bits: u64,
     domain_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(display_name) = string_obj_to_owned(obj_from_bits(display_name_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "display_name must be str");
         };
@@ -1270,9 +1297,13 @@ pub extern "C" fn molt_email_address_format(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_quopri_encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    quotetabs_bits: u64,
+    header_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input = match unsafe { molt_runtime_capi::ByteInput::acquire(_py, data_bits) } {
             Ok(input) => input,
             Err(_) => return MoltObject::none().bits(),
@@ -1294,9 +1325,12 @@ pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_quopri_decode(data_bits: u64, header_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_quopri_decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    header_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input = match unsafe { molt_runtime_capi::ByteInput::acquire(_py, data_bits) } {
             Ok(input) => input,
             Err(_) => return MoltObject::none().bits(),
@@ -1314,13 +1348,13 @@ pub extern "C" fn molt_quopri_decode(data_bits: u64, header_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_quopri_needs_quoting(
+pub fn molt_quopri_needs_quoting_attached_body(
+    _py: &molt_runtime_core::PyToken,
     c_bits: u64,
     quotetabs_bits: u64,
     header_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let byte = match quopri_expect_single_byte(_py, c_bits, "needsquoting") {
             Ok(byte) => byte,
             Err(bits) => return bits,
@@ -1331,9 +1365,8 @@ pub extern "C" fn molt_quopri_needs_quoting(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_quopri_quote(c_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_quopri_quote_attached_body(_py: &molt_runtime_core::PyToken, c_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let byte = match quopri_expect_single_byte(_py, c_bits, "quote") {
             Ok(byte) => byte,
             Err(bits) => return bits,
@@ -1348,9 +1381,8 @@ pub extern "C" fn molt_quopri_quote(c_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_quopri_ishex(c_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_quopri_ishex_attached_body(_py: &molt_runtime_core::PyToken, c_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let byte = match quopri_expect_single_byte(_py, c_bits, "ishex") {
             Ok(byte) => byte,
             Err(bits) => return bits,
@@ -1359,9 +1391,8 @@ pub extern "C" fn molt_quopri_ishex(c_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_quopri_unhex(s_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_quopri_unhex_attached_body(_py: &molt_runtime_core::PyToken, s_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let bytes = match quopri_expect_bytes_like(_py, s_bits, "unhex") {
             Ok(bytes) => bytes,
             Err(bits) => return bits,
@@ -1389,9 +1420,11 @@ pub extern "C" fn molt_quopri_unhex(s_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_header_check(octet_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_header_check_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    octet_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let octet = match email_quopri_expect_int_octet(_py, octet_bits, "header_check") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1403,9 +1436,11 @@ pub extern "C" fn molt_email_quoprimime_header_check(octet_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_body_check(octet_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_body_check_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    octet_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let octet = match email_quopri_expect_int_octet(_py, octet_bits, "body_check") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1414,9 +1449,11 @@ pub extern "C" fn molt_email_quoprimime_body_check(octet_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_header_length(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_header_length_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let data = match quopri_expect_bytes_like(_py, data_bits, "email.quoprimime.header_length")
         {
             Ok(value) => value,
@@ -1434,9 +1471,11 @@ pub extern "C" fn molt_email_quoprimime_header_length(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_body_length(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_body_length_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let data = match quopri_expect_bytes_like(_py, data_bits, "email.quoprimime.body_length") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1449,9 +1488,11 @@ pub extern "C" fn molt_email_quoprimime_body_length(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_quote(c_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_quote_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    c_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let c = match email_quopri_expect_string(_py, c_bits, "quote") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1480,9 +1521,11 @@ pub extern "C" fn molt_email_quoprimime_quote(c_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_unquote(s_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_unquote_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    s_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let s = match email_quopri_expect_string(_py, s_bits, "unquote") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1507,12 +1550,12 @@ pub extern "C" fn molt_email_quoprimime_unquote(s_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_header_encode(
+pub fn molt_email_quoprimime_header_encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
     header_bytes_bits: u64,
     charset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let header_bytes = match quopri_expect_bytes_like(
             _py,
             header_bytes_bits,
@@ -1537,9 +1580,11 @@ pub extern "C" fn molt_email_quoprimime_header_encode(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_header_decode(s_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_header_decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    s_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let s = match email_quopri_expect_string(_py, s_bits, "header_decode") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1566,13 +1611,13 @@ pub extern "C" fn molt_email_quoprimime_header_decode(s_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_body_encode(
+pub fn molt_email_quoprimime_body_encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
     body_bits: u64,
     maxlinelen_bits: u64,
     eol_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let body = match email_quopri_expect_string(_py, body_bits, "body_encode body") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1665,9 +1710,12 @@ pub extern "C" fn molt_email_quoprimime_body_encode(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_quoprimime_decode(encoded_bits: u64, eol_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_email_quoprimime_decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    encoded_bits: u64,
+    eol_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let encoded = match email_quopri_expect_string(_py, encoded_bits, "decode encoded") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1768,3 +1816,5 @@ fn urllib_base64_encode(input: &[u8]) -> String {
     }
     out
 }
+
+include!("attached_exports_generated/email.rs");

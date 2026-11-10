@@ -94,7 +94,7 @@ pub(super) fn io_worker(
                 poller.mark_ready(*future, *mask);
             }
             for (future, mask, socket_id, debug_fd) in ready_futures {
-                let waiter_count = wake_await_waiters(&py, future.0);
+                let waiter_count = wake_await_waiters(py, future.0);
                 if trace_io_poller() {
                     eprintln!(
                         "molt io poller: ready future=0x{:x} socket=0x{:x} fd={} mask={} waiters={}",

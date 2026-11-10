@@ -54,33 +54,178 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum HostScopeKind {
+    Transaction,
+    Ensure,
+    Operation,
+}
+struct HostScope {
+    id: u64,
+    kind: HostScopeKind,
+    previous_depth: usize,
+}
+struct StandaloneCustody {
+    next: u64,
+    depth: usize,
+    scopes: Vec<HostScope>,
+    suspended: Vec<(u64, u64, usize)>,
+}
+thread_local! {
+    static HOST_CUSTODY: std::mem::ManuallyDrop<RefCell<StandaloneCustody>> = const {
+        std::mem::ManuallyDrop::new(RefCell::new(StandaloneCustody {
+            next: 0, depth: 0, scopes: Vec::new(), suspended: Vec::new(),
+        }))
+    };
+}
+fn enter_host_scope(kind: HostScopeKind) -> u64 {
+    HOST_CUSTODY.with(|state| {
+        let mut state = state.borrow_mut();
+        state.next = state
+            .next
+            .checked_add(1)
+            .expect("standalone host scope identity overflow");
+        let id = state.next;
+        let previous_depth = state.depth;
+        state.depth += 1;
+        state.scopes.push(HostScope {
+            id,
+            kind,
+            previous_depth,
+        });
+        id
+    })
+}
+fn leave_host_scope(id: u64, kind: HostScopeKind) {
+    HOST_CUSTODY.with(|state| {
+        let mut state = state.borrow_mut();
+        let scope = state
+            .scopes
+            .last()
+            .expect("standalone host scope is absent");
+        assert!(scope.id == id && scope.kind == kind);
+        assert_eq!(state.depth, scope.previous_depth + 1);
+        let previous = scope.previous_depth;
+        assert!(!state.suspended.iter().any(|(_, owner, _)| *owner == id));
+        state.scopes.pop();
+        state.depth = previous;
+        if state.scopes.is_empty() {
+            assert!(state.suspended.is_empty());
+            state.scopes = Vec::new();
+            state.suspended = Vec::new();
+        }
+    });
+}
+struct HostTransactionScope(u64);
+impl HostTransactionScope {
+    fn enter() -> Self {
+        Self(enter_host_scope(HostScopeKind::Transaction))
+    }
+}
+impl Drop for HostTransactionScope {
+    fn drop(&mut self) {
+        leave_host_scope(self.0, HostScopeKind::Transaction);
+    }
+}
+
+pub(crate) unsafe extern "C" fn foreign_execution_capture()
+-> molt_cpython_abi::hooks::ForeignExecutionSnapshot {
+    use molt_cpython_abi::hooks::{ForeignExecutionDomain, ForeignExecutionSnapshot};
+    let thread_state = unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() };
+    HOST_CUSTODY.with(|cell| {
+        let state = cell.borrow();
+        if state.depth == 0 || state.scopes.is_empty() || thread_state.is_null() {
+            return ForeignExecutionSnapshot::UNAVAILABLE;
+        }
+        ForeignExecutionSnapshot {
+            domain: ForeignExecutionDomain::StandaloneHost,
+            thread_record: std::ptr::from_ref(&*state) as u64,
+            runtime_identity: std::ptr::from_ref(&ABI_TEST_LOCK) as u64,
+            thread_state: thread_state as u64,
+            gil_depth: state.depth,
+            ensure_scope: state.scopes.last().unwrap().id,
+            saved_scope: state.suspended.last().map_or(0, |saved| saved.0),
+            ..ForeignExecutionSnapshot::UNAVAILABLE
+        }
+    })
+}
+pub(crate) unsafe extern "C" fn foreign_execution_validate(
+    snapshot: molt_cpython_abi::hooks::ForeignExecutionSnapshot,
+) -> i32 {
+    i32::from(
+        snapshot.domain == molt_cpython_abi::hooks::ForeignExecutionDomain::StandaloneHost
+            && snapshot == unsafe { foreign_execution_capture() },
+    )
+}
+unsafe extern "C" fn gil_release() {
+    HOST_CUSTODY.with(|cell| {
+        let mut state = cell.borrow_mut();
+        assert_ne!(state.depth, 0);
+        state.next = state
+            .next
+            .checked_add(1)
+            .expect("standalone suspension identity overflow");
+        let saved = (state.next, state.scopes.last().unwrap().id, state.depth);
+        state.suspended.push(saved);
+        state.depth = 0;
+    });
+}
+unsafe extern "C" fn gil_restore() {
+    HOST_CUSTODY.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let saved = *state
+            .suspended
+            .last()
+            .expect("standalone restore has no suspension");
+        assert_eq!(state.depth, 0);
+        assert_eq!(state.scopes.last().unwrap().id, saved.1);
+        state.suspended.pop();
+        state.depth = saved.2;
+    });
+}
+
 unsafe extern "C" fn runtime_is_initialized() -> std::os::raw::c_int {
     1
 }
 
 unsafe extern "C" fn gil_ensure() -> std::os::raw::c_int {
+    let unlocked = HOST_CUSTODY.with(|cell| cell.borrow().depth == 0);
+    let _ = enter_host_scope(HostScopeKind::Ensure);
+    i32::from(unlocked)
+}
+unsafe extern "C" fn gil_leave(returned_state: std::os::raw::c_int) {
+    let (id, previous) = HOST_CUSTODY.with(|cell| {
+        let state = cell.borrow();
+        let scope = state.scopes.last().unwrap();
+        (scope.id, scope.previous_depth)
+    });
+    assert_eq!(returned_state, i32::from(previous == 0));
+    leave_host_scope(id, HostScopeKind::Ensure);
+}
+unsafe extern "C" fn gil_check() -> std::os::raw::c_int {
+    i32::from(HOST_CUSTODY.with(|cell| cell.borrow().depth != 0))
+}
+pub(crate) unsafe extern "C" fn operation_enter() -> u64 {
+    enter_host_scope(HostScopeKind::Operation)
+}
+pub(crate) unsafe extern "C" fn operation_leave(token: u64) {
+    leave_host_scope(token, HostScopeKind::Operation);
+}
+
+unsafe extern "C" fn thread_state_drop_enter(runtime_owner: u64) -> u64 {
+    assert_eq!(runtime_owner, std::ptr::from_ref(&ABI_TEST_LOCK) as u64);
+    unsafe { operation_enter() }
+}
+
+pub(crate) unsafe extern "C" fn thread_state_drop_cleanup() -> std::os::raw::c_int {
+    // This standalone ABI host owns no Molt TLS domain. Its C managed edges
+    // are drained by the real object.rs fixed point, not simulated here.
     0
 }
 
-unsafe extern "C" fn gil_leave(_state: std::os::raw::c_int) {}
-
-unsafe extern "C" fn gil_check() -> std::os::raw::c_int {
-    1
+unsafe extern "C" fn thread_state_drop_leave(token: u64) {
+    unsafe { operation_leave(token) };
 }
-
-pub(crate) unsafe extern "C" fn operation_enter() -> u64 {
-    1
-}
-
-pub(crate) unsafe extern "C" fn operation_leave(token: u64) {
-    assert_eq!(token, 1);
-}
-
-unsafe extern "C" fn thread_state_drop_enter() -> u64 {
-    1
-}
-
-unsafe extern "C" fn thread_state_drop_leave(_token: u64) {}
 
 unsafe extern "C" fn native_gc_allocate(addr: usize) -> std::os::raw::c_int {
     if addr == 0 {
@@ -229,8 +374,11 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             gil_check,
             operation_enter,
             operation_leave,
+            foreign_execution_capture,
+            foreign_execution_validate,
             runtime_is_initialized,
             thread_state_drop_enter,
+            thread_state_drop_cleanup,
             thread_state_drop_leave,
             attached_runtime_context,
             pending_call_error,
@@ -432,6 +580,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
 #[must_use = "the ABI integration transaction must live for the whole C-API test"]
 pub struct AbiTestThreadStateTransaction {
     _not_send: PhantomData<Rc<()>>,
+    _host_scope: HostTransactionScope,
     _exclusive: MutexGuard<'static, ()>,
 }
 
@@ -440,14 +589,20 @@ impl AbiTestThreadStateTransaction {
         let exclusive = ABI_TEST_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let host_scope = HostTransactionScope::enter();
         hooks.runtime_is_initialized = runtime_is_initialized;
         hooks.memory_error = memory_error;
         hooks.gil_ensure = gil_ensure;
         hooks.operation_enter = operation_enter;
         hooks.operation_leave = operation_leave;
         hooks.gil_leave = gil_leave;
+        hooks.gil_release = gil_release;
+        hooks.gil_restore = gil_restore;
+        hooks.foreign_execution_capture = foreign_execution_capture;
+        hooks.foreign_execution_validate = foreign_execution_validate;
         hooks.gil_check = gil_check;
         hooks.thread_state_drop_enter = thread_state_drop_enter;
+        hooks.thread_state_drop_cleanup = thread_state_drop_cleanup;
         hooks.thread_state_drop_leave = thread_state_drop_leave;
         hooks.native_gc_allocate = Some(native_gc_allocate);
         hooks.native_gc_track = native_gc_track;
@@ -480,6 +635,7 @@ impl AbiTestThreadStateTransaction {
         unsafe { molt_cpython_abi::abi_types::prepare_builtin_static_type_runtime_state() };
         Self {
             _not_send: PhantomData,
+            _host_scope: host_scope,
             _exclusive: exclusive,
         }
     }

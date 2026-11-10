@@ -1,6 +1,6 @@
 use super::AggregateRuntimeContext;
 use crate::OpIR;
-use wasm_encoder::Function;
+use crate::wasm_binary::Function;
 
 #[path = "iterator_generator_ops/iterator_ops.rs"]
 mod iterator_ops;

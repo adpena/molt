@@ -120,9 +120,10 @@ fn call_bind_uses_replaced_keyword_value_at_binding_boundary() {
                 intern_metadata_name(_py, b"__molt_arg_names__"),
                 names_bits,
             ));
-            let builder = crate::call::bind::arguments::molt_callargs_new(0, 1);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 1);
             assert_ne!(builder, 0);
-            crate::call::bind::arguments::molt_callargs_push_kw(
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py,
                 builder,
                 key_bits,
                 MoltObject::from_int(1).bits(),
@@ -132,7 +133,7 @@ fn call_bind_uses_replaced_keyword_value_at_binding_boundary() {
             let expected = MoltObject::from_int(29).bits();
             assert!(crate::dict_set_in_place(_py, dict, key_bits, expected));
             assert_eq!(
-                crate::call::bind::molt_call_bind(func_bits, builder),
+                crate::call::bind::molt_call_bind_attached_body(_py, func_bits, builder),
                 expected
             );
             assert!(!crate::exception_pending(_py));
@@ -178,7 +179,20 @@ fn bound_frame_is_the_only_argument_owner_during_the_call() {
     static PROBES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
     static OBSERVED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
     // `def observed(a, *rest, k, **kw)`, called in ABI order `(a, rest, k, kw)`.
-    extern "C" fn observe_frame_owners(_a: u64, _rest: u64, _k: u64, _kw: u64) -> i64 {
+    extern "C" fn observe_frame_owners(
+        __context: u64,
+        _a: u64,
+        _rest: u64,
+        _k: u64,
+        _kw: u64,
+    ) -> i64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         let probes = PROBES.lock().unwrap().clone();
         let counts = probes
             .into_iter()
@@ -227,14 +241,21 @@ fn bound_frame_is_the_only_argument_owner_during_the_call() {
                 .map(|_| MoltObject::from_ptr(alloc_list(_py, &[])).bits())
                 .collect();
             *PROBES.lock().unwrap() = values.clone();
-            let builder = crate::call::bind::arguments::molt_callargs_new(3, 2);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 3, 2);
             for &bits in &values[..3] {
-                crate::call::bind::arguments::molt_callargs_push_pos(builder, bits);
+                crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                    _py, builder, bits,
+                );
             }
-            crate::call::bind::arguments::molt_callargs_push_kw(builder, names[1], values[3]);
-            crate::call::bind::arguments::molt_callargs_push_kw(builder, names[4], values[4]);
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, names[1], values[3],
+            );
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, names[4], values[4],
+            );
             assert!(!crate::exception_pending(_py));
-            let result = crate::call::bind::molt_call_bind(function_bits, builder);
+            let result =
+                crate::call::bind::molt_call_bind_attached_body(_py, function_bits, builder);
             assert!(!crate::exception_pending(_py));
             assert!(obj_from_bits(result).is_none());
             // `a` and `k` sit in parameter slots, `rest` owns two values and
@@ -268,7 +289,14 @@ fn failed_binding_releases_every_argument_exactly_once() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static ENTERED: AtomicBool = AtomicBool::new(false);
     // `def two(a, b)`: a failed binding never enters the callee.
-    extern "C" fn two(_a: u64, _b: u64) -> i64 {
+    extern "C" fn two(__context: u64, _a: u64, _b: u64) -> i64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         ENTERED.store(true, Ordering::SeqCst);
         MoltObject::none().bits() as i64
     }
@@ -302,22 +330,28 @@ fn failed_binding_releases_every_argument_exactly_once() {
                 let values: Vec<u64> = (0..positional + keywords.len())
                     .map(|_| MoltObject::from_ptr(alloc_list(_py, &[])).bits())
                     .collect();
-                let builder = crate::call::bind::arguments::molt_callargs_new(
+                let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(
+                    _py,
                     positional as u64,
                     keywords.len() as u64,
                 );
                 for &bits in &values[..positional] {
-                    crate::call::bind::arguments::molt_callargs_push_pos(builder, bits);
+                    crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                        _py, builder, bits,
+                    );
                 }
                 for (&name, &bits) in keywords.iter().zip(&values[positional..]) {
-                    crate::call::bind::arguments::molt_callargs_push_kw(builder, name, bits);
+                    crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                        _py, builder, name, bits,
+                    );
                 }
                 assert!(!crate::exception_pending(_py));
-                let result = crate::call::bind::molt_call_bind(function_bits, builder);
+                let result =
+                    crate::call::bind::molt_call_bind_attached_body(_py, function_bits, builder);
                 assert!(obj_from_bits(result).is_none());
                 assert!(crate::exception_pending(_py), "the binding error is raised");
                 assert!(!ENTERED.load(Ordering::SeqCst), "the callee never ran");
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(_py);
                 for bits in values {
                     let ptr = obj_from_bits(bits).as_ptr().unwrap();
                     assert_eq!(
@@ -374,7 +408,8 @@ fn inlined_frames_release_parameters_in_target_version_order() {
                         &values[..3],
                         &[(k, values[3]), (x, values[4])],
                     );
-                    let result = crate::call::bind::molt_call_bind(mixed, builder);
+                    let result =
+                        crate::call::bind::molt_call_bind_attached_body(_py, mixed, builder);
                     assert!(obj_from_bits(result).is_none());
                     assert!(!crate::exception_pending(_py));
                     assert_eq!(ReleaseProbes::released(&values), expected, "3.{minor}");
@@ -434,10 +469,10 @@ fn failed_frame_binding_releases_in_initialize_locals_order() {
                         &values[..1],
                         &[(b, values[1]), (c, values[2]), (d, values[3])],
                     );
-                    let result = crate::call::bind::molt_call_bind(two, builder);
+                    let result = crate::call::bind::molt_call_bind_attached_body(_py, two, builder);
                     assert!(obj_from_bits(result).is_none());
                     assert!(crate::exception_pending(_py), "the binding error is raised");
-                    let _ = crate::molt_exception_clear();
+                    let _ = crate::molt_exception_clear_attached_body(_py);
                     assert_eq!(
                         ReleaseProbes::released(&values),
                         remaining_keywords,
@@ -452,10 +487,10 @@ fn failed_frame_binding_releases_in_initialize_locals_order() {
                         &values[..2],
                         &[(a, values[2])],
                     );
-                    let result = crate::call::bind::molt_call_bind(one, builder);
+                    let result = crate::call::bind::molt_call_bind_attached_body(_py, one, builder);
                     assert!(obj_from_bits(result).is_none());
                     assert!(crate::exception_pending(_py), "the binding error is raised");
-                    let _ = crate::molt_exception_clear();
+                    let _ = crate::molt_exception_clear_attached_body(_py);
                     assert_eq!(
                         ReleaseProbes::released(&values),
                         surplus_duplicate,
@@ -508,10 +543,11 @@ fn expanded_calls_keep_their_containers_through_frame_admission() {
                         &values[..2],
                         &[(a, values[2]), (b, values[3])],
                     );
-                    let result = crate::call::bind::molt_call_bind(zero, builder);
+                    let result =
+                        crate::call::bind::molt_call_bind_attached_body(_py, zero, builder);
                     assert!(obj_from_bits(result).is_none());
                     assert!(crate::exception_pending(_py), "the binding error is raised");
-                    let _ = crate::molt_exception_clear();
+                    let _ = crate::molt_exception_clear_attached_body(_py);
                     assert_eq!(ReleaseProbes::released(&values), [1, 0, 2, 3], "3.{minor}");
                     // two(*(p1, p2)): admission succeeds, the containers end
                     // before the callee runs, and the frame clears its own
@@ -523,7 +559,7 @@ fn expanded_calls_keep_their_containers_through_frame_admission() {
                         &values,
                         &[],
                     );
-                    let result = crate::call::bind::molt_call_bind(two, builder);
+                    let result = crate::call::bind::molt_call_bind_attached_body(_py, two, builder);
                     assert!(obj_from_bits(result).is_none());
                     assert!(!crate::exception_pending(_py));
                     assert_eq!(ReleaseProbes::released(&values), success, "3.{minor}");

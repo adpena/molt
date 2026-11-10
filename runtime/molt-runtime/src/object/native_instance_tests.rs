@@ -2,9 +2,9 @@ use super::*;
 
 fn class(py: &PyToken<'_>, name: &[u8], base: u64, slots: bool) -> u64 {
     let name = MoltObject::from_ptr(alloc_string(py, name)).bits();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    crate::molt_class_set_base(class, base);
+    crate::molt_class_set_base_attached_body(py, class, base);
     if slots {
         let field = dynamic_attr_name_bits(py, b"field").unwrap();
         let dict = dynamic_attr_name_bits(py, b"__dict__").unwrap();
@@ -20,7 +20,7 @@ fn class(py: &PyToken<'_>, name: &[u8], base: u64, slots: bool) -> u64 {
         ))
         .bits();
         let key = dynamic_attr_name_bits(py, b"__slots__").unwrap();
-        crate::molt_set_attr_name(class, key, names);
+        crate::molt_set_attr_name_attached_body(py, class, key, names);
         for bits in [field, dict, names, key] {
             dec_ref_bits(py, bits);
         }
@@ -76,7 +76,7 @@ fn native_subtype_constructor_family_tracks_cycles_and_retires_membership() {
             assert!(unsafe { has_fields(ptr) });
             assert!(unsafe { crate::object::gc::gc_is_tracked(ptr) });
             let key = dynamic_attr_name_bits(py, b"self_cycle").unwrap();
-            crate::molt_set_attr_name(object, key, object);
+            crate::molt_set_attr_name_attached_body(py, object, key, object);
             assert!(!exception_pending(py));
             assert_ne!(unsafe { crate::object::instance_dict_bits(ptr) }, 0);
             dec_ref_bits(py, key);
@@ -113,15 +113,15 @@ fn native_subtype_slots_align_and_survive_dictionary_and_class_changes() {
                 assert!(base as usize > ptr as usize);
                 let field = dynamic_attr_name_bits(py, b"field").unwrap();
                 let target = MoltObject::from_ptr(alloc_list(py, &[])).bits();
-                crate::molt_set_attr_name(object, field, target);
+                crate::molt_set_attr_name_attached_body(py, object, field, target);
                 let extra = dynamic_attr_name_bits(py, b"extra").unwrap();
-                crate::molt_set_attr_name(object, extra, target);
+                crate::molt_set_attr_name_attached_body(py, object, extra, target);
                 let class_key = dynamic_attr_name_bits(py, b"__class__").unwrap();
-                crate::molt_set_attr_name(object, class_key, second);
+                crate::molt_set_attr_name_attached_body(py, object, class_key, second);
                 assert!(!exception_pending(py));
                 assert_eq!(type_of_bits(py, object), second);
                 assert_eq!(unsafe { field_base(ptr) }, base);
-                let loaded = crate::molt_get_attr_name(object, field);
+                let loaded = crate::molt_get_attr_name_attached_body(py, object, field);
                 assert_eq!(loaded, target);
                 dec_ref_bits(py, loaded);
                 let dictionary = unsafe { crate::object::instance_dict_bits(ptr) };
@@ -169,7 +169,12 @@ fn native_inline_terminator_precedes_slots_and_the_dictionary_through_c_abi_acce
                     assert!(field_base(ptr) as usize > data.add(length) as usize);
                     assert_eq!(*data.add(length), 0);
                 }
-                crate::molt_set_attr_name(object, key, MoltObject::from_int(0x41).bits());
+                crate::molt_set_attr_name_attached_body(
+                    py,
+                    object,
+                    key,
+                    MoltObject::from_int(0x41).bits(),
+                );
                 assert!(!exception_pending(py));
                 unsafe {
                     assert_eq!(*string_bytes(ptr).add(length), 0);
@@ -219,9 +224,9 @@ fn native_subtype_rejects_generic_allocation_and_overflow_without_class_attachme
         ] {
             let class = class(py, b"NativeAdmission", kind.owner(py).unwrap(), false);
             let ptr = obj_from_bits(class).as_ptr().unwrap();
-            assert!(obj_from_bits(crate::molt_object_new_bound(class)).is_none());
+            assert!(obj_from_bits(crate::molt_object_new_bound_attached_body(py, class)).is_none());
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             let extent = unsafe { crate::object::layout::class_cached_layout_size(ptr) }.unwrap();
             assert!(
                 obj_from_bits(crate::object::builders::alloc_class_instance(
@@ -230,7 +235,7 @@ fn native_subtype_rejects_generic_allocation_and_overflow_without_class_attachme
                 .is_none()
             );
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             if matches!(
                 kind,
                 NativePayload::Tuple | NativePayload::String | NativePayload::Bytes
@@ -238,7 +243,7 @@ fn native_subtype_rejects_generic_allocation_and_overflow_without_class_attachme
                 let refs = unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
                 assert!(unsafe { alloc_unpublished(py, class, kind, usize::MAX) }.is_null());
                 assert!(exception_pending(py));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(
                     unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() },
                     refs
@@ -312,18 +317,18 @@ fn native_io_subtype_slots_preserve_payload_dictionary_and_cycle_retirement() {
             let field = dynamic_attr_name_bits(py, b"field").unwrap();
             let extra = dynamic_attr_name_bits(py, b"extra").unwrap();
             let marker = MoltObject::from_ptr(alloc_list(py, &[])).bits();
-            crate::molt_set_attr_name(object, field, marker);
-            crate::molt_set_attr_name(object, extra, marker);
+            crate::molt_set_attr_name_attached_body(py, object, field, marker);
+            crate::molt_set_attr_name_attached_body(py, object, extra, marker);
             assert!(!exception_pending(py));
             assert_eq!(unsafe { file_handle_ptr(ptr) }, native);
             assert!(
                 unsafe { field_base(ptr) } as usize
                     >= ptr as usize + size_of::<*mut MoltFileHandle>()
             );
-            let loaded = crate::molt_get_attr_name(object, field);
+            let loaded = crate::molt_get_attr_name_attached_body(py, object, field);
             assert_eq!(loaded, marker);
             dec_ref_bits(py, loaded);
-            let output = crate::builtins::io::molt_file_getvalue(object);
+            let output = crate::builtins::io::molt_file_getvalue_attached_body(py, object);
             assert!(!exception_pending(py));
             if text {
                 assert_eq!(
@@ -352,8 +357,8 @@ fn native_io_subtype_slots_preserve_payload_dictionary_and_cycle_retirement() {
             assert_eq!(edges.iter().filter(|&&bits| bits == subclass).count(), 1);
             // Both real owners become cycles. Collection must retire the native
             // resource after clearing the slot and the sole public dictionary.
-            crate::molt_set_attr_name(object, field, object);
-            crate::molt_set_attr_name(object, extra, object);
+            crate::molt_set_attr_name_attached_body(py, object, field, object);
+            crate::molt_set_attr_name_attached_body(py, object, extra, object);
             assert!(!exception_pending(py));
             assert_eq!(
                 unsafe {
@@ -399,7 +404,7 @@ fn native_declared_slots_share_allocation_projection_and_retirement() {
             assert_eq!(roots, vec![kind.owner(py).unwrap()]);
             let name = dynamic_attr_name_bits(py, b"DeclaredNativeTail").unwrap();
             let field = dynamic_attr_name_bits(py, b"retained").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let policy = crate::object::class_storage::ClassSlotPolicy {
                 variable_sized: matches!(
@@ -411,7 +416,7 @@ fn native_declared_slots_share_allocation_projection_and_retirement() {
             unsafe {
                 crate::object::class_storage::class_declare_native_slots(class_ptr, policy);
             }
-            crate::molt_class_set_base(class, kind.owner(py).unwrap());
+            crate::molt_class_set_base_attached_body(py, class, kind.owner(py).unwrap());
             let names = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
             let declaration =
                 MoltObject::from_ptr(alloc_tuple(py, &[names, policy.encode()])).bits();
@@ -436,9 +441,9 @@ fn native_declared_slots_share_allocation_projection_and_retirement() {
                 let marker = MoltObject::from_ptr(alloc_list(py, &[])).bits();
                 let marker_ptr = obj_from_bits(marker).as_ptr().unwrap();
                 let refs = unsafe { (*header_from_obj_ptr(marker_ptr)).ref_count_snapshot() };
-                crate::molt_set_attr_name(object, field, marker);
+                crate::molt_set_attr_name_attached_body(py, object, field, marker);
                 assert!(!exception_pending(py));
-                let selected = crate::molt_get_attr_name(object, field);
+                let selected = crate::molt_get_attr_name_attached_body(py, object, field);
                 assert_eq!(selected, marker);
                 dec_ref_bits(py, selected);
                 assert_eq!(
@@ -460,7 +465,7 @@ fn native_declared_slots_share_allocation_projection_and_retirement() {
 
                 let cycle = construct(py, class, input);
                 let cycle_ptr = obj_from_bits(cycle).as_ptr().unwrap();
-                crate::molt_set_attr_name(cycle, field, cycle);
+                crate::molt_set_attr_name_attached_body(py, cycle, field, cycle);
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, cycle);
                 let _ = unsafe { crate::object::gc::collect_cycles(py) };
@@ -480,7 +485,7 @@ fn native_class_edge_publication_refuses_an_unallocated_tail_atomically() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let name = dynamic_attr_name_bits(py, b"NativePublicationExtent").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         let policy = crate::object::class_storage::ClassSlotPolicy {
@@ -488,7 +493,7 @@ fn native_class_edge_publication_refuses_an_unallocated_tail_atomically() {
             ..Default::default()
         };
         unsafe { crate::object::class_storage::class_declare_native_slots(class_ptr, policy) };
-        crate::molt_class_set_base(class, builtin_classes(py).tuple);
+        crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).tuple);
         let mut names = Vec::new();
         for index in 0..32 {
             names.push(dynamic_attr_name_bits(py, format!("field{index}").as_bytes()).unwrap());
@@ -581,18 +586,19 @@ fn code_replacement_metadata_subclasses_form_collectible_cycles() {
             let args = MoltObject::from_ptr(alloc_tuple(py, &[source_bits])).bits();
             let kwargs =
                 MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[key, text])).bits();
-            let replaced = crate::builtins::functions::molt_code_replace(args, kwargs);
+            let replaced =
+                crate::builtins::functions::molt_code_replace_attached_body(py, args, kwargs);
             assert!(!exception_pending(py));
             let replaced_ptr = obj_from_bits(replaced).as_ptr().unwrap();
             assert!(
                 unsafe { crate::object::gc::gc_is_tracked(replaced_ptr) },
                 "a metadata subclass with mutable fields must promote code tracking"
             );
-            let actual = crate::molt_get_attr_name(replaced, key);
+            let actual = crate::molt_get_attr_name_attached_body(py, replaced, key);
             assert_eq!(actual, text, "replacement must retain subclass identity");
             dec_ref_bits(py, actual);
             let backref = dynamic_attr_name_bits(py, b"code_backref").unwrap();
-            crate::molt_set_attr_name(text, backref, replaced);
+            crate::molt_set_attr_name_attached_body(py, text, backref, replaced);
             assert!(!exception_pending(py));
             for bits in [backref, args, kwargs, key, source_bits, replaced, text] {
                 dec_ref_bits(py, bits);
@@ -649,7 +655,7 @@ fn code_metadata_publication_keeps_earlier_container_owners_collectible() {
         .unwrap();
         assert!(unsafe { crate::object::gc::gc_is_tracked(code) });
         let key = dynamic_attr_name_bits(py, b"owner_backref").unwrap();
-        crate::molt_set_attr_name(text, key, owner_bits);
+        crate::molt_set_attr_name_attached_body(py, text, key, owner_bits);
         assert!(!exception_pending(py));
         for bits in [key, code_bits, owner_bits, text] {
             dec_ref_bits(py, bits);
@@ -744,7 +750,7 @@ fn code_sealing_preserves_atomic_container_fast_paths() {
         let mutable_code_bits = MoltObject::from_ptr(mutable_code).bits();
         let text_ptr = obj_from_bits(text).as_ptr().unwrap();
         let backref = dynamic_attr_name_bits(py, b"name_tuple_backref").unwrap();
-        crate::molt_set_attr_name(text, backref, mutable_code_bits);
+        crate::molt_set_attr_name_attached_body(py, text, backref, mutable_code_bits);
         for bits in [
             MoltObject::from_ptr(tuple).bits(),
             MoltObject::from_ptr(dictionary).bits(),

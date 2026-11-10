@@ -19,10 +19,11 @@ use crate::{
     async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, class_name_for_error, code_filename_bits,
     code_name_bits, context_stack_unwind, dec_ref_bits, exception_handler_active,
     exception_pending, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
-    maybe_ptr_from_bits, molt_exception_last_pending, obj_from_bits, object_class_bits,
-    object_type_id, pending_bits_i64, process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits,
-    raise_exception, record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
-    task_last_exception_contains_valid, task_raise_active, thread_poll_fn_addr, with_gil,
+    maybe_ptr_from_bits, molt_exception_last_pending_attached_body, obj_from_bits,
+    object_class_bits, object_type_id, pending_bits_i64, process_poll_fn_addr,
+    promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception, resolve_task_ptr,
+    runtime_state, set_task_raise_active, task_last_exception_contains_valid, task_raise_active,
+    thread_poll_fn_addr, with_gil,
 };
 
 use super::cancellation::{
@@ -61,20 +62,38 @@ pub(crate) use task_state::{
 
 mod asyncio_runtime;
 pub(crate) use asyncio_runtime::{
-    AsyncioEventWaiterIndex, molt_asyncio_child_watcher_add, molt_asyncio_child_watcher_clear,
-    molt_asyncio_child_watcher_pop, molt_asyncio_child_watcher_remove, molt_asyncio_enter_task,
-    molt_asyncio_event_loop_get_current, molt_asyncio_event_loop_policy_get,
-    molt_asyncio_event_loop_policy_set, molt_asyncio_event_loop_set,
-    molt_asyncio_event_waiters_cleanup_token, molt_asyncio_event_waiters_register,
-    molt_asyncio_event_waiters_unregister, molt_asyncio_leave_task, molt_asyncio_register_task,
-    molt_asyncio_require_child_watcher_support, molt_asyncio_require_unix_socket_support,
-    molt_asyncio_running_loop_get, molt_asyncio_running_loop_set,
-    molt_asyncio_ssl_transport_orchestrate, molt_asyncio_task_last_exception_clear,
-    molt_asyncio_task_registry_contains, molt_asyncio_task_registry_current,
-    molt_asyncio_task_registry_current_for_loop, molt_asyncio_task_registry_get,
-    molt_asyncio_task_registry_live_set, molt_asyncio_task_registry_move,
-    molt_asyncio_task_registry_pop, molt_asyncio_task_registry_set,
-    molt_asyncio_task_registry_values, molt_asyncio_unregister_task,
+    AsyncioEventWaiterIndex, molt_asyncio_child_watcher_add,
+    molt_asyncio_child_watcher_add_attached_body, molt_asyncio_child_watcher_clear,
+    molt_asyncio_child_watcher_clear_attached_body, molt_asyncio_child_watcher_pop,
+    molt_asyncio_child_watcher_pop_attached_body, molt_asyncio_child_watcher_remove,
+    molt_asyncio_child_watcher_remove_attached_body, molt_asyncio_enter_task,
+    molt_asyncio_enter_task_attached_body, molt_asyncio_event_loop_get_current,
+    molt_asyncio_event_loop_get_current_attached_body, molt_asyncio_event_loop_policy_get,
+    molt_asyncio_event_loop_policy_get_attached_body, molt_asyncio_event_loop_policy_set,
+    molt_asyncio_event_loop_policy_set_attached_body, molt_asyncio_event_loop_set,
+    molt_asyncio_event_loop_set_attached_body, molt_asyncio_event_waiters_cleanup_token,
+    molt_asyncio_event_waiters_cleanup_token_attached_body, molt_asyncio_event_waiters_register,
+    molt_asyncio_event_waiters_register_attached_body, molt_asyncio_event_waiters_unregister,
+    molt_asyncio_event_waiters_unregister_attached_body, molt_asyncio_leave_task,
+    molt_asyncio_leave_task_attached_body, molt_asyncio_register_task,
+    molt_asyncio_register_task_attached_body, molt_asyncio_require_child_watcher_support,
+    molt_asyncio_require_child_watcher_support_attached_body,
+    molt_asyncio_require_unix_socket_support,
+    molt_asyncio_require_unix_socket_support_attached_body, molt_asyncio_running_loop_get,
+    molt_asyncio_running_loop_get_attached_body, molt_asyncio_running_loop_set,
+    molt_asyncio_running_loop_set_attached_body, molt_asyncio_ssl_transport_orchestrate,
+    molt_asyncio_ssl_transport_orchestrate_attached_body, molt_asyncio_task_last_exception_clear,
+    molt_asyncio_task_last_exception_clear_attached_body, molt_asyncio_task_registry_contains,
+    molt_asyncio_task_registry_contains_attached_body, molt_asyncio_task_registry_current,
+    molt_asyncio_task_registry_current_attached_body, molt_asyncio_task_registry_current_for_loop,
+    molt_asyncio_task_registry_current_for_loop_attached_body, molt_asyncio_task_registry_get,
+    molt_asyncio_task_registry_get_attached_body, molt_asyncio_task_registry_live_set,
+    molt_asyncio_task_registry_live_set_attached_body, molt_asyncio_task_registry_move,
+    molt_asyncio_task_registry_move_attached_body, molt_asyncio_task_registry_pop,
+    molt_asyncio_task_registry_pop_attached_body, molt_asyncio_task_registry_set,
+    molt_asyncio_task_registry_set_attached_body, molt_asyncio_task_registry_values,
+    molt_asyncio_task_registry_values_attached_body, molt_asyncio_unregister_task,
+    molt_asyncio_unregister_task_attached_body,
 };
 
 thread_local! {
@@ -118,7 +137,7 @@ impl CurrentTaskScope {
 impl Drop for CurrentTaskScope {
     fn drop(&mut self) {
         with_gil(|py| {
-            replace_current_task(&py, self.previous);
+            replace_current_task(py, self.previous);
         });
     }
 }
@@ -161,8 +180,9 @@ impl MoltTask {
 
 impl Drop for MoltTask {
     fn drop(&mut self) {
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter();
         molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
-            crate::molt_dec_ref(self.future_ptr);
+            crate::molt_dec_ref_attached_body(execution.token(), self.future_ptr);
         });
     }
 }
@@ -372,7 +392,7 @@ impl MoltScheduler {
         Self::execute_task(task, injector);
     }
 
-    pub fn enqueue(&self, _py: &PyToken<'_>, task: MoltTask) {
+    pub(crate) fn enqueue(&self, _py: &PyToken<'_>, task: MoltTask) {
         if !self.running.load(AtomicOrdering::Relaxed) {
             return;
         }
@@ -465,7 +485,7 @@ impl MoltScheduler {
         {
             let gil = GilGuard::new();
             let py = gil.token();
-            runtime_state(&py).io_poller().poll_host(&py);
+            runtime_state(py).io_poller().poll_host(py);
         }
         while let Some(task) = self.try_pop() {
             Self::execute_task(task, &self.injector);
@@ -530,7 +550,7 @@ impl MoltScheduler {
                     done
                 };
                 if done {
-                    clear_task_token(&py, task_ptr);
+                    clear_task_token(py, task_ptr);
                     return;
                 }
                 if poll_fn_addr != 0 {
@@ -575,7 +595,7 @@ impl MoltScheduler {
                         && exception_pending(_py)
                         && super::cancellation::task_loop_handle(_py, task_ptr).is_some()
                     {
-                        Some(molt_exception_last_pending())
+                        Some(molt_exception_last_pending_attached_body(py))
                     } else {
                         None
                     };
@@ -628,8 +648,8 @@ impl MoltScheduler {
                     }
                 }
                 if poll_fn_addr == 0 {
-                    task_mark_done(&py, task_ptr);
-                    clear_task_token(&py, task_ptr);
+                    task_mark_done(py, task_ptr);
+                    clear_task_token(py, task_ptr);
                     if async_trace_enabled() {
                         eprintln!(
                             "molt async trace: poll_skip task=0x{:x} poll=0x0",
@@ -933,10 +953,9 @@ pub(crate) fn cancel_task_sleep(py: &PyToken<'_>, task: *mut u8) {
 
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_spawn(task_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_spawn_attached_body(_py: &crate::PyToken<'_>, task_bits: u64) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(task_ptr) = resolve_task_ptr(task_bits) else {
                 return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
             };
@@ -972,8 +991,7 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) -> u64 {
 
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_block_on_attached_body(_py: &crate::PyToken<'_>, task_bits: u64) -> i64 {
     unsafe {
         let (task_ptr, poll_fn_addr, task_scope, prev_task, prev_token, exceptions, prev_raise) = {
             let _gil = GilGuard::new();
@@ -1172,14 +1190,14 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     {
-                        let due = runtime_state(&_py)
+                        let due = runtime_state(_py)
                             .sleep_queue()
-                            .take_due_scheduler_tasks(&_py);
+                            .take_due_scheduler_tasks(_py);
                         for due_task in due {
-                            enqueue_task_ptr(&_py, due_task);
+                            enqueue_task_ptr(_py, due_task);
                         }
                     }
-                    runtime_state(&_py).scheduler().drain_ready();
+                    runtime_state(_py).scheduler().drain_ready();
                 }
                 let wake_pending = {
                     let _gil = GilGuard::new();
@@ -1223,7 +1241,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     let scheduler_deadline =
-                        runtime_state(&_py).sleep_queue().next_scheduler_deadline();
+                        runtime_state(_py).sleep_queue().next_scheduler_deadline();
                     match (deadline, scheduler_deadline) {
                         (Some(a), Some(b)) => Some(a.min(b)),
                         (Some(a), None) => Some(a),
@@ -1310,7 +1328,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             let pending_bits = if let Some(exc_slot) = task_exc_slot {
                 MoltObject::from_ptr(exc_slot.0).bits()
             } else if exception_pending(_py) {
-                molt_exception_last_pending()
+                molt_exception_last_pending_attached_body(_py)
             } else {
                 MoltObject::none().bits()
             };
@@ -1378,7 +1396,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 && !generator_raise
                 && !task_raise
             {
-                let exc_bits = molt_exception_last_pending();
+                let exc_bits = molt_exception_last_pending_attached_body(_py);
                 if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
                     context_stack_unwind(_py, MoltObject::from_ptr(exc_ptr).bits());
                 }
@@ -1404,26 +1422,31 @@ mod context_queue_root_tests {
     static DEFER_FIRST: AtomicBool = AtomicBool::new(false);
     static CANCEL_AFTER_OBSERVE: AtomicBool = AtomicBool::new(false);
 
-    extern "C" fn poll(raw: u64) -> i64 {
-        with_gil(|py| unsafe {
-            let ptr = std::ptr::with_exposed_provenance_mut::<u8>(raw as usize);
-            let var = *ptr.add(crate::GEN_CONTROL_SIZE).cast::<u64>();
-            let value = context::get_variable(&py, var, None).flatten().unwrap_or(0);
-            OBSERVED.store(value, AtomicOrdering::SeqCst);
-            if value != 0 {
-                dec_ref_bits(&py, value);
+    extern "C" fn poll(__context: u64, raw: u64) -> i64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __attached_py;
+            unsafe {
+                let ptr = std::ptr::with_exposed_provenance_mut::<u8>(raw as usize);
+                let var = *ptr.add(crate::GEN_CONTROL_SIZE).cast::<u64>();
+                let value = context::get_variable(py, var, None).flatten().unwrap_or(0);
+                OBSERVED.store(value, AtomicOrdering::SeqCst);
+                if value != 0 {
+                    dec_ref_bits(py, value);
+                }
+                if CANCEL_AFTER_OBSERVE.load(AtomicOrdering::SeqCst) {
+                    crate::async_rt::cancellation::task_set_cancel_pending(ptr);
+                }
+                let first = POLLS.fetch_add(1, AtomicOrdering::SeqCst) == 0;
+                if first && DEFER_FIRST.load(AtomicOrdering::SeqCst) {
+                    runtime_state(py).scheduler().defer_task_ptr(py, ptr);
+                    pending_bits_i64()
+                } else {
+                    MoltObject::none().bits() as i64
+                }
             }
-            if CANCEL_AFTER_OBSERVE.load(AtomicOrdering::SeqCst) {
-                crate::async_rt::cancellation::task_set_cancel_pending(ptr);
-            }
-            let first = POLLS.fetch_add(1, AtomicOrdering::SeqCst) == 0;
-            if first && DEFER_FIRST.load(AtomicOrdering::SeqCst) {
-                runtime_state(&py).scheduler().defer_task_ptr(&py, ptr);
-                pending_bits_i64()
-            } else {
-                MoltObject::none().bits() as i64
-            }
-        })
+        }
     }
 
     fn var(py: &PyToken<'_>, name: &[u8]) -> u64 {
@@ -1450,17 +1473,18 @@ mod context_queue_root_tests {
     fn real_spawn_and_deferred_poll_keep_task_context_alive_without_caller_owner() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             with_gil(|py| {
-                install_deterministic_scheduler(&py);
-                let scheduler = runtime_state(&py).scheduler();
+                install_deterministic_scheduler(py);
+                let scheduler = runtime_state(py).scheduler();
                 for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
                     for deferred in [false, true] {
                         POLLS.store(0, AtomicOrdering::SeqCst);
                         OBSERVED.store(0, AtomicOrdering::SeqCst);
                         DEFER_FIRST.store(deferred, AtomicOrdering::SeqCst);
-                        let value_var = var(&py, b"queued-value");
-                        let cycle_var = var(&py, b"queued-cycle");
-                        let selected = context::new_context(&py).unwrap();
-                        let task = crate::molt_task_new(
+                        let value_var = var(py, b"queued-value");
+                        let cycle_var = var(py, b"queued-cycle");
+                        let selected = context::new_context(py).unwrap();
+                        let task = crate::molt_task_new_attached_body(
+                            py,
                             poll as *const () as usize as u64,
                             (crate::GEN_CONTROL_SIZE + 8) as u64,
                             kind,
@@ -1468,63 +1492,63 @@ mod context_queue_root_tests {
                         let ptr = obj_from_bits(task).as_ptr().unwrap();
                         unsafe {
                             crate::object::payload_refs::store_borrowed(
-                                &py,
+                                py,
                                 ptr,
                                 crate::GEN_CONTROL_SIZE,
                                 value_var,
                             );
                         }
                         {
-                            let _entered = context::EnteredContext::enter(&py, selected).unwrap();
+                            let _entered = context::EnteredContext::enter(py, selected).unwrap();
                             for (key, value) in [
                                 (value_var, MoltObject::from_int(77).bits()),
                                 (cycle_var, task),
                             ] {
-                                let token = context::set_variable(&py, key, value).unwrap();
-                                dec_ref_bits(&py, token);
+                                let token = context::set_variable(py, key, value).unwrap();
+                                dec_ref_bits(py, token);
                             }
                         }
-                        register_task_execution(&py, ptr, 1, TaskContextBinding::Owned(selected));
-                        let task_watch = WeakBorrow::new(&py, task).unwrap();
-                        let context_watch = WeakBorrow::new(&py, selected).unwrap();
+                        register_task_execution(py, ptr, 1, TaskContextBinding::Owned(selected));
+                        let task_watch = WeakBorrow::new(py, task).unwrap();
+                        let context_watch = WeakBorrow::new(py, selected).unwrap();
                         let spawn_count = spawned_task_count();
                         unsafe {
-                            molt_spawn(task);
+                            molt_spawn_attached_body(py, task);
                         }
-                        dec_ref_bits(&py, task);
-                        dec_ref_bits(&py, selected);
+                        dec_ref_bits(py, task);
+                        dec_ref_bits(py, selected);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 0);
                         for watch in [&task_watch, &context_watch] {
                             let live = watch
                                 .upgrade_owned()
                                 .expect("queued task and Context survive GC");
-                            dec_ref_bits(&py, live);
+                            dec_ref_bits(py, live);
                         }
                         // Separate the suspended execution root from queue
                         // custody. The external spawn root alone must survive GC.
                         drop(scheduler.try_pop().expect("real queued work"));
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         let live = task_watch
                             .upgrade_owned()
                             .expect("spawn is an external GC root");
                         task_clear_queue_flags(ptr);
-                        enqueue_task_ptr(&py, ptr);
-                        dec_ref_bits(&py, live);
+                        enqueue_task_ptr(py, ptr);
+                        dec_ref_bits(py, live);
                         scheduler.drain_ready();
                         if deferred {
                             assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 1);
                             unsafe {
-                                crate::object::gc::collect_cycles(&py);
+                                crate::object::gc::collect_cycles(py);
                             }
                             let live = task_watch
                                 .upgrade_owned()
                                 .expect("deferred owner survives GC");
-                            dec_ref_bits(&py, live);
+                            dec_ref_bits(py, live);
                             scheduler.drain_ready();
                         }
                         assert_eq!(
@@ -1537,12 +1561,12 @@ mod context_queue_root_tests {
                         );
                         assert_eq!(spawned_task_count(), spawn_count);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         assert!(task_watch.upgrade_owned().is_none());
                         assert!(context_watch.upgrade_owned().is_none());
-                        dec_ref_bits(&py, value_var);
-                        dec_ref_bits(&py, cycle_var);
+                        dec_ref_bits(py, value_var);
+                        dec_ref_bits(py, cycle_var);
                     }
                 }
             });
@@ -1555,30 +1579,31 @@ mod context_queue_root_tests {
             with_gil(|py| {
                 POLLS.store(0, AtomicOrdering::SeqCst);
                 for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
-                    let variable = var(&py, b"unspawned-cycle");
-                    let selected = context::new_context(&py).unwrap();
-                    let task = crate::molt_task_new(
+                    let variable = var(py, b"unspawned-cycle");
+                    let selected = context::new_context(py).unwrap();
+                    let task = crate::molt_task_new_attached_body(
+                        py,
                         poll as *const () as usize as u64,
                         crate::GEN_CONTROL_SIZE as u64,
                         kind,
                     );
                     let ptr = obj_from_bits(task).as_ptr().unwrap();
                     {
-                        let _entered = context::EnteredContext::enter(&py, selected).unwrap();
-                        let token = context::set_variable(&py, variable, task).unwrap();
-                        dec_ref_bits(&py, token);
+                        let _entered = context::EnteredContext::enter(py, selected).unwrap();
+                        let token = context::set_variable(py, variable, task).unwrap();
+                        dec_ref_bits(py, token);
                     }
-                    register_task_execution(&py, ptr, 1, TaskContextBinding::Owned(selected));
-                    let task_watch = WeakBorrow::new(&py, task).unwrap();
-                    let context_watch = WeakBorrow::new(&py, selected).unwrap();
-                    dec_ref_bits(&py, task);
-                    dec_ref_bits(&py, selected);
+                    register_task_execution(py, ptr, 1, TaskContextBinding::Owned(selected));
+                    let task_watch = WeakBorrow::new(py, task).unwrap();
+                    let context_watch = WeakBorrow::new(py, selected).unwrap();
+                    dec_ref_bits(py, task);
+                    dec_ref_bits(py, selected);
                     unsafe {
-                        crate::object::gc::collect_cycles(&py);
+                        crate::object::gc::collect_cycles(py);
                     }
                     assert!(task_watch.upgrade_owned().is_none());
                     assert!(context_watch.upgrade_owned().is_none());
-                    dec_ref_bits(&py, variable);
+                    dec_ref_bits(py, variable);
                 }
                 assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 0);
             });
@@ -1589,7 +1614,7 @@ mod context_queue_root_tests {
         use crate::async_rt::{cancellation, event_loop};
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             with_gil(|py| {
-                install_deterministic_scheduler(&py);
+                install_deterministic_scheduler(py);
                 DEFER_FIRST.store(false, AtomicOrdering::SeqCst);
                 for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
                     // 0: complete, 1: cancellation during poll, 2: close with
@@ -1597,19 +1622,20 @@ mod context_queue_root_tests {
                     for terminal in 0..3 {
                         POLLS.store(0, AtomicOrdering::SeqCst);
                         CANCEL_AFTER_OBSERVE.store(terminal == 1, AtomicOrdering::SeqCst);
-                        let variable = var(&py, b"loop-value");
-                        let selected = context::new_context(&py).unwrap();
+                        let variable = var(py, b"loop-value");
+                        let selected = context::new_context(py).unwrap();
                         {
-                            let _entry = context::EnteredContext::enter(&py, selected).unwrap();
+                            let _entry = context::EnteredContext::enter(py, selected).unwrap();
                             let token = context::set_variable(
-                                &py,
+                                py,
                                 variable,
                                 MoltObject::from_int(77).bits(),
                             )
                             .unwrap();
-                            dec_ref_bits(&py, token);
+                            dec_ref_bits(py, token);
                         }
-                        let task = crate::molt_task_new(
+                        let task = crate::molt_task_new_attached_body(
+                            py,
                             poll as *const () as usize as u64,
                             (crate::GEN_CONTROL_SIZE + 8) as u64,
                             kind,
@@ -1617,53 +1643,56 @@ mod context_queue_root_tests {
                         let ptr = obj_from_bits(task).as_ptr().unwrap();
                         unsafe {
                             crate::object::payload_refs::store_borrowed(
-                                &py,
+                                py,
                                 ptr,
                                 crate::GEN_CONTROL_SIZE,
                                 variable,
                             );
                         }
                         let execution = unsafe {
-                            cancellation::molt_cancel_token_new(MoltObject::from_int(-1).bits())
+                            cancellation::molt_cancel_token_new_attached_body(
+                                py,
+                                MoltObject::from_int(-1).bits(),
+                            )
                         };
                         let id = obj_from_bits(execution).as_int().unwrap() as u64;
-                        register_task_execution(&py, ptr, id, TaskContextBinding::Owned(selected));
+                        register_task_execution(py, ptr, id, TaskContextBinding::Owned(selected));
                         unsafe {
-                            cancellation::molt_cancel_token_drop(execution);
+                            cancellation::molt_cancel_token_drop_attached_body(py, execution);
                         }
-                        let task_watch = WeakBorrow::new(&py, task).unwrap();
-                        let context_watch = WeakBorrow::new(&py, selected).unwrap();
-                        let loop_handle = event_loop::molt_event_loop_new();
+                        let task_watch = WeakBorrow::new(py, task).unwrap();
+                        let context_watch = WeakBorrow::new(py, selected).unwrap();
+                        let loop_handle = event_loop::molt_event_loop_new_attached_body(py);
                         let spawn_count = spawned_task_count();
-                        event_loop::molt_event_loop_spawn(loop_handle, task);
-                        assert!(!exception_pending(&py));
+                        event_loop::molt_event_loop_spawn_attached_body(py, loop_handle, task);
+                        assert!(!exception_pending(py));
                         if terminal == 2 {
                             register_task_sleep(
-                                &py,
+                                py,
                                 ptr,
                                 Instant::now() + std::time::Duration::from_secs(3600),
                             );
                         }
-                        dec_ref_bits(&py, task);
-                        dec_ref_bits(&py, selected);
+                        dec_ref_bits(py, task);
+                        dec_ref_bits(py, selected);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         let live = task_watch
                             .upgrade_owned()
                             .expect("loop queue owns live work");
-                        dec_ref_bits(&py, live);
+                        dec_ref_bits(py, live);
                         if terminal == 2 {
-                            event_loop::molt_event_loop_close(loop_handle);
+                            event_loop::molt_event_loop_close_attached_body(py, loop_handle);
                         } else {
-                            event_loop::molt_event_loop_run_once(loop_handle);
+                            event_loop::molt_event_loop_run_once_attached_body(py, loop_handle);
                             if terminal == 1 {
-                                assert!(exception_pending(&py));
+                                assert!(exception_pending(py));
                                 unsafe {
                                     molt_cpython_abi::api::errors::PyErr_Clear();
                                 }
                             } else {
-                                assert!(!exception_pending(&py));
+                                assert!(!exception_pending(py));
                             }
                         }
                         assert_eq!(
@@ -1672,12 +1701,12 @@ mod context_queue_root_tests {
                         );
                         assert_eq!(spawned_task_count(), spawn_count);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         assert!(task_watch.upgrade_owned().is_none());
                         assert!(context_watch.upgrade_owned().is_none());
-                        event_loop::molt_event_loop_drop(loop_handle);
-                        dec_ref_bits(&py, variable);
+                        event_loop::molt_event_loop_drop_attached_body(py, loop_handle);
+                        dec_ref_bits(py, variable);
                     }
                 }
                 CANCEL_AFTER_OBSERVE.store(false, AtomicOrdering::SeqCst);
@@ -1685,3 +1714,5 @@ mod context_queue_root_tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/async_rt/scheduler/mod.rs");

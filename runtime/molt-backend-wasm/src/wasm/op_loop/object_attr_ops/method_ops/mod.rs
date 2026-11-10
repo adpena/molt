@@ -2,9 +2,9 @@ mod descriptor_ops;
 mod method_load_ops;
 
 use crate::wasm::{WasmBackend, WasmFrameLocals};
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR};
-use wasm_encoder::Function;
 
 pub(super) fn emit_method_op(
     backend: &mut WasmBackend,

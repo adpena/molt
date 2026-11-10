@@ -140,7 +140,7 @@ fn floating_arithmetic_preserves_zero_signs_and_quiets_signaling_nans() {
         // Enter and leave through integer bits so the host cannot quiet the
         // signaling NaN before the actual emitted arithmetic executes.
         let input = vec![
-            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
             Instruction::F64ReinterpretI64,
             Instruction::F64Const(constant.into()),
             arithmetic,
@@ -154,7 +154,7 @@ fn floating_arithmetic_preserves_zero_signs_and_quiets_signaling_nans() {
             "{name}: unproved float identity removed arithmetic"
         );
         let body = WasmBody {
-            param_types: vec![ValType::I64],
+            param_types: vec![ValType::I64, ValType::I64],
             result_types: vec![ValType::I64],
             locals: vec![],
             ops,
@@ -179,16 +179,16 @@ const paths = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const negativeZero = -(1n << 63n);
 for (const [name, path] of Object.entries(paths)) {
   const run = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path))).exports.run;
-  assert.equal(run(0n), 0n, name + ' positive zero');
-  assert.equal(run(negativeZero), name === 'add_positive_zero' ? 0n : negativeZero,
+  assert.equal(run(executionContext, 0n), 0n, name + ' positive zero');
+  assert.equal(run(executionContext, negativeZero), name === 'add_positive_zero' ? 0n : negativeZero,
                name + ' negative zero');
   for (const bits of [0x4000000000000000n, 0xc000000000000000n,
                      0x7ff0000000000000n, 0xfff0000000000000n]) {
-    assert.equal(BigInt.asUintN(64, run(BigInt.asIntN(64, bits))), bits, name + ' finite/infinite');
+    assert.equal(BigInt.asUintN(64, run(executionContext, BigInt.asIntN(64, bits))), bits, name + ' finite/infinite');
   }
   for (const bits of [0x7ff0000000000001n, 0xfff0000000000001n,
                      0x7ff8000000000042n, 0xfff8000000000042n]) {
-    const actual = BigInt.asUintN(64, run(BigInt.asIntN(64, bits)));
+    const actual = BigInt.asUintN(64, run(executionContext, BigInt.asIntN(64, bits)));
     assert.equal(actual & 0x7ff8000000000000n, 0x7ff8000000000000n,
                  name + ' arithmetic must produce a quiet NaN');
   }

@@ -871,9 +871,11 @@ pub(super) fn define_process_host(
             if out_code != 0 {
                 let _ = write_bytes(&mut caller, &memory, out_code, &code.to_le_bytes());
             }
-            if let Some(func) = caller
-                .get_export("molt_process_host_notify")
-                .and_then(Extern::into_func)
+            if let Some(func) =
+                match RuntimeFunction::resolve(&mut caller, "molt_process_host_notify") {
+                    Ok(function) => function,
+                    Err(_) => return -GuestErrno::EIO,
+                }
             {
                 let _ = func.call(&mut caller, &[Val::I64(handle), Val::I32(code)], &mut []);
             }
@@ -1128,9 +1130,11 @@ pub(super) fn define_process_host(
             }
         }
         if !exited.is_empty()
-            && let Some(func) = caller
-                .get_export("molt_process_host_notify")
-                .and_then(Extern::into_func)
+            && let Some(func) =
+                match RuntimeFunction::resolve(&mut caller, "molt_process_host_notify") {
+                    Ok(function) => function,
+                    Err(_) => return -GuestErrno::EIO,
+                }
         {
             for (handle, code) in exited {
                 let _ = func.call(

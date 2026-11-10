@@ -109,7 +109,7 @@ pub(crate) struct SpecialCache {
 }
 
 pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 pub(crate) type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 pub(crate) struct RuntimeExtensionStateSlot {
@@ -709,33 +709,40 @@ pub(crate) fn runtime_extension_state_get_or_init(
     ptr
 }
 
-pub(crate) fn runtime_extension_states_clear_and_drop(state: &RuntimeState) -> bool {
+pub(crate) fn runtime_extension_states_clear_and_drop(
+    py: &PyToken<'_>,
+    state: &RuntimeState,
+) -> bool {
     crate::gil_assert();
     let slots: Vec<RuntimeExtensionStateSlot> = {
         let mut guard = state.extension_states.lock().unwrap();
         guard.drain().map(|(_, slot)| slot).collect()
     };
     let changed = !slots.is_empty();
-    clear_and_drop_extension_slots(slots);
+    clear_and_drop_extension_slots(py, slots);
     changed
 }
 
-pub(crate) fn runtime_extension_state_clear_and_drop_key(state: &RuntimeState, key: &[u8]) -> bool {
+pub(crate) fn runtime_extension_state_clear_and_drop_key(
+    py: &PyToken<'_>,
+    state: &RuntimeState,
+    key: &[u8],
+) -> bool {
     crate::gil_assert();
     let Some(slot) = state.extension_states.lock().unwrap().remove(key) else {
         return false;
     };
-    clear_and_drop_extension_slots(vec![slot]);
+    clear_and_drop_extension_slots(py, vec![slot]);
     true
 }
 
-fn clear_and_drop_extension_slots(slots: Vec<RuntimeExtensionStateSlot>) {
+fn clear_and_drop_extension_slots(py: &PyToken<'_>, slots: Vec<RuntimeExtensionStateSlot>) {
     for slot in slots {
         if slot.ptr.is_null() {
             continue;
         }
         unsafe {
-            (slot.clear)(slot.ptr);
+            (slot.clear)(py.attached_context(), slot.ptr);
             (slot.drop)(slot.ptr);
         }
     }
@@ -1488,14 +1495,19 @@ fn debug_assert_binding_matches_resolution(
 /// do not change for this thread, and `set_thread_runtime_state` rebinds, so
 /// the binding stays equal to the resolution.
 pub(crate) fn bind_execution_state(tls: &crate::state::ExecutionTls) {
+    let state = runtime_state_for_gil_in(tls);
     tls.bound_state
-        .set(runtime_state_for_gil_in(tls).map_or(std::ptr::null(), std::ptr::from_ref));
+        .set(state.map_or(std::ptr::null(), std::ptr::from_ref));
+    // Runtime-originated callbacks receive the token directly, without the
+    // host entry helper. Publish every compiled borrow at its lifetime owner.
+    tls.pending_work_ptr
+        .set(state.map_or(0, |state| state.pending_work.word_ptr() as u64));
 }
 
 /// Reset the binding once this thread holds neither a lease nor drain custody.
 pub(crate) fn release_execution_state_binding(tls: &crate::state::ExecutionTls) {
     if tls.lease_depth.get() == 0 && tls.shutdown_drain_depth.get() == 0 {
-        tls.bound_state.set(std::ptr::null());
+        unbind_execution_state(tls);
     }
 }
 
@@ -1503,6 +1515,7 @@ pub(crate) fn release_execution_state_binding(tls: &crate::state::ExecutionTls) 
 /// edges that unpublish or free a state call it for their own thread.
 pub(crate) fn unbind_execution_state(tls: &crate::state::ExecutionTls) {
     tls.bound_state.set(std::ptr::null());
+    tls.pending_work_ptr.set(0);
 }
 
 /// `runtime_state_for_gil` for a caller that has already read this thread's
@@ -1592,10 +1605,16 @@ extern "C" fn __core_gil_is_held() -> bool {
     gil_held()
 }
 
+extern "C" fn __core_gil_context() -> u64 {
+    assert!(gil_held(), "core context requested without GIL custody");
+    unsafe { PyToken::with_custody(crate::state::execution_tls()) }.attached_context()
+}
+
 static CORE_GIL_VT: molt_runtime_core::GilVtable = molt_runtime_core::GilVtable {
     acquire: __core_gil_acquire,
     release: __core_gil_release,
     is_held: __core_gil_is_held,
+    context: __core_gil_context,
 };
 
 #[inline]
@@ -1672,8 +1691,15 @@ fn runtime_exit(code_bits: u64) -> u64 {
         };
         if let Some(ptr) = ptr {
             let state = unsafe { &*ptr };
+            // Process exit may retain its caller's admitted lease. Ready
+            // unpublication cleared that lease's binding; resolve it against
+            // the now-published Finalizing owner before teardown callbacks.
+            // A caller without a lease is bound by shutdown-drain admission.
+            if current_thread_holds_runtime_execution_lease() {
+                bind_execution_state(crate::state::execution_tls());
+            }
             let py = gil.token();
-            runtime_teardown_for_process_exit(&py, state);
+            runtime_teardown_for_process_exit(py, state);
             // Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
             //    §2.4). Teardown above has reclaimed every reachable acyclic
             //    graph and the collector has reclaimed unreachable cycles, so the
@@ -1683,7 +1709,7 @@ fn runtime_exit(code_bits: u64) -> u64 {
             // The shared teardown transaction has already quiesced runtime/C
             // TLS and retired exact static bindings before class destruction.
             // Do not reenter the runtime in this callback-free process-exit tail.
-            crate::object::ops::assert_no_true_leak_post_teardown(&py);
+            crate::object::ops::assert_no_true_leak_post_teardown(py);
             let mut phase = lifecycle.phase.lock().unwrap();
             assert_eq!(
                 *phase,
@@ -1720,15 +1746,15 @@ fn initialize_runtime_state(
     // Bootstrap constructs builtin classes and hashes their dictionary keys.
     // Hash-secret selection admits RandomEntropy, so the target and grants must
     // already be frozen before bootstrap enters any Python object operation.
-    crate::async_rt::channels::freeze_capabilities(&gil.token());
+    crate::async_rt::channels::freeze_capabilities(gil.token());
     trace_runtime_init("capabilities");
-    runtime_reset_for_init(&gil.token(), state);
+    runtime_reset_for_init(gil.token(), state);
     trace_runtime_init("runtime_reset_for_init");
 
     // Register synthetic _intrinsics module so stdlib .py files can import it.
     {
         let nested = GilGuard::new();
-        crate::intrinsics::registry::register_intrinsics_module(&nested.token());
+        crate::intrinsics::registry::register_intrinsics_module(nested.token());
     }
     trace_runtime_init("intrinsics_registered");
 
@@ -1759,12 +1785,12 @@ fn initialize_runtime_state(
     #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
     molt_runtime_tk::initialize_library_policy();
     trace_runtime_init("resources");
-    crate::object::ops_sys::molt_runtime_init_audit();
+    crate::object::ops_sys::molt_runtime_init_audit_attached_body(gil.token());
     trace_runtime_init("audit");
-    crate::object::ops_sys::molt_runtime_init_io_mode();
+    crate::object::ops_sys::molt_runtime_init_io_mode_attached_body(gil.token());
     trace_runtime_init("io_mode");
 
-    crate::builtins::exceptions::memory_error::initialize(&gil.token());
+    crate::builtins::exceptions::memory_error::initialize(gil.token());
 
     // Publish the one CPython ABI hook table as part of the runtime
     // initialization transaction. Lifecycle queries such as
@@ -1780,7 +1806,7 @@ fn initialize_runtime_state(
         "primary runtime C-API bootstrap was rejected"
     );
     assert!(
-        crate::builtins::exceptions::memory_error::prepare_c_views(&gil.token()),
+        crate::builtins::exceptions::memory_error::prepare_c_views(gil.token()),
         "MemoryError C transport bootstrap failed"
     );
     drop(cpython_bootstrap_state);
@@ -2006,7 +2032,7 @@ fn runtime_shutdown() -> u64 {
 
     let state = unsafe { &*ptr };
     let py = gil.token();
-    runtime_teardown(&py, state);
+    runtime_teardown(py, state);
     {
         // Callback-capable teardown belongs before static-class retirement,
         // never here after their builtin graph and singleton pools are gone.
@@ -2243,15 +2269,15 @@ mod tests {
             );
             let gil = GilGuard::new();
             let py = gil.token();
-            let state = runtime_state(&py);
-            assert!(!crate::is_trusted(&py));
+            let state = runtime_state(py);
+            assert!(!crate::is_trusted(py));
             assert!(crate::operation_allowed(
-                &py,
+                py,
                 crate::OperationId::IoOpenRead,
                 crate::audit::AuditArgs::None,
             ));
             assert!(!crate::operation_allowed(
-                &py,
+                py,
                 crate::OperationId::RandomEntropy,
                 crate::audit::AuditArgs::None,
             ));
@@ -2259,7 +2285,7 @@ mod tests {
             // independent CPython siphash13 seed=0 'abc' vector through the
             // runtime consumer, after late environment changes could reseed it.
             assert_eq!(
-                crate::object::ops_hash::hash_string_bytes(&py, b"abc"),
+                crate::object::ops_hash::hash_string_bytes(py, b"abc"),
                 if molt_cpython_abi::abi_types::Py_hash_t::BITS == 64 {
                     -4594863902769663758
                 } else {
@@ -2321,7 +2347,7 @@ mod tests {
                 std::env::set_var("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", "1");
             }
             let gil = GilGuard::new();
-            let state = runtime_state(&gil.token());
+            let state = runtime_state(gil.token());
             let vfs = state.get_vfs().expect("startup bundle owns its route");
             let (_, backend, relative) = vfs.resolve("/bundle/data").expect("bundle route");
             assert!(matches!(
@@ -2370,7 +2396,7 @@ mod tests {
             assert_eq!(molt_runtime_init(), 1);
             std::env::set_current_dir(&replacement).unwrap();
             let gil = GilGuard::new();
-            let vfs = runtime_state(&gil.token()).get_vfs().unwrap();
+            let vfs = runtime_state(gil.token()).get_vfs().unwrap();
             let (_, backend, relative) = vfs.resolve("/bundle/data").unwrap();
             assert_eq!(backend.open_read(&relative).unwrap(), b"operator-source");
             drop(gil);
@@ -2427,19 +2453,19 @@ mod tests {
                 let gil = GilGuard::new();
                 let py = gil.token();
                 crate::object::ops_convert::maybe_emit_runtime_feedback_file(
-                    &py,
+                    py,
                     &serde_json::json!({"startup_sink_canary": 73}),
                 );
                 let exception = crate::alloc_exception(
-                    &py,
+                    py,
                     crate::BuiltinExc::RuntimeError,
                     "startup sink canary",
                 );
                 assert!(!exception.is_null());
                 let bits = MoltObject::from_ptr(exception).bits();
-                crate::builtins::exceptions::molt_raise(bits);
+                crate::builtins::exceptions::molt_raise_attached_body(py, bits);
                 assert_eq!(unsafe { molt_main_exit_status() }, 1);
-                crate::dec_ref_bits(&py, bits);
+                crate::dec_ref_bits(py, bits);
                 let feedback_path = original.join(feedback.unwrap_or("molt_runtime_feedback.json"));
                 let payload: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(feedback_path).unwrap()).unwrap();
@@ -2616,7 +2642,7 @@ mod tests {
                         let (owner, address, id, retained) = {
                             let gil = GilGuard::new();
                             let py = gil.token();
-                            let state = runtime_state(&py);
+                            let state = runtime_state(py);
                             let owner = state.identity();
                             assert!(!object::current_thread_has_retained_runtime_state());
                             assert!(object::retain_current_thread_state_after_runtime_failure(0));
@@ -2796,7 +2822,13 @@ mod tests {
         Box::into_raw(Box::new(0x5a5a_u64)) as *mut u8
     }
 
-    unsafe extern "C" fn test_extension_clear(ptr: *mut u8) {
+    unsafe extern "C" fn test_extension_clear(__context: u64, ptr: *mut u8) {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "extension cleanup context identity"
+        );
+        let _py = unsafe { crate::PyToken::from_attached_context(__context) };
         assert!(!ptr.is_null());
         unsafe {
             assert_eq!(*(ptr as *const u64), 0x5a5a);
@@ -2849,15 +2881,63 @@ mod tests {
 
         crate::with_gil_entry_nopanic!(_py, {
             let _ = _py;
-            runtime_extension_states_clear_and_drop(&state);
+            runtime_extension_states_clear_and_drop(_py, &state);
             assert!(state.extension_states.lock().unwrap().is_empty());
             assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
             assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
 
-            runtime_extension_states_clear_and_drop(&state);
+            runtime_extension_states_clear_and_drop(_py, &state);
             assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
             assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
         });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn process_exit_retains_compiled_callback_custody() {
+        const MODE: &str = "MOLT_TEST_EXIT_COMPILED_CUSTODY";
+        const TEST: &str =
+            "state::runtime_state::tests::process_exit_retains_compiled_callback_custody";
+        unsafe extern "C" fn clear(context: u64, _ptr: *mut u8) {
+            let py = unsafe { crate::PyToken::from_attached_context(context) };
+            let _scope = crate::concurrency::execution::CompiledScopeGuard::enter(py);
+            use std::io::Write;
+            println!("process-exit compiled callback completed");
+            std::io::stdout().flush().unwrap();
+        }
+        if std::env::var_os(MODE).is_some() {
+            assert_eq!(molt_runtime_init(), 1);
+            let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+            let py = entry.token();
+            runtime_extension_state_get_or_init(
+                runtime_state(py),
+                b"exit-compiled-callback",
+                test_extension_init,
+                clear,
+                test_extension_drop,
+            );
+            molt_runtime_exit(0);
+            unreachable!("process exit returned");
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .env(MODE, "1");
+        let output = crate::test_support::captured_runtime_children::capture(
+            &mut command,
+            "process-exit",
+            "compiled-callback",
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("process-exit compiled callback completed")
+        );
     }
 
     #[test]
@@ -2945,7 +3025,7 @@ mod tests {
             let (init_done_tx, init_done_rx) = std::sync::mpsc::channel();
             let init_entrant = std::thread::spawn(move || {
                 let gil = GilGuard::new();
-                let _ = runtime_state(&gil.token());
+                let _ = runtime_state(gil.token());
                 drop(gil);
                 init_prepared_tx.send(()).unwrap();
                 init_start_rx.recv().unwrap();

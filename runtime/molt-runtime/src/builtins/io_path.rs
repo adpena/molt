@@ -147,7 +147,7 @@ fn suppress_predicate_conversion_error(py: &PyToken<'_>, is_link: bool) -> bool 
     }
     let pending = ExceptionValue::adopt(
         py,
-        crate::builtins::exceptions::molt_exception_last_pending(),
+        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
     );
     let suppress = exception_matches_kind(py, pending.bits(), crate::BuiltinExc::OSError)
         || exception_matches_kind(py, pending.bits(), crate::BuiltinExc::ValueError)
@@ -193,37 +193,32 @@ fn metadata_predicate(py: &PyToken<'_>, bits: u64, predicate: MetadataPredicate)
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_path_exists_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         metadata_predicate(py, path_bits, MetadataPredicate::Exists)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_isdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_path_isdir_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         metadata_predicate(py, path_bits, MetadataPredicate::Directory)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_isfile(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_path_isfile_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         metadata_predicate(py, path_bits, MetadataPredicate::RegularFile)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_islink(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_path_islink_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         metadata_predicate(py, path_bits, MetadataPredicate::Symlink)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_readlink(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_path_readlink_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let (path, flavor) = match path_from_bits_with_flavor(py, path_bits) {
             Ok(input) => input,
             Err(error) => return error,
@@ -236,13 +231,13 @@ pub extern "C" fn molt_path_readlink(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_symlink(
+pub(crate) fn molt_path_symlink_attached_body(
+    _py: &crate::PyToken<'_>,
     src_bits: u64,
     dst_bits: u64,
     target_is_directory_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !has_capability(_py, "fs.write") {
             return raise_capability_denied(_py, "fs.write");
         }
@@ -279,9 +274,12 @@ pub extern "C" fn molt_path_symlink(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_mkdir_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !has_capability(_py, "fs.write") {
             return raise_capability_denied(_py, "fs.write");
         }
@@ -326,9 +324,8 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_unlink_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !has_capability(_py, "fs.write") {
             return raise_capability_denied(_py, "fs.write");
         }
@@ -357,9 +354,8 @@ pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_rmdir_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !has_capability(_py, "fs.write") {
             return raise_capability_denied(_py, "fs.write");
         }
@@ -555,9 +551,13 @@ fn path_join_components(py: &PyToken<'_>, base_bits: u64, parts: &[u64], posix: 
     allocate(&joined.finish()).map_or(MoltObject::none().bits(), |value| value.into_bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_join_many(base_bits: u64, parts_bits: u64, posix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_path_join_many_attached_body(
+    _py: &crate::PyToken<'_>,
+    base_bits: u64,
+    parts_bits: u64,
+    posix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = obj_from_bits(parts_bits).as_ptr() else {
             return raise_exception::<_>(py, BuiltinExc::TypeError, "parts must be tuple");
         };
@@ -577,9 +577,8 @@ pub extern "C" fn molt_path_join_many(base_bits: u64, parts_bits: u64, posix_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_isabs(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_isabs_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -589,9 +588,8 @@ pub extern "C" fn molt_path_isabs(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_dirname(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_dirname_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -607,9 +605,8 @@ pub extern "C" fn molt_path_dirname(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_basename(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_basename_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -625,9 +622,8 @@ pub extern "C" fn molt_path_basename(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_split(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_split_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -657,9 +653,8 @@ pub extern "C" fn molt_path_split(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_splitext(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_splitext_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -688,9 +683,8 @@ pub extern "C" fn molt_path_splitext(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_normpath(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_normpath_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -706,9 +700,8 @@ pub extern "C" fn molt_path_normpath(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_abspath(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_abspath_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -727,9 +720,12 @@ pub extern "C" fn molt_path_abspath(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_relpath(path_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_relpath_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -756,8 +752,12 @@ pub extern "C" fn molt_path_relpath(path_bits: u64, start_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
+pub(crate) fn molt_path_makedirs_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    mode_bits: u64,
+    exist_ok_bits: u64,
+) -> u64 {
     fn create_parent_dir(path: &std::path::Path) -> std::io::Result<()> {
         if path.as_os_str().is_empty() {
             return Ok(());
@@ -792,7 +792,7 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
         }
     }
 
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) =
             crate::require_operation(_py, crate::OperationId::PathMakedirs, AuditArgs::None)
         {
@@ -893,9 +893,8 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_as_uri(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_as_uri_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -914,9 +913,12 @@ pub extern "C" fn molt_path_as_uri(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_match(path_bits: u64, pattern_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_match_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    pattern_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let path = match path_string_from_bits(_py, path_bits) {
             Ok(path) => path,
@@ -930,15 +932,15 @@ pub extern "C" fn molt_path_match(path_bits: u64, pattern_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_glob(
+pub(crate) fn molt_path_glob_attached_body(
+    _py: &crate::PyToken<'_>,
     path_bits: u64,
     pattern_bits: u64,
     recursive_bits: u64,
     original_pattern_bits: u64,
     legacy_parsed_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !has_capability(_py, "fs.read") {
             return raise_capability_denied(_py, "fs.read");
         }
@@ -1113,7 +1115,8 @@ pub extern "C" fn molt_path_glob(
                 use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
                 use molt_runtime_core::ProtectedRuntimeValue;
 
-                let tail_bits = crate::molt_getitem_method(
+                let tail_bits = crate::molt_getitem_method_attached_body(
+                    _py,
                     original_pattern_bits,
                     MoltObject::from_int(-1).bits(),
                 );
@@ -1212,9 +1215,11 @@ pub extern "C" fn molt_path_glob(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_glob_has_magic(pathname_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_glob_has_magic_attached_body(
+    _py: &crate::PyToken<'_>,
+    pathname_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (pathname, _) = match path_value_with_flavor_from_bits(_py, pathname_bits) {
             Ok(path) => path,
             Err(bits) => return bits,
@@ -1226,9 +1231,8 @@ pub extern "C" fn molt_glob_has_magic(pathname_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_glob_escape(pathname_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_glob_escape_attached_body(_py: &crate::PyToken<'_>, pathname_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = path_sep_char();
         let (pathname, flavor) = match path_value_with_flavor_from_bits(_py, pathname_bits) {
             Ok(value) => value,
@@ -1260,14 +1264,14 @@ pub extern "C" fn molt_glob_escape(pathname_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_glob_translate(
+pub(crate) fn molt_glob_translate_attached_body(
+    _py: &crate::PyToken<'_>,
     pathname_bits: u64,
     recursive_bits: u64,
     include_hidden_bits: u64,
     seps_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let pattern = if let Some(text) = string_obj_to_owned(obj_from_bits(pathname_bits)) {
             text
         } else {
@@ -1452,15 +1456,15 @@ pub(crate) fn glob_parse_args(
 /// Eager: materializes the full match list. Defined as `list(iglob(...))` —
 /// it drains the same lazy streaming iterator the `iglob` path returns, so the
 /// two are guaranteed to agree (one source of truth: `glob_iter_new_state`).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_glob(
+pub(crate) fn molt_glob_attached_body(
+    _py: &crate::PyToken<'_>,
     pathname_bits: u64,
     root_dir_bits: u64,
     dir_fd_bits: u64,
     recursive_bits: u64,
     include_hidden_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let args = match glob_parse_args(
             _py,
             pathname_bits,
@@ -1501,15 +1505,15 @@ pub extern "C" fn molt_glob(
 /// `glob.iglob(...)` — returns a lazy `TYPE_ID_GLOB_ITER` that streams matching
 /// paths one per `__next__` at bounded RSS (CPython-faithful generator chain
 /// reified as a native work-stack; see `GlobIterState`).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_glob_iter(
+pub(crate) fn molt_glob_iter_attached_body(
+    _py: &crate::PyToken<'_>,
     pathname_bits: u64,
     root_dir_bits: u64,
     dir_fd_bits: u64,
     recursive_bits: u64,
     include_hidden_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let args = match glob_parse_args(
             _py,
             pathname_bits,
@@ -1538,9 +1542,12 @@ pub extern "C" fn molt_glob_iter(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_path_chmod_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !has_capability(_py, "fs.write") {
             return raise_capability_denied(_py, "fs.write");
         }
@@ -1841,9 +1848,8 @@ pub(crate) fn stat_result_class(py: &PyToken<'_>) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_stat_result_type() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_os_stat_result_type_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         crate::state::cache::retain_cached_result(py, stat_result_class(py))
     })
 }
@@ -2024,14 +2030,12 @@ fn metadata_stat(py: &PyToken<'_>, bits: u64, follow: bool) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_stat(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { metadata_stat(py, path_bits, true) })
+pub(crate) fn molt_os_stat_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { metadata_stat(py, path_bits, true) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_lstat(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { metadata_stat(py, path_bits, false) })
+pub(crate) fn molt_os_lstat_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { metadata_stat(py, path_bits, false) })
 }
 
 /// Both metadata aliases select a virtual/host path route before a genuinely
@@ -2102,9 +2106,12 @@ fn metadata_stat_at(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_lstat_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_os_lstat_at_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    dir_fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         metadata_stat_at(
             py,
             path_bits,
@@ -2115,9 +2122,8 @@ pub extern "C" fn molt_os_lstat_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_fstat(fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_os_fstat_attached_body(_py: &crate::PyToken<'_>, fd_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(fd) = crate::builtins::numbers::index_c_int_from_obj(py, fd_bits) else {
             return MoltObject::none().bits();
         };
@@ -2129,9 +2135,12 @@ pub extern "C" fn molt_os_fstat(fd_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_rename(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_rename_attached_body(
+    _py: &crate::PyToken<'_>,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -2147,9 +2156,12 @@ pub extern "C" fn molt_os_rename(src_bits: u64, dst_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_replace(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_replace_attached_body(
+    _py: &crate::PyToken<'_>,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -2172,9 +2184,13 @@ pub extern "C" fn molt_os_replace(src_bits: u64, dst_bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Directory-relative stat shares the path route and descriptor custody of lstat.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_stat_at(path_bits: u64, dir_fd_bits: u64, follow_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_os_stat_at_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    dir_fd_bits: u64,
+    follow_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         metadata_stat_at(
             py,
             path_bits,
@@ -2187,14 +2203,14 @@ pub extern "C" fn molt_os_stat_at(path_bits: u64, dir_fd_bits: u64, follow_bits:
 
 /// `os.rename(src, src_dir_fd=..., dst, dst_dir_fd=...)` → None.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_rename_at(
+pub(crate) fn molt_os_rename_at_attached_body(
+    _py: &crate::PyToken<'_>,
     src_bits: u64,
     src_dir_fd_bits: u64,
     dst_bits: u64,
     dst_dir_fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.rename_at", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -2246,9 +2262,14 @@ pub extern "C" fn molt_os_rename_at(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_rename_at(_s: u64, _sd: u64, _d: u64, _dd: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_rename_at_attached_body(
+    _py: &crate::PyToken<'_>,
+    _s: u64,
+    _sd: u64,
+    _d: u64,
+    _dd: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "rename")
     })
 }
@@ -2259,14 +2280,14 @@ pub extern "C" fn molt_os_rename_at(_s: u64, _sd: u64, _d: u64, _dd: u64) -> u64
 /// the distinct symbol exists so the Python wrapper uses the semantically
 /// correct name for diagnostics.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_replace_at(
+pub(crate) fn molt_os_replace_at_attached_body(
+    _py: &crate::PyToken<'_>,
     src_bits: u64,
     src_dir_fd_bits: u64,
     dst_bits: u64,
     dst_dir_fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.replace_at", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -2318,9 +2339,14 @@ pub extern "C" fn molt_os_replace_at(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_replace_at(_s: u64, _sd: u64, _d: u64, _dd: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_replace_at_attached_body(
+    _py: &crate::PyToken<'_>,
+    _s: u64,
+    _sd: u64,
+    _d: u64,
+    _dd: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "replace")
     })
 }
@@ -2332,15 +2358,15 @@ pub extern "C" fn molt_os_replace_at(_s: u64, _sd: u64, _d: u64, _dd: u64) -> u6
 /// would need `AT_EMPTY_PATH` + `CAP_DAC_READ_SEARCH`; we do not pre-raise —
 /// the kernel's `EPERM`/`ENOENT` is propagated as the matching OSError subclass.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_link_at(
+pub(crate) fn molt_os_link_at_attached_body(
+    _py: &crate::PyToken<'_>,
     src_bits: u64,
     src_dir_fd_bits: u64,
     dst_bits: u64,
     dst_dir_fd_bits: u64,
     follow_symlinks_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.link_at", "fs.write", AuditArgs::None, allowed);
         if !allowed {
@@ -2407,16 +2433,21 @@ pub extern "C" fn molt_os_link_at(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_link_at(_s: u64, _sd: u64, _d: u64, _dd: u64, _f: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_link_at_attached_body(
+    _py: &crate::PyToken<'_>,
+    _s: u64,
+    _sd: u64,
+    _d: u64,
+    _dd: u64,
+    _f: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "link")
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_getfilesystemencodeerrors() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_getfilesystemencodeerrors_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_string(
             _py,
             crate::builtins::platform::startup_encoding(_py)
@@ -2430,9 +2461,8 @@ pub extern "C" fn molt_sys_getfilesystemencodeerrors() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_open_flags() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_open_flags_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let flags: &[i64] = &[
             libc::O_RDONLY as i64,
             libc::O_WRONLY as i64,
@@ -2474,9 +2504,13 @@ pub extern "C" fn molt_os_open_flags() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_open(path_bits: u64, flags_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_open_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    flags_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -2536,9 +2570,8 @@ pub extern "C" fn molt_os_open(path_bits: u64, flags_bits: u64, mode_bits: u64) 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_close_attached_body(_py: &crate::PyToken<'_>, fd_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
@@ -2593,9 +2626,12 @@ pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_read_attached_body(
+    _py: &crate::PyToken<'_>,
+    fd_bits: u64,
+    len_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // os.read(fd: int, length: Py_ssize_t): CPython's argument converters.
         let Some(fd) = crate::builtins::numbers::index_c_int_from_obj(_py, fd_bits) else {
             return MoltObject::none().bits();
@@ -2655,9 +2691,12 @@ pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_write(fd_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_write_attached_body(
+    _py: &crate::PyToken<'_>,
+    fd_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(fd) = crate::builtins::numbers::index_c_int_from_obj(_py, fd_bits) else {
             return MoltObject::none().bits();
         };
@@ -2705,9 +2744,8 @@ pub extern "C" fn molt_os_write(fd_bits: u64, data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_pipe() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_pipe_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         #[cfg(target_arch = "wasm32")]
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "pipe")
@@ -2764,9 +2802,8 @@ pub extern "C" fn molt_os_pipe() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_dup(fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_dup_attached_body(_py: &crate::PyToken<'_>, fd_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
@@ -2794,9 +2831,8 @@ pub extern "C" fn molt_os_dup(fd_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_get_inheritable_attached_body(_py: &crate::PyToken<'_>, fd_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
@@ -2854,9 +2890,12 @@ pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_set_inheritable_attached_body(
+    _py: &crate::PyToken<'_>,
+    fd_bits: u64,
+    inheritable_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
@@ -2933,9 +2972,8 @@ pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_urandom_attached_body(_py: &crate::PyToken<'_>, len_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let type_name = class_name_for_error(type_of_bits(_py, len_bits));
         let msg = format!("'{type_name}' object cannot be interpreted as an integer");
         let Some(len) = index_i64_with_overflow(
@@ -2987,3 +3025,5 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
+
+include!("../attached_exports_generated/builtins/io_path.rs");

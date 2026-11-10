@@ -90,7 +90,7 @@ fn view_contained(
         .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
     while let Some(item) = iter.next()? {
         let item = Pin::adopt(py, item);
-        let result = Pin::adopt(py, molt_contains(right, item.bits));
+        let result = Pin::adopt(py, molt_contains_attached_body(py, right, item.bits));
         if exception_pending(py) {
             return Err(molt_runtime_core::ErrorIndicatorSet);
         }
@@ -111,7 +111,7 @@ fn protocol_size(
     py: &PyToken<'_>,
     value: u64,
 ) -> Result<i64, molt_runtime_core::ErrorIndicatorSet> {
-    let result = Pin::adopt(py, molt_len(value));
+    let result = Pin::adopt(py, molt_len_attached_body(py, value));
     if exception_pending(py) {
         return Err(molt_runtime_core::ErrorIndicatorSet);
     }

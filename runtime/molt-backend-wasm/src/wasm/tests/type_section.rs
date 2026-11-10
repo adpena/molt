@@ -24,6 +24,28 @@ fn compile(functions: Vec<FunctionIR>) -> Vec<u8> {
 #[test]
 fn module_types_are_unique_structural_signatures_with_one_result_authority() {
     let bytes = compile(vec![function("molt_main", 0)]);
+    let physical = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_main");
+    let actual_exports = Parser::new(0)
+        .parse_all(&bytes)
+        .filter_map(|payload| {
+            if let Payload::ExportSection(exports) = payload.unwrap() {
+                Some(
+                    exports
+                        .into_iter()
+                        .map(|export| export.unwrap().name.to_string())
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    assert!(actual_exports.contains(&physical));
+    assert!(
+        !actual_exports.contains("molt_main"),
+        "old-signature entry must not survive as an alias"
+    );
     let signatures = wasm_type_section_value_signatures(&bytes);
     assert!(!signatures.is_empty());
     assert_eq!(
@@ -34,12 +56,17 @@ fn module_types_are_unique_structural_signatures_with_one_result_authority() {
     for (name, signature) in wasm_function_import_type_indices(&bytes) {
         let import = wasm_runtime_import(&name).expect("declared runtime import");
         let (params, results) = import.machine_signature();
+        let params = std::iter::once(wasm_encoder::ValType::I64)
+            .filter(|_| {
+                import.execution_abi().context
+                    == molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext::Attached
+            })
+            .chain(params.iter().copied())
+            .map(|ty| format!("{ty:?}"))
+            .collect::<Vec<_>>();
         assert_eq!(
             signatures[signature as usize],
-            (
-                params.iter().map(|ty| format!("{ty:?}")).collect(),
-                results.iter().map(|ty| format!("{ty:?}")).collect()
-            ),
+            (params, results.iter().map(|ty| format!("{ty:?}")).collect()),
             "runtime import {name} must reference its exact machine type"
         );
     }
@@ -59,7 +86,7 @@ fn equally_typed_user_functions_reference_one_module_type() {
     ];
     let bytes = compile(vec![first, function("second", 2)]);
     let signatures = wasm_type_section_value_signatures(&bytes);
-    let requested = (vec!["I64".to_string(); 2], vec!["I64".to_string()]);
+    let requested = (vec!["I64".to_string(); 3], vec!["I64".to_string()]);
     assert_eq!(signatures.iter().filter(|ty| **ty == requested).count(), 1);
     let imported = wasm_function_import_indices(&bytes).len() as u32;
     let functions = wasm_function_section_type_indices(&bytes);
@@ -83,6 +110,6 @@ fn a_large_user_arity_adds_one_type_without_reserving_neighboring_arities() {
     let added = after.difference(&before).collect::<Vec<_>>();
     assert_eq!(
         added,
-        vec![&(vec!["I64".to_string(); 512], vec!["I64".to_string()])]
+        vec![&(vec!["I64".to_string(); 513], vec!["I64".to_string()])]
     );
 }

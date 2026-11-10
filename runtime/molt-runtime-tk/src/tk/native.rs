@@ -44,15 +44,15 @@ pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> Option<bool> {
     let Some(dict_ptr) = obj.as_ptr() else {
         return Some(true);
     };
-    if object_type_id(dict_ptr) != TYPE_ID_DICT {
+    if object_type_id(py, dict_ptr) != TYPE_ID_DICT {
         return Some(true);
     }
-    let entries = dict_snapshot(dict_ptr)?;
+    let entries = dict_snapshot(py, dict_ptr)?;
     for pair in entries.chunks(2) {
         if pair.len() != 2 {
             continue;
         }
-        let Some(key) = (unsafe { string_obj_to_owned(obj_from_bits(pair[0])) }) else {
+        let Some(key) = (unsafe { string_obj_to_owned(py, obj_from_bits(pair[0])) }) else {
             continue;
         };
         if key == "useTk" {
@@ -75,11 +75,11 @@ pub(super) fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
     if let Some(f) = to_f64(obj) {
         return TclObj::from(f);
     }
-    if let Some(s) = unsafe { string_obj_to_owned(obj) } {
+    if let Some(s) = unsafe { string_obj_to_owned(py, obj) } {
         return TclObj::from(s);
     }
     // Handle tuples/lists as Tcl lists (e.g., font tuples like ("SF Pro Display", 18, "bold"))
-    if let Some(elements) = decode_value_list(obj) {
+    if let Some(elements) = decode_value_list(py, obj) {
         let tcl_elements: Vec<TclObj> = elements
             .iter()
             .map(|&elem_bits| tcl_obj_from_bits(py, elem_bits))
@@ -94,7 +94,7 @@ pub(super) fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
         clear_exception(py);
     }
     // SAFETY: adopt the str() result rather than borrowing an untracked handle.
-    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_str(bits)) };
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_str(py, bits)) };
     if !obj_from_bits(text.bits()).is_none()
         && let Some(bytes) = text.string_bytes(py)
     {
@@ -158,10 +158,10 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
     // non-strings, which would pollute the interpreter's exception state for
     // tuple/list/widget arguments.
     if let Some(ptr) = obj.as_ptr() {
-        let type_id = object_type_id(ptr);
+        let type_id = object_type_id(py, ptr);
         // str -> Tcl string object.
         if type_id == TYPE_ID_STRING {
-            if let Some(s) = unsafe { string_obj_to_owned(obj) } {
+            if let Some(s) = unsafe { string_obj_to_owned(py, obj) } {
                 return alloc_string_obj(api, &s);
             }
             return alloc_string_obj(api, "");
@@ -170,7 +170,7 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
         if type_id == TYPE_ID_BYTES {
             // SAFETY: the call's argument owns this immutable bytes object.
             // Tcl_NewByteArrayObj copies it synchronously without Python reentry.
-            let Some(slice) = (unsafe { rt_bytes_as_slice(bits) }) else {
+            let Some(slice) = (unsafe { rt_bytes_as_slice(py, bits) }) else {
                 return Err("failed to read bytes argument".to_string());
             };
             let o = unsafe { api.new_byte_array_obj(slice.as_ptr(), slice.len()) }.inspect_err(
@@ -186,7 +186,7 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
         }
     }
     // tuple / list -> Tcl list of typed elements (font tuples, coordinate lists).
-    if let Some(elements) = decode_value_list(obj) {
+    if let Some(elements) = decode_value_list(py, obj) {
         let list_obj = unsafe { api.new_list_obj(0, ptr::null()) }?;
         if list_obj.is_null() {
             return Err("Tcl_NewListObj returned null".to_string());
@@ -227,7 +227,7 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
         return Err("argument conversion has a pending Python error".to_string());
     }
     // SAFETY: rt_str transfers its one result reference to this existing owner.
-    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_str(bits)) };
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_str(py, bits)) };
     if exception_pending(py) {
         return Err("failed to convert argument to str".to_string());
     }
@@ -273,7 +273,7 @@ pub(super) fn tcl_obj_result_to_bits(
 
     // typePtr == NULL  -> pure string (no internal rep).
     if tp.is_null() {
-        return tcl_obj_string_to_bits(api, obj);
+        return tcl_obj_string_to_bits(py, api, obj);
     }
     // boolean (checked before int: a boolean obj must not be read as wideInt).
     if tp == types.boolean_t && !types.boolean_t.is_null() {
@@ -281,7 +281,7 @@ pub(super) fn tcl_obj_result_to_bits(
         if unsafe { (api.get_boolean_from_obj)(interp, obj, &mut b) } == TCL_OK {
             return MoltObject::from_bool(b != 0).bits();
         }
-        return tcl_obj_string_to_bits(api, obj);
+        return tcl_obj_string_to_bits(py, api, obj);
     }
     // bytearray -> bytes.
     if tp == types.bytearray_t && !types.bytearray_t.is_null() {
@@ -289,9 +289,9 @@ pub(super) fn tcl_obj_result_to_bits(
         let data = unsafe { api.get_byte_array_from_obj(obj, &mut len) };
         if !data.is_null() && len >= 0 {
             let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
-            return rt_bytes_from(slice);
+            return rt_bytes_from(py, slice);
         }
-        return tcl_obj_string_to_bits(api, obj);
+        return tcl_obj_string_to_bits(py, api, obj);
     }
     // double -> float.
     if tp == types.double_t && !types.double_t.is_null() {
@@ -299,7 +299,7 @@ pub(super) fn tcl_obj_result_to_bits(
         if unsafe { (api.get_double_from_obj)(interp, obj, &mut d) } == TCL_OK {
             return MoltObject::from_float(d).bits();
         }
-        return tcl_obj_string_to_bits(api, obj);
+        return tcl_obj_string_to_bits(py, api, obj);
     }
     // int / wideInt -> int. (bignum handled via the string fallback below, which
     // molt's int parser promotes to a bigint — value-identical.)
@@ -308,7 +308,7 @@ pub(super) fn tcl_obj_result_to_bits(
     {
         let mut w: TclWideInt = 0;
         if unsafe { (api.get_wide_int_from_obj)(interp, obj, &mut w) } == TCL_OK {
-            return rt_int(w);
+            return rt_int(py, w);
         }
         // Overflowed i64 (true bignum): fall back to the decimal string, which
         // molt parses into an arbitrary-precision int.
@@ -335,7 +335,7 @@ pub(super) fn tcl_obj_result_to_bits(
             // `alloc_tuple_bits` because the latter also fails on any *already*
             // pending exception, and FromObj runs after a verified-OK Tcl eval —
             // a stale pending flag must not be misattributed to tuple allocation.
-            let tuple_bits = rt_tuple(&bits_vec);
+            let tuple_bits = rt_tuple(py, &bits_vec);
             if tuple_bits != 0 {
                 return tuple_bits;
             }
@@ -346,33 +346,37 @@ pub(super) fn tcl_obj_result_to_bits(
                 "failed to allocate tkinter result tuple",
             );
         }
-        return tcl_obj_string_to_bits(api, obj);
+        return tcl_obj_string_to_bits(py, api, obj);
     }
     // string / utf32string -> str.
     if (tp == types.string_t && !types.string_t.is_null())
         || (tp == types.utf32_string_t && !types.utf32_string_t.is_null())
     {
-        return tcl_obj_string_to_bits(api, obj);
+        return tcl_obj_string_to_bits(py, api, obj);
     }
     // Unknown internal type: match CPython, which wraps it in `_tkinter.Tcl_Obj`.
     // molt's `_tkinter.Tcl_Obj` is a `str` subclass, so the string value is the
     // faithful, comparison-correct representation.
-    tcl_obj_string_to_bits(api, obj)
+    tcl_obj_string_to_bits(py, api, obj)
 }
 
 /// Read a `Tcl_Obj`'s UTF-8 string rep into a molt `str`.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-pub(super) fn tcl_obj_string_to_bits(api: &'static TclApi, obj: *mut c_void) -> u64 {
+pub(super) fn tcl_obj_string_to_bits(
+    py: &molt_runtime_core::PyToken,
+    api: &'static TclApi,
+    obj: *mut c_void,
+) -> u64 {
     let mut len: isize = 0;
     let ptr = unsafe { api.get_string_from_obj(obj, &mut len) };
     if ptr.is_null() || len < 0 {
-        return rt_string_from("");
+        return rt_string_from(py, "");
     }
     let slice = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len as usize) };
     // Tcl strings are Modified-UTF-8; for the common ASCII/UTF-8 case this is a
     // direct decode. Lossy only on genuinely invalid sequences (rare; CPython
     // uses surrogateescape — a follow-up can mirror that precisely).
-    rt_string_from_bytes(slice)
+    rt_string_from_bytes(py, slice)
 }
 
 /// Read a Tcl integer-typed `Tcl_Obj` whose value overflows i64 (a true bignum)
@@ -387,15 +391,20 @@ pub(super) fn tcl_obj_int_string_to_bits(
     let mut len: isize = 0;
     let ptr = unsafe { api.get_string_from_obj(obj, &mut len) };
     if ptr.is_null() || len < 0 {
-        return rt_int(0);
+        return rt_int(py, 0);
     }
     let slice = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len as usize) };
     let text = String::from_utf8_lossy(slice);
     // Parse the decimal string into a molt int via the runtime's int() path,
     // which promotes to arbitrary precision on overflow (CPython fromBignumObj
     // parity).
-    let s_bits = rt_string_from(&text);
-    let parsed = int_from_obj(s_bits, rt_int(10), MoltObject::from_bool(true).bits());
+    let s_bits = rt_string_from(py, &text);
+    let parsed = int_from_obj(
+        py,
+        s_bits,
+        rt_int(py, 10),
+        MoltObject::from_bool(true).bits(),
+    );
     dec_ref_bits(py, s_bits);
     parsed
 }

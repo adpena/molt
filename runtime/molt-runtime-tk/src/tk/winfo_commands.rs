@@ -188,9 +188,9 @@ pub(super) fn handle_winfo_command(py: &PyToken, handle: i64, args: &[u64]) -> R
                 }
             } else if let Some(widget) = app.widgets.get(&path) {
                 if subcommand.ends_with("width") {
-                    widget_option_i64_default(&widget.options, "-width", 200)
+                    widget_option_i64_default(py, &widget.options, "-width", 200)
                 } else {
-                    widget_option_i64_default(&widget.options, "-height", 160)
+                    widget_option_i64_default(py, &widget.options, "-height", 160)
                 }
             } else {
                 0
@@ -372,8 +372,8 @@ pub(super) fn handle_winfo_command(py: &PyToken, handle: i64, args: &[u64]) -> R
                 (200, 160)
             } else if let Some(widget) = app.widgets.get(&path) {
                 (
-                    widget_option_i64_default(&widget.options, "-width", 200),
-                    widget_option_i64_default(&widget.options, "-height", 160),
+                    widget_option_i64_default(py, &widget.options, "-width", 200),
+                    widget_option_i64_default(py, &widget.options, "-height", 160),
                 )
             } else {
                 (0, 0)

@@ -8,9 +8,10 @@
 //! Plain eligibility lives in the count word (`REFCOUNT_RUNTIME_CUSTODY`), so a
 //! site is tag/null, admission, one load, one window compare, add and store.
 
+use crate::boxed_word::{BoxTag, generate_has_tag};
+use crate::word::{WordBuilder, WordComparison};
 use crate::{
     COMPILED_PLAIN_REFCOUNT_WINDOW, HEADER_REFCOUNT_OFFSET, IMMORTAL_REFCOUNT, POINTER_MASK,
-    QNAN_TAG_MASK_I64, QNAN_TAG_PTR_I64,
 };
 
 /// A snapshot borrowed for exactly one compiled invocation, not a GIL token.
@@ -50,33 +51,14 @@ impl RefcountStorage {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RefcountComparison {
-    Equal,
-    NotEqual,
-    UnsignedLessThan,
-}
-
-/// Backend instruction spelling only. Control flow and eligibility are owned
-/// by `generate_refcount`, never restated by an adapter. `if_else` must finish
+/// Backend instruction spelling only, extending the backend's one
+/// `WordBuilder`. Control flow and eligibility are owned by
+/// `generate_refcount`, never restated by an adapter. `if_else` must finish
 /// in its explicit continuation; any caller building a phi captures that
 /// continuation after generation, rather than retaining its original block.
-pub trait RefcountBuilder: Sized {
-    type Word: Copy;
-    type Predicate: Copy;
-
+pub trait RefcountBuilder: WordBuilder {
     fn pointer_width(&self) -> crate::PointerWidth;
 
-    fn constant(&mut self, value: u64) -> Self::Word;
-    fn and(&mut self, value: Self::Word, mask: u64) -> Self::Word;
-    fn add(&mut self, value: Self::Word, delta: i64) -> Self::Word;
-    fn compare(
-        &mut self,
-        comparison: RefcountComparison,
-        left: Self::Word,
-        right: Self::Word,
-    ) -> Self::Predicate;
-    fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate;
     fn load_header_u32(&mut self, pointer: Self::Word, offset: i32) -> Self::Word;
     fn store_header_u32(&mut self, pointer: Self::Word, offset: i32, value: Self::Word);
     fn slow_call(&mut self, operation: RefcountOperation, bits: Self::Word);
@@ -88,9 +70,9 @@ pub trait RefcountBuilder: Sized {
     );
 }
 
-fn compare_immediate<B: RefcountBuilder>(
+fn compare_immediate<B: WordBuilder>(
     b: &mut B,
-    comparison: RefcountComparison,
+    comparison: WordComparison,
     value: B::Word,
     immediate: u64,
 ) -> B::Predicate {
@@ -108,9 +90,8 @@ pub fn generate_refcount<B: RefcountBuilder>(
     operation: RefcountOperation,
     storage: RefcountStorage,
 ) {
-    use RefcountComparison::*;
-    let tag = b.and(bits, QNAN_TAG_MASK_I64 as u64);
-    let pointer_tag = compare_immediate(b, Equal, tag, QNAN_TAG_PTR_I64 as u64);
+    use WordComparison::*;
+    let pointer_tag = generate_has_tag(b, bits, BoxTag::Ptr);
     b.if_else(
         pointer_tag,
         |b| {
@@ -167,7 +148,7 @@ fn generate_attached_transition<B: RefcountBuilder>(
     pointer: B::Word,
     operation: RefcountOperation,
 ) {
-    use RefcountComparison::*;
+    use WordComparison::*;
     let count = b.load_header_u32(pointer, HEADER_REFCOUNT_OFFSET);
     // Retain: 1..=WINDOW. Release: 2..=WINDOW + 1. The runtime authority sees
     // the original bits for every other word.
@@ -175,7 +156,7 @@ fn generate_attached_transition<B: RefcountBuilder>(
         RefcountOperation::Retain => 1,
         RefcountOperation::Release => 2,
     };
-    let index = b.add(count, -minimum);
+    let index = b.add_immediate(count, -minimum);
     let plain = compare_immediate(b, UnsignedLessThan, index, COMPILED_PLAIN_REFCOUNT_WINDOW);
     b.if_else(
         plain,
@@ -184,7 +165,7 @@ fn generate_attached_transition<B: RefcountBuilder>(
                 RefcountOperation::Retain => 1,
                 RefcountOperation::Release => -1,
             };
-            let next = b.add(count, delta);
+            let next = b.add_immediate(count, delta);
             b.store_header_u32(pointer, HEADER_REFCOUNT_OFFSET, next);
         },
         |b| {

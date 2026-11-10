@@ -1,11 +1,16 @@
 //! Shared RC generation in always-inlined LLVM bodies. Keeping its explicit
 //! blocks in a separate IR function leaves the caller's TIR/phi CFG intact.
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::builder::Builder;
 use inkwell::values::IntValue;
 use molt_codegen_abi::inline_refcount::{
-    RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
+    RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
 };
+use molt_codegen_abi::word::WordBuilder;
 
 #[derive(Clone, Copy)]
 pub(super) struct LlvmRefcountSite<'ctx> {
@@ -16,7 +21,7 @@ pub(super) struct LlvmRefcountSite<'ctx> {
 impl<'ctx> LlvmRefcountSite<'ctx> {
     pub(super) fn emit(self, builder: &Builder<'ctx>, value: BasicValueEnum<'ctx>) {
         builder
-            .build_call(self.function, &[value.into(), self.admission.into()], "")
+            .build_execution_call(self.function, &[value.into(), self.admission.into()], "")
             .unwrap();
     }
 }
@@ -27,8 +32,10 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             return self.backend.context.i64_type().const_zero();
         }
         builder
-            .build_call(
-                self.ensure_runtime_import(crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION),
+            .build_execution_call(
+                self.ensure_runtime_import(
+                    molt_ir::runtime_fn_generated::RuntimeFn::RefcountAdmission,
+                ),
                 &[],
                 "rc_admission",
             )
@@ -65,17 +72,18 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             RefcountOperation::Release => "__molt_inline_release",
         };
         let i64_type = self.backend.context.i64_type();
-        let signature = self
+        let logical_signature = self
             .backend
             .context
             .void_type()
             .fn_type(&[i64_type.into(), i64_type.into()], false);
-        if let Some(function) = self.backend.module.get_function(name) {
+        let signature = prepend_execution_context(logical_signature);
+        if let Some(function) = self.backend.module.get_execution_function(name) {
             return require_llvm_function_type(name, function, signature);
         }
-        let function = self.backend.module.add_function(
+        let function = self.backend.module.add_compiled_function(
             name,
-            signature,
+            logical_signature,
             Some(inkwell::module::Linkage::Internal),
         );
         function.add_attribute(
@@ -88,19 +96,22 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         let builder = self.backend.context.create_builder();
         builder.position_at_end(self.backend.context.append_basic_block(function, "entry"));
         let slow = self.ensure_runtime_import(match operation {
-            RefcountOperation::Retain => MOLT_INC_REF_OBJ,
-            RefcountOperation::Release => MOLT_DEC_REF_OBJ,
+            RefcountOperation::Retain => RuntimeFn::IncRefObj,
+            RefcountOperation::Release => RuntimeFn::DecRefObj,
         });
         let mut emitter = LlvmRefcountBuilder {
+            words: LlvmWords {
+                context: self.backend.context,
+                builder: &builder,
+            },
             backend: self.backend,
-            builder: &builder,
             function,
             slow_block: None,
         };
         generate_refcount(
             &mut emitter,
-            function.get_nth_param(0).unwrap().into_int_value(),
             function.get_nth_param(1).unwrap().into_int_value(),
+            function.get_nth_param(2).unwrap().into_int_value(),
             operation,
             RefcountStorage::for_build(nanbox::MOLT_REFCOUNT_ATOMIC),
         );
@@ -108,7 +119,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         if let Some(block) = emitter.slow_block {
             builder.position_at_end(block);
             builder
-                .build_call(slow, &[function.get_nth_param(0).unwrap().into()], "")
+                .build_execution_call(slow, &[function.get_nth_param(1).unwrap().into()], "")
                 .unwrap();
             builder.build_return(None).unwrap();
         }
@@ -117,8 +128,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 }
 
 struct LlvmRefcountBuilder<'a, 'ctx> {
+    words: LlvmWords<'a, 'ctx>,
     backend: &'a LlvmBackend<'ctx>,
-    builder: &'a Builder<'ctx>,
     function: FunctionValue<'ctx>,
     slow_block: Option<BasicBlock<'ctx>>,
 }
@@ -126,6 +137,7 @@ struct LlvmRefcountBuilder<'a, 'ctx> {
 impl<'ctx> LlvmRefcountBuilder<'_, 'ctx> {
     fn address(&self, pointer: IntValue<'ctx>, offset: i32) -> inkwell::values::PointerValue<'ctx> {
         let address = self
+            .words
             .builder
             .build_int_add(
                 pointer,
@@ -136,7 +148,8 @@ impl<'ctx> LlvmRefcountBuilder<'_, 'ctx> {
                 "rc_address",
             )
             .unwrap();
-        self.builder
+        self.words
+            .builder
             .build_int_to_ptr(
                 address,
                 self.backend
@@ -148,43 +161,17 @@ impl<'ctx> LlvmRefcountBuilder<'_, 'ctx> {
     }
 }
 
+impl<'a, 'ctx> WordBuilder for LlvmRefcountBuilder<'a, 'ctx> {
+    molt_codegen_abi::forward_word_builder!(words: LlvmWords<'a, 'ctx>);
+}
+
 impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
-    type Word = IntValue<'ctx>;
-    type Predicate = IntValue<'ctx>;
     fn pointer_width(&self) -> nanbox::PointerWidth {
         nanbox::PointerWidth::Bits64
     }
-    fn constant(&mut self, value: u64) -> Self::Word {
-        self.backend.context.i64_type().const_int(value, false)
-    }
-    fn and(&mut self, value: Self::Word, mask: u64) -> Self::Word {
-        let mask = self.constant(mask);
-        self.builder.build_and(value, mask, "rc_mask").unwrap()
-    }
-    fn add(&mut self, value: Self::Word, delta: i64) -> Self::Word {
-        let delta = self.constant(delta as u64);
-        self.builder.build_int_add(value, delta, "rc_add").unwrap()
-    }
-    fn compare(
-        &mut self,
-        comparison: RefcountComparison,
-        left: Self::Word,
-        right: Self::Word,
-    ) -> Self::Predicate {
-        let comparison = match comparison {
-            RefcountComparison::Equal => inkwell::IntPredicate::EQ,
-            RefcountComparison::NotEqual => inkwell::IntPredicate::NE,
-            RefcountComparison::UnsignedLessThan => inkwell::IntPredicate::ULT,
-        };
-        self.builder
-            .build_int_compare(comparison, left, right, "rc_test")
-            .unwrap()
-    }
-    fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate {
-        self.builder.build_and(left, right, "rc_both").unwrap()
-    }
     fn load_header_u32(&mut self, pointer: Self::Word, offset: i32) -> Self::Word {
         let value = self
+            .words
             .builder
             .build_load(
                 self.backend.context.i32_type(),
@@ -192,7 +179,8 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
                 "rc_word",
             )
             .unwrap();
-        self.builder
+        self.words
+            .builder
             .build_int_z_extend(
                 value.into_int_value(),
                 self.backend.context.i64_type(),
@@ -202,10 +190,12 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
     }
     fn store_header_u32(&mut self, pointer: Self::Word, offset: i32, value: Self::Word) {
         let value = self
+            .words
             .builder
             .build_int_truncate(value, self.backend.context.i32_type(), "rc_count")
             .unwrap();
-        self.builder
+        self.words
+            .builder
             .build_store(self.address(pointer, offset), value)
             .unwrap();
     }
@@ -215,7 +205,10 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
                 .context
                 .append_basic_block(self.function, "rc_slow")
         });
-        self.builder.build_unconditional_branch(block).unwrap();
+        self.words
+            .builder
+            .build_unconditional_branch(block)
+            .unwrap();
     }
     fn if_else(
         &mut self,
@@ -235,35 +228,40 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
             .backend
             .context
             .append_basic_block(self.function, "rc_continue");
-        self.builder
+        self.words
+            .builder
             .build_conditional_branch(condition, yes_block, no_block)
             .unwrap();
-        self.builder.position_at_end(yes_block);
+        self.words.builder.position_at_end(yes_block);
         yes(self);
         if self
+            .words
             .builder
             .get_insert_block()
             .unwrap()
             .get_terminator()
             .is_none()
         {
-            self.builder
+            self.words
+                .builder
                 .build_unconditional_branch(continuation)
                 .unwrap();
         }
-        self.builder.position_at_end(no_block);
+        self.words.builder.position_at_end(no_block);
         no(self);
         if self
+            .words
             .builder
             .get_insert_block()
             .unwrap()
             .get_terminator()
             .is_none()
         {
-            self.builder
+            self.words
+                .builder
                 .build_unconditional_branch(continuation)
                 .unwrap();
         }
-        self.builder.position_at_end(continuation);
+        self.words.builder.position_at_end(continuation);
     }
 }

@@ -1,6 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { WASI } = require('node:wasi');
+const generatedAbi = require('../../wasm/wasm_abi_generated.json');
+const compiledSymbol = logical => logical + generatedAbi.execution_context_abi.suffix;
+const runtimeSymbol = logical => {
+    const spec = generatedAbi.runtime_execution_abis[logical];
+    if (!spec) throw new Error(`missing generated execution ABI ${logical}`);
+    return spec.physical_symbol;
+};
 
 async function main() {
     // Load WASM module
@@ -93,20 +100,20 @@ async function main() {
         // --- Phase 3: Export availability check ---
         console.log('\n=== Phase 3: Export Availability ===');
         const paddleFuncs = {
-            init: instance.exports['tinygrad_paddleocr_driver__init'],
-            init_full: instance.exports['tinygrad_paddleocr_driver__init_full'],
-            ocr: instance.exports['tinygrad_paddleocr_driver__ocr'],
-            detect_only: instance.exports['tinygrad_paddleocr_driver__detect_only'],
-            rgb_to_tensor: instance.exports['tinygrad_paddleocr_driver___rgb_bytes_to_tensor'],
+            init: instance.exports[compiledSymbol('tinygrad_paddleocr_driver__init')],
+            init_full: instance.exports[compiledSymbol('tinygrad_paddleocr_driver__init_full')],
+            ocr: instance.exports[compiledSymbol('tinygrad_paddleocr_driver__ocr')],
+            detect_only: instance.exports[compiledSymbol('tinygrad_paddleocr_driver__detect_only')],
+            rgb_to_tensor: instance.exports[compiledSymbol('tinygrad_paddleocr_driver___rgb_bytes_to_tensor')],
         };
         for (const [name, fn] of Object.entries(paddleFuncs)) {
             console.log(`  ${name}: ${fn ? 'AVAILABLE' : 'MISSING'}`);
         }
 
         const runtimeFuncs = {
-            molt_main: instance.exports['molt_main'],
-            molt_alloc: instance.exports['molt_alloc'],
-            molt_isolate_bootstrap: instance.exports['molt_isolate_bootstrap'],
+            molt_main: instance.exports[compiledSymbol('molt_main')],
+            molt_alloc: instance.exports[runtimeSymbol('molt_alloc')],
+            molt_isolate_bootstrap: instance.exports[runtimeSymbol('molt_isolate_bootstrap')],
         };
         for (const [name, fn] of Object.entries(runtimeFuncs)) {
             console.log(`  ${name}: ${fn ? 'AVAILABLE' : 'MISSING'}`);

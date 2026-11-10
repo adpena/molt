@@ -1,9 +1,7 @@
 use super::super::*;
-use crate::runtime_import_abi::{
-    MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
-};
 use crate::tir::simple_def_use::simple_ir_out_result;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 // Single-source kind authority for [`handle_memory_op`], consulted by
@@ -67,7 +65,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     defined_functions: &BTreeSet<String>,
     output_is_ptr: &mut bool,
     stateful: bool,
-    entry_block: Block,
+    _entry_block: Block,
     local_profile_struct: Option<FuncRef>,
     profile_enabled_val: Option<Value>,
     guard_profile_only: bool,
@@ -205,7 +203,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let task_callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                MOLT_TASK_NEW,
+                RuntimeFn::TaskNew,
             );
             let task_local = module.declare_func_in_func(task_callee, builder.func);
             let kind_val = builder.ins().iconst(types::I64, kind_bits);
@@ -240,7 +238,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let get_callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    MOLT_CANCEL_TOKEN_GET_CURRENT,
+                    RuntimeFn::CancelTokenGetCurrent,
                 );
                 let get_local = module.declare_func_in_func(get_callee, builder.func);
                 let get_call = builder.ins().call(get_local, &[]);
@@ -249,7 +247,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let reg_callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    MOLT_TASK_REGISTER_EXECUTION,
+                    RuntimeFn::TaskRegisterExecution,
                 );
                 let reg_local = module.declare_func_in_func(reg_callee, builder.func);
                 let inherited = builder.ins().iconst(types::I64, box_none());
@@ -490,7 +488,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
             let obj_ptr = if stateful && args.first().map(String::as_str) == Some("self") {
-                builder.block_params(entry_block)[0]
+                compiled_argument(builder, 0)
             } else {
                 let obj = var_get_boxed_overflow_safe(
                     &mut *module,
@@ -535,7 +533,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             .expect("Value not found");
             let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
             let obj_ptr = if stateful && args.first().map(String::as_str) == Some("self") {
-                builder.block_params(entry_block)[0]
+                compiled_argument(builder, 0)
             } else {
                 let obj = var_get_boxed_overflow_safe(
                     &mut *module,

@@ -587,6 +587,102 @@ pub enum ManagedGcAction {
     IsFinalized = 3,
 }
 
+/// What actually owns this foreign call's execution. An unavailable provider
+/// cannot manufacture an attached-runtime receipt.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForeignExecutionDomain {
+    Unavailable,
+    StandaloneHost,
+    AttachedRuntime,
+}
+
+/// By-value custody identity at a foreign call. No heap registry or token
+/// allocation participates in capture/validation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForeignExecutionSnapshot {
+    pub domain: ForeignExecutionDomain,
+    pub thread_record: u64,
+    pub runtime_identity: u64,
+    pub thread_state: u64,
+    pub suspension: u64,
+    pub compiled_scope: u64,
+    pub compiled_depth: usize,
+    pub persistent_owner: u64,
+    pub public_depth: u32,
+    pub public_owns_persistent: bool,
+    pub gil_depth: usize,
+    pub lease_depth: usize,
+    pub shutdown_depth: u8,
+    pub cext_depth: u32,
+    pub ensure_scope: u64,
+    pub saved_scope: u64,
+}
+impl ForeignExecutionSnapshot {
+    pub const UNAVAILABLE: Self = Self {
+        domain: ForeignExecutionDomain::Unavailable,
+        thread_record: 0,
+        runtime_identity: 0,
+        thread_state: 0,
+        suspension: 0,
+        compiled_scope: 0,
+        compiled_depth: 0,
+        persistent_owner: 0,
+        public_depth: 0,
+        public_owns_persistent: false,
+        gil_depth: 0,
+        lease_depth: 0,
+        shutdown_depth: 0,
+        cext_depth: 0,
+        ensure_scope: 0,
+        saved_scope: 0,
+    };
+}
+
+/// This owner must be inside every operand/container owner's lifetime, and
+/// each such owner validates before Python-dependent cleanup as well.
+#[doc(hidden)]
+pub struct ForeignExecutionGuard {
+    snapshot: ForeignExecutionSnapshot,
+    validate: unsafe extern "C" fn(ForeignExecutionSnapshot) -> i32,
+}
+impl ForeignExecutionGuard {
+    #[doc(hidden)]
+    pub fn capture() -> Self {
+        let hooks = hooks_or_stubs();
+        let snapshot = unsafe { (hooks.foreign_execution_capture)() };
+        let guard = Self {
+            snapshot,
+            validate: hooks.foreign_execution_validate,
+        };
+        guard.validate();
+        guard
+    }
+    #[doc(hidden)]
+    pub fn validate(&self) {
+        if self.snapshot.domain == ForeignExecutionDomain::Unavailable
+            || unsafe { (self.validate)(self.snapshot) } == 0
+        {
+            let observed = unsafe { (hooks_or_stubs().foreign_execution_capture)() };
+            eprintln!(
+                "molt fatal: foreign callback returned with invalid execution custody; expected={:?}; observed={observed:?}",
+                self.snapshot
+            );
+            let backtrace = std::backtrace::Backtrace::capture();
+            if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+                eprintln!("{backtrace}");
+            }
+            std::process::abort();
+        }
+    }
+}
+impl Drop for ForeignExecutionGuard {
+    fn drop(&mut self) {
+        self.validate();
+    }
+}
+
 /// The C ingress borrows managed values; a foreign crossing can additionally
 /// own a temporary runtime wrapper. Marshal excludes only that transport pin
 /// from its observable reference-count decision.
@@ -616,13 +712,18 @@ pub struct RuntimeHooks {
     /// custody; it is distinct from an embedding PyGILState_Ensure boundary.
     pub operation_enter: unsafe extern "C" fn() -> u64,
     pub operation_leave: unsafe extern "C" fn(token: u64),
+    pub foreign_execution_capture: unsafe extern "C" fn() -> ForeignExecutionSnapshot,
+    pub foreign_execution_validate: unsafe extern "C" fn(ForeignExecutionSnapshot) -> i32,
     pub runtime_is_initialized: unsafe extern "C" fn() -> std::os::raw::c_int,
-    /// Acquire runtime-lifetime and default-GIL custody for destruction of a
-    /// retained CPython thread-state record. This lane must never attach or
-    /// create a PyThreadState because it is invoked from that TLS destructor.
+    /// Acquire lifetime and normal GIL custody for this exact retained record.
+    /// The drain phase attaches that existing record before releasing managed
+    /// edges; this hook must not create or substitute a thread-state record.
     /// Returns an opaque nonzero token consumed exactly once by
     /// `thread_state_drop_leave`.
-    pub thread_state_drop_enter: unsafe extern "C" fn() -> u64,
+    pub thread_state_drop_enter: unsafe extern "C" fn(runtime_owner: u64) -> u64,
+    /// Drain runtime TLS roots in the same fixed point as the retained C
+    /// record, before its origin identity can be retired.
+    pub thread_state_drop_cleanup: unsafe extern "C" fn() -> std::os::raw::c_int,
     pub thread_state_drop_leave: unsafe extern "C" fn(token: u64),
     /// Project the runtime's target-specific execution custody into one typed
     /// ABI-stable capability discriminant. Pending calls require a non-detached
@@ -1522,7 +1623,9 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // struct-sequence factories and full-version target predicate.
 // Version 75 joins explicit C type invalidation to runtime type epochs.
 // Version 76 routes both public marshal C APIs through the shared runtime codec.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 76;
+// Version 77 (lane HF-198) binds exact-origin, two-domain native thread-exit destruction.
+// Version 78 joins Version 76's marshal codec with Version 77's thread-exit custody.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 78;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2558,10 +2661,16 @@ unsafe extern "C" fn stub_operation_enter() -> u64 {
     0
 }
 unsafe extern "C" fn stub_operation_leave(_token: u64) {}
+unsafe extern "C" fn stub_foreign_execution_capture() -> ForeignExecutionSnapshot {
+    ForeignExecutionSnapshot::UNAVAILABLE
+}
+unsafe extern "C" fn stub_foreign_execution_validate(_: ForeignExecutionSnapshot) -> i32 {
+    0
+}
 unsafe extern "C" fn stub_runtime_is_initialized() -> std::os::raw::c_int {
     0
 }
-unsafe extern "C" fn stub_thread_state_drop_enter() -> u64 {
+unsafe extern "C" fn stub_thread_state_drop_enter(_runtime_owner: u64) -> u64 {
     0
 }
 unsafe extern "C" fn stub_thread_state_drop_leave(_token: u64) {}
@@ -2799,8 +2908,11 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_check: stub_gil_check,
     operation_enter: stub_operation_enter,
     operation_leave: stub_operation_leave,
+    foreign_execution_capture: stub_foreign_execution_capture,
+    foreign_execution_validate: stub_foreign_execution_validate,
     runtime_is_initialized: stub_runtime_is_initialized,
     thread_state_drop_enter: stub_thread_state_drop_enter,
+    thread_state_drop_cleanup: stub_runtime_is_initialized,
     thread_state_drop_leave: stub_thread_state_drop_leave,
     attached_runtime_context: stub_attached_runtime_context,
     pending_call_error: stub_pending_call_error,

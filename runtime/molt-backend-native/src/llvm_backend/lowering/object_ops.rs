@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -6,25 +8,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &self,
         bits: inkwell::values::IntValue<'ctx>,
     ) -> inkwell::values::IntValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        let tag = self
-            .backend
-            .builder
-            .build_and(
-                bits,
-                i64_ty.const_int(nanbox::QNAN_TAG_MASK_I64 as u64, false),
-                "field_tag",
-            )
-            .unwrap();
-        self.backend
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::EQ,
-                tag,
-                i64_ty.const_int(nanbox::QNAN_TAG_PTR_I64 as u64, false),
-                "field_is_ptr",
-            )
-            .unwrap()
+        nanbox::boxed_word::generate_has_tag(
+            &mut self.words(),
+            bits,
+            nanbox::boxed_word::BoxTag::Ptr,
+        )
     }
 
     /// The caller must have admitted the receiver before this header read.
@@ -180,7 +168,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let runtime_val = self
                 .backend
                 .builder
-                .build_call(
+                .build_execution_call(
                     get_fn,
                     &[obj_ptr_bits.into(), offset_val.into()],
                     "field_get_runtime",
@@ -297,7 +285,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 runtime_name,
             )
             .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
-            let get_fn = require_llvm_function_type(runtime_name, get_fn, fn_ty);
+            let get_fn = require_llvm_function_type(
+                runtime_name,
+                get_fn,
+                runtime_execution_type(runtime_name, fn_ty),
+            );
             let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
             let site_bits = self.source_call_site_bits(op, site_kind.as_str());
             let call_args_generic = [
@@ -308,7 +300,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ];
             self.backend
                 .builder
-                .build_call(get_fn, &call_args_generic, runtime_name)
+                .build_execution_call(get_fn, &call_args_generic, runtime_name)
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -319,7 +311,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.with_owned_name(attr_name, |this, name_bits| {
                 this.backend
                     .builder
-                    .build_call(get_fn, &[obj_bits.into(), name_bits.into()], runtime_name)
+                    .build_execution_call(
+                        get_fn,
+                        &[obj_bits.into(), name_bits.into()],
+                        runtime_name,
+                    )
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()
@@ -443,7 +439,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let set_fn = self.ensure_runtime_i64_fn("molt_object_field_set", 3);
             self.backend
                 .builder
-                .build_call(
+                .build_execution_call(
                     set_fn,
                     &[
                         obj_bits.into(),
@@ -556,12 +552,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 runtime_name,
             )
             .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
-            let set_fn = require_llvm_function_type(runtime_name, set_fn, fn_ty);
+            let set_fn = require_llvm_function_type(
+                runtime_name,
+                set_fn,
+                runtime_execution_type(runtime_name, fn_ty),
+            );
             let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
             let site_bits = self.source_call_site_bits(op, site_kind.as_str());
             self.backend
                 .builder
-                .build_call(
+                .build_execution_call(
                     set_fn,
                     &[
                         obj_i64.into(),
@@ -581,7 +581,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.with_owned_name(attr_name, |this, name_i64| {
                 this.backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         set_fn,
                         &[obj_i64.into(), name_i64.into(), val_i64.into()],
                         "setattr",
@@ -635,7 +635,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .with_owned_name(attr_name, |this, name_bits| {
                 this.backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         del_fn,
                         &[obj_bits.into(), name_bits.into()],
                         "del_attr_name",

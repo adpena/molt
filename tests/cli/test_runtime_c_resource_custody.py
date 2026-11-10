@@ -16,6 +16,7 @@ from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceR
 from molt.cargo_execution_policy import (
     cargo_c_tool_environment_names,
     cargo_c_tool_words,
+    default_nested_process_timeout_seconds,
     validate_sccache_epoch_environment,
 )
 from molt.cli.runtime_c_resources import (
@@ -23,9 +24,11 @@ from molt.cli.runtime_c_resources import (
     runtime_c_flag_environment_names,
 )
 from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 from molt.cli.cargo_execution import _run_resolved_cargo_plan
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 from tests.rust.process_guard import run_rust_test_process
+from tests.process_guard_common import GuardedProcessRole
 
 
 TARGET = "wasm32-wasip1"
@@ -685,14 +688,13 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
             requested_target=requested_target,
         )
 
-    # This is cold fixture qualification, including the host's first-image
-    # assessment, rather than a warm program latency assertion.
-    cold_timeout = 90
-
+    # Compilation and initial execution use their owning budgets.
     def execute(plan, expected: str, *, fresh: bool) -> Path:
         result = _run_resolved_cargo_plan(
             plan,
-            timeout=cold_timeout,
+            timeout=default_nested_process_timeout_seconds(
+                GuardedProcessRole.BUILD.value
+            ),
             json_output=True,
             label="external-resource-reuse-test",
         )
@@ -724,7 +726,7 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
             [str(binary)],
             cwd=str(project),
             env=plan.environment,
-            timeout=cold_timeout,
+            timeout=FRESH_EXECUTABLE_TIMEOUT_S,
         )
         assert output.returncode == 0, output.stderr
         assert output.stdout.strip() == expected

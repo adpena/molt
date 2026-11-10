@@ -156,7 +156,10 @@ fn call_method1<'a>(
 ) -> Result<Value<'a>> {
     let name_bits = name.owned_bits(py).ok_or(())?;
     let _name = owned(py, name_bits)?;
-    let method = owned(py, molt_get_attr_name(receiver, name_bits))?;
+    let method = owned(
+        py,
+        molt_get_attr_name_attached_body(py, receiver, name_bits),
+    )?;
     owned(py, unsafe { call_callable1(py, method.bits(), arg) })
 }
 
@@ -197,16 +200,18 @@ fn loads<'a>(py: &'a PyToken<'_>, bits: u64) -> Result<Value<'a>> {
     read::decode(py, read::Source::memory(input.as_slice()))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_marshal_version() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_marshal_version_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         MoltObject::from_int(if target_minor(py) >= 14 { 5 } else { 4 }).bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_marshal_dumps(bits: u64, version_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_marshal_dumps_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    version_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         version_argument(py, version_bits)
             .and_then(|version| dumps(py, bits, version))
             .map(Value::into_bits)
@@ -214,18 +219,21 @@ pub extern "C" fn molt_marshal_dumps(bits: u64, version_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_marshal_loads(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_marshal_loads_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         loads(py, bits)
             .map(Value::into_bits)
             .unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_marshal_dump(bits: u64, file: u64, version_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_marshal_dump_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    file: u64,
+    version_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = version_argument(py, version_bits).and_then(|version| {
             let bytes = dumps(py, bits, version)?;
             call_method1(py, file, NameId::Write, bytes.bits())
@@ -236,9 +244,8 @@ pub extern "C" fn molt_marshal_dump(bits: u64, file: u64, version_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_marshal_load(file: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_marshal_load_attached_body(_py: &crate::PyToken<'_>, file: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = (|| {
             let check = call_method1(py, file, NameId::Read, MoltObject::from_int(0).bits())?;
             let bytes_result = isinstance_bits(py, check.bits(), builtin_classes(py).bytes);
@@ -262,3 +269,5 @@ pub extern "C" fn molt_marshal_load(file: u64) -> u64 {
             .unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
+
+include!("../attached_exports_generated/marshal/mod.rs");

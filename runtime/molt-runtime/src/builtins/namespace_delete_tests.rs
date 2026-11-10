@@ -14,7 +14,9 @@ fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
         let active_bits = MoltObject::from_ptr(active).bits();
         inc_ref_bits(_py, active_bits);
         crate::builtins::frames::frame_stack_push_owned(_py, 0, active_bits, 0, 0);
-        assert!(obj_from_bits(molt_module_del_global(lexical_bits, key)).is_none());
+        assert!(
+            obj_from_bits(molt_module_del_global_attached_body(_py, lexical_bits, key)).is_none()
+        );
         assert_eq!(
             unsafe { dict_get_in_place(_py, active, key).expect("dictionary lookup succeeds") },
             None
@@ -23,10 +25,17 @@ fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
             unsafe { dict_get_in_place(_py, lexical, key).expect("dictionary lookup succeeds") },
             Some(value)
         );
-        assert!(obj_from_bits(molt_module_del_global_if_present(lexical_bits, key)).is_none());
+        assert!(
+            obj_from_bits(molt_module_del_global_if_present_attached_body(
+                _py,
+                lexical_bits,
+                key
+            ))
+            .is_none()
+        );
         assert!(!exception_pending(_py));
-        molt_module_del_global(lexical_bits, key);
-        let error = molt_exception_last_pending();
+        molt_module_del_global_attached_body(_py, lexical_bits, key);
+        let error = molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
@@ -44,8 +53,16 @@ fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
 static DELETE_RESULT: AtomicU64 = AtomicU64::new(0);
 static DELETE_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn namespace_delete_callback(_self: u64, _key: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn namespace_delete_callback(__context: u64, _self: u64, _key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         DELETE_CALLS.fetch_add(1, Ordering::SeqCst);
         let result = DELETE_RESULT.load(Ordering::SeqCst);
         if result == 0 {
@@ -53,7 +70,7 @@ extern "C" fn namespace_delete_callback(_self: u64, _key: u64) -> u64 {
         }
         inc_ref_bits(_py, result);
         result
-    })
+    }
 }
 
 fn callback_namespace(_py: &PyToken<'_>) -> (u64, u64, u64) {
@@ -72,7 +89,8 @@ fn callback_namespace(_py: &PyToken<'_>) -> (u64, u64, u64) {
     let dict = alloc_dict_with_pairs(_py, &[slot, function]);
     assert!(!dict.is_null());
     let dict = MoltObject::from_ptr(dict).bits();
-    let class = crate::builtins::types::molt_type_new(
+    let class = crate::builtins::types::molt_type_new_attached_body(
+        _py,
         builtin_classes(_py).type_obj,
         name,
         MoltObject::none().bits(),
@@ -98,7 +116,7 @@ fn namespace_delete_dictionary_success_returns_none_and_keeps_receiver_owner() {
         assert!(!dict.is_null());
         let namespace = MoltObject::from_ptr(dict).bits();
         let before = unsafe { (*crate::header_from_obj_ptr(dict)).ref_count_snapshot() };
-        let result = molt_namespace_del(namespace, key);
+        let result = molt_namespace_del_attached_body(_py, namespace, key);
         assert!(obj_from_bits(result).is_none());
         dec_ref_bits(_py, result);
         assert_eq!(
@@ -110,8 +128,8 @@ fn namespace_delete_dictionary_success_returns_none_and_keeps_receiver_owner() {
             None
         );
         assert!(!exception_pending(_py));
-        let _ = molt_namespace_del(namespace, key);
-        let error = molt_exception_last_pending();
+        let _ = molt_namespace_del_attached_body(_py, namespace, key);
+        let error = molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
@@ -136,7 +154,7 @@ fn namespace_delete_custom_mapping_discards_result_and_preserves_pending_entry()
         let before = unsafe { (*crate::header_from_obj_ptr(result)).ref_count_snapshot() };
         DELETE_RESULT.store(result_bits, Ordering::SeqCst);
         DELETE_CALLS.store(0, Ordering::SeqCst);
-        assert!(obj_from_bits(molt_namespace_del(namespace, key)).is_none());
+        assert!(obj_from_bits(molt_namespace_del_attached_body(_py, namespace, key)).is_none());
         assert_eq!(DELETE_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(
             unsafe { (*crate::header_from_obj_ptr(result)).ref_count_snapshot() },
@@ -145,17 +163,17 @@ fn namespace_delete_custom_mapping_discards_result_and_preserves_pending_entry()
         assert!(!exception_pending(_py));
 
         DELETE_RESULT.store(0, Ordering::SeqCst);
-        let _ = molt_namespace_del(namespace, key);
+        let _ = molt_namespace_del_attached_body(_py, namespace, key);
         assert_eq!(DELETE_CALLS.load(Ordering::SeqCst), 2);
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
             crate::BuiltinExc::NameError
         ));
-        let _ = molt_namespace_del(namespace, key);
+        let _ = molt_namespace_del_attached_body(_py, namespace, key);
         assert_eq!(DELETE_CALLS.load(Ordering::SeqCst), 2);
-        let retained = molt_exception_last_pending();
+        let retained = molt_exception_last_pending_attached_body(_py);
         assert_eq!(error, retained);
         clear_exception(_py);
         dec_ref_bits(_py, retained);

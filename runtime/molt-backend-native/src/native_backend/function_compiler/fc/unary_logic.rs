@@ -971,9 +971,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
-            let callee = module
-                .declare_function(func_name, Linkage::Import, &sig)
-                .unwrap();
+            let callee = declare_runtime_execution_function(module, func_name, &sig).unwrap();
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*container, *item]);
             let res = builder.inst_results(call)[0];

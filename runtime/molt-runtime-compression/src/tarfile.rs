@@ -118,7 +118,9 @@ unsafe extern "C" fn tar_runtime_state_init() -> *mut u8 {
     Box::into_raw(Box::new(TarRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn tar_runtime_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn tar_runtime_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
@@ -138,6 +140,7 @@ unsafe extern "C" fn tar_runtime_state_drop(ptr: *mut u8) {
 
 fn tar_state(_py: &PyToken) -> &'static TarRuntimeState {
     let ptr = runtime_state_get_or_init(
+        _py,
         b"molt-runtime-compression/tarfile/v1",
         tar_runtime_state_init,
         tar_runtime_state_clear,
@@ -380,7 +383,7 @@ fn path_from_bits_local(_py: &PyToken, bits: u64) -> Option<String> {
     if obj.is_none() {
         return None;
     }
-    string_obj_to_owned(obj)
+    string_obj_to_owned(_py, obj)
 }
 
 fn return_none() -> u64 {
@@ -388,12 +391,16 @@ fn return_none() -> u64 {
 }
 
 // ── Public intrinsics ─────────────────────────────────────────────────────
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tarfile_open_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    name_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let name = path_from_bits_local(_py, name_bits).unwrap_or_default();
         let mode_str =
-            string_obj_to_owned(obj_from_bits(mode_bits)).unwrap_or_else(|| "r".to_string());
+            string_obj_to_owned(_py, obj_from_bits(mode_bits)).unwrap_or_else(|| "r".to_string());
 
         let (archive_mode, compression) = match mode_str.as_str() {
             "r" | "r:" => (ArchiveMode::Read, TarCompression::None),
@@ -469,10 +476,13 @@ pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
         int_bits_from_i64(_py, id)
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_getnames(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
+
+pub fn molt_tarfile_getnames_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = match to_i64(_py, obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
@@ -552,10 +562,13 @@ fn tarinfo_to_tuple(_py: &PyToken, info: &TarInfo) -> u64 {
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
+
+pub fn molt_tarfile_getmembers_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = match to_i64(_py, obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
@@ -587,10 +600,14 @@ pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
+
+pub fn molt_tarfile_extractall_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = match to_i64(_py, obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
@@ -649,17 +666,22 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
         return_none()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
+
+pub fn molt_tarfile_extract_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    member_bits: u64,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = match to_i64(_py, obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
             }
         };
         let dest = path_from_bits_local(_py, path_bits).unwrap_or_else(|| ".".to_string());
-        let member_name = match string_obj_to_owned(obj_from_bits(member_bits)) {
+        let member_name = match string_obj_to_owned(_py, obj_from_bits(member_bits)) {
             Some(n) => n,
             None => return raise_exception(_py, BuiltinExc::TypeError, "member must be a str"),
         };
@@ -726,16 +748,20 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
         return_none()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_extractfile(handle_bits: u64, member_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
+
+pub fn molt_tarfile_extractfile_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    member_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = match to_i64(_py, obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
             }
         };
-        let member_name = match string_obj_to_owned(obj_from_bits(member_bits)) {
+        let member_name = match string_obj_to_owned(_py, obj_from_bits(member_bits)) {
             Some(n) => n,
             None => return raise_exception(_py, BuiltinExc::TypeError, "member must be a str"),
         };
@@ -779,10 +805,15 @@ pub extern "C" fn molt_tarfile_extractfile(handle_bits: u64, member_bits: u64) -
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_add(handle_bits: u64, name_bits: u64, arcname_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
+
+pub fn molt_tarfile_add_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    name_bits: u64,
+    arcname_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = match to_i64(_py, obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
@@ -852,10 +883,10 @@ pub extern "C" fn molt_tarfile_add(handle_bits: u64, name_bits: u64, arcname_bit
         return_none()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match to_i64(obj_from_bits(handle_bits)) {
+
+pub fn molt_tarfile_close_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = match to_i64(_py, obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
                 return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
@@ -906,14 +937,17 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
         return_none()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_drop(handle_bits: u64) -> u64 {
-    molt_tarfile_close(handle_bits)
+
+pub fn molt_tarfile_drop_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_tarfile_close_attached_body(_py, handle_bits)
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tarfile_is_tarfile(name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let path = match string_obj_to_owned(obj_from_bits(name_bits)) {
+
+pub fn molt_tarfile_is_tarfile_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let path = match string_obj_to_owned(_py, obj_from_bits(name_bits)) {
             Some(p) => p,
             None => return raise_exception(_py, BuiltinExc::TypeError, "path must be a str"),
         };
@@ -961,3 +995,5 @@ pub extern "C" fn molt_tarfile_is_tarfile(name_bits: u64) -> u64 {
         MoltObject::from_bool(is_tar).bits()
     })
 }
+
+include!("attached_exports_generated/tarfile.rs");

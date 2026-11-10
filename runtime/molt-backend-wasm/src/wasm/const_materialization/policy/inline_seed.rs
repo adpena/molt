@@ -2,9 +2,10 @@ use super::WasmConstOpPolicy;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::WasmConstInlineSeed;
+use crate::wasm_binary::Function;
 use crate::wasm_values::ConstantCache;
 use molt_codegen_abi::fits_inline_int;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 impl WasmConstOpPolicy {
     pub(in crate::wasm) fn inline_seed_bits(self, op: &OpIR) -> Option<i64> {

@@ -695,39 +695,47 @@ fn tuple_sequence_receiver(py: &PyToken<'_>, bits: u64, method: &str) -> bool {
     crate::object::tuple_storage::TupleStorage::admit(py, bits, method).is_some()
 }
 
-extern "C" fn tuple_iter_slot(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn tuple_iter_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if !tuple_sequence_receiver(py, bits, "__iter__") {
             return MoltObject::none().bits();
         }
-        crate::object::ops_iter::builtin_iter_slot(bits)
+        crate::object::ops_iter::builtin_iter_slot(__attached_py.attached_context(), bits)
     })
 }
 
-extern "C" fn tuple_len_slot(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn tuple_len_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if !tuple_sequence_receiver(py, bits, "__len__") {
             return MoltObject::none().bits();
         }
-        crate::object::ops_sys::molt_len_builtin(bits)
+        crate::object::ops_sys::molt_len_builtin_attached_body(py, bits)
     })
 }
 
-extern "C" fn tuple_getitem_slot(bits: u64, key: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn tuple_getitem_slot(__context: u64, bits: u64, key: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if !tuple_sequence_receiver(py, bits, "__getitem__") {
             return MoltObject::none().bits();
         }
-        crate::object::ops::molt_getitem_builtin(bits, key)
+        crate::object::ops::molt_getitem_builtin_attached_body(py, bits, key)
     })
 }
 
-extern "C" fn tuple_contains_slot(bits: u64, item: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn tuple_contains_slot(__context: u64, bits: u64, item: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if !tuple_sequence_receiver(py, bits, "__contains__") {
             return MoltObject::none().bits();
         }
-        crate::object::ops::molt_contains_builtin(bits, item)
+        crate::object::ops::molt_contains_builtin_attached_body(py, bits, item)
     })
 }
 

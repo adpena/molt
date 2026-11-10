@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 
 #[test]
 fn lower_i64_add_overflow_safe_uses_native_add() {
@@ -24,12 +26,12 @@ fn lower_i64_add_overflow_safe_uses_native_add() {
     let ir = llvm_fn.print_to_string().to_string();
 
     assert!(
-        ir.contains("add i64"),
+        ir.contains_execution("add i64"),
         "expected native i64 add for an overflow-safe result: {}",
         ir
     );
     assert!(
-        !ir.contains("call") || !ir.contains("molt_add"),
+        !ir.contains_execution("call") || !ir.contains_execution("molt_add"),
         "overflow-safe i64+i64 add must NOT call the runtime: {}",
         ir
     );
@@ -50,7 +52,7 @@ fn lower_i64_add_not_overflow_safe_routes_to_runtime() {
     let ir = llvm_fn.print_to_string().to_string();
 
     assert!(
-        ir.contains("call i64 @molt_add"),
+        ir.contains_execution("call i64 @molt_add"),
         "non-overflow-safe i64+i64 add must route through molt_add: {}",
         ir
     );
@@ -103,8 +105,8 @@ fn f64_add_requires_exact_producers() {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         backend.module.verify().unwrap();
         let ir = llvm_fn.print_to_string().to_string();
-        assert_eq!(ir.contains("call i64 @molt_add"), !exact, "{ir}");
-        assert_eq!(ir.contains("ret double"), exact, "{ir}");
+        assert_eq!(ir.contains_execution("call i64 @molt_add"), !exact, "{ir}");
+        assert_eq!(ir.contains_execution("ret double"), exact, "{ir}");
     }
 }
 
@@ -139,7 +141,7 @@ fn lower_dynbox_add_calls_runtime() {
     let ir = llvm_fn.print_to_string().to_string();
 
     assert!(
-        ir.contains("molt_add"),
+        ir.contains_execution("molt_add"),
         "expected runtime call to molt_add in IR: {}",
         ir
     );
@@ -227,19 +229,27 @@ fn lower_conditional_branch() {
 
     // Should have 3 blocks and a conditional branch
     assert!(
-        ir.contains("br i1"),
+        ir.contains_execution("br i1"),
         "expected conditional branch in IR: {}",
         ir
     );
-    assert!(ir.contains("bb1"), "expected then block in IR: {}", ir);
-    assert!(ir.contains("bb2"), "expected else block in IR: {}", ir);
+    assert!(
+        ir.contains_execution("bb1"),
+        "expected then block in IR: {}",
+        ir
+    );
+    assert!(
+        ir.contains_execution("bb2"),
+        "expected else block in IR: {}",
+        ir
+    );
 }
 
 #[test]
 fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend.module.add_function(
+    backend.module.add_compiled_function(
         "helper_raw",
         ctx.i64_type().fn_type(&[ctx.i64_type().into(); 2], false),
         Some(inkwell::module::Linkage::External),
@@ -255,7 +265,7 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -269,25 +279,28 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
         .verify()
         .expect("trampoline owns its cleanup transport");
     let ir = trampoline.print_to_string().to_string();
-    let target = ir.find("call i64 @helper_raw").expect("raw target entry");
+    let target = ir
+        .find_execution("call i64 @helper_raw")
+        .expect("raw target entry");
     let cleanup = ir
-        .find("call void @molt_call_inputs_release")
+        .find_execution("call void @molt_call_inputs_release")
         .expect("canonical input retirement");
     assert!(target < cleanup, "{ir}");
     assert_eq!(
-        ir.matches("call void @molt_call_inputs_release").count(),
+        ir.matches_execution("call void @molt_call_inputs_release")
+            .count(),
         1,
         "{ir}"
     );
-    assert!(ir.contains("alloca i64, i64 2"), "{ir}");
-    assert!(!ir.contains("@__molt_inline_release"), "{ir}");
+    assert!(ir.contains_execution("alloca i64, i64 2"), "{ir}");
+    assert!(!ir.contains_execution("@__molt_inline_release"), "{ir}");
 }
 
 #[test]
 fn plain_trampoline_boxes_bool_return_into_i64_abi() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    let _target = backend.module.add_function(
+    let _target = backend.module.add_compiled_function(
         "helper_bool",
         ctx.bool_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -302,7 +315,7 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -316,15 +329,18 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
     );
     backend.module.verify().expect("llvm module should verify");
     let ir = trampoline.print_to_string().to_string();
-    assert!(ir.contains("box_bool") || ir.contains("zext_bool"), "{ir}");
-    assert!(ir.contains("ret i64"), "{ir}");
+    assert!(
+        ir.contains_execution("box_bool") || ir.contains_execution("zext_bool"),
+        "{ir}"
+    );
+    assert!(ir.contains_execution("ret i64"), "{ir}");
 }
 
 #[test]
 fn plain_trampoline_boxes_f64_return_into_i64_abi() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    let _target = backend.module.add_function(
+    let _target = backend.module.add_compiled_function(
         "helper_f64",
         ctx.f64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -339,7 +355,7 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -354,9 +370,9 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
     backend.module.verify().expect("llvm module should verify");
     let ir = trampoline.print_to_string().to_string();
     assert!(
-        ir.contains("f64_to_i64") || ir.contains("bitcast double"),
+        ir.contains_execution("f64_to_i64") || ir.contains_execution("bitcast double"),
         "{ir}"
     );
-    assert!(ir.contains("fcmp uno"), "{ir}");
-    assert!(ir.contains("ret i64"), "{ir}");
+    assert!(ir.contains_execution("fcmp uno"), "{ir}");
+    assert!(ir.contains_execution("ret i64"), "{ir}");
 }

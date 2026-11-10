@@ -204,7 +204,7 @@ pub(crate) fn mappingproxy_from_mapping(py: &PyToken<'_>, mapping: u64) -> u64 {
     if class == 0 || exception_pending(py) {
         return MoltObject::none().bits();
     }
-    molt_types_mappingproxy_new(class, mapping)
+    molt_types_mappingproxy_new_attached_body(py, class, mapping)
 }
 
 pub(crate) fn mappingproxy_class_bits(_py: &PyToken<'_>) -> u64 {
@@ -269,7 +269,11 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
             dec_ref_bits(_py, descriptor);
             return 0;
         }
-        let getters: [(crate::NameId, &AtomicU64, extern "C" fn(u64, u64) -> u64); 2] = [
+        let getters: [(
+            crate::NameId,
+            &AtomicU64,
+            unsafe extern "C" fn(u64, u64, u64) -> u64,
+        ); 2] = [
             (
                 crate::NameId::FLineno,
                 &state.frame_f_lineno_get_fn,
@@ -761,9 +765,13 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_method_new(_cls_bits: u64, func_bits: u64, self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_method_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    _cls_bits: u64,
+    func_bits: u64,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !crate::builtins::callable::is_callable_impl(_py, func_bits) {
             return raise_exception::<_>(
                 _py,
@@ -778,14 +786,21 @@ pub extern "C" fn molt_types_method_new(_cls_bits: u64, func_bits: u64, self_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_method_init(_self_bits: u64, _func_bits: u64, _self_arg: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+pub(crate) fn molt_types_method_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    _self_bits: u64,
+    _func_bits: u64,
+    _self_arg: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_mappingproxy_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    mapping_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if obj_from_bits(mapping_bits).is_none() {
             return raise_exception::<_>(
                 _py,
@@ -830,26 +845,34 @@ pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_init(_self_bits: u64, _mapping_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+pub(crate) fn molt_types_mappingproxy_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    _self_bits: u64,
+    _mapping_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_getitem(self_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_mappingproxy_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
-        molt_index(mapping_bits, key_bits)
+        molt_index_attached_body(_py, mapping_bits, key_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_iter(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_mappingproxy_iter_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
-        let iter_bits = molt_iter(mapping_bits);
+        let iter_bits = molt_iter_attached_body(_py, mapping_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -860,31 +883,36 @@ pub extern "C" fn molt_types_mappingproxy_iter(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_len(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_mappingproxy_len_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
-        molt_len(mapping_bits)
+        molt_len_attached_body(_py, mapping_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_contains(self_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_mappingproxy_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
-        molt_contains(mapping_bits, key_bits)
+        molt_contains_attached_body(_py, mapping_bits, key_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_get(
+pub(crate) fn molt_types_mappingproxy_get_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let args_ptr = obj_from_bits(args_bits).as_ptr();
         let Some(args_ptr) = args_ptr else {
             return raise_exception::<_>(
@@ -942,12 +970,13 @@ pub extern "C" fn molt_types_mappingproxy_get(
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT })
         {
-            return molt_dict_get(mapping_bits, key_bits, default_bits);
+            return molt_dict_get_attached_body(_py, mapping_bits, key_bits, default_bits);
         }
         let Some(name_bits) = crate::NameId::Get.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let method = molt_getattr_builtin(mapping_bits, name_bits, missing_bits(_py));
+        let method =
+            molt_getattr_builtin_attached_body(_py, mapping_bits, name_bits, missing_bits(_py));
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -970,7 +999,7 @@ fn mappingproxy_call_noargs(_py: &PyToken<'_>, self_bits: u64, name: &str) -> u6
         return MoltObject::none().bits();
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let method_bits = molt_getattr_builtin(mapping_bits, name_bits, missing);
+    let method_bits = molt_getattr_builtin_attached_body(_py, mapping_bits, name_bits, missing);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
         return MoltObject::none().bits();
@@ -983,27 +1012,41 @@ fn mappingproxy_call_noargs(_py: &PyToken<'_>, self_bits: u64, name: &str) -> u6
     res_bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_keys(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { mappingproxy_call_noargs(_py, self_bits, "keys") })
+pub(crate) fn molt_types_mappingproxy_keys_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        mappingproxy_call_noargs(_py, self_bits, "keys")
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_items(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { mappingproxy_call_noargs(_py, self_bits, "items") })
+pub(crate) fn molt_types_mappingproxy_items_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        mappingproxy_call_noargs(_py, self_bits, "items")
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_values(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { mappingproxy_call_noargs(_py, self_bits, "values") })
+pub(crate) fn molt_types_mappingproxy_values_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        mappingproxy_call_noargs(_py, self_bits, "values")
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_mappingproxy_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
-        let mapping_repr_bits = molt_repr_from_obj(mapping_bits);
+        let mapping_repr_bits = molt_repr_from_obj_attached_body(_py, mapping_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1019,13 +1062,13 @@ pub extern "C" fn molt_types_mappingproxy_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_setitem(
+pub(crate) fn molt_types_mappingproxy_setitem_attached_body(
+    _py: &crate::PyToken<'_>,
     _self_bits: u64,
     _key_bits: u64,
     _val_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
@@ -1034,9 +1077,12 @@ pub extern "C" fn molt_types_mappingproxy_setitem(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_mappingproxy_delitem(_self_bits: u64, _key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_mappingproxy_delitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    _self_bits: u64,
+    _key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
@@ -1067,27 +1113,41 @@ fn mappingproxy_admits(py: &PyToken<'_>, mapping: u64) -> Result<bool, ()> {
     }
 }
 
-extern "C" fn mappingproxy_copy(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { mappingproxy_call_noargs(py, self_bits, "copy") })
-}
+extern "C" fn mappingproxy_copy(__context: u64, self_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
-extern "C" fn mappingproxy_reversed(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let pointer = obj_from_bits(self_bits).as_ptr().unwrap();
-        crate::molt_reversed_builtin(unsafe { mappingproxy_mapping_bits(pointer) })
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        mappingproxy_call_noargs(py, self_bits, "copy")
     })
 }
 
-extern "C" fn mappingproxy_str(self_bits: u64) -> u64 {
-    crate::molt_str_from_obj(mappingproxy_unwrap(self_bits))
+extern "C" fn mappingproxy_reversed(__context: u64, self_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, _py, {
+        let pointer = obj_from_bits(self_bits).as_ptr().unwrap();
+        crate::molt_reversed_builtin_attached_body(_py, unsafe {
+            mappingproxy_mapping_bits(pointer)
+        })
+    })
 }
 
-extern "C" fn mappingproxy_hash(self_bits: u64) -> u64 {
-    crate::molt_hash_builtin(mappingproxy_unwrap(self_bits))
+extern "C" fn mappingproxy_str(__context: u64, self_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_str_from_obj_attached_body(__attached_py, mappingproxy_unwrap(self_bits))
 }
 
-extern "C" fn mappingproxy_ior(_self_bits: u64, _other: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn mappingproxy_hash(__context: u64, self_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_hash_builtin_attached_body(__attached_py, mappingproxy_unwrap(self_bits))
+}
+
+extern "C" fn mappingproxy_ior(__context: u64, _self_bits: u64, _other: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         raise_exception::<_>(
             py,
             BuiltinExc::TypeError,
@@ -1106,31 +1166,51 @@ fn mappingproxy_unwrap(bits: u64) -> u64 {
     }
 }
 
-extern "C" fn mappingproxy_or(self_bits: u64, other: u64) -> u64 {
-    crate::molt_bit_or(mappingproxy_unwrap(self_bits), mappingproxy_unwrap(other))
+extern "C" fn mappingproxy_or(__context: u64, self_bits: u64, other: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_bit_or_attached_body(
+        __attached_py,
+        mappingproxy_unwrap(self_bits),
+        mappingproxy_unwrap(other),
+    )
 }
 
-extern "C" fn mappingproxy_ror(self_bits: u64, other: u64) -> u64 {
-    crate::molt_bit_or(mappingproxy_unwrap(other), mappingproxy_unwrap(self_bits))
+extern "C" fn mappingproxy_ror(__context: u64, self_bits: u64, other: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_bit_or_attached_body(
+        __attached_py,
+        mappingproxy_unwrap(other),
+        mappingproxy_unwrap(self_bits),
+    )
 }
 
 macro_rules! mappingproxy_comparison {
     ($name:ident, $operation:path) => {
-        extern "C" fn $name(self_bits: u64, other: u64) -> u64 {
-            $operation(mappingproxy_unwrap(self_bits), mappingproxy_unwrap(other))
+        extern "C" fn $name(__context: u64, self_bits: u64, other: u64) -> u64 {
+            let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+            $operation(
+                __attached_py,
+                mappingproxy_unwrap(self_bits),
+                mappingproxy_unwrap(other),
+            )
         }
     };
 }
-mappingproxy_comparison!(mappingproxy_eq, crate::molt_eq);
-mappingproxy_comparison!(mappingproxy_ne, crate::molt_ne);
-mappingproxy_comparison!(mappingproxy_lt, crate::molt_lt);
-mappingproxy_comparison!(mappingproxy_le, crate::molt_le);
-mappingproxy_comparison!(mappingproxy_gt, crate::molt_gt);
-mappingproxy_comparison!(mappingproxy_ge, crate::molt_ge);
+mappingproxy_comparison!(mappingproxy_eq, crate::molt_eq_attached_body);
+mappingproxy_comparison!(mappingproxy_ne, crate::molt_ne_attached_body);
+mappingproxy_comparison!(mappingproxy_lt, crate::molt_lt_attached_body);
+mappingproxy_comparison!(mappingproxy_le, crate::molt_le_attached_body);
+mappingproxy_comparison!(mappingproxy_gt, crate::molt_gt_attached_body);
+mappingproxy_comparison!(mappingproxy_ge, crate::molt_ge_attached_body);
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_capsule_new(_cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_capsule_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    _cls_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
@@ -1139,9 +1219,13 @@ pub extern "C" fn molt_types_capsule_new(_cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_cell_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    _cls_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !obj_from_bits(kwargs_bits).is_none() {
             let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() else {
                 return raise_exception::<_>(
@@ -1189,9 +1273,12 @@ pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_cell_contents_get(_descriptor_bits: u64, cell_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_cell_contents_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    _descriptor_bits: u64,
+    cell_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
@@ -1204,13 +1291,13 @@ pub extern "C" fn molt_types_cell_contents_get(_descriptor_bits: u64, cell_bits:
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_cell_contents_set(
+pub(crate) fn molt_types_cell_contents_set_attached_body(
+    _py: &crate::PyToken<'_>,
     _descriptor_bits: u64,
     cell_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
@@ -1219,9 +1306,12 @@ pub extern "C" fn molt_types_cell_contents_set(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_cell_contents_delete(_descriptor_bits: u64, cell_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_cell_contents_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    _descriptor_bits: u64,
+    cell_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
@@ -1230,13 +1320,13 @@ pub extern "C" fn molt_types_cell_contents_delete(_descriptor_bits: u64, cell_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_simplenamespace_init(
+pub(crate) fn molt_types_simplenamespace_init_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -1332,8 +1422,12 @@ pub extern "C" fn molt_types_simplenamespace_init(
 // CPython v3.13.9/v3.14.0 Objects/namespaceobject.c: namespace_replace.
 // Call the actual subtype without arguments, then update the actual dictionaries;
 // subclass __setattr__ and data descriptors do not participate.
-pub extern "C" fn molt_types_simplenamespace_replace(args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_types_simplenamespace_replace_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(call) = crate::builtins::native_arguments::NativeArguments::read(
             py,
             "__replace__",
@@ -1360,7 +1454,7 @@ pub extern "C" fn molt_types_simplenamespace_replace(args_bits: u64, kwargs_bits
         let Some(result_ptr) = obj_from_bits(result).as_ptr() else {
             return result;
         };
-        let result_owner = crate::PtrDropGuard::new(result_ptr);
+        let result_owner = crate::PtrDropGuard::new(py, result_ptr);
         let source_ptr = obj_from_bits(self_bits)
             .as_ptr()
             .expect("namespace descriptor receiver");
@@ -1393,9 +1487,11 @@ pub extern "C" fn molt_types_simplenamespace_replace(args_bits: u64, kwargs_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_simplenamespace_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mut out = String::from("namespace(");
         let dict_bits = unsafe { instance_dict_bits(self_ptr) };
@@ -1418,7 +1514,7 @@ pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
                             let val_bits = order[idx + 1];
                             let key_str = string_obj_to_owned(obj_from_bits(key_bits))
                                 .unwrap_or_else(|| "<key>".to_string());
-                            let val_repr_bits = molt_repr_from_obj(val_bits);
+                            let val_repr_bits = molt_repr_from_obj_attached_body(_py, val_bits);
                             let val_repr = string_obj_to_owned(obj_from_bits(val_repr_bits))
                                 .unwrap_or_default();
                             dec_ref_bits(_py, val_repr_bits);
@@ -1444,9 +1540,12 @@ pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_simplenamespace_eq(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_simplenamespace_eq_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let other_ptr = obj_from_bits(other_bits).as_ptr();
         let Some(other_ptr) = other_ptr else {
@@ -1488,7 +1587,7 @@ pub extern "C" fn molt_types_simplenamespace_eq(self_bits: u64, other_bits: u64)
         } else {
             other_dict_bits
         };
-        let eq_bits = molt_eq(left_bits, right_bits);
+        let eq_bits = molt_eq_attached_body(_py, left_bits, right_bits);
         for bits in created.iter() {
             dec_ref_bits(_py, *bits);
         }
@@ -1535,3 +1634,5 @@ pub(crate) unsafe fn types_detach_owned_edges(
         _ => unreachable!("non-types object shape"),
     }
 }
+
+include!("../../attached_exports_generated/builtins/types/concrete_types.rs");

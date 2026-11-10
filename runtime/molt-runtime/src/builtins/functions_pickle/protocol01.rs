@@ -382,9 +382,12 @@ fn pickle_apply_reduce(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_dumps_protocol01(obj_bits: u64, protocol_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pickle_dumps_protocol01_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    protocol_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(protocol) = to_i64(obj_from_bits(protocol_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle protocol must be int");
         };
@@ -409,9 +412,11 @@ pub extern "C" fn molt_pickle_dumps_protocol01(obj_bits: u64, protocol_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pickle_loads_protocol01_attached_body(
+    _py: &crate::PyToken<'_>,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle data must be str");
         };
@@ -678,3 +683,5 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../../attached_exports_generated/builtins/functions_pickle/protocol01.rs");

@@ -57,7 +57,7 @@ impl<'py> PreparedKernelOutputs<'py> {
                     "GPU output lost its storage owner",
                 )
             })?;
-            if unsafe { object_type_id(data) } == TYPE_ID_BYTEARRAY {
+            if unsafe { object_type_id(py, data) } == TYPE_ID_BYTEARRAY {
                 continue;
             }
             let ptr = alloc_bytearray(py, &[]);
@@ -176,7 +176,7 @@ impl KernelStoragePlan {
                     let data = obj_from_bits(buffer.data.bits())
                         .as_ptr()
                         .ok_or_else(|| fail("GPU buffer lost its storage owner"))?;
-                    let mutable = unsafe { object_type_id(data) } == TYPE_ID_BYTEARRAY;
+                    let mutable = unsafe { object_type_id(py, data) } == TYPE_ID_BYTEARRAY;
                     let format =
                         scalar_format_from_text(&buffer.original_format).ok_or_else(|| {
                             fail("GPU buffer format is outside strict kernel capability")
@@ -298,12 +298,12 @@ impl KernelStoragePlan {
                         })?;
                     group.rebuilt.extend_from_slice(&group.original);
                     let data = obj_from_bits(buffer.data.bits()).as_ptr().unwrap();
-                    if unsafe { object_type_id(data) } != TYPE_ID_BYTEARRAY {
+                    if unsafe { object_type_id(py, data) } != TYPE_ID_BYTEARRAY {
                         let owner = MoltObject::from_ptr(buffer.object_ptr).bits();
                         let destination = prepared.destinations.get(&owner).ok_or_else(|| {
                             fail("GPU COW output changed during destination preparation")
                         })?;
-                        if !bytearray_copy(destination.bits(), &group.original, false) {
+                        if !bytearray_copy(py, destination.bits(), &group.original, false) {
                             return Err(if exception_pending(py) {
                                 MoltObject::none().bits()
                             } else {
@@ -502,11 +502,12 @@ impl KernelStoragePlan {
                 unreachable!()
             };
             let destination = group.destination.unwrap_or(buffer.data.bits());
-            if !bytearray_copy(destination, &group.rebuilt, true) {
+            if !bytearray_copy(py, destination, &group.rebuilt, true) {
                 return Err(fail("GPU admitted bytearray publication invariant changed"));
             }
             if group.destination.is_some()
                 && !commit_buffer_data(
+                    py,
                     MoltObject::from_ptr(buffer.object_ptr).bits(),
                     buffer.data.bits(),
                     destination,

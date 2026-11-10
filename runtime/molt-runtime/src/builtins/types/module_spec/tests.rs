@@ -112,17 +112,31 @@ fn attr_text(py: &PyToken<'_>, obj_bits: u64, name: crate::NameId) -> String {
     text
 }
 
-extern "C" fn observed_setattr(self_bits: u64, name_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn observed_setattr(
+    __context: u64,
+    self_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         if crate::object::ops_format::string_obj_matches_bytes(obj_from_bits(name_bits), b"name") {
             let observed = str_bits(py, b"observed.leaf");
-            let result = crate::molt_object_setattr(self_bits, name_bits, observed);
+            let result =
+                crate::molt_object_setattr_attached_body(py, self_bits, name_bits, observed);
             dec_ref_bits(py, observed);
             result
         } else {
-            crate::molt_object_setattr(self_bits, name_bits, value_bits)
+            crate::molt_object_setattr_attached_body(py, self_bits, name_bits, value_bits)
         }
-    })
+    }
 }
 
 #[test]
@@ -131,7 +145,7 @@ fn runtime_factory_obeys_mutable_class_attribute_protocol() {
     impl Drop for RemoveAttribute {
         fn drop(&mut self) {
             crate::with_gil_entry_nopanic!(py, {
-                crate::molt_del_attr_name(self.0, self.1);
+                crate::molt_del_attr_name_attached_body(py, self.0, self.1);
                 dec_ref_bits(py, self.1);
                 dec_ref_bits(py, self.0);
             });
@@ -149,7 +163,7 @@ fn runtime_factory_obeys_mutable_class_attribute_protocol() {
         let setter_name = str_bits(py, b"__setattr__");
         inc_ref_bits(py, class);
         let _restore_class = RemoveAttribute(class, setter_name);
-        crate::molt_set_attr_name(class, setter_name, setter);
+        crate::molt_set_attr_name_attached_body(py, class, setter_name, setter);
         dec_ref_bits(py, setter);
         assert!(!exception_pending(py));
         let name = str_bits(py, b"original");
@@ -173,7 +187,7 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
             attr_text(py, class_bits, crate::NameId::DunderModule),
             "_frozen_importlib"
         );
-        let facade_bits = molt_importlib_module_spec_type();
+        let facade_bits = molt_importlib_module_spec_type_attached_body(py);
         assert_eq!(facade_bits, class_bits);
         dec_ref_bits(py, facade_bits);
 
@@ -198,7 +212,7 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
         ] {
             assert_eq!(attr(py, spec, field), expected);
         }
-        let repr = molt_importlib_module_spec_repr(spec);
+        let repr = molt_importlib_module_spec_repr_attached_body(py, spec);
         assert_eq!(
             string_obj_to_owned(obj_from_bits(repr)).as_deref(),
             Some("ModuleSpec(name='pkg.leaf', loader=None, origin='/tmp/leaf.so')")
@@ -208,7 +222,7 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
         let is_package = MoltObject::from_bool(true).bits();
         let package = alloc_module_spec(py, name, none, none, is_package).expect("package spec");
         assert_eq!(attr_text(py, package, crate::NameId::Parent), "pkg.leaf");
-        let package_repr = molt_repr_from_obj(package);
+        let package_repr = molt_repr_from_obj_attached_body(py, package);
         assert!(!exception_pending(py));
         assert_eq!(
             string_obj_to_owned(obj_from_bits(package_repr)).as_deref(),
@@ -220,7 +234,10 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
             MoltObject::from_bool(false).bits()
         );
         let locations = attr(py, package, crate::NameId::SubmoduleSearchLocations);
-        assert_eq!(molt_len(locations), MoltObject::from_int(0).bits());
+        assert_eq!(
+            molt_len_attached_body(py, locations),
+            MoltObject::from_int(0).bits()
+        );
         dec_ref_bits(py, locations);
 
         for bits in [package, spec, origin, name] {
@@ -246,14 +263,18 @@ fn class_call_binds_positional_and_keyword_initializer_arguments() {
 
         let origin_key = str_bits(py, b"origin");
         let package_key = str_bits(py, b"is_package");
-        let builder = molt_callargs_new(1, 2);
+        let builder = molt_callargs_new_attached_body(py, 1, 2);
         unsafe {
-            let _ = molt_callargs_push_pos(builder, name);
-            let _ = crate::molt_callargs_push_kw(builder, origin_key, origin);
-            let _ =
-                crate::molt_callargs_push_kw(builder, package_key, MoltObject::from_int(1).bits());
+            let _ = molt_callargs_push_pos_attached_body(py, builder, name);
+            let _ = crate::molt_callargs_push_kw_attached_body(py, builder, origin_key, origin);
+            let _ = crate::molt_callargs_push_kw_attached_body(
+                py,
+                builder,
+                package_key,
+                MoltObject::from_int(1).bits(),
+            );
         }
-        let keyword = molt_call_bind(class_bits, builder);
+        let keyword = molt_call_bind_attached_body(py, class_bits, builder);
         assert!(!exception_pending(py));
         assert_eq!(attr_text(py, keyword, crate::NameId::Origin), "built-in");
         assert_eq!(attr(py, keyword, crate::NameId::Loader), none);
@@ -264,7 +285,7 @@ fn class_call_binds_positional_and_keyword_initializer_arguments() {
         assert_eq!(attr_text(py, keyword, crate::NameId::Parent), "top");
 
         let parent_name = str_bits(py, b"parent");
-        let _ = molt_set_attr_name(keyword, parent_name, name);
+        let _ = molt_set_attr_name_attached_body(py, keyword, parent_name, name);
         assert!(exception_pending(py), "parent is a read-only property");
         clear_exception(py);
 

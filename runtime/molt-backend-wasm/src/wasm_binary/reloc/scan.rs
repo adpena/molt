@@ -93,8 +93,16 @@ impl RelocScan {
                 Payload::ExportSection(reader) => {
                     for export in reader.into_iter().flatten() {
                         if export.kind == ExternalKind::Func {
-                            scan.func_exports
-                                .insert(export.index, export.name.to_string());
+                            let suffix = molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX;
+                            if !scan
+                                .func_exports
+                                .get(&export.index)
+                                .is_some_and(|name| name.ends_with(suffix))
+                                || export.name.ends_with(suffix)
+                            {
+                                scan.func_exports
+                                    .insert(export.index, export.name.to_string());
+                            }
                         }
                     }
                 }

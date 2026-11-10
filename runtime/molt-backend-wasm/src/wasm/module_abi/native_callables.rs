@@ -204,6 +204,8 @@ impl WasmBackend {
             let symbol_import = match symbol_imports.entry(request.symbol.clone()) {
                 Entry::Vacant(entry) => {
                     let function_index = self.func_count;
+                    std::rc::Rc::make_mut(&mut self.execution_call_abis)
+                        .register_boundary(function_index);
                     self.imports.import(
                         NATIVE_CALLABLE_IMPORT_MODULE,
                         &request.symbol,

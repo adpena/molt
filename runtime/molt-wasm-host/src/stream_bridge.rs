@@ -1,76 +1,42 @@
 use super::*;
 
 pub(super) struct RuntimeExports {
-    stream_new: Func,
-    pub(super) stream_send: Func,
-    pub(super) stream_close: Func,
-    stream_drop: Func,
-    int_from_i64: Func,
-    exception_pending_fast: Func,
-    scratch_alloc: Func,
-    scratch_free: Func,
-    pub(super) dec_ref_obj: Func,
-    pub(super) cancel_is_cancelled: Option<Func>,
+    stream_new: RuntimeFunction,
+    pub(super) stream_send: RuntimeFunction,
+    pub(super) stream_close: RuntimeFunction,
+    stream_drop: RuntimeFunction,
+    int_from_i64: RuntimeFunction,
+    exception_pending_fast: RuntimeFunction,
+    scratch_alloc: RuntimeFunction,
+    scratch_free: RuntimeFunction,
+    pub(super) dec_ref_obj: RuntimeFunction,
+    pub(super) cancel_is_cancelled: Option<RuntimeFunction>,
 }
 
 pub(super) fn runtime_exports(caller: &mut Caller<HostState>) -> Result<RuntimeExports> {
-    let stream_new = caller
-        .get_export("molt_stream_new")
-        .and_then(Extern::into_func)
-        .context("missing molt_stream_new export")?;
-    let stream_send = caller
-        .get_export("molt_stream_send")
-        .and_then(Extern::into_func)
-        .context("missing molt_stream_send export")?;
-    let stream_close = caller
-        .get_export("molt_stream_close")
-        .and_then(Extern::into_func)
-        .context("missing molt_stream_close export")?;
-    let stream_drop = caller
-        .get_export("molt_stream_drop")
-        .and_then(Extern::into_func)
-        .context("missing molt_stream_drop export")?;
-    let int_from_i64 = caller
-        .get_export("molt_int_from_i64")
-        .and_then(Extern::into_func)
-        .context("missing molt_int_from_i64 export")?;
-    let exception_pending_fast = caller
-        .get_export("molt_exception_pending_fast")
-        .and_then(Extern::into_func)
-        .context("missing molt_exception_pending_fast export")?;
-    // Raw frame bytes are staged in the runtime's scratch allocator, as
-    // wasm/run_wasm.js stages them. molt_alloc allocates compiler-owned boxed
-    // fields of u64 stride, never arbitrary byte lengths.
-    let scratch_alloc = caller
-        .get_export("molt_scratch_alloc")
-        .and_then(Extern::into_func)
-        .context("missing molt_scratch_alloc export")?;
-    let scratch_free = caller
-        .get_export("molt_scratch_free")
-        .and_then(Extern::into_func)
-        .context("missing molt_scratch_free export")?;
-    let dec_ref_obj = caller
-        .get_export("molt_dec_ref_obj")
-        .and_then(Extern::into_func)
-        .context("missing molt_dec_ref_obj export")?;
-    let cancel_is_cancelled = caller
-        .get_export("molt_cancel_token_is_cancelled")
-        .and_then(Extern::into_func);
+    fn required(caller: &mut Caller<HostState>, logical: &str) -> Result<RuntimeFunction> {
+        RuntimeFunction::resolve(caller, logical)?
+            .with_context(|| format!("missing canonical {logical} export"))
+    }
     Ok(RuntimeExports {
-        stream_new,
-        stream_send,
-        stream_close,
-        stream_drop,
-        int_from_i64,
-        exception_pending_fast,
-        scratch_alloc,
-        scratch_free,
-        dec_ref_obj,
-        cancel_is_cancelled,
+        stream_new: required(caller, "molt_stream_new")?,
+        stream_send: required(caller, "molt_stream_send")?,
+        stream_close: required(caller, "molt_stream_close")?,
+        stream_drop: required(caller, "molt_stream_drop")?,
+        int_from_i64: required(caller, "molt_int_from_i64")?,
+        exception_pending_fast: required(caller, "molt_exception_pending_fast")?,
+        scratch_alloc: required(caller, "molt_scratch_alloc")?,
+        scratch_free: required(caller, "molt_scratch_free")?,
+        dec_ref_obj: required(caller, "molt_dec_ref_obj")?,
+        cancel_is_cancelled: RuntimeFunction::resolve(caller, "molt_cancel_token_is_cancelled")?,
     })
 }
 
-pub(super) fn call_i64(func: &Func, caller: &mut Caller<HostState>, args: &[Val]) -> Result<i64> {
+pub(super) fn call_i64(
+    func: &RuntimeFunction,
+    caller: &mut Caller<HostState>,
+    args: &[Val],
+) -> Result<i64> {
     let mut results = [Val::I64(0)];
     func.call(caller, args, &mut results)?;
     match results[0] {
@@ -271,44 +237,70 @@ mod tests {
         for mode in 0..5 {
             let module = Module::new(
                 &engine,
-                format!(
+                crate::execution_fixture::render(format!(
                     r#"(module
                 (import "host" "new_stream" (func $new_stream (result i64)))
                 (global $pending (mut i64) (i64.const 0))
                 (global $boxes (mut i32) (i32.const 0))
                 (global $streams (mut i32) (i32.const 0))
                 (global $dropped (mut i32) (i32.const 0))
-                (func (export "molt_exception_pending_fast") (result i64) global.get $pending)
-                (func (export "molt_int_from_i64") (param i64) (result i64)
-                    local.get 0 i64.const 0 i64.ne if unreachable end
+                (func (export "molt_exception_pending_fast@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ global.get $pending)
+                (func (export "molt_int_from_i64@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                    local.get 1 i64.const 0 i64.ne if unreachable end
                     i32.const 1 global.set $boxes
                     i32.const {mode} i32.const 1 i32.eq
                     if i64.const 1 global.set $pending end
                     i64.const 123)
-                (func (export "molt_stream_new") (param i64) (result i64)
-                    local.get 0 i64.const 123 i64.ne if unreachable end
+                (func (export "molt_stream_new@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                    local.get 1 i64.const 123 i64.ne if unreachable end
                     i32.const {mode} i32.const 2 i32.eq
                     i32.const {mode} i32.const 4 i32.eq i32.or
                     if i64.const 1 global.set $pending i64.const 999 return end
                     i32.const 1 global.set $streams i64.const 456)
-                (func (export "molt_dec_ref_obj") (param i64)
-                    local.get 0 i64.const 123 i64.ne if unreachable end
+                (func (export "molt_dec_ref_obj@CONTEXT_SUFFIX@") (param $context i64) (param i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                    local.get 1 i64.const 123 i64.ne if unreachable end
                     i32.const 0 global.set $boxes
                     i32.const {mode} i32.const 3 i32.ge_s if unreachable end)
-                (func (export "molt_stream_drop") (param i64) (result i64)
-                    local.get 0 i64.const 456 i64.ne if unreachable end
+                (func (export "molt_stream_drop@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                    local.get 1 i64.const 456 i64.ne if unreachable end
                     i32.const 0 global.set $streams
                     i32.const 1 global.set $dropped i64.const 0x7ffb000000000000)
-                (func (export "molt_stream_close") (param i64) (result i64)
+                (func (export "molt_stream_close@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
                     i64.const 0x7ffb000000000000)
-                (func (export "molt_stream_send") (param i64 i32 i64) (result i64) i64.const 0)
-                (func (export "molt_scratch_alloc") (param i64) (result i64) i64.const 0)
-                (func (export "molt_scratch_free") (param i64 i64))
+                (func (export "molt_stream_send@CONTEXT_SUFFIX@") (param $context i64) (param i64 i32 i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+                (func (export "molt_scratch_alloc") (param i64) (result i64)
+ i64.const 0)
+                (func (export "molt_scratch_free") (param i64 i64)
+)
                 (func (export "run") (result i64) call $new_stream)
                 (func (export "boxes") (result i32) global.get $boxes)
                 (func (export "streams") (result i32) global.get $streams)
-                (func (export "dropped") (result i32) global.get $dropped))"#
-                ),
+                (func (export "dropped") (result i32) global.get $dropped)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)"#
+                )),
             )
             .unwrap();
             let mut store = Store::new(&engine, crate::main_tests::test_host_state());
@@ -328,9 +320,12 @@ mod tests {
             if mode == 0 {
                 assert_eq!(result.unwrap(), 456);
                 instance
-                    .get_typed_func::<i64, i64>(&mut store, "molt_stream_drop")
+                    .get_typed_func::<(i64, i64), i64>(
+                        &mut store,
+                        runtime_symbol("molt_stream_drop").unwrap(),
+                    )
                     .unwrap()
-                    .call(&mut store, 456)
+                    .call(&mut store, (32768, 456))
                     .unwrap();
             }
             for name in ["boxes", "streams"] {
@@ -358,7 +353,7 @@ mod tests {
         let engine = build_engine().unwrap();
         let module = Module::new(
             &engine,
-            r#"(module
+            crate::execution_fixture::render(r#"(module
             (import "host" "send" (func $send))
             (memory (export "memory") 1)
             (global $alloc_size (mut i64) (i64.const -1))
@@ -366,16 +361,30 @@ mod tests {
             (global $sent_len (mut i64) (i64.const -1))
             (global $freed_ptr (mut i64) (i64.const -1))
             (global $freed_size (mut i64) (i64.const -1))
-            (func (export "molt_exception_pending_fast") (result i64) i64.const 0)
-            (func (export "molt_int_from_i64") (param i64) (result i64) unreachable)
-            (func (export "molt_stream_new") (param i64) (result i64) unreachable)
-            (func (export "molt_dec_ref_obj") (param i64) unreachable)
-            (func (export "molt_stream_drop") (param i64) (result i64) unreachable)
-            (func (export "molt_stream_close") (param i64) (result i64) unreachable)
-            (func (export "molt_stream_send") (param i64 i32 i64) (result i64)
-                local.get 0 i64.const 456 i64.ne if unreachable end
-                local.get 1 global.set $sent_ptr
-                local.get 2 global.set $sent_len
+            (func (export "molt_exception_pending_fast@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+            (func (export "molt_int_from_i64@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_stream_new@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_dec_ref_obj@CONTEXT_SUFFIX@") (param $context i64) (param i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_stream_drop@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_stream_close@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_stream_send@CONTEXT_SUFFIX@") (param $context i64) (param i64 i32 i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                local.get 1 i64.const 456 i64.ne if unreachable end
+                local.get 2 global.set $sent_ptr
+                local.get 3 global.set $sent_len
                 i64.const 0)
             (func (export "molt_scratch_alloc") (param i64) (result i64)
                 local.get 0 global.set $alloc_size
@@ -388,7 +397,15 @@ mod tests {
             (func (export "sent_ptr") (result i32) global.get $sent_ptr)
             (func (export "sent_len") (result i64) global.get $sent_len)
             (func (export "freed_ptr") (result i64) global.get $freed_ptr)
-            (func (export "freed_size") (result i64) global.get $freed_size))"#,
+            (func (export "freed_size") (result i64) global.get $freed_size)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+)"#),
         )
         .unwrap();
         let mut store = Store::new(&engine, crate::main_tests::test_host_state());

@@ -23,9 +23,10 @@ use crate::object::{ObjectShapeId, object_shape_id};
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_TUPLE, TYPE_ID_TYPE,
     alloc_dict_with_pairs, alloc_instance_for_class, alloc_list, alloc_string, alloc_tuple,
-    dec_ref_bits, exception_pending, inc_ref_bits, molt_contains, molt_dict_get, molt_eq,
-    molt_index, molt_iter, molt_len, molt_repr_from_obj, obj_from_bits, object_type_id,
-    raise_exception, string_obj_to_owned,
+    dec_ref_bits, exception_pending, inc_ref_bits, molt_contains_attached_body,
+    molt_dict_get_attached_body, molt_eq_attached_body, molt_index_attached_body,
+    molt_iter_attached_body, molt_len_attached_body, molt_repr_from_obj_attached_body,
+    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
 };
 
 const WORD: usize = std::mem::size_of::<u64>();
@@ -163,12 +164,20 @@ fn frame_location_field(py: &PyToken<'_>, frame: u64, line: bool) -> u64 {
     }
 }
 
-pub extern "C" fn molt_frame_f_lineno_get(_descriptor: u64, frame: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { frame_location_field(py, frame, true) })
+pub(crate) fn molt_frame_f_lineno_get_attached_body(
+    py: &crate::PyToken<'_>,
+    _descriptor: u64,
+    frame: u64,
+) -> u64 {
+    frame_location_field(py, frame, true)
 }
 
-pub extern "C" fn molt_frame_f_lasti_get(_descriptor: u64, frame: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { frame_location_field(py, frame, false) })
+pub(crate) fn molt_frame_f_lasti_get_attached_body(
+    py: &crate::PyToken<'_>,
+    _descriptor: u64,
+    frame: u64,
+) -> u64 {
+    frame_location_field(py, frame, false)
 }
 
 /// # Safety
@@ -280,9 +289,12 @@ fn frame_object_source_slot(
 /// `frame.f_locals`, read now. An optimized frame (synchronous or stateful)
 /// reports its activation's one refreshed dict before PEP 667 and a proxy from
 /// 3.13; a module body reports its namespace mapping.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_f_locals_get(_descriptor_bits: u64, frame_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_f_locals_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    _descriptor_bits: u64,
+    frame_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Ok(slot) = frame_object_source_slot(py, frame_bits, "f_locals") else {
             return MoltObject::none().bits();
         };
@@ -314,9 +326,8 @@ pub extern "C" fn molt_frame_f_locals_get(_descriptor_bits: u64, frame_bits: u64
 /// frame object owns in the explicit-clear order; a finished module/class body's
 /// frame drops its namespace. Returns None; a failure leaves its exception
 /// pending.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_clear(frame_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_clear_attached_body(_py: &crate::PyToken<'_>, frame_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Ok(slot) = frame_object_source_slot(py, frame_bits, "clear") else {
             return MoltObject::none().bits();
         };
@@ -426,41 +437,59 @@ fn positional_args(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_getitem(self_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        with_snapshot(py, self_bits, |snapshot| molt_index(snapshot, key_bits))
+pub(crate) fn molt_frame_locals_proxy_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        with_snapshot(py, self_bits, |snapshot| {
+            molt_index_attached_body(py, snapshot, key_bits)
+        })
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_contains(self_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        with_snapshot(py, self_bits, |snapshot| molt_contains(snapshot, key_bits))
+pub(crate) fn molt_frame_locals_proxy_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        with_snapshot(py, self_bits, |snapshot| {
+            molt_contains_attached_body(py, snapshot, key_bits)
+        })
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_len(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        with_snapshot(py, self_bits, |snapshot| molt_len(snapshot))
+pub(crate) fn molt_frame_locals_proxy_len_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        with_snapshot(py, self_bits, |snapshot| {
+            molt_len_attached_body(py, snapshot)
+        })
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_iter(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        with_snapshot(py, self_bits, |snapshot| molt_iter(snapshot))
+pub(crate) fn molt_frame_locals_proxy_iter_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        with_snapshot(py, self_bits, |snapshot| {
+            molt_iter_attached_body(py, snapshot)
+        })
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_get(
+pub(crate) fn molt_frame_locals_proxy_get_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(args) = positional_args(py, "get", args_bits, kwargs_bits, 1..=2) else {
             return MoltObject::none().bits();
         };
@@ -469,7 +498,7 @@ pub extern "C" fn molt_frame_locals_proxy_get(
             .copied()
             .unwrap_or_else(|| MoltObject::none().bits());
         with_snapshot(py, self_bits, |snapshot| {
-            molt_dict_get(snapshot, args[0], default)
+            molt_dict_get_attached_body(py, snapshot, args[0], default)
         })
     })
 }
@@ -511,9 +540,11 @@ fn snapshot_list(py: &PyToken<'_>, self_bits: u64, project: impl Fn(u64, u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_keys(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_locals_proxy_keys_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         snapshot_list(py, self_bits, |key, _| {
             inc_ref_bits(py, key);
             key
@@ -521,9 +552,11 @@ pub extern "C" fn molt_frame_locals_proxy_keys(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_values(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_locals_proxy_values_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         snapshot_list(py, self_bits, |_, value| {
             inc_ref_bits(py, value);
             value
@@ -531,9 +564,11 @@ pub extern "C" fn molt_frame_locals_proxy_values(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_items(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_locals_proxy_items_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         snapshot_list(py, self_bits, |key, value| {
             let pair = alloc_tuple(py, &[key, value]);
             if pair.is_null() {
@@ -544,18 +579,22 @@ pub extern "C" fn molt_frame_locals_proxy_items(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_copy(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_locals_proxy_copy_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         proxy_snapshot(py, self_bits).unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_locals_proxy_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         with_snapshot(py, self_bits, |snapshot| {
-            let repr_bits = molt_repr_from_obj(snapshot);
+            let repr_bits = molt_repr_from_obj_attached_body(py, snapshot);
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
@@ -570,10 +609,15 @@ pub extern "C" fn molt_frame_locals_proxy_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_eq(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        with_snapshot(py, self_bits, |snapshot| molt_eq(snapshot, other_bits))
+pub(crate) fn molt_frame_locals_proxy_eq_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        with_snapshot(py, self_bits, |snapshot| {
+            molt_eq_attached_body(py, snapshot, other_bits)
+        })
     })
 }
 
@@ -582,7 +626,7 @@ pub extern "C" fn molt_frame_locals_proxy_eq(self_bits: u64, other_bits: u64) ->
 fn proxy_lookup(py: &PyToken<'_>, self_bits: u64, key: u64) -> Result<Option<u64>, ()> {
     let snapshot = proxy_snapshot(py, self_bits)?;
     let missing = crate::missing_bits(py);
-    let value = molt_dict_get(snapshot, key, missing);
+    let value = molt_dict_get_attached_body(py, snapshot, key, missing);
     dec_ref_bits(py, snapshot);
     if exception_pending(py) {
         return Err(());
@@ -595,35 +639,38 @@ fn proxy_lookup(py: &PyToken<'_>, self_bits: u64, key: u64) -> Result<Option<u64
 }
 
 /// Returns `None`; a failed write leaves its exception pending.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_setitem(
+pub(crate) fn molt_frame_locals_proxy_setitem_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     key_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = proxy_write(py, self_bits, key_bits, Some(value_bits));
         MoltObject::none().bits()
     })
 }
 
 /// Returns `None`; a failed deletion leaves its exception pending.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_delitem(self_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_locals_proxy_delitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = proxy_write(py, self_bits, key_bits, None);
         MoltObject::none().bits()
     })
 }
 
 /// `setdefault` of a bound name is a read; of an unbound one, a write.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_setdefault(
+pub(crate) fn molt_frame_locals_proxy_setdefault_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(args) = positional_args(py, "setdefault", args_bits, kwargs_bits, 1..=2) else {
             return MoltObject::none().bits();
         };
@@ -646,13 +693,13 @@ pub extern "C" fn molt_frame_locals_proxy_setdefault(
 }
 
 /// Removes an extra local; a code slot's binding cannot be removed.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_pop(
+pub(crate) fn molt_frame_locals_proxy_pop_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(args) = positional_args(py, "pop", args_bits, kwargs_bits, 1..=2) else {
             return MoltObject::none().bits();
         };
@@ -677,13 +724,13 @@ pub extern "C" fn molt_frame_locals_proxy_pop(
 }
 
 /// Writes every item of a dict or of another frame's proxy.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_proxy_update(
+pub(crate) fn molt_frame_locals_proxy_update_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(args) = positional_args(py, "update", args_bits, kwargs_bits, 1..=1) else {
             return MoltObject::none().bits();
         };
@@ -732,3 +779,5 @@ pub extern "C" fn molt_frame_locals_proxy_update(
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/builtins/frames/locals_proxy.rs");

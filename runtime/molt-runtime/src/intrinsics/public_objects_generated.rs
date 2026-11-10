@@ -1759,7 +1759,7 @@ impl PublicObjectId {
             Self::FormatBuiltin => None,
             Self::FunctoolsCmpToKey => None,
             Self::FunctoolsPartialType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_functools_partial_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1789,7 +1789,7 @@ impl PublicObjectId {
             Self::Issubclass => None,
             Self::IterBuiltin => None,
             Self::ItertoolsAccumulateType => {
-                let callback: extern "C" fn(u64, u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_accumulate_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1806,7 +1806,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsBatchedType if !python_313 => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_batched_new_312;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1823,7 +1823,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsBatchedType => {
-                let callback: extern "C" fn(u64, u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_batched_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1840,7 +1840,8 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsChainType => {
-                let callback: extern "C" fn(u64, u64) -> u64 = crate::molt_itertools_chain_new;
+                let callback: unsafe extern "C" fn(u64, u64, u64) -> u64 =
+                    crate::molt_itertools_chain_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
                     signature: PublicSignatureSpec {
@@ -1856,7 +1857,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsCombinationsType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_combinations_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1873,7 +1874,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsCombinationsWithReplacementType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_combinations_with_replacement_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1890,7 +1891,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsCompressType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_compress_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1907,7 +1908,8 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsCountType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 = crate::molt_itertools_count_new;
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
+                    crate::molt_itertools_count_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
                     signature: PublicSignatureSpec {
@@ -1926,7 +1928,8 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsCycleType => {
-                let callback: extern "C" fn(u64, u64) -> u64 = crate::molt_itertools_cycle_new;
+                let callback: unsafe extern "C" fn(u64, u64, u64) -> u64 =
+                    crate::molt_itertools_cycle_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
                     signature: PublicSignatureSpec {
@@ -1942,7 +1945,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsDropwhileType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_dropwhile_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1959,7 +1962,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsFilterfalseType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_filterfalse_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1976,7 +1979,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsGroupbyType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_groupby_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -1993,7 +1996,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsIsliceType => {
-                let callback: extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_islice_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -2013,7 +2016,8 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsPairwiseType => {
-                let callback: extern "C" fn(u64, u64) -> u64 = crate::molt_itertools_pairwise_new;
+                let callback: unsafe extern "C" fn(u64, u64, u64) -> u64 =
+                    crate::molt_itertools_pairwise_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
                     signature: PublicSignatureSpec {
@@ -2029,7 +2033,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsPermutationsType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_permutations_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -2046,7 +2050,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsProductType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_product_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -2063,7 +2067,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsRepeatType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_repeat_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -2080,7 +2084,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsStarmapType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_starmap_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -2097,7 +2101,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsTakewhileType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_takewhile_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,
@@ -2114,7 +2118,7 @@ impl PublicObjectId {
                 })
             }
             Self::ItertoolsZipLongestType => {
-                let callback: extern "C" fn(u64, u64, u64) -> u64 =
+                let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_zip_longest_new;
                 Some(PublicConstructorSpec {
                     callback: callback as *const () as usize as u64,

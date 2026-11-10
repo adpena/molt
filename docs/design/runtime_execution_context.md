@@ -1,11 +1,14 @@
 # Runtime execution context (HF-198 stage 2)
 
-Status: revised 2026-11-03 after review. The first draft proposed an attached ABI: runtime entries
+Status: B1/B2 implemented and measured; attached ABI implemented. The
+[V1 ledger](../agent/V1_HANDOFF_FINDINGS.md) owns current qualification and release status.
+Section 11 supersedes the earlier deferral. The first draft proposed
+an attached ABI: runtime entries
 that take the execution context as an argument. Three reviews rejected it as written (section 6).
-Stage 2 is now three changes and a measurement gate: B1 makes the nested runtime entry nearly free
-and binds the runtime state once per attachment; B2 tests the pending-exception byte inline on LLVM
-and WASM; the gate measures both. The attached ABI stays a recorded, deferred option. Owner: lane
-`hf198-entry-context`; review and landing: integrator. Ledger: HF-198. Coordinates with HF-670
+The measured B1 change makes the nested runtime entry cheaper and binds the runtime state once
+per attachment; B2 tests the pending-exception byte inline on LLVM and WASM. Section 11 owns the
+selected attached ABI migration. Owner: lane `hf198-attached-context`; review and landing:
+integrator. Ledger: HF-198. Coordinates with HF-670
 (calling convention), HF-205 (inline refcount), HF-185 (frame records) and HF-657 (eval-breaker
 word).
 
@@ -28,9 +31,8 @@ the lines that change there.
    function that already holds the thread record loads the record's pending byte. It calls
    `molt_exception_pending` only when the byte is set, so that reader keeps its repair behavior.
    Cranelift already tests the byte inline.
-4. **The attached ABI is deferred.** Section 6 keeps its design, its costs and the review blockers
-   that any later attached ABI must answer. The integrator decides after the gate whether it is
-   worth a new row.
+4. **The attached ABI is selected.** Section 6 retains the original blockers; section 11 owns
+   their resolution and the complete migration. The measurements below qualify B1/B2 only.
 
 ## 1. What exists today
 
@@ -270,7 +272,7 @@ Every other primitive per-op axis fell by 4.7% to 9.3%; no per-op axis rose. Sta
 inside entries); the residual guard is 21 instructions plus one `_tlv_get_addr` thunk call per
 nested entry.
 
-## 6. Deferred: the attached ABI
+## 6. Review blockers of the original attached ABI
 
 The first draft proposed that compiled code pass the thread record as the first argument of the
 call-path runtime entries (`AttachedContext<'a>`, declared per manifest row), skipping the guard
@@ -357,3 +359,240 @@ WASM cannot carry one; the compiled-to-compiled context parameter belongs to HF-
 - `docs/design/foundation/77_architecture_convergence.md`, section C: link this design.
 - `docs/INDEX.md`: list this design.
 - The HF-198 ledger row (integrator).
+
+## 11. Attached execution ABI (selected 2026-11-04)
+
+Compiled execution receives its thread's attached context once and forwards it to runtime
+operations. Those operations borrow a token from the argument; they neither enter an execution
+guard nor obtain their record through TLS. Real application, foreign-thread and callback
+boundaries retain lifecycle admission and attachment. A borrowed context owns none of them.
+Generators receive the resumer's context on every resume and never persist it in a heap object.
+This migration takes the context parameter needed from HF-670; argument packing remains there.
+HF-185 retains frame-record deletion. Their work cannot justify retaining replaced entry guards.
+
+### 11.1 Finalizers and one GIL authority
+
+The parent's decision is that Python never executes detached, including finalizers triggered by
+TLS destruction. They attach with explicit lifetime custody before the first callback, may
+suspend/reacquire the GIL through the ordinary transitions, and detach after the last finalizer.
+Shutdown suspension follows the existing drain rule; an ordinary foreign thread cannot acquire
+new execution after finalization closes admission. There is no Python execution mode with
+zero native GIL depth. CPython's `PyThreadState_Clear` provides the semantic oracle
+([pystate.c](https://github.com/python/cpython/blob/v3.12.12/Python/pystate.c)).
+
+Replace the process-owned `TlsDestruction` GIL lane and the destructor-bearing mutex slot with
+one native `GilMutexCustody` in `ExecutionTls`. Its initialized
+`ManuallyDrop<RefCell<Option<MutexGuard<'static, ()>>>>` has no automatic TLS destructor.
+Only the GIL authority accesses its private slot. `Option::take` transfers each acquired mutex
+guard once; no reference or RefCell borrow survives transfer, unlocking, or a callback. No
+uninitialized storage, per-acquisition allocation, process-owner lookup or new unsafe storage
+operation is needed. Assert that `ExecutionTls` still needs no drop. Rust documents safe access
+to initialized [ManuallyDrop](https://doc.rust-lang.org/std/mem/struct.ManuallyDrop.html) contents;
+the wrapper itself is never manually destroyed or moved out.
+
+The slot holds the mutex exactly while native `gil_depth` is positive. Outer acquisition installs
+the guard then publishes depth one; nested guards own independent depth units. Final release and
+suspension set depth zero and take the guard exactly once. Restoration installs the reacquired
+mutex before restoring depth. Persistent GIL ownership is one explicit transferred unit in the
+same authority: suspension transfers it to its saved frame, and only restoration or final release
+may consume that obligation. Thread exit checks both live and suspended custody. A lifetime
+sentinel ordered before runtime cleanup is initialized first and drops last; it retires a
+remaining persistent unit without executing Python. The mutex slot itself survives every TLS
+sentinel and supports the same ordinary acquisition/restoration during destruction.
+
+### 11.2 Exact origin and destruction retirement
+
+Destruction supplies the actual payload owner's runtime identity from the existing current
+thread-state record, or the owning initializing/isolate lifecycle. Admission is valid only for
+that identity. A matching active lease/drain capability and positive execution depth permit
+borrowing. A suspended owner retains allocation lifetime but no execution permission: same-runtime
+reentry independently obtains GIL and scoped attachment, restoring the dormant owner's detached
+state on return. A closed or mismatched foreign origin executes no Python and is never replaced
+by whichever runtime happens to be Ready.
+
+The existing CPython thread-state drain must drain runtime TLS roots in the same fixed point as
+its C dictionary and error roots, while its exact record/identity is still published. Either
+domain can repopulate the other through finalizers, so a pass over only one domain is insufficient.
+The drop-enter hook owns normal lifecycle/GIL/C-extension custody without creating another
+thread-state record; the existing drain phase makes that record current/attached. It retires
+context and lease only after both domains are quiescent and all callback/suspension scopes have
+closed. The later runtime TLS sentinel performs allocator-only cleanup. A late exception-release
+sentinel must either retain the published origin or have transferred its roots into that drain.
+`tls_guard_touched` prevents reinitializing an already armed or destroying sentinel.
+
+Foreign-return validation captures that actual current C record, including a shutdown drain
+borrowing its retained owner. The ordinary runtime attachment-unit flag describes ownership;
+it cannot reject a destruction phase that intentionally owns no ordinary unit. The current-record
+query still checks runtime identity and execution custody before a snapshot can be published.
+
+The C record, managed frame/context/exception stacks, attribute cache and thread-local dictionary
+inverse edges have permanent initialized storage with explicit cleanup. Native TLS destruction
+cannot silently discard their integer-carried strong edges or make a callback's storage
+inaccessible. The attached fixed point detaches ownership before decref, frees idle frame/resume/
+module buffers, and leaves usable empty storage for later foreign TLS callbacks. A late boundary
+owns any record it creates through retirement; it cannot re-arm a destroyed lifetime sentinel.
+`threading.local` dictionaries retain one owner in their local object's thread map; weak inverse
+edges let the exact exiting thread detach its dictionaries. Neither that map's mutex nor a TLS
+borrow survives a finalizer, and local-object destruction detaches the whole map before decref.
+
+### 11.3 Suspension, public release and foreign return
+
+Raw protocols keep their actual admission contract. Handle decoding does not dereference an
+allocation, and scratch allocation/free can precede interpreter initialization. They remain sole
+Boundary entries without a context parameter. Scratch allocation publishes failure through its
+existing cold raw-admission policy; successful allocation and free do not admit Python execution.
+The detached cold-resource oracle must retain null refusal, unchanged budget and no runtime state.
+
+The final public `molt_gil_release` cannot revoke an owner borrowed by any live compiled scope,
+including dormant scopes under a reentrant callback. Refusal uses the existing `-1` channel and
+precedes changes to public depth, attachment, saved frames or persistent ownership. A public
+owner acquired inside an independently owned boundary can release without stealing that boundary.
+The persistent-unit boolean records a unit; it is not an ownership/dependency predicate.
+
+Ensure/callback scopes and saved suspension frames have distinct typed identities and LIFO
+ownership. Replace the scalar Ensure bookkeeping and single saved-token slot where needed:
+outer save, callback admission, inner save/restore, callback exit, outer restore must work.
+An unrelated acquire cannot consume an outstanding saved token. Rejected saves/restores/releases
+leave every owning stack unchanged. Both source-extension header tiers use the canonical runtime
+saved-state transitions; header-local thread-state stubs and empty allow-threads macros cannot
+stand in for suspension or create a second token registry.
+
+A foreign-call token captures the actual thread record, runtime identity, saved-frame identity
+and scope/public/GIL custody accounting. Shared foreign invocation validates restoration before
+operand synchronization, tuple/dict release, exceptions, or any other Python-dependent cleanup.
+The validating/restoring RAII scope is inside the operand-owning scope, so its disposition also
+dominates unwind cleanup. Invalid custody terminates with an invariant diagnostic without trying
+to raise or decref under a dormant token. Raw encoded FFI retains its unsafe same-thread,
+exactly-once contract; a numeric pointer is not claimed to be unforgeable.
+
+### 11.4 One generated ABI and complete consumers
+
+The runtime-call manifests and their existing generator own the context mode, leading `u64`
+carrier, position, physical entry identity, callable classification and schema fingerprint.
+Context is not a Python argument and does not increase Python callable arity. An attached Rust
+body takes the existing typed token; generated external entries borrow it from the explicit
+context and invoke that sole body under the existing profile-specific panic contract. Internal
+Rust calls pass the token. Genuine public C admission entries use the same body. No old-signature
+compiled export, body pointer in a resolver, guarded internal compatibility body, or fallback
+reacquisition remains for a migrated entry.
+
+Public C declarations in `include/molt/molt.h` identify their own admission entries and raw
+machine signatures. Compiled calls select the schema-qualified attached entries. Both entries
+invoke the single typed implementation. The handle-based `Python.h` bytes-concatenation consumer
+uses the existing public number API; unused direct-intrinsic declarations are retired. Pure raw
+pointer/table/byte protocols keep their established borrowing and lifecycle preconditions.
+Allocator-only bridge frees and foreign C error completion remain raw close protocols in the
+same generated boundary classification. Protected Python-value release instead borrows the
+attached token, since retiring that owner can execute Python finalizers.
+The private initialization thread-state owner can retire a proven-empty C record before runtime
+admission exists, through the canonical empty-record checks. This owner has admitted no ordinary
+runtime TLS work. Ordinary thread teardown still drains both domains under execution custody;
+an empty C record alone cannot prove that runtime TLS has no finalizers.
+Exception construction requires GC allocation authority and a live execution domain. Bootstrap
+and detached-boundary refusals retain the existing class-only C indicator without executing a
+Python constructor; attached errors preserve normal construction, identity and channel custody.
+
+Private Python providers and cached executable pointers carry the same leading context, including
+native iterator-next slots, class-initializer caches, descriptor callbacks and async polls.
+Logical Python arity remains unchanged. Scoped reference owners retain their actual token borrow.
+Runtime poll keys resolve to attached exports taking the context followed by an object word;
+compiled polls receive that same context followed by the raw task payload address. The typed
+poll target chooses the argument convention on native and WASM. Indirect-call entries reject
+runtime keys in the index argument after the leading context, before narrowing to a table slot.
+Collections of owned handles store contiguous bits and one token; an array of token-bearing owners
+is not a bits slice. Release order and allocation-failure behavior remain observable contracts.
+
+Migrate native and LLVM declarations, compiled signatures/direct calls/indirect trampolines,
+runtime pointer dispatch, core/runtime vtables, constructors, polls, module initialization,
+isolate bootstrap, launch code, generic and lir_fast WASM, callable tables and split/browser
+hosts together. Every callable key selects its ABI classification and correctly typed executable
+target together; a raw cast cannot make a body function eligible. Generated Python/JS projections,
+build/install/link/cache consumers and public-header fixtures are direct readers of this change.
+Native stateful frame and closure operations select logical argument zero after the context;
+they must never reinterpret the context parameter as a task object. Tests track actual frame
+provenance and exact context forwarding independently.
+
+Every independently compiled artifact requires its own schema. Bind physical compiled entries
+and attached runtime imports/exports to that generated schema and extend the existing per-object
+link witness facts. Retain no old-signature aliases. A witness contributed by another current
+object cannot qualify a stale object, including one selected from an archive under dead stripping.
+Shared-stdlib partition manifests retain logical IR function identities. Native archive admission
+projects those identities through the generated physical symbol formatter before checking member
+closure, rejects unsuffixed definitions, and versions its derived symbol-validation receipts.
+The runtime callable projection similarly admits generated physical exports from the selected
+archive and publishes their logical identities to IR reachability and resolver construction.
+It never derives identity by stripping a suffix; the generated ABI table owns the mapping.
+Unsuffixed attached exports are rejected, and the content-addressed projection is revision 4.
+Declared public C-API boundaries retain their separately generated entry signatures; their raw
+exports never satisfy admission of the corresponding attached runtime callable.
+WASM application exports keep object-scoped linker symbols even when their physical public
+names match runtime intrinsics. The attached suffix proves a calling convention, not ownership
+of the runtime's linker namespace; only compiled entry points and generated indirect-call
+exports retain stable global symbols. Public export aliases still select the application body.
+The manifest's `compiled_entries` generates `CompiledExecutionEntry`; relocation uses that
+closed identity so isolate entry points cannot disappear from a handwritten preservation list.
+Process exit may retain its caller's ordinary lease after closing Ready admission. After
+publishing Finalizing, it rebinds that retained lease to the finalizing owner before any cleanup
+callback; callers without a lease acquire the ordinary shutdown-drain binding instead.
+Split-WASM admission compares the application's required schema with the runtime's offered schema
+before any application initializer executes. Function admission uses the split-runtime ABI
+signature authority for physical exports, including the leading attached context and the distinct
+public C prototypes; direct inspection and cached artifact facts share that decision.
+Application-resolved WASM foreign declarations use their generated physical `link_name`
+without a host import-module annotation. Rust otherwise emits an opaque linker symbol
+despite a correct wire import field. Actual-object/link tests cover every indirect arity
+and isolate import; genuine host-owned imports retain their namespace annotations.
+The shared runtime's final Cargo link admits unresolved app symbols through an exact
+content-addressed allowlist projected from the generated indirect-call and app-export
+families. Its direct file selector belongs to final-link resource custody and identity;
+export response files cannot introduce nested resources. Host declarations occupy a
+separate extern block, so their namespace annotations cannot affect app linker identity.
+Preserve `pending_work_ptr` and its Arc lifetime;
+do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
+The runtime-state binding publishes that word's address together with the resolved state for
+every lease, drain, retained worker and runtime switch; terminal unbinding clears both borrows.
+The host entry uses this same authority, and runtime-originated callbacks require no host helper.
+A compiled activation retains its resolved runtime allocation until return, including through
+GIL suspension. Rebinding a later activation cannot refresh an earlier activation's cached pointer.
+
+The merged object witness is revision 10, joining main's frame-location and refcount facts with
+the context schema, argument position, carrier width, header size/alignment and thread-record
+offset. `GeneratedObjectAbiFacts` in `molt-codegen-abi` owns its layout and fingerprint.
+Physical bindings qualify each
+individual producer as well as its selected runtime. WASM's application custom section contains
+exactly eight little-endian fingerprint bytes; manifest fingerprints use decimal strings so JS
+does not round them. Node, browser, Worker and Rust hosts enforce the generated schema and the
+existing shared-memory contract. The canonical backend imports memory zero: inline reference
+count, frame handoff, exception/work-word and context-header loads address that same memory.
+Raw byte/argv bridges retain their separate copying protocol and tests. A typed host lifetime is
+published before guest setup/validation calls so failures retain both primary and cleanup errors.
+
+The shared runtime re-exports its imported memory zero as `memory`, which WASI Preview 1
+callbacks access through the calling instance. Its link plan pairs `--import-memory` with
+[`--export-memory`](https://github.com/llvm/llvm-project/blob/main/lld/wasm/Options.td);
+the export refers to the same shared memory at index zero.
+
+### 11.5 Review and acceptance
+
+Two sequential independent read-only Codex reviewers examined the design in two rounds, without
+session or repository context. They found the finalizer policy initially unsettled; the parent
+settled it as above. Their later findings are implementation obligations: exact origin, active
+versus suspended custody, ownership-aware public refusal, nested saved-frame identity, teardown
+ordering, unwind-safe return validation and artifact-local ABI rejection. The mechanisms above
+are the author's disposition. A completed review process is not a passing implementation proof.
+
+Adversaries include a thread-local object's `__del__` sleeping and another raising, with CPython
+output and idle custody after join. Exercise native and LLVM OS threads and state WASM's existing
+unsupported threading cell explicitly. A real Rust TLS-destructor adversary must suspend, let a
+second thread acquire the mutex, restore and release all depth/lease obligations. Cover callbacks,
+isolate identity, generators resumed on another thread and exception identity across boundaries.
+Execute Python-callable intrinsics through actual backend trampolines, and reject stale separately
+compiled callers/callees/archives before entry. One producer or one target cannot prove this family.
+
+The acceptance measurement is five alternating base/head instruction-retired pairs on local_call,
+id, memo_get, getattr_miss, recursion and loop, with exact CPython 3.12.16 and matching source,
+toolchain, environment, profiles and workload bytes. Retain call-site and runtime-entry disassembly
+and count TLS accesses on the attached fast path, targeting zero. The historical section-5 gate
+cannot substitute. Run affected readers, generators and native/LLVM/WASM differentials, then the
+selected static-only and canonical precheck once. Qualification, landing and retirement remain
+separate facts; the integrator owns the ledger, landing and retirement.

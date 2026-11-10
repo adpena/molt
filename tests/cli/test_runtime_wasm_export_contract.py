@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from molt._wasm_abi_generated import runtime_execution_abi
 from molt.cli.runtime_wasm_validation import _runtime_wasm_typed_export_names
 from molt.wasm_artifact import (
     _build_wasm_sections,
@@ -103,20 +106,20 @@ def test_cpython_function_export_must_match_generated_c_abi_signature(
     assert _typed_exports(path, expected) == set()
 
 
-def test_direct_runtime_export_uses_generated_reverse_import_signature(
+def test_public_c_runtime_export_preserves_its_declared_signature(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "runtime.wasm"
-    expected = {"molt_fast_list_append": "function"}
+    expected = {"molt_buffer_acquire": "function"}
     path.write_bytes(
         _function_export_wasm(
-            "molt_fast_list_append",
-            params=b"\x02\x7e\x7e",
-            results=b"\x01\x7e",
+            "molt_buffer_acquire",
+            params=b"\x02\x7e\x7f",
+            results=b"\x01\x7f",
         )
     )
 
-    assert _typed_exports(path, expected) == {"molt_fast_list_append"}
+    assert _typed_exports(path, expected) == {"molt_buffer_acquire"}
 
 
 def test_split_runtime_export_uses_generated_canonical_import_signature(
@@ -199,3 +202,50 @@ def test_publication_transform_has_one_bounded_buffered_pass(tmp_path: Path) -> 
     assert not warm.changed
     assert warm.written_bytes == 0
     assert not tuple(tmp_path.glob(".molt-wasm-transform-*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("params", "results", "accepted"),
+    [
+        (b"\x03\x7e\x7e\x7e", b"\x01\x7e", True),
+        (b"\x02\x7e\x7e", b"\x01\x7e", False),  # missing context
+        (b"\x04\x7e\x7e\x7e\x7e", b"\x01\x7e", False),
+        (b"\x03\x7f\x7e\x7e", b"\x01\x7e", False),  # i32 context
+        (b"\x03\x7e\x7e\x7e", b"\x01\x7f", False),  # wrong result
+    ],
+)
+def test_attached_export_requires_exact_physical_signature(
+    tmp_path: Path, params: bytes, results: bytes, accepted: bool
+) -> None:
+    # Encode the physical contract independently of the signature resolver:
+    # execution context, list and item are i64; the return value is i64.
+    abi = runtime_execution_abi("molt_fast_list_append")
+    assert abi is not None and abi.context == "Attached"
+    symbol = abi.physical_symbol
+    path = tmp_path / "runtime.wasm"
+    path.write_bytes(_function_export_wasm(symbol, params=params, results=results))
+    assert _typed_exports(path, {symbol: "function"}) == (
+        {symbol} if accepted else set()
+    )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "params", "results", "extra_context"),
+    [
+        ("molt_runtime_execution_leave", b"\x01\x7e", b"\x00", b"\x02\x7e\x7e"),
+        ("molt_none", b"\x00", b"\x01\x7e", b"\x01\x7e"),
+    ],
+)
+def test_boundary_export_does_not_acquire_an_extra_context_parameter(
+    tmp_path: Path, symbol: str, params: bytes, results: bytes, extra_context: bytes
+) -> None:
+    abi = runtime_execution_abi(symbol)
+    assert abi is not None and abi.context == "Boundary"
+    assert abi.physical_symbol == symbol
+    path = tmp_path / "runtime.wasm"
+    path.write_bytes(_function_export_wasm(symbol, params=params, results=results))
+    assert _typed_exports(path, {symbol: "function"}) == {symbol}
+    path.write_bytes(
+        _function_export_wasm(symbol, params=extra_context, results=results)
+    )
+    assert _typed_exports(path, {symbol: "function"}) == set()

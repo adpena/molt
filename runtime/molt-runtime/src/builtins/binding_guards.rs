@@ -195,8 +195,10 @@ fn active_frame_admits(mask: u64) -> bool {
 /// `mask_bits` is an inline int of guard bits. Returns a bool object. It
 /// reads only the frame stack and namespace state words: it neither
 /// allocates nor raises, and an unknown mask never holds.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_guard_builtin_bindings(mask_bits: u64) -> u64 {
+pub(crate) fn molt_guard_builtin_bindings_attached_body(
+    _py: &crate::PyToken<'_>,
+    mask_bits: u64,
+) -> u64 {
     let admitted = match obj_from_bits(mask_bits).as_int() {
         Some(mask) if mask > 0 && (mask as u64) & !BUILTIN_BINDING_GUARD_ALL_MASK == 0 => {
             active_frame_admits(mask as u64)
@@ -209,3 +211,5 @@ pub extern "C" fn molt_guard_builtin_bindings(mask_bits: u64) -> u64 {
 #[cfg(test)]
 #[path = "binding_guards_tests.rs"]
 mod tests;
+
+include!("../attached_exports_generated/builtins/binding_guards.rs");

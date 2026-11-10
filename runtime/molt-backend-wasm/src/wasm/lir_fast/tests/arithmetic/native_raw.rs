@@ -6,7 +6,7 @@ fn add_two_i64s() {
 
     let output = lower_tir_to_wasm(&func).test_view();
 
-    assert_eq!(output.param_types, Vec::<ValType>::new());
+    assert_eq!(output.param_types, vec![ValType::I64]);
 
     // Should contain i64.add.
     let has_add = output
@@ -40,7 +40,7 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
     };
 
     let annotated = lower_tir_to_wasm(&func).test_view();
-    assert_eq!(annotated.param_types, vec![ValType::I64; 2]);
+    assert_eq!(annotated.param_types, vec![ValType::I64; 3]);
     for call in ["is_truthy", "exception_pending"] {
         assert!(
             annotated.runtime_calls.contains(&call),
@@ -124,7 +124,7 @@ fn raw_unary_pos_stays_noop_without_runtime_call() {
         !output.bails_to_generic_path,
         "proven raw unary plus must stay in the LIR fast lane"
     );
-    assert_eq!(output.param_types, vec![ValType::I64]);
+    assert_eq!(output.param_types, vec![ValType::I64; 2]);
     assert_eq!(output.result_types, vec![ValType::I64]);
     assert!(
         !output.runtime_calls.contains(&"pos"),
@@ -157,7 +157,7 @@ fn add_two_f64s() {
     };
 
     let annotated = lower_tir_to_wasm(&func).test_view();
-    assert_eq!(annotated.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(annotated.param_types, vec![ValType::I64; 3]);
     assert_eq!(annotated.result_types, vec![ValType::I64]);
     assert!(annotated.runtime_calls.contains(&"add"));
     assert!(
@@ -188,7 +188,7 @@ fn add_two_f64s() {
     }
     let output = lower_tir_to_wasm(&func).test_view();
 
-    assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(output.param_types, vec![ValType::I64; 3]);
     assert_eq!(output.result_types, vec![ValType::F64]);
     assert!(!output.runtime_calls.contains(&"add"));
     assert!(!output.bails_to_generic_path);
@@ -223,7 +223,7 @@ fn f64_mod_requires_exact_runtime_semantics_for_proven_float_carriers() {
     };
 
     let annotated = lower_tir_to_wasm(&func).test_view();
-    assert_eq!(annotated.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(annotated.param_types, vec![ValType::I64; 3]);
     assert_eq!(
         annotated.result_types,
         vec![ValType::I64],
@@ -249,7 +249,7 @@ fn f64_mod_requires_exact_runtime_semantics_for_proven_float_carriers() {
         );
     }
     let output = lower_tir_to_wasm(&func).test_view();
-    assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(output.param_types, vec![ValType::I64; 3]);
     assert_eq!(output.result_types, vec![ValType::F64]);
     assert!(output.runtime_calls.contains(&"mod"));
     assert!(

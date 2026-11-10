@@ -1,26 +1,29 @@
 //! WASM spelling for the shared checked RC generator.
 //!
 //! The generated decision is written once per module, as one internal
-//! `(word: i64, admission: i64)` body per operation; every dynamic site calls
-//! its operation's body (docs/design/foundation/inline_refcount.md, "WASM: one
-//! generated body per transition"). A site therefore costs one `local.get` and
-//! one `call` instead of the whole decision, which was 76-78% of compiled code.
+//! `(context: i64, word: i64, admission: i64)` body per operation; every dynamic site calls
+//! its operation's body through the attached call emitter
+//! (docs/design/foundation/inline_refcount.md, "WASM: one generated body per
+//! transition"). The caller forwards its context, word and admission instead
+//! of repeating the whole decision, which was 76-78% of compiled code.
 use crate::wasm::WasmBackend;
 use crate::wasm::body::WasmBodyOps;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use molt_codegen_abi::inline_refcount::{
-    RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
+    RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
 };
-use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
+use molt_codegen_abi::word::{WordBuilder, WordComparison};
+use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
-/// Body parameters: the word, then the invocation's admission snapshot.
-const WORD_PARAM: u32 = 0;
-const ADMISSION_PARAM: u32 = 1;
+/// Body parameters: the attached context, word, and invocation's admission snapshot.
+const WORD_PARAM: u32 = 1;
+const ADMISSION_PARAM: u32 = 2;
 const WORDS: u32 = 40;
 const PREDICATES: u32 = 16;
-const FIRST_WORD: u32 = 2;
+const FIRST_WORD: u32 = 3;
 const FIRST_PREDICATE: u32 = FIRST_WORD + WORDS;
 
 /// Function indices of the two generated transition bodies of one module.
@@ -67,13 +70,16 @@ impl WasmRefcountScratch {
 /// other defined function whose index is derived from `func_count`, so callers
 /// run this before the callable-table layout fixes user function indices.
 pub(in crate::wasm) fn emit_refcount_bodies(backend: &mut WasmBackend, reloc: bool) {
-    let type_idx = backend.types.function(&[ValType::I64, ValType::I64], &[]);
+    let type_idx = backend.types.function(&[ValType::I64; 3], &[]);
     let mut index_of = |operation| {
         let index = backend.func_count;
+        std::rc::Rc::make_mut(&mut backend.execution_call_abis)
+            .register_attached(index, &[ValType::I64; 2]);
         backend.funcs.function(type_idx);
         let mut locals = vec![ValType::I64; WORDS as usize];
         locals.extend(std::iter::repeat_n(ValType::I32, PREDICATES as usize));
         let mut func = Function::new_with_locals_types(locals);
+        func.attach_context(3, backend.execution_call_abis.clone());
         generate_body(
             &mut BodySink {
                 func: &mut func,
@@ -201,12 +207,9 @@ impl WasmRefcountBuilder<'_, '_> {
     }
 }
 
-impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
+impl WordBuilder for WasmRefcountBuilder<'_, '_> {
     type Word = u32;
     type Predicate = u32;
-    fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
-        molt_codegen_abi::PointerWidth::Bits32
-    }
     fn constant(&mut self, value: u64) -> u32 {
         self.sink.push(Instruction::I64Const(value as i64));
         self.word()
@@ -217,19 +220,37 @@ impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
         self.sink.push(Instruction::I64And);
         self.word()
     }
-    fn add(&mut self, value: u32, delta: i64) -> u32 {
+    fn or(&mut self, value: u32, bits: u64) -> u32 {
+        self.get(value);
+        self.sink.push(Instruction::I64Const(bits as i64));
+        self.sink.push(Instruction::I64Or);
+        self.word()
+    }
+    fn shift_left(&mut self, value: u32, amount: u32) -> u32 {
+        self.get(value);
+        self.sink.push(Instruction::I64Const(i64::from(amount)));
+        self.sink.push(Instruction::I64Shl);
+        self.word()
+    }
+    fn shift_right_arithmetic(&mut self, value: u32, amount: u32) -> u32 {
+        self.get(value);
+        self.sink.push(Instruction::I64Const(i64::from(amount)));
+        self.sink.push(Instruction::I64ShrS);
+        self.word()
+    }
+    fn add_immediate(&mut self, value: u32, delta: i64) -> u32 {
         self.get(value);
         self.sink.push(Instruction::I64Const(delta));
         self.sink.push(Instruction::I64Add);
         self.word()
     }
-    fn compare(&mut self, comparison: RefcountComparison, left: u32, right: u32) -> u32 {
+    fn compare(&mut self, comparison: WordComparison, left: u32, right: u32) -> u32 {
         self.get(left);
         self.get(right);
         self.sink.push(match comparison {
-            RefcountComparison::Equal => Instruction::I64Eq,
-            RefcountComparison::NotEqual => Instruction::I64Ne,
-            RefcountComparison::UnsignedLessThan => Instruction::I64LtU,
+            WordComparison::Equal => Instruction::I64Eq,
+            WordComparison::NotEqual => Instruction::I64Ne,
+            WordComparison::UnsignedLessThan => Instruction::I64LtU,
         });
         self.predicate()
     }
@@ -238,6 +259,12 @@ impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
         self.get(right);
         self.sink.push(Instruction::I32And);
         self.predicate()
+    }
+}
+
+impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
+    fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
+        molt_codegen_abi::PointerWidth::Bits32
     }
     fn load_header_u32(&mut self, pointer: u32, offset: i32) -> u32 {
         self.address(pointer, offset);

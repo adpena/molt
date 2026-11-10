@@ -46,7 +46,7 @@ pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
 /// `PyNumber_Add(a, b)` — return `a + b`, or 0 on error.
 pub extern "C" fn PyNumber_Add(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_add(a, b);
+        let res = molt_add_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -60,7 +60,7 @@ pub extern "C" fn PyNumber_Add(a: u64, b: u64) -> u64 {
 /// `PyNumber_Subtract(a, b)` — return `a - b`, or 0 on error.
 pub extern "C" fn PyNumber_Subtract(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_sub(a, b);
+        let res = molt_sub_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -74,7 +74,7 @@ pub extern "C" fn PyNumber_Subtract(a: u64, b: u64) -> u64 {
 /// `PyNumber_Multiply(a, b)` — return `a * b`, or 0 on error.
 pub extern "C" fn PyNumber_Multiply(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_mul(a, b);
+        let res = molt_mul_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -88,7 +88,7 @@ pub extern "C" fn PyNumber_Multiply(a: u64, b: u64) -> u64 {
 /// `PyNumber_MatrixMultiply(a, b)` — return `a @ b`, or 0 on error.
 pub extern "C" fn PyNumber_MatrixMultiply(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_matmul(a, b);
+        let res = molt_matmul_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -102,7 +102,7 @@ pub extern "C" fn PyNumber_MatrixMultiply(a: u64, b: u64) -> u64 {
 /// `PyNumber_TrueDivide(a, b)` — return `a / b`, or 0 on error.
 pub extern "C" fn PyNumber_TrueDivide(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_div(a, b);
+        let res = molt_div_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -116,7 +116,7 @@ pub extern "C" fn PyNumber_TrueDivide(a: u64, b: u64) -> u64 {
 /// `PyNumber_FloorDivide(a, b)` — return `a // b`, or 0 on error.
 pub extern "C" fn PyNumber_FloorDivide(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_floordiv(a, b);
+        let res = molt_floordiv_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -130,7 +130,7 @@ pub extern "C" fn PyNumber_FloorDivide(a: u64, b: u64) -> u64 {
 /// `PyNumber_Remainder(a, b)` — return `a % b`, or 0 on error.
 pub extern "C" fn PyNumber_Remainder(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_mod(a, b);
+        let res = molt_mod_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -144,7 +144,7 @@ pub extern "C" fn PyNumber_Remainder(a: u64, b: u64) -> u64 {
 /// `PyNumber_Negative(a)` — return `-a`, or 0 on error.
 pub extern "C" fn PyNumber_Negative(a: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_operator_neg(a);
+        let res = molt_operator_neg_attached_body(_py, a);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -158,7 +158,7 @@ pub extern "C" fn PyNumber_Negative(a: u64) -> u64 {
 /// `PyNumber_Positive(a)` — return `+a`, or 0 on error.
 pub extern "C" fn PyNumber_Positive(a: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_operator_pos(a);
+        let res = molt_operator_pos_attached_body(_py, a);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -172,7 +172,7 @@ pub extern "C" fn PyNumber_Positive(a: u64) -> u64 {
 /// `PyNumber_Absolute(a)` — return `abs(a)`, or 0 on error.
 pub extern "C" fn PyNumber_Absolute(a: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_abs_builtin(a);
+        let res = molt_abs_builtin_attached_body(_py, a);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -186,7 +186,7 @@ pub extern "C" fn PyNumber_Absolute(a: u64) -> u64 {
 /// `PyNumber_Invert(a)` — return `~a`, or 0 on error.
 pub extern "C" fn PyNumber_Invert(a: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_invert(a);
+        let res = molt_invert_attached_body(_py, a);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -200,7 +200,7 @@ pub extern "C" fn PyNumber_Invert(a: u64) -> u64 {
 /// `PyNumber_Lshift(a, b)` — return `a << b`, or 0 on error.
 pub extern "C" fn PyNumber_Lshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_lshift(a, b);
+        let res = molt_lshift_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -214,7 +214,7 @@ pub extern "C" fn PyNumber_Lshift(a: u64, b: u64) -> u64 {
 /// `PyNumber_Rshift(a, b)` — return `a >> b`, or 0 on error.
 pub extern "C" fn PyNumber_Rshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_rshift(a, b);
+        let res = molt_rshift_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -228,7 +228,7 @@ pub extern "C" fn PyNumber_Rshift(a: u64, b: u64) -> u64 {
 /// `PyNumber_And(a, b)` — return `a & b`, or 0 on error.
 pub extern "C" fn PyNumber_And(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_bit_and(a, b);
+        let res = molt_bit_and_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -242,7 +242,7 @@ pub extern "C" fn PyNumber_And(a: u64, b: u64) -> u64 {
 /// `PyNumber_Or(a, b)` — return `a | b`, or 0 on error.
 pub extern "C" fn PyNumber_Or(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_bit_or(a, b);
+        let res = molt_bit_or_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -256,7 +256,7 @@ pub extern "C" fn PyNumber_Or(a: u64, b: u64) -> u64 {
 /// `PyNumber_Xor(a, b)` — return `a ^ b`, or 0 on error.
 pub extern "C" fn PyNumber_Xor(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_bit_xor(a, b);
+        let res = molt_bit_xor_attached_body(_py, a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -339,7 +339,7 @@ pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char
             return 0;
         }
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let result = molt_object_getattr(obj, name_bits);
+        let result = molt_object_getattr_attached_body(_py, obj, name_bits);
         dec_ref_bits(_py, name_bits);
         result
     })
@@ -353,9 +353,9 @@ pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char
 pub(crate) fn new_set_from_iterable(iterable: Option<u64>, frozen: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let result = if frozen {
-            molt_frozenset_new(0)
+            molt_frozenset_new_attached_body(_py, 0)
         } else {
-            molt_set_new(0)
+            molt_set_new_attached_body(_py, 0)
         };
         if obj_from_bits(result).is_none() {
             return 0;
@@ -537,7 +537,7 @@ pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
             return 0;
         };
         let dict = MoltObject::from_ptr(storage).bits();
-        let res = molt_dict_copy(dict);
+        let res = molt_dict_copy_attached_body(_py, dict);
         if obj_from_bits(res).is_none() { 0 } else { res }
     })
 }

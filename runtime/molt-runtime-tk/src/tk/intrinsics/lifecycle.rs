@@ -29,17 +29,16 @@ use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{GilReleaseGuard, MoltObject, obj_from_bits};
 use std::time::Duration;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_available() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_tk_available_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let gate = tk_gate_state(_py, TkOperation::AvailabilityProbe);
         let available = !gate.wasm_unsupported && !gate.backend_unimplemented;
         MoltObject::from_bool(available).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_app_new(_options_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_app_new_attached_body(_py: &molt_runtime_core::PyToken, _options_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         let Some(use_tk) = option_use_tk(_py, _options_bits) else {
             return MoltObject::none().bits();
@@ -68,9 +67,9 @@ pub extern "C" fn molt_tk_app_new(_options_bits: u64) -> u64 {
         MoltObject::from_int(handle).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_quit(app_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_quit_attached_body(_py: &molt_runtime_core::PyToken, app_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Quit) {
             return bits;
         }
@@ -86,9 +85,9 @@ pub extern "C" fn molt_tk_quit(app_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_mainloop(app_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_mainloop_attached_body(_py: &molt_runtime_core::PyToken, app_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Mainloop) {
             return bits;
         }
@@ -144,9 +143,13 @@ pub extern "C" fn molt_tk_mainloop(app_bits: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_do_one_event(app_bits: u64, flags_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_do_one_event_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::DoOneEvent) {
             return bits;
         }
@@ -204,9 +207,13 @@ pub extern "C" fn molt_tk_do_one_event(app_bits: u64, flags_bits: u64) -> u64 {
         MoltObject::from_bool(false).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_call_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    argv_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -216,7 +223,7 @@ pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
         // The handle is validated by the single registry lock inside the dispatch
         // path (run_tcl_command / the callback+filehandler resolution); a separate
         // up-front validation lock here is redundant per-call overhead.
-        let Some(args) = decode_value_list(obj_from_bits(argv_bits)) else {
+        let Some(args) = decode_value_list(_py, obj_from_bits(argv_bits)) else {
             return raise_tcl_for_handle(_py, handle, "tk call argv must be a list or tuple");
         };
         match tk_call_dispatch(_py, handle, &args) {
@@ -225,16 +232,21 @@ pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_destroy_widget_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    widget_path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::DestroyWidget) {
             return bits;
         }
         let Ok(handle) = parse_app_handle(_py, app_bits) else {
             return raise_invalid_handle_error(_py);
         };
-        let Some(widget_path) = (unsafe { string_obj_to_owned(obj_from_bits(widget_path_bits)) })
+        let Some(widget_path) =
+            (unsafe { string_obj_to_owned(_py, obj_from_bits(widget_path_bits)) })
         else {
             return raise_tcl_for_handle(_py, handle, "widget path must be str");
         };
@@ -295,9 +307,9 @@ pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_last_error(app_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_last_error_attached_body(_py: &molt_runtime_core::PyToken, app_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::LastError) {
             return bits;
         }
@@ -317,9 +329,9 @@ pub extern "C" fn molt_tk_last_error(app_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_getboolean_attached_body(_py: &molt_runtime_core::PyToken, value_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let obj = obj_from_bits(value_bits);
         if obj.is_bool() {
             return MoltObject::from_bool(obj.as_bool().unwrap_or(false)).bits();
@@ -330,7 +342,7 @@ pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
         if let Some(value) = to_f64(obj) {
             return MoltObject::from_bool(value != 0.0).bits();
         }
-        if let Some(text) = unsafe { string_obj_to_owned(obj) } {
+        if let Some(text) = unsafe { string_obj_to_owned(_py, obj) } {
             if let Some(parsed) = parse_bool_text(&text) {
                 return MoltObject::from_bool(parsed).bits();
             }
@@ -343,14 +355,14 @@ pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
         MoltObject::from_bool(is_truthy(_py, obj)).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_getdouble_attached_body(_py: &molt_runtime_core::PyToken, value_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let obj = obj_from_bits(value_bits);
         if let Some(value) = to_f64(obj) {
             return MoltObject::from_float(value).bits();
         }
-        if let Some(text) = unsafe { string_obj_to_owned(obj) }
+        if let Some(text) = unsafe { string_obj_to_owned(_py, obj) }
             && let Ok(value) = text.trim().parse::<f64>()
         {
             return MoltObject::from_float(value).bits();
@@ -360,23 +372,23 @@ pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
             BuiltinExc::ValueError,
             &format!(
                 "invalid floating-point value \"{}\"",
-                unsafe { string_obj_to_owned(obj) }.unwrap_or_else(|| "?".to_string())
+                unsafe { string_obj_to_owned(_py, obj) }.unwrap_or_else(|| "?".to_string())
             ),
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_splitlist(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_splitlist_attached_body(_py: &molt_runtime_core::PyToken, value_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let obj = obj_from_bits(value_bits);
-        if let Some(items) = decode_value_list(obj) {
+        if let Some(items) = decode_value_list(_py, obj) {
             return match alloc_tuple_bits(_py, items.as_ref(), "failed to allocate splitlist tuple")
             {
                 Ok(bits) => bits,
                 Err(bits) => bits,
             };
         }
-        if let Some(text) = unsafe { string_obj_to_owned(obj) } {
+        if let Some(text) = unsafe { string_obj_to_owned(_py, obj) } {
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 return match alloc_tuple_from_strings(
@@ -407,9 +419,13 @@ pub extern "C" fn molt_tk_splitlist(value_bits: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_errorinfo_append(app_bits: u64, message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_errorinfo_append_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    message_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -428,7 +444,7 @@ pub extern "C" fn molt_tk_errorinfo_append(app_bits: u64, message_bits: u64) -> 
             .variables
             .get("errorInfo")
             .copied()
-            .and_then(|bits| unsafe { string_obj_to_owned(obj_from_bits(bits)) })
+            .and_then(|bits| unsafe { string_obj_to_owned(_py, obj_from_bits(bits)) })
             .unwrap_or_default();
         let merged = if current.is_empty() {
             message
@@ -449,3 +465,5 @@ pub extern "C" fn molt_tk_errorinfo_append(app_bits: u64, message_bits: u64) -> 
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/tk/intrinsics/lifecycle.rs");

@@ -982,9 +982,12 @@ fn events_to_list(_py: &CoreGilToken, events: Vec<HtmlEvent>) -> u64 {
 // Public FFI — html.escape / html.unescape
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_escape(text_bits: u64, quote_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_escape_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    text_bits: u64,
+    quote_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             let tn = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("html.escape() argument must be str, not {tn}");
@@ -1004,9 +1007,8 @@ pub extern "C" fn molt_html_escape(text_bits: u64, quote_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_unescape(text_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_unescape_attached_body(_py: &molt_runtime_core::PyToken, text_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             let tn = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("html.unescape() argument must be str, not {tn}");
@@ -1029,9 +1031,11 @@ pub extern "C" fn molt_html_unescape(text_bits: u64) -> u64 {
 // Public FFI — HTMLParser handle API
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_parser_new(convert_charrefs_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_parser_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    convert_charrefs_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let convert = is_truthy(_py, obj_from_bits(convert_charrefs_bits));
         let id = next_handle_id();
         PARSER_HANDLES.with(|map| {
@@ -1041,9 +1045,12 @@ pub extern "C" fn molt_html_parser_new(convert_charrefs_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_parser_feed(handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_parser_feed_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid HTMLParser handle");
         };
@@ -1074,9 +1081,11 @@ pub extern "C" fn molt_html_parser_feed(handle_bits: u64, data_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_parser_close(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_parser_close_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid HTMLParser handle");
         };
@@ -1100,9 +1109,11 @@ pub extern "C" fn molt_html_parser_close(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_parser_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_parser_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             PARSER_HANDLES.with(|map| {
                 map.borrow_mut().remove(&id);
@@ -1152,9 +1163,8 @@ static HTML5_ENTITIES: &[(&str, &str)] = &[
     ("frac34;", "\u{00BE}"),
 ];
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_entities_html5() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_entities_html5_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut pairs: Vec<u64> = Vec::with_capacity(HTML5_ENTITIES.len() * 2);
         for (name, ch) in HTML5_ENTITIES {
             let k_ptr = alloc_string(_py, name.as_bytes());
@@ -1214,9 +1224,8 @@ static CODEPOINT2NAME: &[(u32, &str)] = &[
     (190, "frac34"),
 ];
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_entities_codepoint2name() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_entities_codepoint2name_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut pairs: Vec<u64> = Vec::with_capacity(CODEPOINT2NAME.len() * 2);
         for (cp, name) in CODEPOINT2NAME {
             let k_bits = MoltObject::from_int(*cp as i64).bits();
@@ -1241,9 +1250,8 @@ pub extern "C" fn molt_html_entities_codepoint2name() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_html_entities_name2codepoint() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_html_entities_name2codepoint_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut pairs: Vec<u64> = Vec::with_capacity(CODEPOINT2NAME.len() * 2);
         for (cp, name) in CODEPOINT2NAME {
             let k_ptr = alloc_string(_py, name.as_bytes());
@@ -1267,3 +1275,5 @@ pub extern "C" fn molt_html_entities_name2codepoint() -> u64 {
         MoltObject::from_ptr(dict_ptr).bits()
     })
 }
+
+include!("attached_exports_generated/html.rs");

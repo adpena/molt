@@ -13,6 +13,7 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
 from molt.wasm_artifact import WasmSplitRuntimeCallableLayout
+from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 from tools.wasm_link_format import CallableTableLayout, _read_varuint, _write_varuint
 from tools.wasm_link_facts import callable_table_entry_rows
 from tools.wasm_link_operations import build_sections, parse_sections
@@ -309,14 +310,19 @@ def _resolve_callable_table_entry_plan(
             if dispatch != "direct":
                 continue
             logical_slot = WASM_RESERVED_RUNTIME_CALLABLE_BASE + index
-            runtime_function_index = exports.get(runtime_name)
+            physical = wasm_split_runtime_export_name_for_import(runtime_name)
+            if physical is None:
+                raise ValueError(
+                    f"reserved runtime callable lacks execution ABI: {runtime_name}"
+                )
+            runtime_function_index = exports.get(physical)
             if runtime_function_index is None:
-                candidates = named_indices.get(runtime_name, set())
+                candidates = named_indices.get(physical, set())
                 if len(candidates) == 1:
                     runtime_function_index = next(iter(candidates))
             if runtime_function_index is None:
                 raise ValueError(
-                    f"linked wasm is missing reserved runtime export {runtime_name}"
+                    f"linked wasm is missing reserved runtime export {physical}"
                 )
             mutable_fixed_indices[logical_slot] = runtime_function_index
         fixed_indices = tuple(mutable_fixed_indices)

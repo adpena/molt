@@ -1,10 +1,18 @@
 use super::*;
 
-extern "C" fn generic_iteration_identity_next(receiver: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn generic_iteration_identity_next(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         crate::inc_ref_bits(py, receiver);
         receiver
-    })
+    }
 }
 
 #[test]
@@ -14,7 +22,7 @@ fn generic_iteration_owns_identity_without_dispatch_temporaries() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = MoltObject::from_ptr(alloc_string(py, b"GenericIterationIdentity")).bits();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
                 crate::provenance::abi::expose_function_address(
@@ -25,7 +33,7 @@ fn generic_iteration_owns_identity_without_dispatch_temporaries() {
             assert!(!function_ptr.is_null());
             let function = MoltObject::from_ptr(function_ptr).bits();
             let next_name = MoltObject::from_ptr(alloc_string(py, b"__next__")).bits();
-            crate::molt_set_attr_name(class, next_name, function);
+            crate::molt_set_attr_name_attached_body(py, class, next_name, function);
             let iterator = crate::alloc_instance_for_class(
                 py,
                 MoltObject::from_bits(class)
@@ -46,7 +54,7 @@ fn generic_iteration_owns_identity_without_dispatch_temporaries() {
                     let before = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
                     for _ in 0..if measuring { 400 } else { 1 } {
                         if mode == "boxed" {
-                            let pair = molt_iter_next(iterator);
+                            let pair = molt_iter_next_attached_body(py, iterator);
                             assert!(!crate::exception_pending(py));
                             let pair_ptr = MoltObject::from_bits(pair).as_ptr().unwrap();
                             let (value, done) = crate::object::seq_access::tuple_pair(pair_ptr)
@@ -56,8 +64,11 @@ fn generic_iteration_owns_identity_without_dispatch_temporaries() {
                             dec_ref_bits(py, pair);
                         } else if mode == "unboxed" {
                             let mut value = MoltObject::none().bits();
-                            let done =
-                                molt_iter_next_unboxed(iterator, (&raw mut value) as usize as u64);
+                            let done = molt_iter_next_unboxed_attached_body(
+                                py,
+                                iterator,
+                                (&raw mut value) as usize as u64,
+                            );
                             assert!(!crate::exception_pending(py));
                             assert_eq!(MoltObject::from_bits(done).as_bool(), Some(false));
                             assert_eq!(value, iterator);
@@ -72,7 +83,7 @@ fn generic_iteration_owns_identity_without_dispatch_temporaries() {
                                 } else {
                                     iterator
                                 };
-                                molt_next_builtin(iterator, default)
+                                molt_next_builtin_attached_body(py, iterator, default)
                             };
                             assert!(!crate::exception_pending(py));
                             assert_eq!(value, iterator);
@@ -98,15 +109,23 @@ fn generic_iteration_owns_identity_without_dispatch_temporaries() {
     });
 }
 
-extern "C" fn generic_iteration_raise_next(receiver: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn generic_iteration_raise_next(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let name = MoltObject::from_ptr(alloc_string(py, b"error")).bits();
-        let error = molt_getattr_builtin(receiver, name, missing_bits(py));
+        let error = molt_getattr_builtin_attached_body(py, receiver, name, missing_bits(py));
         dec_ref_bits(py, name);
-        let result = molt_raise(error);
+        let result = molt_raise_attached_body(py, error);
         dec_ref_bits(py, error);
         result
-    })
+    }
 }
 
 #[test]
@@ -115,7 +134,7 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = MoltObject::from_ptr(alloc_string(py, b"GenericIterationStops")).bits();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             let function =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
@@ -126,7 +145,7 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
                 ))
                 .bits();
             let next_name = MoltObject::from_ptr(alloc_string(py, b"__next__")).bits();
-            crate::molt_set_attr_name(class, next_name, function);
+            crate::molt_set_attr_name_attached_body(py, class, next_name, function);
             let iterator =
                 crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap());
             let error_name = MoltObject::from_ptr(alloc_string(py, b"error")).bits();
@@ -136,23 +155,28 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
                 crate::BuiltinExc::StopIteration,
                 crate::BuiltinExc::RuntimeError,
             ] {
-                let error = crate::builtins::exceptions::molt_exception_new_from_class(
-                    exception_class_bits(py, exception_name),
-                    args,
-                );
-                crate::molt_set_attr_name(iterator, error_name, error);
+                let error =
+                    crate::builtins::exceptions::molt_exception_new_from_class_attached_body(
+                        py,
+                        exception_class_bits(py, exception_name),
+                        args,
+                    );
+                crate::molt_set_attr_name_attached_body(py, iterator, error_name, error);
                 assert!(!exception_pending(py));
                 let payload_pointer = obj_from_bits(payload).as_ptr().unwrap();
                 let baseline = (*header_from_obj_ptr(payload_pointer)).owned_ref_count_snapshot();
                 for mode in ["next", "next-default", "boxed", "unboxed"] {
                     let result = match mode {
-                        "next" => molt_next_builtin(iterator, missing_bits(py)),
-                        "next-default" => molt_next_builtin(iterator, payload),
-                        "boxed" => molt_iter_next(iterator),
+                        "next" => molt_next_builtin_attached_body(py, iterator, missing_bits(py)),
+                        "next-default" => molt_next_builtin_attached_body(py, iterator, payload),
+                        "boxed" => molt_iter_next_attached_body(py, iterator),
                         "unboxed" => {
                             let mut output = payload;
-                            let done =
-                                molt_iter_next_unboxed(iterator, (&raw mut output) as usize as u64);
+                            let done = molt_iter_next_unboxed_attached_body(
+                                py,
+                                iterator,
+                                (&raw mut output) as usize as u64,
+                            );
                             assert!(obj_from_bits(output).is_none());
                             done
                         }
@@ -160,7 +184,7 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
                     };
                     if exception_name == crate::BuiltinExc::RuntimeError || mode == "next" {
                         assert!(exception_pending(py));
-                        let caught = molt_exception_last_pending();
+                        let caught = molt_exception_last_pending_attached_body(py);
                         assert_eq!(caught, error, "{mode} replaced the original exception");
                         dec_ref_bits(py, caught);
                         clear_exception(py);
@@ -187,7 +211,12 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
                         baseline
                     );
                 }
-                crate::molt_set_attr_name(iterator, error_name, MoltObject::none().bits());
+                crate::molt_set_attr_name_attached_body(
+                    py,
+                    iterator,
+                    error_name,
+                    MoltObject::none().bits(),
+                );
                 dec_ref_bits(py, error);
             }
             for value in [
@@ -200,13 +229,21 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
     });
 }
 
-extern "C" fn generic_iteration_token_next(receiver: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn generic_iteration_token_next(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let name = MoltObject::from_ptr(alloc_string(py, b"token")).bits();
-        let value = molt_getattr_builtin(receiver, name, missing_bits(py));
+        let value = molt_getattr_builtin_attached_body(py, receiver, name, missing_bits(py));
         dec_ref_bits(py, name);
         value
-    })
+    }
 }
 
 #[test]
@@ -218,7 +255,7 @@ fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
             // A native tuple iterator legitimately retains its boxed status
             // cache. Use a raw generic source to isolate zip's owned row edge.
             let class_name = MoltObject::from_ptr(alloc_string(py, b"ZipTokenSource")).bits();
-            let class = crate::molt_class_new(class_name);
+            let class = crate::molt_class_new_attached_body(py, class_name);
             let iter_function =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
@@ -240,11 +277,11 @@ fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
             let iter_name = MoltObject::from_ptr(alloc_string(py, b"__iter__")).bits();
             let next_name = MoltObject::from_ptr(alloc_string(py, b"__next__")).bits();
             let token_name = MoltObject::from_ptr(alloc_string(py, b"token")).bits();
-            crate::molt_set_attr_name(class, iter_name, iter_function);
-            crate::molt_set_attr_name(class, next_name, next_function);
+            crate::molt_set_attr_name_attached_body(py, class, iter_name, iter_function);
+            crate::molt_set_attr_name_attached_body(py, class, next_name, next_function);
             let source =
                 crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap());
-            crate::molt_set_attr_name(source, token_name, token);
+            crate::molt_set_attr_name_attached_body(py, source, token_name, token);
             assert!(!exception_pending(py));
             let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
             let token_ptr = obj_from_bits(token).as_ptr().unwrap();
@@ -258,7 +295,7 @@ fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
             // checking zip: neither direct nor public next retains a result.
             for public in [false, true] {
                 let value = if public {
-                    molt_next_builtin(source, missing_bits(py))
+                    molt_next_builtin_attached_body(py, source, missing_bits(py))
                 } else {
                     call_callable1(py, next_function, source)
                 };
@@ -269,9 +306,9 @@ fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
                 assert_eq!(refs(), baseline, "source retains no status-cache owner");
             }
             let zip = zip_new_impl(py, &[source, empty], false);
-            let result = molt_next_builtin(zip, missing_bits(py));
+            let result = molt_next_builtin_attached_body(py, zip, missing_bits(py));
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             dec_ref_bits(py, result);
             assert_eq!(
                 refs(),
@@ -282,9 +319,9 @@ fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
             assert_eq!(refs(), baseline, "zip retirement releases its partial row");
 
             let zip = zip_new_impl(py, &[source], false);
-            let first = molt_next_builtin(zip, missing_bits(py));
+            let first = molt_next_builtin_attached_body(py, zip, missing_bits(py));
             assert!(!exception_pending(py));
-            let second = molt_next_builtin(zip, missing_bits(py));
+            let second = molt_next_builtin_attached_body(py, zip, missing_bits(py));
             assert!(!exception_pending(py));
             assert_ne!(first, second, "an aliased result must force a fresh row");
             assert_eq!(
@@ -347,7 +384,14 @@ fn tuple_cache_publication_retracks_a_demoted_result_before_retirement() {
     });
 }
 
-extern "C" fn iter_overload_returns_none() -> u64 {
+extern "C" fn iter_overload_returns_none(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits()
 }
 
@@ -357,7 +401,7 @@ fn public_iter_callable_admits_both_overloads() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = MoltObject::from_ptr(alloc_string(py, b"iter_overload_fixture")).bits();
-            let module = crate::molt_module_new(name);
+            let module = crate::molt_module_new_attached_body(py, name);
             let spec = crate::builtins::functions::python_builtin_function_info("iter").unwrap();
             let public =
                 crate::builtins::functions::alloc_python_builtin_function_bits(py, spec, module)
@@ -410,7 +454,10 @@ fn public_iter_callable_admits_both_overloads() {
             let source = MoltObject::from_ptr(alloc_tuple(py, &[seven])).bits();
             let iterator = call_callable1(py, public, source);
             assert!(!exception_pending(py));
-            assert_eq!(molt_next_builtin(iterator, missing_bits(py)), seven);
+            assert_eq!(
+                molt_next_builtin_attached_body(py, iterator, missing_bits(py)),
+                seven
+            );
             dec_ref_bits(py, iterator);
             let callback =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
@@ -424,7 +471,10 @@ fn public_iter_callable_admits_both_overloads() {
             let sentinel_iter =
                 crate::call_callable2(py, public, callback, MoltObject::none().bits());
             assert!(!exception_pending(py));
-            assert_eq!(molt_next_builtin(sentinel_iter, seven), seven);
+            assert_eq!(
+                molt_next_builtin_attached_body(py, sentinel_iter, seven),
+                seven
+            );
             assert!(!exception_pending(py));
             dec_ref_bits(py, sentinel_iter);
             let invalid_unary = call_callable1(py, public, MoltObject::none().bits());

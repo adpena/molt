@@ -12,11 +12,13 @@ use molt_runtime_core::prelude::*;
 // ---------------------------------------------------------------------------
 
 pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_runtime_state_get_or_init")]
     fn __molt_collections_runtime_state_get_or_init(
+        __molt_context: u64,
         key_ptr: *const u8,
         key_len: usize,
         init: RuntimeExtensionStateInit,
@@ -26,13 +28,21 @@ unsafe extern "C" {
 }
 
 pub fn runtime_state_get_or_init(
+    _py: &PyToken,
     key: &[u8],
     init: RuntimeExtensionStateInit,
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
     unsafe {
-        __molt_collections_runtime_state_get_or_init(key.as_ptr(), key.len(), init, clear, drop)
+        __molt_collections_runtime_state_get_or_init(
+            _py.attached_context(),
+            key.as_ptr(),
+            key.len(),
+            init,
+            clear,
+            drop,
+        )
     }
 }
 
@@ -41,15 +51,19 @@ pub fn runtime_state_get_or_init(
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_raise_exception")]
     fn __molt_collections_raise_exception(
+        __molt_context: u64,
         kind_code: u16,
         msg_ptr: *const u8,
         msg_len: usize,
     ) -> u64;
 
-    fn __molt_collections_exception_pending() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_exception_pending")]
+    fn __molt_collections_exception_pending(__molt_context: u64) -> i32;
 
-    fn __molt_collections_raise_key_error_with_key(key_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_raise_key_error_with_key")]
+    fn __molt_collections_raise_key_error_with_key(__molt_context: u64, key_bits: u64) -> u64;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -58,17 +72,23 @@ pub fn raise_exception<T: ExceptionSentinel>(
     msg: &str,
 ) -> T {
     let bits = unsafe {
-        __molt_collections_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len())
+        __molt_collections_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
     };
     T::from_bits(bits)
 }
 
 pub fn exception_pending(_py: &CoreGilToken) -> bool {
-    unsafe { __molt_collections_exception_pending() != 0 }
+    unsafe { __molt_collections_exception_pending(_py.attached_context()) != 0 }
 }
 
 pub fn raise_key_error_with_key<T: ExceptionSentinel>(_py: &CoreGilToken, key_bits: u64) -> T {
-    let bits = unsafe { __molt_collections_raise_key_error_with_key(key_bits) };
+    let bits =
+        unsafe { __molt_collections_raise_key_error_with_key(_py.attached_context(), key_bits) };
     T::from_bits(bits)
 }
 
@@ -101,27 +121,52 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_collections_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_collections_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_collections_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_collections_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize)
-    -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_alloc_tuple")]
+    fn __molt_collections_alloc_tuple(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_alloc_list")]
+    fn __molt_collections_alloc_list(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_alloc_string")]
+    fn __molt_collections_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_alloc_dict_with_pairs")]
+    fn __molt_collections_alloc_dict_with_pairs(
+        __molt_context: u64,
+        pairs_ptr: *const u64,
+        pairs_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_tuple(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_collections_alloc_tuple(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_collections_alloc_tuple(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_list(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_collections_alloc_list(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_collections_alloc_list(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_collections_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_collections_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_dict_with_pairs(_py: &CoreGilToken, pairs: &[u64]) -> *mut u8 {
-    unsafe { __molt_collections_alloc_dict_with_pairs(pairs.as_ptr(), pairs.len()) }
+    unsafe {
+        __molt_collections_alloc_dict_with_pairs(
+            _py.attached_context(),
+            pairs.as_ptr(),
+            pairs.len(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,9 +180,15 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_collections_is_truthy(bits: u64) -> i32;
-    fn __molt_collections_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize)
-    -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_is_truthy")]
+    fn __molt_collections_is_truthy(__molt_context: u64, bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_type_name")]
+    fn __molt_collections_type_name(
+        __molt_context: u64,
+        bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 /// # Safety
@@ -162,13 +213,20 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 }
 
 pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
-    unsafe { __molt_collections_is_truthy(obj.bits()) != 0 }
+    unsafe { __molt_collections_is_truthy(_py.attached_context(), obj.bits()) != 0 }
 }
 
 pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_collections_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_collections_type_name(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         String::from_utf8_lossy(&boxed).into_owned()
@@ -182,16 +240,18 @@ pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_collections_dec_ref_bits(bits: u64);
-    fn __molt_collections_inc_ref_bits(bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_dec_ref_bits")]
+    fn __molt_collections_dec_ref_bits(__molt_context: u64, bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_inc_ref_bits")]
+    fn __molt_collections_inc_ref_bits(__molt_context: u64, bits: u64);
 }
 
 pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_collections_dec_ref_bits(bits) }
+    unsafe { __molt_collections_dec_ref_bits(_py.attached_context(), bits) }
 }
 
 pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_collections_inc_ref_bits(bits) }
+    unsafe { __molt_collections_inc_ref_bits(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +260,9 @@ pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
 
 unsafe extern "C" {
     fn __molt_collections_to_i64(bits: u64, out: *mut i64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_index_i64_with_overflow")]
     fn __molt_collections_index_i64_with_overflow(
+        __molt_context: u64,
         bits: u64,
         type_err_ptr: *const u8,
         type_err_len: usize,
@@ -223,6 +285,7 @@ pub fn index_i64_with_overflow(
     let mut out: i64 = 0;
     let ok = unsafe {
         __molt_collections_index_i64_with_overflow(
+            _py.attached_context(),
             bits,
             type_err.as_ptr(),
             type_err.len(),
@@ -238,12 +301,16 @@ pub fn index_i64_with_overflow(
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_seq_snapshot")]
     fn __molt_collections_seq_snapshot(
+        __molt_context: u64,
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
     ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_dict_snapshot")]
     fn __molt_collections_dict_snapshot(
+        __molt_context: u64,
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
@@ -253,15 +320,17 @@ unsafe extern "C" {
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { __molt_collections_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_collections_seq_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }
 
 /// Returns owned, pinned key/value pairs in insertion order.
@@ -269,14 +338,19 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 ///
 /// `ptr` must refer to a live Molt dictionary object for the duration of this
 /// call.
-pub unsafe fn dict_snapshot(_py: &CoreGilToken, ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
+pub unsafe fn dict_snapshot(
+    _py: &CoreGilToken,
+    ptr: *mut u8,
+) -> Option<OwnedBridgeHandleSnapshot<'_>> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_collections_dict_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_collections_dict_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         return None;
     }
-    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
+    Some(unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) })
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +358,8 @@ pub unsafe fn dict_snapshot(_py: &CoreGilToken, ptr: *mut u8) -> Option<OwnedBri
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_collections_compare_eq(lhs_bits: u64, rhs_bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_compare_eq")]
+    fn __molt_collections_compare_eq(__molt_context: u64, lhs_bits: u64, rhs_bits: u64) -> i32;
 }
 
 pub fn compare_eq(
@@ -292,7 +367,7 @@ pub fn compare_eq(
     lhs: MoltObject,
     rhs: MoltObject,
 ) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
-    match unsafe { __molt_collections_compare_eq(lhs.bits(), rhs.bits()) } {
+    match unsafe { __molt_collections_compare_eq(_py.attached_context(), lhs.bits(), rhs.bits()) } {
         1 => Ok(true),
         0 => Ok(false),
         _ => Err(molt_runtime_core::ErrorIndicatorSet),
@@ -304,10 +379,11 @@ pub fn compare_eq(
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_collections_call_callable0(call_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_collections_call_callable0")]
+    fn __molt_collections_call_callable0(__molt_context: u64, call_bits: u64) -> u64;
 }
 
 /// Call a callable with zero arguments. Returns the result bits.
 pub fn call_callable0(_py: &CoreGilToken, call_bits: u64) -> u64 {
-    unsafe { __molt_collections_call_callable0(call_bits) }
+    unsafe { __molt_collections_call_callable0(_py.attached_context(), call_bits) }
 }

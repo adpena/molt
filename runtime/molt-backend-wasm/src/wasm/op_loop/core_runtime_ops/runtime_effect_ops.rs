@@ -1,10 +1,11 @@
 use super::super::result_sink::store_result_or_drop;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::emit_box_bool_from_i32;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_runtime_effect_op(
     func: &mut Function,

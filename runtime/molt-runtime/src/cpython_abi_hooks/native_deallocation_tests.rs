@@ -53,7 +53,7 @@ fn native_deallocation_deep_list_tuple_and_heap_subtype_chains() {
     let transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         for minor in [12, 13, 14] {
-            transaction.with_target_python_minor(&py, minor, || {
+            transaction.with_target_python_minor(py, minor, || {
                 let mut slots = [PyType_Slot {
                     slot: 0,
                     pfunc: ptr::null_mut(),
@@ -112,7 +112,7 @@ fn native_deallocation_deep_list_tuple_and_heap_subtype_chains() {
                 assert_eq!(typeobj::molt_type_clear(subclass.as_ptr()), 0);
             });
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -154,7 +154,7 @@ fn native_deallocation_interleaves_immediate_non_gc_nodes_without_deferring_them
     let transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         for minor in [12, 13, 14] {
-            transaction.with_target_python_minor(&py, minor, || {
+            transaction.with_target_python_minor(py, minor, || {
                 let mut witness = MixedWitness::default();
                 let mut class = NativeType::<PyTypeObject>::subtype(
                     &raw mut PyBaseObject_Type,
@@ -193,7 +193,7 @@ fn native_deallocation_interleaves_immediate_non_gc_nodes_without_deferring_them
                 assert!(!witness.bad_error);
             });
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -233,7 +233,7 @@ fn native_deallocation_custom_gc_slot_participates_only_in_python_314() {
     let transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         for (minor, immediate) in [(12, true), (13, true), (14, false)] {
-            transaction.with_target_python_minor(&py, minor, || {
+            transaction.with_target_python_minor(py, minor, || {
                 let mut witness = MixedWitness::default();
                 let mut class = NativeType::<PyTypeObject>::subtype(
                     &raw mut PyBaseObject_Type,
@@ -269,7 +269,7 @@ fn native_deallocation_custom_gc_slot_participates_only_in_python_314() {
                 assert!(!witness.bad_error);
             });
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -314,7 +314,7 @@ fn native_deallocation_queue_retains_identity_and_restores_only_requested_tracki
                 assert!(!crate::object::gc::native_gc_defer(address, 0, restore));
                 assert!(!crate::object::gc::native_gc_track(address));
                 assert_eq!(
-                    crate::object::gc::collect_cycles(&py).status,
+                    crate::object::gc::collect_cycles(py).status,
                     crate::object::gc::GcCollectStatus::Completed
                 );
                 assert!(crate::object::gc::native_gc_is_enrolled(address));
@@ -328,7 +328,7 @@ fn native_deallocation_queue_retains_identity_and_restores_only_requested_tracki
                 assert!(!crate::object::gc::native_gc_is_enrolled(address));
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -410,7 +410,7 @@ fn native_deallocation_resurrects_a_deferred_heap_list_before_releasing_its_payl
     let transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         for minor in [12, 13, 14] {
-            transaction.with_target_python_minor(&py, minor, || {
+            transaction.with_target_python_minor(py, minor, || {
                 let mut witness = ResurrectionWitness::default();
                 let mut observer_class = NativeType::<PyTypeObject>::subtype(
                     &raw mut PyBaseObject_Type,
@@ -509,7 +509,7 @@ fn native_deallocation_resurrects_a_deferred_heap_list_before_releasing_its_payl
                 assert_eq!(typeobj::molt_type_clear(class.as_ptr()), 0);
             });
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -541,7 +541,7 @@ fn shutdown_record_survives_post_drain_native_deallocation_and_republished_c_own
         } else {
             crate::concurrency::RuntimeExecutionGuard::enter()
         };
-        let identity = crate::runtime_state(&entry.token()).identity();
+        let identity = crate::runtime_state(entry.token()).identity();
         let root = unsafe {
             let payload = OwnedPyObject::from_owned(molt_cpython_abi::api::capsule::PyCapsule_New(
                 std::ptr::dangling_mut::<c_void>(),
@@ -616,7 +616,7 @@ fn shutdown_drained_witness_does_not_exempt_foreign_retained_records() {
         .unwrap();
     let gil = crate::concurrency::GilGuard::new();
     let _shutdown = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter();
-    let identity = crate::runtime_state(&gil.token()).identity();
+    let identity = crate::runtime_state(gil.token()).identity();
     let mut state = object::RuntimeShutdownThreadState::begin(identity);
     object::detach_runtime_execution_thread();
     {
@@ -647,7 +647,7 @@ fn shutdown_owner_unwind_preserves_record_and_releases_only_new_attachment() {
         } else {
             crate::concurrency::RuntimeExecutionGuard::enter()
         };
-        let identity = crate::runtime_state(&entry.token()).identity();
+        let identity = crate::runtime_state(entry.token()).identity();
         let caller = if mode == 2 {
             Some(entry)
         } else {

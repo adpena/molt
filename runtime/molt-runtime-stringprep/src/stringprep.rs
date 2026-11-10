@@ -197,9 +197,12 @@ fn in_table_a1(cp: u32) -> bool {
 // ---------------------------------------------------------------------------
 
 /// `molt_stringprep_in_table(table_name, char) -> bool`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stringprep_in_table(table_bits: u64, char_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_stringprep_in_table_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    table_bits: u64,
+    char_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(table_name) = string_obj_to_owned(obj_from_bits(table_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -302,17 +305,21 @@ fn map_stringprep_table(
 }
 
 /// `molt_stringprep_map_table_b2(char) -> str`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stringprep_map_table_b2(char_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_stringprep_map_table_b2_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    char_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         map_stringprep_table(_py, char_bits, tables::B2_MAPPINGS, "map_table_b2")
     })
 }
 
 /// `molt_stringprep_map_table_b3(char) -> str`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stringprep_map_table_b3(char_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_stringprep_map_table_b3_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    char_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         map_stringprep_table(_py, char_bits, tables::B3_MAPPINGS, "map_table_b3")
     })
 }
@@ -320,6 +327,8 @@ pub extern "C" fn molt_stringprep_map_table_b3(char_bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+include!("attached_exports_generated/stringprep.rs");
 
 #[cfg(test)]
 mod tests {

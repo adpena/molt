@@ -109,7 +109,7 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
         compile_function_to_clif_with_imports(vec![normalized_wait()], "activation_exits");
     let function = &compiled.function;
     let entry = function.layout.entry_block().expect("entry block");
-    let params = function.dfg.block_params(entry).to_vec();
+    let params = function.dfg.block_params(entry)[1..].to_vec();
     let calls = |symbol: &str| {
         compiled
             .import_ids
@@ -122,7 +122,7 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
     // including a running state that no resume dispatches to.
     let mut saved = Vec::new();
     for (_, save) in calls("molt_obj_set_state") {
-        let save_args = function.dfg.inst_args(save);
+        let save_args = attached_arguments(function, save);
         assert!(
             value_originates_only_from(function, save_args[0], params[SELF]),
             "{}",
@@ -143,7 +143,7 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
     let &[(wait_block, register)] = calls("molt_sleep_register").as_slice() else {
         panic!("one wait registration:\n{}", function.display());
     };
-    let register_args = function.dfg.inst_args(register);
+    let register_args = attached_arguments(function, register);
     assert!(
         value_originates_only_from(function, register_args[0], params[SELF]),
         "{}",

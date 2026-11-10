@@ -5,11 +5,11 @@ fn compiled_finder_binds_defaults_on_class_instance_and_subclass() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let builtin = compiled_loader_builtin_class(py);
-        let instance = molt_importlib_compiled_loader();
+        let instance = molt_importlib_compiled_loader_attached_body(py);
         let child_name =
             dynamic_attr_name_bits(py, b"CatalogFinderSubclass").expect("subclass name");
-        let child = crate::molt_class_new(child_name);
-        let outcome = crate::molt_class_set_base(child, builtin);
+        let child = crate::molt_class_new_attached_body(py, child_name);
+        let outcome = crate::molt_class_set_base_attached_body(py, child, builtin);
         dec_ref_bits(py, outcome);
         assert!(!exception_pending(py));
         let missing = dynamic_attr_name_bits(py, b"__molt_catalog_finder_missing_control__")

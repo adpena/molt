@@ -90,8 +90,8 @@ fn reserved_runtime_callable_function_objects_own_final_active_element_slots() {
     let trampoline_type_idx = function_type_indices[(trampoline_func_idx - import_count) as usize];
     assert_eq!(
         signatures[trampoline_type_idx as usize],
-        (3, 1),
-        "reserved runtime trampoline must consume closure, argv, argc and return one value"
+        (4, 1),
+        "reserved runtime trampoline must consume context, closure, argv, argc and return one value"
     );
 }
 
