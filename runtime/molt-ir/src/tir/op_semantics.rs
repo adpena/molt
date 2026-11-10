@@ -490,6 +490,7 @@ mod tests {
             assert_eq!(opcode_fixed_result_count_table(checked), Some(2));
             let op = TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: checked,
                 operands: vec![ValueId(0), ValueId(1)],
@@ -669,6 +670,7 @@ mod tests {
 
         let malformed = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -694,6 +696,7 @@ mod tests {
                     }
                     let op = TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: (0..operands).map(|index| ValueId(index as u32)).collect(),

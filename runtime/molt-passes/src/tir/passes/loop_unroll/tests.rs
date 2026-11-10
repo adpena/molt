@@ -8,6 +8,7 @@ use crate::tir::values::{TirValue, ValueId};
 fn const_int_op(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -24,6 +25,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
 fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![lhs, rhs],
@@ -36,6 +38,7 @@ fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
 fn cmp_op(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -535,6 +538,7 @@ fn unrolls_with_check_exception_observation_in_body() {
         0,
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -584,6 +588,7 @@ fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation()
                 .ops
                 .push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -631,6 +636,7 @@ fn does_not_unroll_with_try_handler_in_body() {
         0,
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -842,6 +848,7 @@ fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop
             ops: vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -924,6 +931,7 @@ fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> 
     );
     source.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ExceptionPending,
         operands: vec![],
@@ -1467,6 +1475,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
             ops: vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -1500,6 +1509,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
             ops: vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::InplaceAdd,
                     operands: vec![acc, iv_view],
@@ -1514,6 +1524,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                 // store-to-slot: Copy(value, slot) -> () (no result, 2 operands)
                 TirOp {
                     origin: Some(molt_ir::OpKind::Store),
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![acc_next, slot],

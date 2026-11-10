@@ -36,6 +36,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
         entry.ops.push(const_int_def(raw, 7));
         entry.ops.push(TirOp {
             origin: Some(OpKind::Call),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![raw; arity],
@@ -98,6 +99,7 @@ fn direct_raw_runtime_calls_bind_words_without_owners() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: Some(OpKind::Call),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -151,6 +153,7 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
             entry.ops.push(const_none_def(arg));
             entry.ops.push(TirOp {
                 origin: Some(OpKind::Call),
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![arg; arity],
@@ -204,6 +207,7 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
             entry.ops.push(const_none_def(none));
             entry.ops.push(TirOp {
                 origin: Some(origin),
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![arg],
@@ -257,6 +261,7 @@ fn direct_runtime_calls_reject_unclassified_arity_and_internal_target() {
         entry.ops.push(const_none_def(arg));
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![arg; arity],
@@ -294,6 +299,7 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
         entry.ops.push(const_none_def(arg));
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![arg],
@@ -366,6 +372,7 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                 entry.ops.push(const_none_def(none));
                 entry.ops.push(TirOp {
                     origin: Some(origin),
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![arg],
@@ -485,6 +492,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
                     .ops
                     .push(TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::LoadMethod,
                         operands: vec![input],
@@ -498,6 +506,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             };
             let mut call = TirOp {
                 origin,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -564,6 +573,7 @@ fn compiled_call_results_use_semantic_ownership_without_boxing_discarded_scalars
                 entry.ops.push(const_none_def(input));
                 entry.ops.push(TirOp {
                     origin: Some(kind),
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Call,
                     operands: vec![],
@@ -650,6 +660,7 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
         entry.ops.push(const_int_def(raw, i64::MAX));
         entry.ops.push(TirOp {
             origin,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![raw; width * 2],
@@ -786,6 +797,7 @@ fn dictionary_full_pairs_materialize_once_before_the_constructor() {
     // repeats the first entry's.
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildDict,
         operands: vec![first, first, second, first],
@@ -853,6 +865,7 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
         entry.ops.push(const_int_def(raw, i64::MAX));
         entry.ops.push(TirOp {
             origin: Some(OpKind::Call),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![raw],
@@ -943,6 +956,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
         let origin = preserved;
         entry.ops.push(TirOp {
             origin,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -1054,6 +1068,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
     entry.ops.push(const_none_def(iterator));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::IterNextUnboxed,
         operands: vec![iterator],
@@ -1101,6 +1116,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         entry.ops.push(const_none_def(fallback));
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![raw],
@@ -1160,6 +1176,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
     entry.ops.push(const_none_def(fallback));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::IterNextUnboxed,
         operands: vec![raw],
@@ -1231,6 +1248,7 @@ fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
         .extend([const_none_def(callable), const_none_def(arg0)]);
     entry.ops.push(TirOp {
         origin: Some(OpKind::CallGuarded),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, arg0],
@@ -1270,6 +1288,7 @@ fn lower_import_uses_var_attr_fallback_for_module_name() {
     attrs.insert("_var".into(), AttrValue::Str("pathlib".into()));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Import,
         operands: vec![],
@@ -1307,6 +1326,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     entry.ops.push(const_int_def(raw, 2));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1320,6 +1340,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildList,
         operands: vec![raw],
@@ -1329,6 +1350,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildTuple,
         operands: vec![raw],
@@ -1338,6 +1360,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildSet,
         operands: vec![raw],
@@ -1347,6 +1370,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildDict,
         operands: vec![key, raw],
@@ -1399,6 +1423,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
     entry.ops.push(const_int_def(raw, 2));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1418,6 +1443,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
     ] {
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands,
@@ -1483,6 +1509,7 @@ fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
         entry.ops.push(const_int_def(raw, i64::MAX));
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstStr,
             operands: vec![],
@@ -1505,6 +1532,7 @@ fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
                 args: vec![],
                 ops: vec![TirOp {
                     origin,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![raw, text],
@@ -1589,6 +1617,7 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
     entry.ops.push(const_none_def(receiver));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::LoadMethod,
         operands: vec![receiver],
@@ -1602,6 +1631,7 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
     let operands: Vec<_> = pair.into_iter().chain(arguments).collect();
     let mut call = TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallLoadedMethod,
         operands,
@@ -1685,6 +1715,7 @@ fn method_receiver_prefix_guards_the_null_and_ends_only_the_original_credit() {
     let receiver = entry.args[1].id;
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallargsPushMethodReceiver,
         operands: vec![entry.args[0].id, receiver],
@@ -1767,6 +1798,7 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1781,6 +1813,7 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     entry.ops.push(const_none_def(base));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1798,6 +1831,7 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     attrs.insert("s_value".into(), AttrValue::Str("1,1,0,0,0".into()));
     entry.ops.push(TirOp {
         origin,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![name, base, attr_key, attr_value],

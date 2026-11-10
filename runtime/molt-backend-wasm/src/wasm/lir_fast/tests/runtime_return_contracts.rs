@@ -43,6 +43,7 @@ fn sink_body(
     let op = LirOp {
         tir_op: TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: (0..args.len()).map(|index| ValueId(index as u32)).collect(),

@@ -660,6 +660,7 @@ mod tests {
     fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -711,6 +712,7 @@ mod tests {
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops = vec![TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -736,6 +738,7 @@ mod tests {
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops = vec![TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],

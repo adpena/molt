@@ -529,6 +529,9 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
         func.name,
     );
     let mut lowering_changed = prepare_final_backend_lowering(func, tti);
+    if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
+        lowering_changed |= super::pass_manager::run_late_lowering(func, tti);
+    }
     let audit_start = Instant::now();
     let had_drop_inserted = matches!(
         func.attrs.get(DROP_INSERTED_ATTR),
@@ -863,6 +866,7 @@ mod tests {
             assert!(typed.blocks[&forwarding_block].ops.is_empty());
             let effect = |opcode| TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![other],
@@ -1044,6 +1048,7 @@ mod tests {
             function.blocks.get_mut(&entry).unwrap().ops = vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![exception],
@@ -1054,6 +1059,7 @@ mod tests {
                 // Raise captures its own Origin; its transport check forwards.
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -1334,6 +1340,7 @@ mod tests {
             }
             let operation = |opcode, operands, results, attrs| TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -1613,6 +1620,7 @@ mod tests {
             .insert(value, crate::tir::types::TirType::I64);
         tir.blocks.get_mut(&tir.entry_block).unwrap().ops = vec![crate::tir::ops::TirOp {
             origin: None,
+            runtime: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: crate::tir::ops::OpCode::ConstInt,
             operands: vec![],

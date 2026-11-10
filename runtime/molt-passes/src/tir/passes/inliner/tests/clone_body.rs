@@ -180,6 +180,7 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
         let block = callee.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![param],
@@ -189,6 +190,7 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
         });
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::LoadVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![stored],
@@ -218,6 +220,7 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
         attrs.insert("_var".into(), AttrValue::Str("i".into()));
         caller.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![arg],
@@ -300,6 +303,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
         let block = callee.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::Missing),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -309,6 +313,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
         });
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![missing],
@@ -318,6 +323,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
         });
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![param],
@@ -327,6 +333,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
         });
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::LoadVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![assigned],
@@ -408,6 +415,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
         let block = callee.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -438,6 +446,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
         let block = g.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -447,6 +456,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
         });
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],

@@ -238,6 +238,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
                 .zip(candidate.unpack_results.iter())
                 .map(|(&src, &dst)| TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![src],

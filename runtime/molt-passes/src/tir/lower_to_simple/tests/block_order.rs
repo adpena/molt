@@ -14,6 +14,7 @@ fn block(id: BlockId, ops: Vec<TirOp>, terminator: Terminator) -> TirBlock {
 fn operation(opcode: OpCode, operands: Vec<ValueId>, value: Option<i64>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

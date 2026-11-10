@@ -624,7 +624,9 @@ def test_generated_opcode_canonical_kind_matches_table() -> None:
         if kind in registered:
             assert generated[opcode] == f"Some(OpKind::{_wire_variant(kind)})"
         else:
-            assert opcode in {"ScfFor", "ScfWhile"}
+            # Region ops and the final-TIR ops of the late lowering stage
+            # (HF-821) never cross the SimpleIR wire.
+            assert opcode in {"ScfFor", "ScfWhile", *data["final_tir_opcodes"]}
             assert generated[opcode] == "None"
 
 
@@ -908,6 +910,7 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         "CallMethod",
         "CallLoadedMethod",
         "CallBuiltin",
+        "CallRuntime",
         "CheckException",
         "Copy",
         "UnpackSequence",
@@ -1404,6 +1407,8 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
 
     expected = {
         "Pow": "dynbox",
+        "IsInlineInt": "bool",
+        "UnboxInlineInt": "i64",
         "ModuleSlot": "i64",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
@@ -1948,6 +1953,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         "Mod": "mod",
         "Shr": "shr",
         "Shl": "shl",
+        "UnboxInlineInt": "inline_int_payload",
     }
     expected_const_fold_rows = {
         "Add": "add",
@@ -1995,6 +2001,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         "mod": "Mod",
         "shr": "Shr",
         "shl": "Shl",
+        "inline_int_payload": "InlineIntPayload",
     }
     narrow_variant = {
         "lt_upper_exclusive": "LtUpperExclusive",
@@ -2736,6 +2743,8 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
 
     expected_always = {
         "UnboxVal",
+        "IsInlineInt",
+        "UnboxInlineInt",
     }
     expected_type_gated = {
         "Add",
@@ -3759,7 +3768,7 @@ def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
     )[1].split("fn opcode_supports_i64_checked_overflow_triple_table")[0]
     checked_table_block = rendered.split(
         "fn opcode_supports_i64_checked_overflow_triple_table"
-    )[1].split("fn opcode_uses_boxed_runtime_inplace_dispatch_table")[0]
+    )[1].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
     for row in data["opcode"]:
         overflow_bool = "true" if row["name"] in overflow_box_dispatch else "false"
         checked_bool = "true" if row["name"] in checked_triples else "false"
@@ -3803,35 +3812,6 @@ def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
     helper_body = lower_to_lir[start:end]
     assert checked_table_name in helper_body
     assert "OpCode::Add | OpCode::Sub | OpCode::Mul" not in helper_body
-
-
-def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> None:
-    """First-class augassign opcodes must route boxed LLVM fallback via registry."""
-    gen = _gen()
-    data = gen.load_table()
-    rendered = gen.render_rs(data)
-    llvm_lowering = (
-        ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/numeric_ops.rs"
-    ).read_text(encoding="utf-8")
-
-    expected = {"InplaceAdd", "InplaceSub", "InplaceMul"}
-    assert set(data["boxed_runtime_inplace_dispatch_opcodes"]) == expected
-
-    table_block = rendered.split("fn opcode_uses_boxed_runtime_inplace_dispatch_table")[
-        1
-    ].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
-    for row in data["opcode"]:
-        expected_bool = "true" if row["name"] in expected else "false"
-        assert f"OpCode::{row['name']} => {expected_bool}," in table_block
-
-    table_name = "opcode_uses_boxed_runtime_inplace_dispatch_table"
-    body = _rust_fn_body(llvm_lowering, "fn emit_binary_arith(")
-    assert table_name in body
-    assert 'starts_with("inplace_")' not in body
-    assert "op.origin.is_some_and" in body
-    assert "OpKind::InplaceDiv" in body
-    assert "matches!(\n                    op.opcode" not in body
-    assert "OpCode::InplaceAdd | OpCode::InplaceSub | OpCode::InplaceMul" not in body
 
 
 def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:

@@ -66,6 +66,7 @@ from .schema import (
     _VALUE_RANGE_CONST_FOLD_RULES,
     _VALUE_RANGE_CONTAINER_LENGTH_RULES,
     _VALUE_RANGE_TRANSFER_RULES,
+    _FAST_PATH_EXPANSION_RULES,
     _VARIABLE_RESULT_ARITY_OPCODES,
     _VARIABLE_OPERAND_ARITIES,
     _VECTORIZE_BODY_ACTIONS,
@@ -267,7 +268,11 @@ def load_table(table_path: Path = TABLE) -> dict:
         )
         comparison = row.get("predicate_semantics")
         exact_scalar = row.get("exact_scalar_result_type")
-        if exact_scalar is not None or result_type in {
+        # Final-TIR ops never exist in the frontend, so they carry no frontend
+        # intrinsic facts.
+        if name in data.get("final_tir_opcodes", []):
+            pass
+        elif exact_scalar is not None or result_type in {
             "i64",
             "f64",
             "bool",
@@ -790,6 +795,13 @@ def load_table(table_path: Path = TABLE) -> dict:
         seen_opcodes,
         _VALUE_RANGE_TRANSFER_RULES,
         "value-range transfer rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "fast_path_expansion_rules",
+        seen_opcodes,
+        _FAST_PATH_EXPANSION_RULES,
+        "fast-path expansion rule",
     )
     _validate_opcode_rule_rows(
         data,

@@ -8,6 +8,7 @@ use crate::tir::values::{TirValue, ValueId};
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -22,6 +23,7 @@ fn const_str(result: ValueId) -> TirOp {
     attrs.insert("s_value".into(), AttrValue::Str("x".into()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -235,6 +237,7 @@ fn raw_i64_excluded_from_live_sets() {
         a0.insert("value".into(), AttrValue::Int(3));
         b.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -246,6 +249,7 @@ fn raw_i64_excluded_from_live_sets() {
         a1.insert("value".into(), AttrValue::Int(4));
         b.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -433,6 +437,7 @@ fn exact_float_copy_excludes_heap_obligation_without_refinement() {
         float_attrs.insert("f_value".into(), AttrValue::Float(1.0));
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],

@@ -13,6 +13,7 @@ pub(crate) fn attr_is_true(func: &TirFunction, name: &str) -> bool {
 pub(super) fn make_op(opcode: OpCode, operands: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

@@ -1,5 +1,5 @@
 use crate::tir::blocks::BlockId;
-use crate::tir::numeric_facts::IntRange;
+use crate::tir::numeric_facts::{INLINE_INT47_HI, INLINE_INT47_LO, IntRange};
 use crate::tir::op_kinds_generated::{
     ValueRangeTransferRule, opcode_value_range_transfer_rule_table,
 };
@@ -91,6 +91,10 @@ pub(super) fn transfer_op_range(
             Some(s) => Some(r(0).shl_const(s)),
             None => Some(IntRange::FULL_I64),
         },
+        // A sign-extended 47-bit inline-int payload (HF-821's fast arm).
+        ValueRangeTransferRule::InlineIntPayload if op.operands.len() == 1 => {
+            Some(IntRange::new(INLINE_INT47_LO, INLINE_INT47_HI))
+        }
         _ => None,
     }
 }

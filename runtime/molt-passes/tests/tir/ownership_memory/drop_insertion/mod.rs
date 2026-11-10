@@ -19,6 +19,7 @@ use molt_passes::tir::op_kinds_generated::{
 pub(super) fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -33,6 +34,7 @@ pub(super) fn const_str(result: ValueId) -> TirOp {
     attrs.insert("s_value".into(), AttrValue::Str("x".into()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -47,6 +49,7 @@ pub(super) fn finalizer_object(result: ValueId) -> TirOp {
     attrs.insert("defines_del".into(), AttrValue::Bool(true));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ObjectNewBound,
         operands: vec![],

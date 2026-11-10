@@ -626,6 +626,7 @@ mod tests {
     fn op(opcode: OpCode) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -1332,6 +1333,7 @@ mod tests {
             original_check,
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],

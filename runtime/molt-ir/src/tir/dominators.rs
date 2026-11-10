@@ -731,6 +731,7 @@ mod tests {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(crate::tir::ops::TirOp {
                 origin: None,
+                runtime: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: crate::tir::ops::OpCode::ConstBool,
                 operands: vec![],
@@ -816,6 +817,7 @@ mod tests {
             attrs.insert("value".into(), AttrValue::Int(100));
             entry.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![entry_arg],
@@ -898,6 +900,7 @@ mod tests {
             attrs.insert("value".into(), AttrValue::Int(200));
             entry.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::TryEnd,
                 operands: vec![],

@@ -28,6 +28,7 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::And,
         operands: vec![ValueId(0), ValueId(1)],
@@ -62,6 +63,7 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
             index,
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstBool,
                 operands: vec![],
@@ -101,6 +103,7 @@ fn raw_unary_pos_stays_noop_without_runtime_call() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Pos,
         operands: vec![ValueId(0)],
@@ -145,6 +148,7 @@ fn add_two_f64s() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -177,6 +181,7 @@ fn add_two_f64s() {
             index,
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstFloat,
                 operands: vec![],
@@ -211,6 +216,7 @@ fn f64_mod_requires_exact_runtime_semantics_for_proven_float_carriers() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Mod,
         operands: vec![ValueId(0), ValueId(1)],
@@ -239,6 +245,7 @@ fn f64_mod_requires_exact_runtime_semantics_for_proven_float_carriers() {
             index,
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstFloat,
                 operands: vec![],

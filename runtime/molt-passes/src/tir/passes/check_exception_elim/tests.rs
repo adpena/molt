@@ -16,6 +16,7 @@ fn make_check_exception() -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(100));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -30,6 +31,7 @@ fn make_const_int(value: i64, out: ValueId) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -44,6 +46,7 @@ fn make_call(callee: &str, out: ValueId) -> TirOp {
     attrs.insert("s_value".into(), AttrValue::Str(callee.to_string()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -56,6 +59,7 @@ fn make_call(callee: &str, out: ValueId) -> TirOp {
 fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ModuleGetAttr,
         operands: vec![module, attr_name],
@@ -68,6 +72,7 @@ fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> Ti
 fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -82,6 +87,7 @@ fn make_original_kind(kind: molt_ir::OpKind) -> TirOp {
 
     TirOp {
         origin: Some(kind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -133,6 +139,7 @@ fn aggregate_allocation_and_callback_failures_keep_their_exception_checks() {
             make_check_exception(),
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![],
@@ -228,6 +235,7 @@ fn full_width_boxing_preserves_local_and_successor_exception_edges() {
     for split_block in [false, true] {
         let boxed = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::BoxVal,
             operands: vec![ValueId(0)],
@@ -278,6 +286,7 @@ fn untargeted_observers_preserve_literal_and_poll_failures_locally_and_across_cf
             if let Some(opcode) = literal {
                 ops.push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -612,6 +621,7 @@ fn class_allocation_preserves_pending_exception_checks_across_blocks() {
         attrs.insert("value".into(), AttrValue::Int(16));
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0)],

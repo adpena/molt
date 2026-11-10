@@ -32,6 +32,7 @@ fn make_sub_func() -> TirFunction {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Sub,
         operands: vec![ValueId(0), ValueId(1)],

@@ -172,6 +172,7 @@ mod tests {
         // Add a ForIter op with only affine body ops
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Scf,
             opcode: OpCode::ForIter,
             operands: vec![],
@@ -181,6 +182,7 @@ mod tests {
         });
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -203,6 +205,7 @@ mod tests {
         let block = func.blocks.get_mut(&bid).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Scf,
             opcode: OpCode::ForIter,
             operands: vec![],
@@ -213,6 +216,7 @@ mod tests {
         // A Call op makes it non-affine
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0)],

@@ -137,6 +137,7 @@ fn assert_lowering_error_contains(err: &LlvmLoweringError, needle: &str) {
 fn const_none_def(result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -169,6 +170,7 @@ fn lowering_error_for_single_op(
         }
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect,
             opcode,
             operands,
@@ -193,6 +195,7 @@ fn const_int_def(result: ValueId, value: i64) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -249,6 +252,7 @@ fn build_i64_add_func() -> (TirFunction, ValueId) {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -293,6 +297,7 @@ fn lower_preserved_kind_ir(
     }
     entry.ops.push(TirOp {
         origin,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,

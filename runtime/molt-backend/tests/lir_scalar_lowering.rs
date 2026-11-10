@@ -56,6 +56,7 @@ fn make_op(
 ) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

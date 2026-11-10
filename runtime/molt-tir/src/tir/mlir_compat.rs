@@ -285,6 +285,9 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::BoxVal => "box",
         OpCode::UnboxVal => "unbox",
         OpCode::TypeGuard => "type_guard",
+        OpCode::IsInlineInt => "is_inline_int",
+        OpCode::UnboxInlineInt => "unbox_inline_int",
+        OpCode::CallRuntime => "call_runtime",
         OpCode::IncRef => "inc_ref",
         OpCode::DecRef => "dec_ref",
         OpCode::DelBoundary => "del_boundary",
@@ -365,6 +368,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -429,6 +433,7 @@ mod tests {
         let entry = f.blocks.get_mut(&f.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -473,6 +478,7 @@ mod tests {
                 terminator: Terminator::Return { values: vec![v1] },
                 ops: vec![TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -493,6 +499,7 @@ mod tests {
                 terminator: Terminator::Return { values: vec![v2] },
                 ops: vec![TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -528,6 +535,7 @@ mod tests {
         ] {
             entry.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,

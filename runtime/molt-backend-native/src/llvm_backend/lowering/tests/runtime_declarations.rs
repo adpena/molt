@@ -17,6 +17,7 @@ fn boxed_or_retains_selected_operand_result() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Or,
         operands: vec![ValueId(0), ValueId(1)],
@@ -119,6 +120,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
         entry.ops.push(const_none_def(operand));
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![operand],

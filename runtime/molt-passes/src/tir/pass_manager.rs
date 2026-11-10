@@ -560,6 +560,64 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
     PassManager::new(passes, target_info)
 }
 
+/// The late lowering stage of TIR (HF-821), for targets whose backend consumes
+/// final TIR. Expansion runs as its own pipeline, so the post-pipeline function
+/// and exception-region verification checks it before anything else runs.
+/// Only when it expanded an op do GVN (merging a value's repeated tag tests)
+/// and DCE run; debug builds verify between them. A function without an
+/// eligible op is left untouched. Returns whether the function changed.
+pub fn run_late_lowering(func: &mut TirFunction, target_info: &TargetInfo) -> bool {
+    use Mutates::*;
+    let expansion = PassManager::new(
+        vec![pass("fast_path_expansion", Cfg, |f, _am, _tti| {
+            passes::fast_path_expansion::run(f)
+        })],
+        target_info.clone(),
+    );
+    let expanded: usize = expansion
+        .run(func)
+        .iter()
+        .map(PassStats::total_changes)
+        .sum();
+    if expanded == 0 {
+        return false;
+    }
+    let mut cleanup: Vec<Box<dyn TirPass>> =
+        vec![pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am))];
+    if cfg!(debug_assertions) {
+        cleanup.push(pass(
+            "verify_after_gvn",
+            ReadOnly,
+            verify_late_lowering_step,
+        ));
+    }
+    cleanup.push(pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)));
+    PassManager::new(cleanup, target_info.clone()).run(func);
+    true
+}
+
+/// Verify-each for the late lowering stage: a debug-build pass that checks the
+/// function and its exception regions and changes nothing.
+fn verify_late_lowering_step(
+    func: &mut TirFunction,
+    _am: &mut AnalysisManager,
+    _target_info: &TargetInfo,
+) -> PassStats {
+    if let Err(errors) = super::verify::verify_function(func) {
+        panic!(
+            "[TIR] late lowering left '{}' invalid: {errors:?}",
+            func.name
+        );
+    }
+    if let Err(diagnostics) = super::exception_regions::verify_exception_regions(func) {
+        panic!(
+            "[TIR] late lowering broke the exception regions of '{}': {diagnostics:?}",
+            func.name
+        );
+    }
+    PassStats::default()
+}
+
 /// Build the RC drop-insertion pipeline (design 20): the two passes that close
 /// the whole-program expression-temporary leak, run as a SEPARATE terminal phase
 /// AFTER all per-function optimization AND all module-level transforms (the E1
@@ -794,6 +852,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ObjectNewBound,
             operands: vec![ValueId(0)],
@@ -878,6 +937,7 @@ mod tests {
             attrs.insert("value".into(), AttrValue::Int(70));
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0)],
@@ -890,6 +950,7 @@ mod tests {
             labeled(OpCode::TryStart),
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![ValueId(0)],
@@ -903,6 +964,7 @@ mod tests {
             labeled(OpCode::CheckException),
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],
@@ -948,6 +1010,7 @@ mod tests {
         attrs.insert("s_value".into(), AttrValue::Str("external_call".into()));
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -1088,6 +1151,7 @@ mod tests {
                 args: vec![],
                 ops: vec![TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -1159,6 +1223,7 @@ mod tests {
 
         let mut try_start = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -1175,6 +1240,7 @@ mod tests {
 
         let mut match_ref = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1218,6 +1284,7 @@ mod tests {
 
         let mut try_start = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -1240,6 +1307,7 @@ mod tests {
 
         let mut match_ref = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1250,6 +1318,7 @@ mod tests {
         match_ref.origin = Some(molt_ir::OpKind::ExceptionLastPending);
         let mut exception_pop = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1315,6 +1384,7 @@ mod tests {
             let block = func.blocks.get_mut(&entry).unwrap();
             block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![parameter],

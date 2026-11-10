@@ -20,6 +20,7 @@ fn lir_op(opcode: OpCode, operands: &[u32], result_values: Vec<LirValue>) -> Lir
     LirOp {
         tir_op: TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: operands.iter().copied().map(ValueId).collect(),
@@ -37,6 +38,7 @@ fn const_int(result: u32, value: i64) -> LirOp {
     LirOp {
         tir_op: TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -622,6 +624,7 @@ fn verify_lir_rejects_malformed_checked_i64_arithmetic_contract() {
         ops: vec![LirOp {
             tir_op: TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![ValueId(0), ValueId(1)],

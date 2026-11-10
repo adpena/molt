@@ -38,6 +38,7 @@ fn task_factory(
         } else {
             OpKind::FuncNew
         }),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: if has_closure {

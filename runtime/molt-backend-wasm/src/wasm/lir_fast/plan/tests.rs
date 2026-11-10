@@ -22,6 +22,7 @@ fn const_i64_return_func(value: i64) -> TirFunction {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -51,6 +52,7 @@ fn literal_const_return_func(
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],
@@ -75,6 +77,7 @@ fn add_two_i64_params_func() -> TirFunction {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -105,6 +108,7 @@ fn checked_mul_i64_consts_func() -> TirFunction {
         attrs.insert("value".into(), AttrValue::Int(value));
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -115,6 +119,7 @@ fn checked_mul_i64_consts_func() -> TirFunction {
     }
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckedMul,
         operands: vec![lhs, rhs],
@@ -417,6 +422,7 @@ fn wasm_terminal_reachability_preserves_unused_import_effects_and_balances_owner
     let entry = function.blocks.get_mut(&function.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -426,6 +432,7 @@ fn wasm_terminal_reachability_preserves_unused_import_effects_and_balances_owner
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Import,
         operands: vec![],

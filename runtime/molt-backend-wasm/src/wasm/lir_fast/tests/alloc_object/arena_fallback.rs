@@ -14,6 +14,7 @@ fn arena_eligible_alloc_is_rejected_without_owner_lifetime() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Alloc,
         operands: vec![],

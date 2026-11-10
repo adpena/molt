@@ -49,7 +49,6 @@ use crate::tir::blocks::{BlockId, Terminator};
 #[cfg(feature = "llvm")]
 use crate::tir::function::TirFunction;
 #[cfg(feature = "llvm")]
-use crate::tir::op_kinds_generated::opcode_uses_boxed_runtime_inplace_dispatch_table;
 #[cfg(feature = "llvm")]
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 #[cfg(feature = "llvm")]
@@ -1099,6 +1098,7 @@ mod operation_shape_tests {
                 .ops
                 .push(TirOp {
                     origin,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: (0..operands).map(ValueId).collect(),

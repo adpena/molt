@@ -5690,6 +5690,23 @@ impl RuntimeFn {
     }
 }
 
+/// Serialized by symbol, the identity the runtime exports, so a cached
+/// TIR function stays valid while table order changes.
+impl serde::Serialize for RuntimeFn {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.symbol())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RuntimeFn {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        let symbol = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(decoder)?;
+        Self::from_symbol(&symbol).ok_or_else(|| {
+            serde::de::Error::custom(format_args!("unknown runtime entry `{symbol}`"))
+        })
+    }
+}
+
 pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
     RuntimeFnAbi {
         symbol: "molt_abc_bootstrap",
@@ -22487,6 +22504,63 @@ pub const fn runtime_boxed_op_abi(kind: crate::OpKind) -> Option<RuntimeBoxedAbi
         crate::OpKind::StringFindSlice => RuntimeFn::StringFindSlice.boxed_abi(),
         crate::OpKind::StringStartswith => RuntimeFn::StringStartswith.boxed_abi(),
         crate::OpKind::StringStartswithSlice => RuntimeFn::StringStartswithSlice.boxed_abi(),
+        _ => None,
+    }
+}
+
+/// The runtime entry that implements a numeric op on boxed operands: the
+/// slow path that backends and the late lowering stage of TIR call. Its one
+/// source is the manifest's numeric_runtime_selector rows.
+pub const fn numeric_runtime_fn(kind: crate::OpKind) -> Option<RuntimeFn> {
+    match kind {
+        crate::OpKind::Add => Some(RuntimeFn::Add),
+        crate::OpKind::InplaceAdd => Some(RuntimeFn::InplaceAdd),
+        crate::OpKind::Sub => Some(RuntimeFn::Sub),
+        crate::OpKind::InplaceSub => Some(RuntimeFn::InplaceSub),
+        crate::OpKind::Mul => Some(RuntimeFn::Mul),
+        crate::OpKind::InplaceMul => Some(RuntimeFn::InplaceMul),
+        crate::OpKind::Div => Some(RuntimeFn::Div),
+        crate::OpKind::InplaceDiv => Some(RuntimeFn::InplaceDiv),
+        crate::OpKind::Floordiv => Some(RuntimeFn::Floordiv),
+        crate::OpKind::InplaceFloordiv => Some(RuntimeFn::InplaceFloordiv),
+        crate::OpKind::Mod => Some(RuntimeFn::Mod),
+        crate::OpKind::InplaceMod => Some(RuntimeFn::InplaceMod),
+        crate::OpKind::Matmul => Some(RuntimeFn::Matmul),
+        crate::OpKind::InplaceMatmul => Some(RuntimeFn::InplaceMatmul),
+        crate::OpKind::Pow => Some(RuntimeFn::Pow),
+        crate::OpKind::InplacePow => Some(RuntimeFn::InplacePow),
+        crate::OpKind::PowMod => Some(RuntimeFn::PowMod),
+        crate::OpKind::Round => Some(RuntimeFn::Round),
+        crate::OpKind::Trunc => Some(RuntimeFn::Trunc),
+        crate::OpKind::BitAnd => Some(RuntimeFn::BitAnd),
+        crate::OpKind::InplaceBitAnd => Some(RuntimeFn::InplaceBitAnd),
+        crate::OpKind::BitOr => Some(RuntimeFn::BitOr),
+        crate::OpKind::InplaceBitOr => Some(RuntimeFn::InplaceBitOr),
+        crate::OpKind::BitXor => Some(RuntimeFn::BitXor),
+        crate::OpKind::InplaceBitXor => Some(RuntimeFn::InplaceBitXor),
+        crate::OpKind::Invert => Some(RuntimeFn::Invert),
+        crate::OpKind::BitNot => Some(RuntimeFn::Invert),
+        crate::OpKind::Neg => Some(RuntimeFn::Neg),
+        crate::OpKind::UnaryNeg => Some(RuntimeFn::Neg),
+        crate::OpKind::Pos => Some(RuntimeFn::Pos),
+        crate::OpKind::UnaryPos => Some(RuntimeFn::Pos),
+        crate::OpKind::Lshift => Some(RuntimeFn::Lshift),
+        crate::OpKind::Shl => Some(RuntimeFn::Lshift),
+        crate::OpKind::InplaceLshift => Some(RuntimeFn::InplaceLshift),
+        crate::OpKind::Rshift => Some(RuntimeFn::Rshift),
+        crate::OpKind::Shr => Some(RuntimeFn::Rshift),
+        crate::OpKind::InplaceRshift => Some(RuntimeFn::InplaceRshift),
+        crate::OpKind::Lt => Some(RuntimeFn::Lt),
+        crate::OpKind::Le => Some(RuntimeFn::Le),
+        crate::OpKind::Gt => Some(RuntimeFn::Gt),
+        crate::OpKind::Ge => Some(RuntimeFn::Ge),
+        crate::OpKind::Eq => Some(RuntimeFn::Eq),
+        crate::OpKind::Ne => Some(RuntimeFn::Ne),
+        crate::OpKind::StringEq => Some(RuntimeFn::StringEq),
+        crate::OpKind::VecSum => Some(RuntimeFn::VecSum),
+        crate::OpKind::VecProd => Some(RuntimeFn::VecProd),
+        crate::OpKind::VecMin => Some(RuntimeFn::VecMin),
+        crate::OpKind::VecMax => Some(RuntimeFn::VecMax),
         _ => None,
     }
 }

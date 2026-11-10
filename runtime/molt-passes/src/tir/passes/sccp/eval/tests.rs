@@ -61,6 +61,7 @@ fn builtin(name: &str, args: &[ConstVal]) -> Option<ConstVal> {
     use crate::tir::values::ValueId;
     let op = TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: (0..args.len()).map(|index| ValueId(index as u32)).collect(),
@@ -352,6 +353,7 @@ fn explicit_range_primitive_retains_constant_domain_without_public_name_folding(
         let values = [ConstVal::Int(0), ConstVal::Int(3), ConstVal::Int(step)];
         let mut op = TirOp {
             origin: Some(molt_ir::OpKind::RangeNew),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
             operands: vec![ValueId(0), ValueId(1), ValueId(2)],

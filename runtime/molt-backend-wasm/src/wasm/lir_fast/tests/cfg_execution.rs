@@ -23,6 +23,7 @@ fn op(opcode: OpCode, args: &[u32], result: LirValue) -> LirOp {
     LirOp {
         tir_op: TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: args.iter().copied().map(ValueId).collect(),

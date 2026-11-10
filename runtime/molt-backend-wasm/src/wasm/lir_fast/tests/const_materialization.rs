@@ -191,6 +191,7 @@ fn lir_literal_const_without_result_fails_closed() {
     attrs.insert("s_value".into(), AttrValue::Str("orphan".into()));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -215,6 +216,7 @@ fn binding_alias_copy_retains_before_forwarding_bits() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: Some(molt_ir::OpKind::BindingAlias),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![ValueId(0)],

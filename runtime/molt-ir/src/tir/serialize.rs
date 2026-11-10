@@ -11,7 +11,7 @@ use super::types::TirType;
 use super::values::{TirValue, ValueId};
 use crate::{ExecutionContextPolicy, FunctionReturnAbi};
 
-const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v4\0";
+const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v5\0";
 
 #[derive(Serialize, Deserialize)]
 struct TirFunctionArtifact {
@@ -49,6 +49,8 @@ struct TirOpArtifact {
     opcode: OpCode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<crate::OpKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
     operands: Vec<ValueId>,
     results: Vec<ValueId>,
     #[serde(deserialize_with = "deserialize_op_attr_entries")]
@@ -92,6 +94,8 @@ struct TirOpArtifactRef<'a> {
     opcode: OpCode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<crate::OpKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
     operands: &'a [ValueId],
     results: &'a [ValueId],
     attrs: Vec<(&'a String, &'a AttrValue)>,
@@ -142,6 +146,7 @@ fn artifact_op_ref(op: &TirOp) -> TirOpArtifactRef<'_> {
         dialect: op.dialect,
         opcode: op.opcode,
         origin: op.origin,
+        runtime: op.runtime,
         operands: &op.operands,
         results: &op.results,
         attrs: sorted_entry_refs(&op.attrs),
@@ -195,6 +200,7 @@ impl From<TirOpArtifact> for TirOp {
             dialect: op.dialect,
             opcode: op.opcode,
             origin: op.origin,
+            runtime: op.runtime,
             operands: op.operands,
             results: op.results,
             attrs: op.attrs.into_iter().collect::<AttrDict>(),
@@ -291,6 +297,7 @@ mod tests {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             origin: Some(crate::OpKind::Len),
+            runtime: None,
             operands: vec![arg],
             results: vec![result],
             attrs: AttrDict::new(),
@@ -326,7 +333,7 @@ mod tests {
             );
         }
         let mut old_version = encoded.clone();
-        old_version[..TIR_FUNCTION_CACHE_MAGIC.len()].copy_from_slice(b"MOLT:TIRFUNC:v3\0");
+        old_version[..TIR_FUNCTION_CACHE_MAGIC.len()].copy_from_slice(b"MOLT:TIRFUNC:v4\0");
         assert!(deserialize_tir_function(&old_version).is_none());
         let op = &mut function.blocks.get_mut(&function.entry_block).unwrap().ops[0];
         op.origin = None;
@@ -434,6 +441,7 @@ mod tests {
         let mut entry = function.blocks.remove(&function.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],

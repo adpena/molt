@@ -76,6 +76,7 @@ fn f64_add_requires_exact_producers() {
             for (id, value) in [(left, 1.25), (right, 2.5)] {
                 entry.ops.push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstFloat,
                     operands: vec![],
@@ -94,6 +95,7 @@ fn f64_add_requires_exact_producers() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands,
@@ -126,6 +128,7 @@ fn lower_dynbox_add_calls_runtime() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -182,6 +185,7 @@ fn lower_conditional_branch() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -207,6 +211,7 @@ fn lower_conditional_branch() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -375,4 +380,66 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
     );
     assert!(ir.contains_execution("fcmp uno"), "{ir}");
     assert!(ir.contains_execution("ret i64"), "{ir}");
+}
+
+/// The late lowering stage's integer lane end to end (HF-821): `a + b` over two
+/// boxed words expands in TIR, and LLVM selects instructions for each piece —
+/// the shared tag test, the shared unbox, an exact `add nsw`, the full-range
+/// box, and the cold `molt_add` call.
+#[test]
+fn late_lowered_boxed_add_selects_the_inline_int_lane() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "late_add".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let sum = func.fresh_value();
+    func.value_types.insert(sum, TirType::DynBox);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.push(TirOp::new(
+        OpCode::Add,
+        vec![ValueId(0), ValueId(1)],
+        vec![sum],
+    ));
+    block.terminator = Terminator::Return { values: vec![sum] };
+
+    // The selected runtime exports the slow entry, as a built runtime does.
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+        .insert(RuntimeFn::Add.symbol().into());
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    assert!(crate::tir::pass_manager::run_late_lowering(&mut func, &tti));
+    crate::tir::type_refine::refine_types(&mut func);
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    let ir = llvm_fn.print_to_string().to_string();
+    let int_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_INT);
+    assert!(
+        ir.contains_execution("icmp eq i64 %word_and") && ir.contains_execution(&int_tag),
+        "shared inline-int tag test: {ir}"
+    );
+    assert!(
+        ir.contains_execution("word_shl") && ir.contains_execution("word_sar"),
+        "shared unbox: {ir}"
+    );
+    assert!(
+        ir.contains_execution("add nsw i64"),
+        "exact payload add: {ir}"
+    );
+    assert!(
+        ir.contains_execution("molt_int_from_i64"),
+        "full-range box of the exact sum: {ir}"
+    );
+    assert!(ir.contains_execution("molt_add"), "cold runtime edge: {ir}");
+    backend
+        .module
+        .verify()
+        .expect("late-lowered function verifies in LLVM");
 }

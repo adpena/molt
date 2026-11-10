@@ -31,6 +31,7 @@ fn fixture(opcode: OpCode, args: &[LirRepr], operands: &[u32], result: LirRepr) 
         ops: vec![LirOp {
             tir_op: TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: operands.iter().copied().map(ValueId).collect(),
@@ -86,6 +87,7 @@ fn loop_fixture(lazy: bool) -> LirFunction {
         LirOp {
             tir_op: TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(3)],
@@ -98,6 +100,7 @@ fn loop_fixture(lazy: bool) -> LirFunction {
         LirOp {
             tir_op: TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Not,
                 operands: vec![ValueId(2)],
@@ -494,6 +497,7 @@ fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
             LirOp {
                 tir_op: TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![ValueId(0)],

@@ -193,6 +193,10 @@ pub enum OpCode {
     BoxVal,
     UnboxVal,
     TypeGuard,
+    // Late-TIR representation primitives and the cold runtime edge (HF-821)
+    IsInlineInt,
+    UnboxInlineInt,
+    CallRuntime,
     // Refcount
     IncRef,
     DecRef,
@@ -459,6 +463,10 @@ pub struct TirOp {
     /// Preserved wire identity, separate from untyped payload attributes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<crate::OpKind>,
+    /// The runtime entry a `CallRuntime` op calls. The verifier requires it on
+    /// `CallRuntime` and forbids it on every other op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
     /// Dialect this operation belongs to.
     pub dialect: Dialect,
     /// The operation code.
@@ -611,6 +619,20 @@ pub fn builtin_call_view<'a, T>(
 }
 
 impl TirOp {
+    /// A Molt-dialect op with no attributes, origin, runtime entry or span.
+    pub fn new(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Self {
+        Self {
+            origin: None,
+            runtime: None,
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results,
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
     pub fn exception_source_kind(&self) -> Option<super::op_kinds_generated::ExceptionEdgeKind> {
         match self.attrs.get("exception_source") {
             Some(AttrValue::Int(tag)) => {
@@ -648,6 +670,20 @@ impl TirOp {
     pub fn with_origin(mut self, origin: crate::OpKind) -> Self {
         self.origin = Some(origin);
         self
+    }
+
+    /// The runtime entry that implements this numeric op on boxed operands:
+    /// the entry of its wire identity (its origin, else its opcode's canonical
+    /// kind). An in-place opcode or origin thus selects `molt_inplace_*`, which
+    /// tries `__i<op>__` before the binary chain, as CPython requires; alias
+    /// spellings (`shl`, `unary_neg`) share their entry. One rule for every
+    /// backend and the late lowering stage.
+    pub fn numeric_runtime(&self) -> Option<crate::runtime_fn_generated::RuntimeFn> {
+        use crate::runtime_fn_generated::numeric_runtime_fn;
+        self.origin.and_then(numeric_runtime_fn).or_else(|| {
+            super::op_kinds_generated::opcode_canonical_kind_table(self.opcode)
+                .and_then(numeric_runtime_fn)
+        })
     }
 
     pub fn builtin_call(&self) -> Option<BuiltinCallView<'_, ValueId>> {
@@ -900,6 +936,7 @@ pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
     };
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: Vec::new(),
@@ -1032,6 +1069,7 @@ mod tests {
     fn retiring_poll_role_preserves_exception_payload_and_source() {
         let original = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![ValueId(7), ValueId(8)],

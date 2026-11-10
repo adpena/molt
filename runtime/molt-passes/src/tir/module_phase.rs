@@ -424,6 +424,7 @@ mod tests {
             attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
             block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -460,6 +461,7 @@ mod tests {
         let v = b.fresh_value();
         b.blocks.get_mut(&bentry).unwrap().ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],

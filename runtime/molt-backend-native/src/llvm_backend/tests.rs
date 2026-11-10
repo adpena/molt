@@ -36,6 +36,7 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
             let join = func.fresh_block();
             let rc = |opcode| TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![owner],

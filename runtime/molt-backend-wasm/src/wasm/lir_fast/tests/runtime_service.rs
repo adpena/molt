@@ -13,6 +13,7 @@ fn exception_pending_stays_lir_fast_with_bool_result_adapter() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ExceptionPending,
         operands: vec![],
@@ -270,6 +271,7 @@ fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
         let source = entry.ops[0].results[0];
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -279,6 +281,7 @@ fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
         });
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source, tag],

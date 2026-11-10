@@ -603,10 +603,12 @@ def render_py(data: dict) -> str:
     out.append(
         "    return domain == 'unboxed_scalar' and left == right and left in ('int', 'float', 'bool', 'None')\n\n"
     )
+    final_tir = set(data.get("final_tir_opcodes", []))
     intrinsic_types = {
         row["name"]: row["operand_independent_result_types"][0]
         for row in data["opcode"]
-        if len(row.get("operand_independent_result_types", [])) == 1
+        if row["name"] not in final_tir
+        and len(row.get("operand_independent_result_types", [])) == 1
         and row["operand_independent_result_types"][0]
         in {"i64", "f64", "bool", "str", "bytes", "none"}
     }

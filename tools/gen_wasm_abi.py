@@ -1460,6 +1460,21 @@ def render_runtime_fn_rs(data: dict) -> str:
             "            .map(|index| Self::ALL[index])\n",
             "    }\n",
             "}\n\n",
+            "/// Serialized by symbol, the identity the runtime exports, so a cached\n",
+            "/// TIR function stays valid while table order changes.\n",
+            "impl serde::Serialize for RuntimeFn {\n",
+            "    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {\n",
+            "        serializer.serialize_str(self.symbol())\n",
+            "    }\n",
+            "}\n\n",
+            "impl<'de> serde::Deserialize<'de> for RuntimeFn {\n",
+            "    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {\n",
+            "        let symbol = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(decoder)?;\n",
+            "        Self::from_symbol(&symbol).ok_or_else(|| {\n",
+            '            serde::de::Error::custom(format_args!("unknown runtime entry `{symbol}`"))\n',
+            "        })\n",
+            "    }\n",
+            "}\n\n",
             "pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[\n",
         ]
     )
@@ -1514,6 +1529,28 @@ def render_runtime_fn_rs(data: dict) -> str:
         variant = _wire_kind_variant(entry["runtime_name"].removeprefix("molt_"))
         lines.append(
             f"        {_rust_op_kind(entry['kind'])} => RuntimeFn::{variant}.boxed_abi(),\n"
+        )
+    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
+    imports = {entry["name"]: entry for entry in data["import"]}
+    entries = {spec["runtime_name"] for spec in specs}
+    lines.extend(
+        [
+            "\n/// The runtime entry that implements a numeric op on boxed operands: the\n",
+            "/// slow path that backends and the late lowering stage of TIR call. Its one\n",
+            "/// source is the manifest's numeric_runtime_selector rows.\n",
+            "pub const fn numeric_runtime_fn(kind: molt_ir::OpKind) -> Option<RuntimeFn> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in data.get("numeric_runtime_selector", []):
+        symbol = _runtime_export_name(imports[entry["import_name"]])
+        if symbol not in entries:
+            raise ValueError(
+                f"numeric selector {entry['kind']!r}: {symbol} is not a RuntimeFn"
+            )
+        variant = _wire_kind_variant(symbol.removeprefix("molt_"))
+        lines.append(
+            f"        {_rust_op_kind(entry['kind'])} => Some(RuntimeFn::{variant}),\n"
         )
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines).replace("molt_ir::OpKind", "crate::OpKind")

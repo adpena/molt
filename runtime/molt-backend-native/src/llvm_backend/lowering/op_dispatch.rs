@@ -119,6 +119,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::Bool);
             }
 
+            // -- Late-TIR representation primitives and the cold runtime edge
+            // (HF-821): bit-level meaning from the shared word generators.
+            OpCode::IsInlineInt => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let is_int = nanbox::boxed_word::generate_has_tag(
+                    &mut self.words(),
+                    word,
+                    nanbox::boxed_word::BoxTag::Int,
+                );
+                self.values.insert(op.results[0], is_int.into());
+                self.value_types.insert(op.results[0], TirType::Bool);
+            }
+            OpCode::UnboxInlineInt => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let raw = nanbox::boxed_word::generate_unbox_inline_int(&mut self.words(), word);
+                self.values.insert(op.results[0], raw.into());
+                self.value_types.insert(op.results[0], TirType::I64);
+            }
+            OpCode::CallRuntime => {
+                let runtime = op
+                    .runtime
+                    .expect("verified: CallRuntime carries its runtime entry");
+                match runtime.boxed_abi() {
+                    Some(abi) => self.emit_boxed_runtime_call(op, abi),
+                    None => self.emit_raw_runtime_call(op, runtime),
+                }
+            }
+
             // -- Box/Unbox --
             OpCode::BoxVal => self.emit_box(op),
             OpCode::UnboxVal => self.emit_unbox(op),

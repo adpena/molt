@@ -12,6 +12,7 @@ fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DecRef,
         operands: vec![owned],
@@ -46,6 +47,7 @@ fn lir_fast_lane_del_boundary_emits_named_dec_ref_runtime_call() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelBoundary,
         operands: vec![owned],
@@ -80,6 +82,7 @@ fn producer_proven_none_has_no_refcount_instructions_or_admission() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -90,6 +93,7 @@ fn producer_proven_none_has_no_refcount_instructions_or_admission() {
     for opcode in [OpCode::IncRef, OpCode::DecRef] {
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![owned],
@@ -130,6 +134,7 @@ fn boxed_proven_scalars_have_no_refcount_or_fallible_boxing_boundary() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -147,6 +152,7 @@ fn boxed_proven_scalars_have_no_refcount_or_fallible_boxing_boundary() {
         });
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::BoxVal,
             operands: vec![source],
@@ -156,6 +162,7 @@ fn boxed_proven_scalars_have_no_refcount_or_fallible_boxing_boundary() {
         });
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::DecRef,
             operands: vec![boxed],

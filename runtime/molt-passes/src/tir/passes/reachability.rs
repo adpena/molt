@@ -55,6 +55,7 @@ mod tests {
             .insert(BlockId(4), LoopBreakKind::BreakIfFalse);
         func.blocks.get_mut(&BlockId(3)).unwrap().ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryEnd,
             operands: vec![],
@@ -69,6 +70,7 @@ mod tests {
         };
         func.blocks.get_mut(&BlockId(6)).unwrap().ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -112,6 +114,7 @@ mod tests {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstBool,
                 operands: vec![],
