@@ -277,7 +277,7 @@ fixtures plus midend_literal_materialization_identity pass explicitly on native,
 LLVM and WASM (21 backend observations), with a closed guard. All 246 opcode
 generator tests pass and both opcode projections are current.
 
-The integrator's 08:51Z Correction accepts beneficial changes beyond the
+Historical first continuation: the integrator's 08:51Z Correction accepts beneficial changes beyond the
 A/A envelope: neutrality means no above-envelope regression. Nine current
 native cells were completed with five alternating baseline/on/raw triples and
 exact CPython stdout/exit checks. Eight have no above-envelope regression;
@@ -288,7 +288,7 @@ The batch stopped at that cell. The other thirteen native cells and current
 LLVM/WASM instruction cells remain unqualified; no deletion or implementation
 precheck was run.
 
-VERIFIED lost fact: the raw loop retains a pending-exception observation at its
+Historical lost fact, corrected below: the raw loop retains a pending-exception observation at its
 header before the first ModuleGetGlobal; on eliminates it. Text-matched native
 inspection has 289/293 loop instructions and 56/57 branches, with identical
 runtime-call maps (four release sites; no retain/literal constructor sites).
@@ -327,6 +327,38 @@ generator tests pass in the plain development environment. These include the
 loop-header obligation, preservation of the marker and impure floors, and
 rejection of invalid or duplicate table entries. They do not qualify the
 remaining instruction corpus or the final landing matrix.
+
+The 09:24Z nothrow implementation is measured at `9c8a163c40`. Native
+bench_while now has on/base -1.635583%, raw/on +0.006651% and raw/base
+-1.627254%, within its unchanged 0.011276% raw/on envelope. All 22 native
+rows completed without an above-envelope regression. LLVM bench_calls has
+on/base -5.353879% and raw/on +0.001416%, against a 0.596212% envelope.
+
+The batch stops at LLVM bench_chainmap: on/base +1.568592% exceeds its
+0.072614% envelope. Raw/on -0.044060% is within the envelope; raw/base is
++1.288231%. All five on/base pairs regress beyond that envelope; all fifteen
+executions match CPython stdout/exit and close their guards. This fails the
+separate on-arm neutrality obligation. Twenty LLVM and 21 available WASM
+instruction cells remain unmeasured, with baseline WASM Regex Redux still
+unavailable. High-noise cells remain unknown for small performance differences.
+
+VERIFIED localization: baseline/current LLVM on-arm frontend inputs are
+byte-identical (SHA-256 15ad0baaa10c0b55facbd79d9538e416bcd0730457765a59923b88e3addc831b)
+and use the same immutable runtime generation. The failure is downstream of
+Python lowering. Supplementary actual-backend fact graphs are byte-identical
+for ChainMap.__getitem__ and get; the caller and __contains__ have fewer
+string producers and release sites. Retained archive-candidate anatomy shows
+850/692 static caller-loop instructions and six/one string materialization
+sites, while full-caller stack-memory sites rise 241/267. Linked-text equality
+and a causal dynamic attribution are not established. Extended literal lifetime
+or register placement is a hypothesis, not a named proven lost fact. The report
+explicitly leaves the cause unlocalized rather than inventing one.
+
+No deletion or precheck runs after this failed oracle. An unapplied deletion
+draft based on `9c8a163c40` is preserved privately; its rendered projections and
+Ruff checks do not qualify its migrated readers or final wire boundary. Claude
+integrator owns the regression disposition, integration and retirement. The
+typed nothrow fix does not waive the separate LLVM regression.
 
 VERIFIED native bench_calls inspection products have text identical to both
 new measured arms. Their loops have 429/431 static instructions and identical
