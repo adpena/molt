@@ -221,6 +221,18 @@ crate::builtins::methods::native_method_table!(exception_method_bits, publish_ex
             fn_addr!(molt_exception_with_traceback),
             2,
         )),
+        crate::NameId::DunderSetstate => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception, crate::NameId::DunderSetstate),
+            fn_addr!(molt_exception_setstate),
+            2,
+        )),
+        crate::NameId::DunderReduce => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception, crate::NameId::DunderReduce),
+            fn_addr!(molt_exception_reduce),
+            1,
+        )),
 });
 
 /// Materialize the builtin ``__init__`` descriptor for its declaring exception
@@ -4689,6 +4701,78 @@ pub(crate) extern "C" fn molt_exception_init_owned(
         }
         let _ = storage.initialize(py, owner_root, args_bits, &names, &values);
         MoltObject::none().bits()
+    })
+}
+
+/// CPython's `BaseException_setstate`: None is a no-op; any dict (subclasses
+/// included) sets each item as an attribute, in insertion order.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_setstate(self_bits: u64, state_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(state_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let storage = match crate::object::ops::dict_backing_bits(_py, state_bits) {
+            Ok(Some(storage)) => storage,
+            Ok(None) => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "state is not a dictionary",
+                );
+            }
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let dict_ptr = obj_from_bits(storage).as_ptr().expect("dictionary storage");
+        // Own every pair first: a setter may run Python and mutate the state.
+        let pairs: Vec<(u64, u64)> = unsafe {
+            crate::builtins::containers::dict_live_entries(dict_ptr)
+                .map(|row| {
+                    inc_ref_bits(_py, row.key);
+                    inc_ref_bits(_py, row.value);
+                    (row.key, row.value)
+                })
+                .collect()
+        };
+        let mut failed = false;
+        for &(key, value) in &pairs {
+            if !failed {
+                let _ = crate::molt_set_attr_name(self_bits, key, value);
+                failed = exception_pending(_py);
+            }
+            dec_ref_bits(_py, key);
+            dec_ref_bits(_py, value);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// CPython's `BaseException_reduce`: `(type(self), self.args)`, plus the
+/// instance `__dict__` as a third item once the instance has one.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_reduce(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = obj_from_bits(self_bits).as_ptr() else {
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "descriptor '__reduce__' requires a 'BaseException' object",
+            );
+        };
+        let Some(args_bits) = exception_materialized_args_bits(_py, ptr) else {
+            return MoltObject::none().bits();
+        };
+        let class_bits = crate::builtins::type_ops::type_of_bits(_py, self_bits);
+        let dict_bits = unsafe { exception_dict_bits(ptr) };
+        let tuple_ptr = if obj_from_bits(dict_bits).as_ptr().is_some() {
+            alloc_tuple(_py, &[class_bits, args_bits, dict_bits])
+        } else {
+            alloc_tuple(_py, &[class_bits, args_bits])
+        };
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
 
