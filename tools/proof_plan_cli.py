@@ -349,7 +349,7 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
         selected = [
             family.name
             for family in plan.scheduled_families
-            if family.data["workflow"] == args.verify_scheduled
+            if family.data.get("workflow") == args.verify_scheduled
         ]
         if not selected:
             print(

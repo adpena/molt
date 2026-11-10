@@ -3,9 +3,10 @@
 
 ``config/perf_methodology.toml`` lists the methodology files, names the
 mechanics modules they may import, and locks the files' content to a
-methodology ``version``. Two boards are comparable only within one version
-(``perf_history.identity_class``), so a refactor keeps history comparable and a
-change that can move a number or a verdict starts a new comparability class.
+methodology ``version``. A board records the version it was measured under,
+so a refactor keeps boards comparable and a change that can move a number or a
+verdict starts a new comparability class. The instruction signal
+(``tools/perf_instructions.py``) keys its records on its own bytes instead.
 
 When the locked content changes, ``--check`` fails until the author decides:
 ``--bump`` (the change can move a number or a verdict) or ``--relock`` (it

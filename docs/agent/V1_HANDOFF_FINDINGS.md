@@ -764,7 +764,8 @@ work, until HF-459 closes. Each family's prior art and experiment live in
 The family table owns each typed stratum and its HF-459 axis mapping. Capacity
 requires an active engine lane for non-engine dispatch and at most one active
 apparatus lane; only landing repair or integrator ledger reasons bypass capacity.
-The read-only plan reports recorded primitive ratios or their absence.
+The read-only plan shows each engine family's instruction axes; the registry
+(`tools/perf_instructions.py`) owns the axis list and every per-op axis needs an engine owner.
 
 | Family | Stratum | HF-459 axes | Shared cause or missing authority | Open rows |
 | --- | --- | --- | --- | --- |
@@ -792,7 +793,7 @@ The read-only plan reports recorded primitive ratios or their absence.
 | V. Object reduction and serialization protocol | semantics | - | Pickle and copy restate CPython's reduce protocol privately (two pickle VMs, the encoder's own default reduce, globals written outside save_global, copy arms that return the original object) instead of consuming one object-model `__reduce_ex__` | HF-570, HF-643, HF-644, HF-645, HF-649 |
 | W. Startup and build-time initialization | engine | empty/startup | Every start reruns runtime setup and every module body; nothing evaluates deterministic initialization at build time or emits its objects as static data | HF-673, HF-507, HF-737, HF-747, HF-750 |
 | X. Object model compilation | engine | isinstance/per_op, type_dispatch/per_op, getattr_miss/per_op, memo_get/per_op, memo_set/per_op, plain_construction/per_op, new_and_update/per_op, reduce_ex/per_op | Compile methods, attributes, type tests, fixed layouts and construction on proven types; a lookup miss creates no exception | HF-680, HF-681, HF-685, HF-815 |
-| Y. Calls and frames | engine | recursion/per_op, dynamic_call/per_op | Native register or stack-array calls, lazy frames, static locations, exception propagation and inlining | HF-261, HF-561, HF-669, HF-670, HF-683, HF-684, HF-817, HF-824 |
+| Y. Calls and frames | engine | recursion/per_op, dynamic_call/per_op, raise_user/per_op, raise_runtime/per_op | Native register or stack-array calls, lazy frames, static locations, exception propagation and inlining | HF-261, HF-561, HF-669, HF-670, HF-683, HF-684, HF-817, HF-824 |
 | Z. Memory and allocation | engine | tuple_unpack/per_op, loop/per_op | Inline refcounts, eliminate scalar reference counting and short-lived allocations, and use typed suspension slots | HF-205, HF-229, HF-682, HF-808, HF-816 |
 
 | Row | V1 class |

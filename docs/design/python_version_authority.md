@@ -43,9 +43,9 @@ as a `.python-version` diff.
    `[tool.molt.dx] python`); derive or check them against the default minor.
 4. A Python pin move is one transaction: new row (tag and commit), `--refresh-sources`, the
    generators, and patch-bound evidence that must be re-measured
-   (`config/python_compatibility_error_sources.json`, `bench/primitive_ratchet.json` with the
-   `--cpython` argument in `tools/proof_plan.toml`). It must also check that uv ships a managed
-   build of the new patch before `.python-version` moves.
+   (`config/python_compatibility_error_sources.json`, and `CPYTHON_VERSION` in
+   `tools/perf_instructions.py`, the output reference of the instruction signal). It must also
+   check that uv ships a managed build of the new patch before `.python-version` moves.
 
 ## Prior art
 

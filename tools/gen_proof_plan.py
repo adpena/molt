@@ -209,7 +209,8 @@ def _scheduled_timeout_envelope_projection(
             plan,
             family.name,
             int(family.data["timeout_minutes"]) * 60,
-            job_reserve_seconds=int(family.data["job_reserve_seconds"]),
+            # A farm family has no GitHub job, so no setup reserve.
+            job_reserve_seconds=int(family.data.get("job_reserve_seconds", 0)),
         )
         for family in plan.scheduled_families
     }
@@ -453,10 +454,11 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "",
             "## Scheduled families",
             "",
-            "Scheduled workflows consume the same typed command DAG and receipt "
-            "executor without entering changed-path CI admission.",
+            "Scheduled workflows and farm runs consume the same typed command "
+            "DAG and receipt executor without entering changed-path CI "
+            "admission. A farm family runs through tools/trunk_loop.py.",
             "",
-            "| Family | Workflow job | Timeout | Commands | Reserve | Headroom | Resource | Partitions |",
+            "| Family | Workflow job or executor | Timeout | Commands | Reserve | Headroom | Resource | Partitions |",
             "|---|---|---:|---:|---:|---:|---|---:|",
         ]
     )
@@ -467,11 +469,12 @@ def _markdown_projection(plan: ProofPlan) -> str:
             plan,
             family.name,
             budget,
-            job_reserve_seconds=int(data["job_reserve_seconds"]),
+            job_reserve_seconds=int(data.get("job_reserve_seconds", 0)),
         )
         command_count = sum(command.family == family.name for command in plan.commands)
+        job = data.get("job", data["executor"])
         lines.append(
-            f"| `{family.name}` | `{data['job']}` | {budget} s | "
+            f"| `{family.name}` | `{job}` | {budget} s | "
             f"{record['projected_makespan_seconds']} s | "
             f"{record['job_reserve_seconds']} s | "
             f"{record['headroom_seconds']} s | "
@@ -486,12 +489,13 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "workflow strategy. The runner is therefore generated policy, not "
             "a second handwritten OS list. Each matrix family has its own "
             "classifier output, `<family>_matrix`, so a matrix job never "
-            "receives another family's cells.",
+            "receives another family's cells. A farm-only cell runs on an "
+            "inventoried farm host (`tools/cross_hosts.toml`), not a runner.",
             "",
             "| Cell | Runner | OS | Architecture | Python | Backend | Target | Profile |",
             "|---|---|---|---|---|---|---|---|",
             *[
-                f"| `{cell.id}` | `{cell.data['runner']}` | `{cell.data['os']}` | "
+                f"| `{cell.id}` | `{cell.data.get('runner', 'farm')}` | `{cell.data['os']}` | "
                 f"`{cell.data['arch']}` | `{cell.data['python']}` | "
                 f"`{cell.data['backend']}` | `{cell.data['target']}` | "
                 f"`{cell.data['profile']}` |"

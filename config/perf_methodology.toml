@@ -1,6 +1,6 @@
 # The perf methodology: the code and data that decide a scoreboard cell's
-# numbers and verdicts. Boards are comparable only within one `version`
-# (tools/perf_history.py identity_class). `content_sha256` locks the listed
+# numbers and verdicts. Boards are comparable only within one `version`.
+# `content_sha256` locks the listed
 # files; when they change, run `uv run python tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
@@ -33,8 +33,11 @@ schema = "molt-perf-methodology-v1"
 # v35: HF-198 carries the attached execution context through WASM host calls
 # and admits schema-qualified exports, so invocation costs can move; earlier
 # reports retain their recorded comparison class.
-version = 35
-content_sha256 = "0f446f4fa364d4c4b0e323098a75063d1ddc81f619273d731e5a8151f7360078"
+# v36: the instruction axis moves to tools/perf_instructions.py: Molt counts on
+# the farm against the nearest measured ancestor, CPython for output only, no
+# ratchet; the board-vs-history chain is retired (HF-222).
+version = 36
+content_sha256 = "190bb95c27de7a572a76e0cdebc24e98326e30f8d631aa5a712017c301b17508"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -53,16 +56,20 @@ path = "tools/perf_scoreboard.py"
 role = "classifies cells against CPython and the repeat interval"
 
 [[methodology]]
-path = "tools/perf_scoreboard_primitives.py"
-role = "declares primitive programs, instruction counters, slope normalization and the repeated-ratio ratchet"
+path = "tools/perf_primitives.py"
+role = "declares the primitive programs, their operations and per-op axes"
 
 [[methodology]]
-path = "bench/primitive_ratchet.json"
-role = "measured instruction-ratio limits and noise calibration for the declared primitive axes"
+path = "tools/perf_instructions.py"
+role = "declares the instruction workloads, counters, slope normalization, run identity, calibrated bounds and verdicts"
 
 [[mechanics]]
-path = "tools/opt_explorer.py"
-reason = "optional diagnostic cost buckets; samples never change the instruction ratchet"
+path = "tools/resource_pressure.py"
+reason = "chooses how many instruction workloads build at once; counts do not move under parallel load"
+
+[[mechanics]]
+path = "tools/molt_dev_queue.py"
+reason = "names suspect landings and restoration commands after a record is written"
 
 [[mechanics]]
 path = "src/molt/python_environment_identity.py"
@@ -93,16 +100,8 @@ path = "tools/compat/comparison.py"
 role = "decides whether Molt's output matches CPython's"
 
 [[methodology]]
-path = "tools/perf_board.py"
-role = "projects cells into the gated boards"
-
-[[methodology]]
 path = "tools/perf_authority.py"
 role = "release acceptance rules a board reports"
-
-[[methodology]]
-path = "tools/perf_history.py"
-role = "binds historical comparisons to execution engine bytes and version"
 
 [[methodology]]
 path = "src/molt/node_runtime.py"
@@ -174,10 +173,6 @@ reason = "this lock"
 [[mechanics]]
 path = "tools/import_file.py"
 reason = "binds the repository for a by-path launch"
-
-[[mechanics]]
-path = "tools/command_execution.py"
-reason = "history repository custody commands; no benchmark samples use this executor"
 
 [[mechanics]]
 path = "src/molt/process_guard.py"
@@ -286,10 +281,6 @@ role = "classifies cross-run Molt metric changes and threshold refusals"
 [[methodology]]
 path = "tools/bench_dashboard.py"
 role = "classifies cross-run baseline improvements and regressions"
-
-[[methodology]]
-path = "tools/perf_regression.py"
-role = "admits pairwise and historical trend comparisons and computes verdicts"
 
 [[methodology]]
 path = "bench/harness.py"

@@ -241,7 +241,7 @@ the lane after B1 and B2, same environment.
 |---|---|---|
 | W1 | `def add(a, b): return a + b`; `total = add(total, i)` for 20,000,000 iterations | instructions and cycles per call |
 | W2 | a `while` generator yielding `0..n-1`; `for v in gen(6_000_000): total += v` | per generator step |
-| W3 | `tools/perf_scoreboard.py primitives --cpython 3.12.16`: `recursion` and `dynamic_call`, with every other axis as a guard | per op, against CPython 3.12.16 |
+| W3 | `tools/perf_scoreboard.py instructions measure`: `recursion` and `dynamic_call`, with every other axis as a guard | Molt instructions per op; the CPython ratio stays in `call_anatomy.md` |
 | W4 | `print("hello, world")` | startup instructions |
 
 - **Counter:** `/usr/bin/time -l` instructions retired ([performance authority](../../tools/PERF_AUTHORITY.md)),

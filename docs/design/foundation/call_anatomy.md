@@ -367,7 +367,7 @@ constructor/namespace gap. The cell below compares source `ca1cdefc68c1` with
 release-output runtime, Rust 1.99.1 and Valgrind 3.22.0. It counts Callgrind
 instruction reads (`Ir`); hardware retired instructions are a separate cell.
 
-Compile each program from `tools/perf_scoreboard_primitives.py` once with
+Compile each program from `tools/perf_instructions.py` once with
 `MOLT_KEEP_SYMBOLS=1`. Capture that same executable with Callgrind at N=0 and
 10,000/20,000 actual operations (`new_and_update` receives N=100,000/200,000).
 Subtract N=0 function costs and divide by operations; loop/control work stays in

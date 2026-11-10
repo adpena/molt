@@ -38,7 +38,7 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
             return json.dumps(
                 {
                     "config": "[wsl2]\nmemory=24GB\nswap=4GB\nvmIdleTimeout=-1\n",
-                    "disk_bytes": 80 * 1024**3,
+                    "disk_bytes": host.wsl_disk_gb * 1024**3,
                     "vhdx": host.wsl_vhdx,
                     "pending": False,
                 }
@@ -47,7 +47,7 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
         def shell_command(self, script, *, timeout=60):
             scripts.append(script)
             if "lsblk -bdno SIZE" in script:
-                return str(80 * 1024**3)
+                return str(host.wsl_disk_gb * 1024**3)
             if script.startswith("df -Pk / |"):
                 return str(2 * 1024**2)
             if "flock -n" in script:
@@ -356,8 +356,12 @@ def test_wsl_root_transport_uses_stdin_and_only_the_inventoried_distro(monkeypat
     assert kwargs["input"] == script + "\n"
 
 
-@pytest.mark.parametrize("used_gib", [61, 81])
-def test_used_budget_refuses_before_disk_mutation(used_gib):
+@pytest.mark.parametrize("over_gib", [1, 21])
+def test_used_budget_refuses_before_disk_mutation(over_gib: int) -> None:
+    # Used bytes plus one proof build, then the whole cap, overrun the budget.
+    host = host_named("molt-gate")
+    used_gib = host.wsl_disk_gb - host.proof_build_gb + over_gib
+
     class Transport:
         def windows_command(self, script):
             assert "Get-ChildItem" in script
@@ -375,10 +379,10 @@ def test_used_budget_refuses_before_disk_mutation(used_gib):
             assert script.startswith("df -Pk / |")
             return str(used_gib * 1024**2)
 
-    with pytest.raises(ValueError, match="used bytes.*exceeds 80 GiB disk budget"):
-        trunk_loop.admit_wsl_profile(
-            host_named("molt-gate"), Transport(), provision_disk=True
-        )
+    with pytest.raises(
+        ValueError, match=f"used bytes.*exceeds {host.wsl_disk_gb} GiB disk budget"
+    ):
+        trunk_loop.admit_wsl_profile(host, Transport(), provision_disk=True)
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
@@ -389,6 +393,7 @@ def test_wsl_shrink_trim_compact_then_readmit_and_second_admission_does_nothing(
     disk = 1024**4
     pending = False
     fail_compact = interrupted
+    cap = host_named("molt-gate").wsl_disk_gb
 
     class Transport:
         def windows_command(self, script, **kwargs):
@@ -412,11 +417,11 @@ def test_wsl_shrink_trim_compact_then_readmit_and_second_admission_does_nothing(
                 < script.index("--shutdown")
                 < script.index("--manage")
             )
-            if "--resize 80GB" in script:
+            if f"--resize {cap}GB" in script:
                 assert "WriteAllText" in script
                 pending = True
                 assert "--terminate 'molt-gate'" in script
-                disk = 80 * 1024**3
+                disk = cap * 1024**3
             else:
                 assert "--user root -- fstrim -av" in script
                 assert (
@@ -453,7 +458,7 @@ def test_wsl_shrink_trim_compact_then_readmit_and_second_admission_does_nothing(
         host_named("molt-gate"), transport, provision_disk=True
     )
     assert first == second
-    assert first["disk_bytes"] == 80 * 1024**3
+    assert first["disk_bytes"] == cap * 1024**3
     assert len(events) == (3 if interrupted else 2)
 
 

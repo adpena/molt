@@ -24,7 +24,7 @@ and a small fixed landing suite, in staged deletions.
 | Development environment (pin + `dev` and `bench` groups) | every tool, gate, landing | the environment of the default key |
 | One environment per target CPython (3.12, 3.13, 3.14) | `tests/molt_diff.py:247-253`, `tools/compat/backends.py:742-756`, `tools/dev.py:483-499`, CI target-pythons | key `(python=X, groups=default)` |
 | One environment per dependency group (pact-witness, source-build-numpy, source-build-scipy) | `src/molt/cli/source_extension_producer.py:2347`, `tools/proof_queue_pkg/pact.py:171,603`, `command_admission.py:1386-1409` | key `(python=pin, groups=G)` |
-| Interpreter identity probe | `molt compare` (`script_commands.py:1061-1067`), `startup_bench.py:228`, `perf_scoreboard_primitives.py:501`, `cli/deps.py:35`, `python_interpreter.py` | one small module, moved out of the deleted layer |
+| Interpreter identity probe | `molt compare` (`script_commands.py:1061-1067`), `startup_bench.py:228`, `perf_instructions._resolve_cpython`, `cli/deps.py:35`, `python_interpreter.py` | one small module, moved out of the deleted layer |
 | Release interpreter provenance | `tools/release/verify_consumer.py:61-63`, `python_capture.py:54-61` | recorded from the identity probe plus `uv.lock` (already in the release payload, `compiler_payload.py:53,70`) |
 | Receipt identity for gates | `tools/proof_queue_pkg/command_identity.py:34,48,670-724` | `uv.lock` digest plus interpreter version |
 | Non-uv checkout inputs: Acorn, edgebox-typescript, Git hooks | `checkout_provisioning.py:59-61`, `ci.yml:59`, `molt-wasm-ci.yml:66` | plain idempotent install checks with their owners |

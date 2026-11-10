@@ -576,7 +576,8 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     described.add_argument("--name", required=True)
     described.add_argument("--cause", required=True)
     described.add_argument(
-        "--axes", help="comma-separated HF-459 ratchet axis keys (default: unchanged)"
+        "--axes",
+        help="comma-separated HF-459 instruction axis keys (tools/perf_instructions.py) (default: unchanged)",
     )
     recut = family_sub.add_parser("recut")
     recut.add_argument("--spec", required=True, help="JSON: describe and move lists")
@@ -590,7 +591,7 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     created.add_argument(
         "--axes",
         default="-",
-        help="comma-separated HF-459 ratchet axis keys (required for engine families)",
+        help="comma-separated HF-459 instruction axis keys (tools/perf_instructions.py) (required for engine families)",
     )
     edge = sub.add_parser("edge", help="add or remove a family dependency edge")
     edge_sub = edge.add_subparsers(dest="edge_command", required=True)

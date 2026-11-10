@@ -83,7 +83,9 @@ uv run python3 tools/perf_scoreboard.py \
   --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
 ```
 
-It is mirrored by `.github/workflows/perf-gate.yml`. Use `tools/bench.py` for
+Run it on a quiet host for release measurement; no workflow runs it. Main's
+head is watched in instructions retired by `tools/perf_instructions.py` on the
+farm (`tools/PERF_AUTHORITY.md`). Use `tools/bench.py` for
 native triage and `tools/bench_wasm.py` for WASM triage; their JSON and Markdown
 outputs are non-canonical evidence and must not be cited as PR/release
 performance authority.

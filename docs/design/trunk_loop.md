@@ -352,6 +352,26 @@ retains original bytes and hashes in
 older results. Recoverable records name exact remote allocations. Nothing
 deletes resources while process closure is unknown.
 
+The run checkout is retired after collection and the archive holds only
+`stage/<cell>/`, so the worker copies each command's declared evidence outputs
+(the paths in the receipt's evidence snapshot) into `stage/<cell>/evidence/`
+before it publishes the archive; the snapshot digests verify the copies.
+
+### Periodic cells and `--if-idle`
+
+A farm family (`executor = "farm"` in `tools/proof_plan.toml`) names no GitHub
+workflow, job or runner: trunk_loop's stage archive and `collect` are its
+evidence transport. The instruction signal (`instruction_signal`,
+`tools/PERF_AUTHORITY.md`) is the first. Its driver is the blocking
+`trunk_loop.py run --host molt-gate --commit HEAD --cell
+performance.instructions --if-idle`, issued from the clean main checkout after a
+fetch (`--no-wait` never collects or retires). `--if-idle` reads the host's
+`trunk-worker.lock` with the disk-maintenance probe (`flock -n "$lock" true`)
+before it retires earlier runs or stages anything; a held lock prints "busy;
+nothing staged, not measured" and exits 0. A lock race lost after the probe is an
+ordinary run that ends `INFRASTRUCTURE`. Landings never wait for or read a
+periodic cell. Automating the trigger is a follow-up (HF-222, F1).
+
 Run-record schema v2 removes the inventory interpreter field. Schema v3 adds
 the acknowledged worker identity. A retained record stays with the exact
 controller of its own version, named in that record; no later schema silently

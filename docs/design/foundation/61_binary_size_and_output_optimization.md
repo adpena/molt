@@ -13,6 +13,15 @@
 
 # 61 — The Size Plane: Artifact Footprint as a First-Class, Gated, Per-Backend/Profile Dimension
 
+> **Status 2026-11-10 (HF-222).** The doc-64 homes this plan extends for its
+> board and history phases are retired: `tools/perf_board.py`,
+> `tools/perf_history.py`, `tools/perf_regression.py` and
+> `bench/scoreboard/history/`. Phases 1 and 2 need a new home before they start;
+> size deltas are deterministic, so the instruction signal's model (a farm store
+> of write-once records compared with the nearest measured ancestor,
+> `tools/perf_instructions.py`) is the candidate. Phase text below names the
+> retired files as design history.
+
 > **One-line thesis.** molt already ships *seven* hand-tuned Cargo profiles and a
 > sophisticated per-crate opt-level policy, and it already has three size-measurement
 > scripts — but **size is not gated, monomorphization bloat is completely uncontrolled

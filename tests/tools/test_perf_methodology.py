@@ -100,7 +100,7 @@ def test_comparison_verdict_authorities_are_governed_not_unlocked_mechanics() ->
         "tools/bench_reporting.py",
         "tools/bench_diff.py",
         "tools/bench_dashboard.py",
-        "tools/perf_regression.py",
+        "tools/perf_instructions.py",
         "bench/harness.py",
         "src/molt/compilation_target.py",
         "src/molt/native_target.py",

@@ -51,66 +51,17 @@ baseline; release-output native Y1 = startup_tax < 100ms"). A missing budget
 means `FAIL_COLD_BUDGET` cannot fire (we never invent a budget); the measured
 tax is still recorded so the ceiling can be seeded.
 
-## The measurement PLANE — one truth, five gated projections (doc 64)
+## Regressions on main: the instruction signal
 
-`perf_scoreboard.py` is the single measurement **core**: it produces one stream
-of cells (`benchmark × target × backend × profile`). The constitution's
-"required machine-readable scoreboards" are **not** five measurement loops — they
-are five **projections** of that one stream, each a pure function with its own
-gate exit code. This is the load-bearing architectural decision (doc 64 §1
-refusal of "five separate scripts"): **five boards, one truth.**
-
-`tools/perf_board.py <source_scoreboard.json>` projects the source board into:
-
-| board | `kind` | owns | gate FAILs iff |
-|-------|--------|------|----------------|
-| **CPython** | `cpython_floor_board` | all cells | a stable+quiescent `warm_speedup < 1.00`, OR a hard engine/cold/build/run/unstable verdict (the absolute floor) |
-| **Backend** | `backend_parity_board` | all cells, grouped by backend | any lane below its own CPython floor **OR** a *cross-backend divergence* (one backend RED where another is GREEN — "a native win never excuses a wasm regression") |
-| **Profile** | `profile_parity_board` | all cells, grouped by profile | a `release-fast`/`release-output` warm RED (dev-fast warm reds are advisory — compile-latency-optimized) |
-| **PyPy** | `pypy_reference_board` | dynamic-class cells with a PyPy lane | an **un-attributed** loss (`pypy_ratio < 1.00` with no `pypy_advantage_class`). Losing is allowed; *unexplained* losing is the failure. Host absent → `ADVISORY` |
-| **Codon** | `codon_reference_board` | equivalent-semantics cells with a Codon lane | never hard-FAILs (Codon is a *ceiling*, not a floor); advises approach/match/exceed. Host absent → `ADVISORY` |
-
-The **plane gate** (`board_gate_exit_code`) is nonzero iff ANY board's
-`board_state` is `FAIL`. Because each board has its own exit code, a native win
-**cannot** hide a wasm regression and a release-output win **cannot** hide a
-release-fast regression — the asymmetry is enforced by separate verdicts, not a
-reader's diligence. PyPy/Codon comparator boards are `ADVISORY` when the host
-lacks the binary (recorded as host-absent — never a faked ratio, per
-`bench_evidence.METRIC_POLICIES`).
-
-Quiescence governs warm-RED authority (Rule 3): on a non-authoritative /
-non-quiescent source board, an absolute warm RED downgrades to `ADVISORY` (a
-contended runner cannot manufacture a blocking red); the contamination-robust
-**regression** axis is what the per-merge gate trusts there.
-
-## Board history + the regression gate (doc 64 Phase 4)
-
-The absolute floor answers "is this below CPython NOW?". The second
-Performance-Constitution triage axis — "any previously-green benchmark that
-**regressed**" — needs "previously-green" to be a queryable FACT.
-`tools/perf_history.py` provides it:
-
-- `board_identity = sha256(git_rev ‖ methodology_sha256 ‖ suite_hash ‖
-  host_class)` content-addresses each promoted board; `bench/scoreboard/history/`
-  is the committed trail (see its `README.md`). `--promote` admits only
-  authoritative, methodology-locked boards measured on origin/main; CI never
-  records.
-- `--gate` compares a candidate board against the **most recent promoted
-  baseline of its identity class** (methodology version from
-  `config/perf_methodology.toml` ‖ suite ‖ host), so a refactor that keeps the
-  methodology version keeps history comparable. A class without a baseline is
-  reported UNARMED. A cell that gated `PASS` then and `FAIL` now is
-  an **error** regression → the gate exits nonzero (CI fails). A still-passing
-  but materially slower (> 5%) cell is a **warn** drift (advisory). A
-  within-threshold delta is **not** flagged (the no-false-positive rule).
-- Only **authoritative** boards become baselines (Rule 2). The history starts
-  empty and **arms** on the first authoritative `main` run; until then the
-  regression gate is silent and the absolute floor is the sole gate.
-
-Both gates are proven falsifiable by `tools/check_perf_plane_gate.py` (a
-landing gate and the `repository.perf-plane-gate` proof-plan row): it synthesizes a CPython-red and asserts BOTH the absolute-floor gate
-and the regression gate reject it, and that an unchanged re-run is not flagged. A
-gate that cannot fail certifies nothing.
+The five-board projection (`perf_board.py`) and the board-vs-history gate
+(`perf_history.py`, `perf_regression.py`, `check_perf_plane_gate.py`) are
+retired: the weekly CI board never finished inside its runner budget and the
+history gate never armed (HF-222). "Any previously-green benchmark that
+regressed" is answered on main by the instruction signal,
+`tools/perf_instructions.py`: a farm run compares Molt's instructions retired
+with the nearest measured ancestor and names the suspect landings
+(`tools/PERF_AUTHORITY.md`, "Instruction signal on main"). This scoreboard stays
+the manual, quiet-host release measurement of the absolute CPython floor.
 
 ## Provenance — the anti-stale-lore enforcement (council ruling A + B)
 
@@ -354,9 +305,9 @@ impossible (launch dominated). The attributions this unblocks are recorded in
   parsed as measurement metadata. The CLI remains a diagnostic adapter.
 
 The scoreboard is the *new* artifact: none of the existing tools emitted the
-constitution's absolute-vs-CPython-floor board. `tools/perf_regression.py`
-detects regression-vs-self (a stored baseline); this tool measures
-absolute-vs-CPython-floor and gates on it.
+constitution's absolute-vs-CPython-floor board. The instruction signal
+(`tools/perf_instructions.py`) detects regression-vs-self on main; this tool
+measures absolute-vs-CPython-floor and gates on it.
 
 ## How to run
 
