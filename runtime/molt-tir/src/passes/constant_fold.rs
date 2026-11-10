@@ -11,6 +11,18 @@ use std::collections::BTreeMap;
 // yielding a 3-5% binary size reduction on constant-heavy code.
 // ---------------------------------------------------------------------------
 
+/// The exact i64 result of an integer `+`, `-` or `*`, or `None` when Python's
+/// result leaves i64. Such an op stays unfolded, so the backend computes the
+/// unbounded int; a wrapped fold would be a wrong value.
+fn exact_int_arith(kind: molt_ir::OpKind, a: i64, b: i64) -> Option<i64> {
+    match kind {
+        molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => a.checked_add(b),
+        molt_ir::OpKind::Sub | molt_ir::OpKind::InplaceSub => a.checked_sub(b),
+        molt_ir::OpKind::Mul | molt_ir::OpKind::InplaceMul => a.checked_mul(b),
+        _ => unreachable!("non-arithmetic op routed to exact_int_arith: {kind}"),
+    }
+}
+
 pub fn fold_constants(ops: &mut [OpIR]) {
     // Map from variable name -> known constant integer value (raw, unboxed).
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
@@ -42,13 +54,9 @@ pub fn fold_constants(ops: &mut [OpIR]) {
                 {
                     let a_val = const_ints.get(&args[0]).copied();
                     let b_val = const_ints.get(&args[1]).copied();
-                    if let (Some(a), Some(b)) = (a_val, b_val) {
-                        let result = match op.kind {
-                            molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => a.wrapping_add(b),
-                            molt_ir::OpKind::Sub | molt_ir::OpKind::InplaceSub => a.wrapping_sub(b),
-                            molt_ir::OpKind::Mul | molt_ir::OpKind::InplaceMul => a.wrapping_mul(b),
-                            _ => unreachable!(),
-                        };
+                    if let (Some(a), Some(b)) = (a_val, b_val)
+                        && let Some(result) = exact_int_arith(op.kind, a, b)
+                    {
                         op.kind = molt_ir::OpKind::Const;
                         op.value = Some(result);
                         op.args = None;
@@ -207,13 +215,9 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                 {
                     let a_val = const_ints.get(&args[0]).copied();
                     let b_val = const_ints.get(&args[1]).copied();
-                    if let (Some(a), Some(b)) = (a_val, b_val) {
-                        let result = match op.kind {
-                            molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => a.wrapping_add(b),
-                            molt_ir::OpKind::Sub | molt_ir::OpKind::InplaceSub => a.wrapping_sub(b),
-                            molt_ir::OpKind::Mul | molt_ir::OpKind::InplaceMul => a.wrapping_mul(b),
-                            _ => unreachable!(),
-                        };
+                    if let (Some(a), Some(b)) = (a_val, b_val)
+                        && let Some(result) = exact_int_arith(op.kind, a, b)
+                    {
                         op.kind = molt_ir::OpKind::Const;
                         op.value = Some(result);
                         op.args = None;

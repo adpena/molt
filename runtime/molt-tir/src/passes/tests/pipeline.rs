@@ -118,3 +118,58 @@ fn pipeline_leaves_extern_functions_untouched() {
     run_simple_ir_pipeline(&mut ir, &TargetInfo::native_release_fast());
     assert_eq!(kinds(&ir), kinds(&original));
 }
+
+/// Both integer folders fold an exact `+`, `-` or `*` and keep one whose
+/// Python result leaves i64. Each overflowing case wraps to an inline int in
+/// i64 (-2, 1, 0, -2**18, 0), so a wrapping fold would yield a wrong small int.
+#[test]
+fn integer_folds_keep_ops_whose_result_leaves_i64() {
+    use molt_ir::OpKind::{Add, InplaceAdd, InplaceMul, InplaceSub, Mul, Sub};
+    let cases = [
+        (Add, i64::MAX, i64::MAX),
+        (Sub, i64::MIN, i64::MAX),
+        (Mul, 1 << 40, 1 << 40),
+        (Mul, (1 << 46) - 1, 1 << 18),
+        (InplaceMul, -(1 << 46), 1 << 18),
+        (InplaceSub, -(1 << 46), 1 << 46),
+        (InplaceAdd, (1 << 46) - 1, (1 << 46) - 1),
+        (Mul, 3_037_000_499, 3_037_000_499),
+    ];
+    let folders: [(&str, fn(&mut [OpIR])); 2] = [
+        ("fold_constants", fold_constants),
+        ("fold_constants_cross_block", fold_constants_cross_block),
+    ];
+    for (folder, fold) in folders {
+        for (kind, a, b) in cases {
+            let constant = |out: &str, value: i64| OpIR {
+                value: Some(value),
+                ..op(molt_ir::OpKind::Const, Some(out), None, &[])
+            };
+            let mut ops = vec![
+                constant("a", a),
+                constant("b", b),
+                op(kind, Some("r"), None, &["a", "b"]),
+                op(molt_ir::OpKind::Ret, None, None, &["r"]),
+            ];
+            fold(&mut ops);
+            let exact = match kind {
+                Add | InplaceAdd => i128::from(a) + i128::from(b),
+                Sub | InplaceSub => i128::from(a) - i128::from(b),
+                _ => i128::from(a) * i128::from(b),
+            };
+            let result = &ops[2];
+            match i64::try_from(exact) {
+                Ok(value) => assert_eq!(
+                    (result.kind, result.value),
+                    (molt_ir::OpKind::Const, Some(value)),
+                    "{folder}: {kind} {a} {b} folds to its exact value"
+                ),
+                Err(_) => assert_eq!(
+                    (result.kind, result.args.as_deref()),
+                    (kind, Some(&["a".to_string(), "b".to_string()][..])),
+                    "{folder}: {kind} {a} {b} leaves i64 and stays"
+                ),
+            }
+        }
+    }
+}
