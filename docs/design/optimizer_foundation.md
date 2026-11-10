@@ -143,6 +143,342 @@ The findings ledger owns current qualification. The
 [single typed IR migration](foundation/77_architecture_convergence.md#b-one-typed-ir-as-the-backend-input)
 owns retirement of the overlapping Python and Rust optimizers.
 
+## Python SCCP/CSE retirement (HF-773 slice E)
+
+Status: proposed, 2026-11-09; implementation requires the integrator's Goldfish
+review. This section specifies the migration; the coverage contract above
+describes the current implementation. The findings ledger owns qualification.
+The integration owner lands and retires the lane; the assigned worker owns its
+measurements and proofs. D0 remains diagnostic-only. This migration does not
+implement guarded-call specialization or change the inliner's execution-context
+admission (HF-824).
+
+### Problem, evidence and alternatives
+
+The frontend and TIR both compute constant, expression-identity and executable-
+edge facts. Retiring the Python owner must remove repeated analysis and its
+selection machinery while preserving observable behavior and generated-program
+performance. The target is one optimizer, rather than another faster Python
+solver or a new Rust service called separately from the TIR pipeline.
+
+Historical measurement, retained in HF-572's round-2 report: a full-coverage
+native release build of `loop` took 113.653 s and 1,794.17 MiB guarded process-tree
+peak RSS. Inclusive Python pass observations were CSE 24.600 s (including its
+23.061 s solver), SCCP solver 22.992 s (also nested in other stages), edge
+threading 11.065 s, prune 5.809 s, DCE 1.431 s, post-CSE DCE 1.283 s and verifier
+0.840 s. These times overlap; summing them is invalid. Compiler-process sampled
+RSS and guarded process-tree RSS have different scopes. This is VERIFIED
+historical evidence at the report's recorded producer bytes, not a measurement
+of the current default build.
+
+Current-source inspection is INFERRED until measured on the merged source:
+`_run_ir_midend_passes` bypasses stdlib bodies before coalescing or optimization.
+Other bodies enter the fixed-point driver. Module entries normally select A,
+ordinary functions B and bodies of at least 1,800 ops C; explicit overrides and
+PGO promotion can change those choices. All profile/tier defaults enable CSE
+and deep edge threading. Required SCCP/CFG/DCE work drains by default; nominal
+round counts calibrate optional CSE's deterministic work budget. Exhausting that
+budget disables CSE. Explicit diagnostic caps and verifier rejection/fallback
+are separate loss mechanisms. A tier label alone therefore cannot establish
+which passes actually executed.
+
+Reuse the landed Wegman-Zadeck SCCP and its copy/publication and nullness facts,
+the existing scoped GVN, memory GVN, effect/ownership authorities, analysis
+invalidation and pass timing. Prior design and review: the integrator's
+`logs/agents/hf773-sccp/design.md`, revision 2, and its slice-2 consumer/precision
+inventory. Its proposal to leave Python edge-thread consumers with empty or
+structural facts is superseded here: generic optimizations are retired with
+their consumers; only demonstrated wire-format obligations remain in Python.
+[LLVM SCCP](https://llvm.org/docs/Passes.html#sccp-sparse-conditional-constant-propagation)
+combines value propagation and dead-edge discovery; its
+[GVN](https://llvm.org/docs/Passes.html#gvn-global-value-numbering) removes
+redundant computations. These support reusing the existing TIR owners; they do
+not prove parity for Molt's Python effects, exceptions or ownership.
+
+Alternatives and their concrete costs:
+
+- Keep Python SCCP as CSE's seed: retains duplicate fact ownership and nested
+  solving. Rejected even if a small sample's compile time looks acceptable.
+- Port the Python object-graph pipeline verbatim: preserves name-keyed maps,
+  repeated CFG walks and a second pass manager. Rejected; extend existing TIR
+  passes only for measured gaps.
+- Delete the entire frontend mid-end immediately: can discard valuable heap-
+  read CSE or wire PHI/exception/region normalization. Rejected before A/B and
+  ingress proof. A narrow first deletion remains admissible only with complete
+  consumer retirement and evidence for its own fact family.
+- Emit TIR directly or migrate SimpleIR/backend lowering in this slice: a wider
+  ingress/ABI migration with reserved-path owners. Deferred to architecture
+  convergence; do not solve an exposed backend conflict by opening another lane.
+
+### Mechanism and global invariants
+
+1. **One fact owner.** SCCP owns immutable constants and executable-edge value
+   facts; GVN owns pure computation identity; memory GVN/effects own reusable
+   heap observations. A measured missing fact extends its existing TIR owner,
+   never a Python compatibility solver. No cache, environment knob or second
+   optimizer is added. Registered op/effect rules remain generated from
+   `runtime/molt-ir/src/tir/op_kinds.toml`.
+2. **Semantics before deletion.** Preserve exception order, callbacks, missing
+   values, arbitrary-precision arithmetic, singleton/object identity, ownership,
+   mutation and resume edges. An annotation is not an exact-type proof. A read
+   separated from another by a possible writer is not reusable without the
+   existing memory-state proof. Retain distinct semantics at sibling sites.
+3. **Structural ingress remains explicit.** Frontend lowering must still emit
+   admissible wire regions, labels, PHIs, exception routing and suspended-value
+   transport. A structurally required rewrite stays at its current owner until
+   the ingress changes. No branch/value fact is fabricated to satisfy a retired
+   API. Verification needed by retained lowering remains; verification serving
+   only a deleted speculative rewrite is removed with that rewrite.
+4. **Typed facts and existing boundaries.** TIR facts use `ValueId`, `BlockId`,
+   `OpCode`, `TerminatorEdge` and existing closed effect/lattice types. New closed
+   roles belong at their existing generating authority. Python `MoltOp` keeps
+   its current typed frontend kind at the wire boundary. No new string-keyed
+   facts, untyped dictionaries, `Any`, validators-as-types or spelling-based
+   lowering are introduced.
+5. **Indivisible retirement.** Delete the displaced algorithms, their private
+   helpers/state, policy choices, caps, counters, environment registrations,
+   cache-key fields, worker transport and implementation-pinning tests together.
+   Preserve unrelated language semantics tests and build diagnostics. Generated
+   protocols/registries are regenerated from their sources. Retained diagnostics
+   describe actual lowering or TIR work; Python pass absence cannot be reported
+   as a full execution of that pass.
+6. **Evidence has an identity.** Record source/patch, toolchain, environment,
+   workload/input, backend/profile, artifact and counter scope for every A/B.
+   An old D0 or HF-572 receipt establishes only its recorded cell. A missing
+   counter or failed run is unknown/failure, never zero cost or preserved speed.
+
+The skeleton binds existing owners and signatures; placeholder bodies below
+are specification only. No executable stub is added. The Python entry retains
+only obligations admitted by invariant 3; it does not call the retired CSE or
+SCCP pipeline. Specific TIR transfer-function changes require a measured missing
+fact and a settled semantic contract, so none is invented in this skeleton.
+
+```python
+# src/molt/frontend/lowering/midend_pipeline.py
+class MidendPipelineMixin(GeneratorMixinBase):
+    def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
+        """Normalize frontend wire obligations, without optimizing SSA facts.
+
+        Requires: language lowering has emitted typed MoltOp kinds (I-3, I-4).
+        Ensures: retained region/PHI/exception/resume ingress obligations hold;
+        constants, CSE and executable-edge facts have only TIR owners (I-1,
+        I-2, I-3). No policy tier or budget selects an optimizer here (I-5).
+        Raises: the existing lowering diagnostic on malformed structural input;
+        no speculative optimizer rollback hides a lowering defect (I-3).
+        """
+        ...
+```
+
+```rust
+// Existing public entry signatures, in sccp/mod.rs, gvn/engine.rs, dce/engine.rs.
+// Each is shown inside its existing module; no replacement module is created.
+
+/// Requires: valid typed SSA, full exception edges and metadata (I-2, I-4).
+/// Ensures: immutable value/edge facts only; missing values, loop carriers,
+/// effects and observable identity remain sound (I-1, I-2).
+/// Panics: only on an existing violated IR invariant, never as feature detection.
+pub fn run(func: &mut TirFunction) -> PassStats { todo!() } // SCCP
+
+/// Requires: analyses belong to this function's current CFG (I-2, I-4).
+/// Ensures: replacements dominate uses and preserve ownership/effects;
+/// heap observations use the existing memory authority (I-1, I-2).
+/// Panics: only on an existing violated IR invariant.
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+    todo!()
+} // GVN
+
+/// Requires: valid use-def, exception and ownership metadata (I-2, I-4).
+/// Ensures: removes only unobservable dead work; preserves metadata roots
+/// and fallible operations whose exceptions remain observable (I-1, I-2).
+/// Panics: only on an existing violated IR invariant.
+pub fn run(func: &mut TirFunction) -> PassStats { todo!() } // DCE
+```
+
+Closed facts in the skeleton are the existing Rust IDs/enums and Python kinds;
+`list[MoltOp]` is an ordered transport sequence, not a fact dictionary. No new
+string/`dict`/`Any` fact carrier is proposed. Existing legacy name maps disappear
+with their solver; remaining wire names are an ingress limitation, not a second
+source of optimization facts. Existing generators and consumer gates check
+projections and stale contracts; source review must additionally establish
+single ownership, which behavioral output tests alone cannot prove.
+
+### Representation, cost and admission sequence
+
+No TIR pass is changed by this proposal commit. The following inventory is
+INFERRED from source, with no fresh largest-program cost claim. For every pass
+actually changed, record its measured elapsed time, allocations/RSS limitations,
+and largest program/function dimensions before and after. Reuse `PassStats.elapsed`
+and existing pass-delta facilities rather than adding a profiler.
+
+| Existing owner | Representation and algorithm | Cost obligation |
+| --- | --- | --- |
+| SCCP | Typed IDs in hash maps/sets; edge and SSA-value vector worklists; incremental meet | Work follows changed lattice uses and executable edges; bounded lattice height alone does not bound operand/constant evaluation or guard queries. Measure those costs. |
+| GVN | Scoped hash tables and undo vectors; iterative dominator-tree traversal | Expected linear table work in visited operations/operands, plus key construction, dominance and exact-type analysis; no worst-case linear claim. |
+| DCE | Hash-map use counts, per-block vectors; reverse scan, at most ten global rounds | Up to ten whole-function use/operation scans plus metadata reachability; a round cap is not proof of a complete fixed point. |
+| Copy propagation | Typed-ID hash map/set; at most twenty chain-flattening rounds | Repeated map scans plus operand rewriting; measure chain and largest-program behavior if changed. |
+| Canonicalization | Typed-ID constant/source maps; function scans | Account for operand/key/type-analysis cost, not just operation count. |
+| Block-argument pruning | Hash-set liveness, ordered dead-position map; repeated edge scans to stability | Cost scales with propagation depth times edge-payload visits; preserve terminal ownership-phase placement. |
+| Exception-check elimination | Typed-ID maps/sets; whole-CFG pending-state scans to stability | Include map reconstruction and iteration count; preserve exception-target entry state. |
+
+1. After review, preflight the actual child toolchain, selected interpreter,
+   target runtimes, counters and source/artifact identity before expensive work.
+   Measure unchanged default `loop`, `bench/bench_chainmap.py` and
+   `examples/hello.py` builds, recording the exact loop source from retained
+   evidence (do not silently substitute a similarly named workload). Use fresh
+   per-program artifact/cache roots under lane scratch. Record cold product
+   state separately from warm compiler/toolchain and OS caches. Use
+   `MOLT_MIDEND_STATS=1` and `MOLT_BUILD_DIAGNOSTICS_FILE` for profiled runs;
+   report observer overhead separately from uninstrumented default wall/RSS.
+   Report actual per-function coverage, passes, tier/budget/degrade/fallback
+   decisions and exclusive outer mid-end time, without summing nested solvers.
+2. Keep an exact scratch-only disabling patch and its digest. Disable the
+   coupled Python SCCP/CSE/edge-thread transformations, including the CSE solver's
+   nested SCCP and facts used by prune; retain structural normalization and
+   unrelated lowering. Add no flag/environment variable. The patch and resulting
+   ingress must be audited before comparing runtimes. Use an authorized scratch
+   source snapshot and existing build custody, not a second integration lane.
+3. Compare the same CPython-running `bench/` workloads in alternating A/B pairs,
+   preserving source, inputs and backend/profile. Measure program instructions
+   and runtime calls per iteration where a hot path is implicated. On macOS,
+   `/usr/bin/time -l` counters cover the measured process; multiprocessing needs
+   a demonstrated whole-workload scope. Record exact outputs/exit and applicable
+   stderr policy against the independently identified CPython oracle before
+   admitting a pair. Use the existing performance runners and methodology;
+   scratch diagnostics do not publish authoritative release performance.
+4. Run owning differentials with the pipeline disabled on native, LLVM and WASM.
+   For each instruction regression, use existing TIR dumps/pass deltas to name
+   the lost fact, op kinds, effect premise and canonical Rust owner. Include
+   bigint, singleton/heap identity, MISSING, type/truth predicates, heap reads,
+   loops, exception joins and suspension siblings in this analysis. Do not assume
+   pure GVN subsumes Python heap-read CSE. A fact requiring a reserved path or
+   unsettled semantic decision returns to the integrator with measured evidence.
+5. Close admitted gaps in existing Rust passes with CPython differential
+   programs, then delete the displaced Python family and every consumer in
+   one change. Compare final deletion against the same base; a disabling patch
+   is not the final implementation's performance receipt. Classify all remaining
+   frontend helpers as required lowering or optimization awaiting retirement,
+   with specific producer/consumer evidence. Do not move SimpleIR-required work.
+
+Before implementation, `_align_phi_args_to_cfg_predecessors`,
+`_ensure_structural_cfg_validity`, `_canonicalize_structured_regions_pre_sccp`,
+`_normalize_try_except_join_labels`, label cleanup and exception-check coalescing
+are candidates for retained ingress obligations, not a blanket retention list.
+Their current composition in `_canonicalize_cfg_before_optimization` mixes
+normalization and optimizations; prove each retained action. Generic branch
+pruning, tail merging, unreachable-region removal, loop threading, value
+numbering and trivial-constant DCE belong to the retirement inventory. Audit
+all callers before deleting definite-assignment verification or unique-result
+analysis: their existence in a mid-end module does not establish sole ownership.
+
+### GoldfishContext: consumer and proof closure
+
+The review must challenge the following concrete authorities and their real
+readers, rather than treating deletion of a pipeline call as complete migration.
+Paths below extend the starting aperture where necessary; reserved descendants
+remain excluded. No new registry, runner or proof cell is proposed.
+
+- Algorithms/assembly: all seven `src/molt/frontend/lowering/midend_*.py`
+  modules; `src/molt/frontend/__init__.py`, `_types.py`, `cfg_analysis.py`,
+  `value_liveness.py`, and `lowering/serialization.py`. Remove SCCPResult,
+  CanonicalizationState and sentinel/helper families only with their last reader.
+- TIR owners: `runtime/molt-passes/src/tir/passes/{sccp,gvn,dce,
+  block_arg_prune,check_exception_elim}`, and its `mem_gvn.rs`, `copy_prop.rs`,
+  `canonicalize.rs`, `effects.rs` and `value_identity.rs`;
+  `runtime/molt-passes/src/tir/{type_refine.rs,pass_manager.rs}`.
+  `runtime/molt-ir/src/tir/op_kinds.toml` and `tools/gen_op_kinds.py` own any
+  measured new opcode property; do not edit reserved runtime-function outputs.
+- Protocol sibling/import lists: `tools/gen_protocol.py` and
+  `tools/generator_manifest.toml`; regenerate frontend `_protocol.py` and
+  `_protocol_attrs.py`. Registry: `src/molt/environment_registry.toml`,
+  `tools/gen_environment_registry.py`, generated `src/molt/_environment_registry.py`
+  and `docs/environment-variables.generated.md`. The same generator also owns
+  `src/molt/guard_stems_generated.py`,
+  `runtime/molt-host-process/src/host_process_environment_generated.rs` and
+  reserved `runtime/molt-runtime/src/runtime_flags_generated.rs`; inspect its
+  output and return any required reserved-path change to the integrator.
+  Remove all retired MIDEND/SCCP/CSE
+  keys with their readers; `MOLT_MIDEND_STATS` survives only if retained work
+  still consumes it meaningfully. No new environment variable is proposed.
+- Cache/fingerprint and capture/closure transport: `src/molt/cli/module_cache.py`
+  (`midend_policy` key and persisted coverage), `cache_fingerprints.py`,
+  `build_inputs.py`, `models.py`, `frontend_worker.py`, `frontend_pipeline.py`,
+  `frontend_execution.py`, `backend_output_pipeline.py`, `build_diagnostics.py`.
+  Preserve semantic compiler/source/target identity and reject stale products;
+  do not accept fabricated empty optimizer outcomes as old full coverage.
+  Inspect `_FRONTEND_COMPILER_INPUTS` roles and source-closure discovery in
+  `cache_fingerprints.py` when deleting a module; do not retain a dead producer
+  row or classify an optimization producer as reporting to avoid invalidation.
+- Hand-written proof lists and projections: `tools/proof_plan.toml` authority
+  inputs, frontend path globs/test lists and `tir-midend` cell;
+  `tools/gen_proof_plan.py` and its manifest outputs if those inputs change;
+  `tools/generator_manifest.toml` source lists and
+  `tools/generator_manifest_baseline.json` if an owned generator retires.
+- Direct tests/fakes: `tests/test_frontend_midend_passes.py`,
+  `test_frontend_literal_identity.py`, `test_frontend_package_composition.py`,
+  `test_opcode_literal_payloads.py`, `determinism/test_ir_determinism.py`,
+  `model_based/test_model_smoke.py`; under `tests/cli/`,
+  `test_cli_module_frontend_shared_cache.py`,
+  `test_cli_build_diagnostics_authority.py`,
+  `test_cli_frontend_execution_authority.py`,
+  `test_cli_frontend_integration_authority.py`,
+  `test_cli_frontend_scc_scheduling.py`,
+  `test_cli_backend_output_pipeline_authority.py`,
+  `test_cli_binary_image_closure.py`, `test_cli_import_collection.py`,
+  `test_cli_smoke.py`, `test_cli_runtime_callable_symbols_authority.py` and
+  `test_native_object_publication.py`.
+  Their fake generators, worker results and persisted cache records must use
+  the real retained boundary. Preserve language/identity/resume tests; retire
+  assertions whose only contract is Python CSE policy or optimized frontend shape.
+- Existing tools/models: `tools/frontend_hot_pass_profile.py`, `bench_wasm.py`,
+  `translation_validator.py`, `quint_trace_to_tests.py`, `check_formal_methods.py`,
+  `formal/quint/molt_midend_pipeline.qnt`, `molt_optimization_pipeline.qnt`,
+  `tests/test_translation_validator_unit.py`, `test_check_formal_methods_tool.py`
+  and `tests/tools/test_formal_correspondence_truth.py`. Retire obsolete Python
+  pipeline correspondence and last-consumer paths; preserve models/validators
+  still proving the Rust fact family. Generic pass names alone are not obsolete.
+- Public contracts: this document, `docs/OPERATIONS.md`, `BENCHMARKING.md`,
+  `docs/spec/areas/compiler/0100_MOLT_IR.md`, the frontend architecture designs
+  and architecture convergence section B. Inspect
+  `config/public_contract_v1.surface.json` for affected symbol references.
+  The HF-773 row in `docs/agent/V1_HANDOFF_FINDINGS.md` alone owns progress.
+
+Use existing consumer gates, generator write/check and changed-reader pytest
+selection (at most four workers). Test plausible defects with independent
+language programs: constants across feasible/infeasible joins and loops;
+overloaded arithmetic versus exact scalars; mutation/callback invalidation;
+exceptions from apparently dead values; missing/unbound reads; PHI transport;
+generators/coroutines resuming through exception regions; literal identity.
+Run the owning programs through `tests/molt_diff.py` for native, LLVM and WASM;
+backend/profile/target prerequisites must be observed before admission.
+
+For changed Rust crates, the existing changed-crate gate owns whole-library
+tests and reverse dependencies in declared feature/profile cells, plus selected
+Clippy/build checks. Use the plain landing environment, not sourced lane
+selectors, for changed tests and `molt_dev.py land --precheck-only`. Run that
+handoff gate once on the final implementation, and repeat only for a changed
+input, new failure or uncovered obligation. The design-only review handoff is
+not a precheck-green implementation claim.
+
+### Risks, limits and completion
+
+The principal risks are hidden wire normalization, Python facts not yet modeled
+in TIR, heap/effect unsoundness, stale cached products, altered diagnostics and
+loss of verification around retained lowering. Invariants 1–6 and the consumer
+closure above address these at their owners. Full default and historical
+full-coverage comparisons answer different questions; neither substitutes for
+the other. Largest-program TIR cost, default wall/RSS share and instruction
+parity remain unmeasured in this proposal. No security boundary, supported
+dynamic-execution policy or host-interpreter dependency is expanded.
+
+The post-review checkpoint consists of preserved D0, completed default and
+scratch-disable measurements, and the first coherent deletion those results
+justify, with complete consumers and a green landing precheck. Full retirement
+of SCCP/CSE/edge-thread and after/base qualification is the assigned end state;
+a partial checkpoint must identify remaining families without claiming that end
+state. Reserved-path conflicts or a measured fact needing an unsettled semantic
+decision return to the integrator. The required design review is a separate
+handoff before implementation; its settled findings arrive in the live brief.
+
 ## What "better than each" technically requires
 - **vs Nuitka** (full CPython compat, but slow — inherits CPython's runtime/object model via
   libpython): molt keeps the compatibility but has its OWN runtime, so the win comes from an
