@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    TAG_BOOL, TAG_INT, TAG_NONE, TAG_PENDING, TAG_PTR, box_int_bits, fits_inline_int, is_int_bits,
-    tag_bits, unbox_inline_int_bits,
+    TAG_BOOL, TAG_INT, TAG_NONE, TAG_PENDING, TAG_PTR, box_bool_bits, box_int_bits,
+    fits_inline_int, is_bool_bits, is_int_bits, tag_bits, unbox_bool_bits, unbox_inline_int_bits,
 };
 
 /// Evaluates the primitives on concrete 64-bit words.
@@ -210,5 +210,24 @@ fn the_composed_add_and_sub_lanes_match_exact_arithmetic() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn bool_words_unbox_to_their_runtime_truth_value() {
+    for value in [0_i64, 1] {
+        let word = box_bool_bits(value) as u64;
+        assert!(generate_has_tag(&mut Evaluate, word, BoxTag::Bool));
+        assert_eq!(
+            generate_unbox_bool(&mut Evaluate, word),
+            unbox_bool_bits(word) != 0
+        );
+    }
+    for word in sweep_words().into_iter().filter(|&w| is_bool_bits(w)) {
+        assert_eq!(
+            generate_unbox_bool(&mut Evaluate, word),
+            unbox_bool_bits(word) != 0,
+            "{word:#x}"
+        );
     }
 }

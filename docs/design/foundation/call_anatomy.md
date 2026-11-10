@@ -68,9 +68,10 @@ code (stage 1) and traceback location decoding (`LocationRows`) at the top of `e
 The TIR, the SimpleIR passes, the module phase, the runtime, the refcount algorithm and the
 generated ABI tables are shared. Op lowering is not: Cranelift (57k lines) and WASM (100k) lower a
 SimpleIR copy rebuilt from TIR; LLVM (27k) lowers TIR. Each writes its own guarded call, NaN-box
-integer helpers, truthiness, poll, exception check, frame enter and location store. LLVM has no
-guarded direct call and no tag-check integer lane, so it runs 17-28% slower than Cranelift on calls
-(`bench_fib` 0.30 against 0.235 s, interleaved, release, macOS arm64). Evidence:
+integer helpers, truthiness, poll, exception check, frame enter and location store. On the
+2026-11-09 survey LLVM had no guarded direct call and no tag-check integer lane, so it ran 17-28%
+slower than Cranelift on calls (`bench_fib` 0.30 against 0.235 s, interleaved, release, macOS
+arm64); the late stage now gives LLVM the integer lane (status below). Evidence:
 logs/agents/backend-sharing-survey.md; design: logs/agents/shared-lowering/design.md; row HF-821.
 
 End state (2026-11-09 re-plan, owner: engineer for the optimal end state, no transitional debt):
@@ -94,9 +95,15 @@ Status (2026-11-10): C1 landed (229180b0b): one set of NaN-box word generators i
 string runtime-name matches for numeric fallbacks are deleted. `bench_fib`, LLVM release, macOS
 arm64: 8.77 to 8.53 billion instructions retired (-2.7%, VERIFIED, three interleaved runs per
 binary, output identical); molt_diff on 13 integer programs passes native 13/13, LLVM 13/13, WASM
-12/13 (the one failure was HF-826, fixed on main). Next: C3 truthiness (also settles HF-829), C4
-comparisons, C5 `Mul` with a cheap exact test; WASM moves once the stage covers its lane parity
-checklist.
+12/13 (the one failure was HF-826, fixed on main). C3 landed (8763d0b60): truthiness of bool and
+inline-int words without a runtime call. C2b and C4 (HF-821 lane): a boxed operand with a literal
+(`n - 1`) tests only the boxed word; `==`, `!=`, `<`, `<=`, `>`, `>=` compare inline payloads; the
+fifth primitive `BoxInlineInt` boxes a window value without raising; the stage now runs after the
+terminal type refinement, so an expanded int keeps its `I64` type. `bench_fib`, LLVM release,
+macOS arm64, against C3: 8.40 to 7.57 billion instructions retired (-9.9%, VERIFIED, three
+interleaved runs per binary, output identical); user time 0.25 to 0.23 s, below Cranelift's 0.235 s
+(row above). Next: C5 `Mul` with a cheap exact test; list index and store fast paths (fannkuch's hot
+path); WASM moves once the stage covers its lane parity checklist.
 
 ## Whole-pipeline structure (mapped 2026-11-10)
 

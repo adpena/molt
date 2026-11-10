@@ -137,6 +137,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(op.results[0], raw.into());
                 self.value_types.insert(op.results[0], TirType::I64);
             }
+            OpCode::IsBoolWord => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let is_bool = nanbox::boxed_word::generate_has_tag(
+                    &mut self.words(),
+                    word,
+                    nanbox::boxed_word::BoxTag::Bool,
+                );
+                self.values.insert(op.results[0], is_bool.into());
+                self.value_types.insert(op.results[0], TirType::Bool);
+            }
+            OpCode::UnboxBoolWord => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let truth = nanbox::boxed_word::generate_unbox_bool(&mut self.words(), word);
+                self.values.insert(op.results[0], truth.into());
+                self.value_types.insert(op.results[0], TirType::Bool);
+            }
+            OpCode::BoxInlineInt => {
+                let value = self.ensure_i64(self.resolve(op.operands[0]));
+                let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);
+                self.values.insert(op.results[0], word.into());
+                self.value_types.insert(op.results[0], TirType::DynBox);
+            }
             OpCode::CallRuntime => {
                 let runtime = op
                     .runtime

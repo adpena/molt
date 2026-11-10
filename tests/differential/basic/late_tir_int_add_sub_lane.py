@@ -93,3 +93,35 @@ negative = -LIMIT + 2
 for step in range(4):
     negative -= 1
 print(negative, negative + 1, negative - LIMIT)
+
+
+# One boxed operand and one literal: only the boxed word is tag-tested.
+def plus_one(x):
+    return x + 1
+
+
+def one_minus(x):
+    return 1 - x
+
+
+def plus_top(x):
+    return x + 70368744177663  # LIMIT - 1, the top of the inline window
+
+
+def minus_bottom(x):
+    return x - -70368744177664  # -LIMIT, the bottom of the inline window
+
+
+def plus_past(x):
+    return x + 70368744177664  # LIMIT, past the window
+
+
+for x in EDGES + [True, False, Meters(3)]:
+    for f in (plus_one, one_minus, plus_top, minus_bottom, plus_past):
+        value = f(x)
+        print(f.__name__, value, type(value).__name__)
+for value in ("x", 1.5, None):
+    try:
+        print(plus_one(value))
+    except TypeError as error:
+        print("TypeError", error)

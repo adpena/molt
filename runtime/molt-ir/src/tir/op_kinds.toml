@@ -1490,6 +1490,9 @@ gvn_always_numberable_opcodes = [
     # Late-TIR primitives: pure and total on every word (HF-821).
     "IsInlineInt",
     "UnboxInlineInt",
+    "IsBoolWord",
+    "UnboxBoolWord",
+    "BoxInlineInt",
 ]
 
 gvn_type_gated_numberable_opcodes = [
@@ -1543,7 +1546,14 @@ gvn_numberable_attr_key_opcodes = [
 # final_tir_opcodes: produced only by the late lowering stage of TIR for targets
 # whose backend consumes final TIR (HF-821). They never cross the SimpleIR wire
 # and carry no frontend facts.
-final_tir_opcodes = ["IsInlineInt", "UnboxInlineInt", "CallRuntime"]
+final_tir_opcodes = [
+    "IsInlineInt",
+    "UnboxInlineInt",
+    "IsBoolWord",
+    "UnboxBoolWord",
+    "BoxInlineInt",
+    "CallRuntime",
+]
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
 # useful as a proven-map seed. This is intentionally separate from
@@ -1644,6 +1654,13 @@ fast_path_expansion_rules = [
     { opcode = "InplaceAdd", rule = "int_add" },
     { opcode = "Sub", rule = "int_sub" },
     { opcode = "InplaceSub", rule = "int_sub" },
+    { opcode = "Eq", rule = "int_compare" },
+    { opcode = "Ne", rule = "int_compare" },
+    { opcode = "Lt", rule = "int_compare" },
+    { opcode = "Le", rule = "int_compare" },
+    { opcode = "Gt", rule = "int_compare" },
+    { opcode = "Ge", rule = "int_compare" },
+    { opcode = "Bool", rule = "truthiness" },
 ]
 
 value_range_transfer_rules = [
@@ -3618,6 +3635,8 @@ result_absorbs_operands = false
 # Late-TIR representation primitives (HF-821): produced only by the final
 # lowering stage for targets whose backend consumes final TIR. IsInlineInt is
 # total; UnboxInlineInt is total and meaningful where IsInlineInt holds.
+# BoxInlineInt is its inverse: the inline-int word of a value proven to fit the
+# inline window (RawI64Safe); it allocates nothing and cannot raise.
 [[opcode]]
 name = "IsInlineInt"
 may_call_python = false
@@ -3635,6 +3654,42 @@ name = "UnboxInlineInt"
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["i64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IsBoolWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "UnboxBoolWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BoxInlineInt"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["dynbox"]
 may_throw = false
 side_effecting = false
 purity = "pure"

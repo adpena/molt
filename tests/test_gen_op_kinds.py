@@ -1409,6 +1409,9 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "Pow": "dynbox",
         "IsInlineInt": "bool",
         "UnboxInlineInt": "i64",
+        "IsBoolWord": "bool",
+        "UnboxBoolWord": "bool",
+        "BoxInlineInt": "dynbox",
         "ModuleSlot": "i64",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
@@ -2745,6 +2748,9 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "UnboxVal",
         "IsInlineInt",
         "UnboxInlineInt",
+        "IsBoolWord",
+        "UnboxBoolWord",
+        "BoxInlineInt",
     }
     expected_type_gated = {
         "Add",

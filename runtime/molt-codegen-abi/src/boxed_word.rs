@@ -57,6 +57,14 @@ pub fn generate_inline_int_fits<B: WordBuilder>(b: &mut B, value: B::Word) -> B:
     b.compare(WordComparison::UnsignedLessThan, biased, limit)
 }
 
+/// The truth value of a bool word: its low bit. Total: meaningful where
+/// `generate_has_tag(.., BoxTag::Bool)` holds.
+pub fn generate_unbox_bool<B: WordBuilder>(b: &mut B, word: B::Word) -> B::Predicate {
+    let bit = b.and(word, 1);
+    let zero = b.constant(0);
+    b.compare(WordComparison::NotEqual, bit, zero)
+}
+
 /// The inline-int word for `value`. Requires: `value` fits (a dominating
 /// `generate_inline_int_fits` true edge); otherwise the payload wraps.
 pub fn generate_box_inline_int<B: WordBuilder>(b: &mut B, value: B::Word) -> B::Word {

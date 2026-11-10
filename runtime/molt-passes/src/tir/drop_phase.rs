@@ -529,9 +529,6 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
         func.name,
     );
     let mut lowering_changed = prepare_final_backend_lowering(func, tti);
-    if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
-        lowering_changed |= super::pass_manager::run_late_lowering(func, tti);
-    }
     let audit_start = Instant::now();
     let had_drop_inserted = matches!(
         func.attrs.get(DROP_INSERTED_ATTR),
@@ -570,6 +567,14 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
         None,
         Some(audit_start.elapsed().as_millis()),
     );
+    // The late lowering stage consumes refined types and gives every value it
+    // creates an explicit type; nothing re-derives types from final TIR. Run
+    // before the refinement, the expansion's arms (a boxed sum, a runtime
+    // call) would re-derive the original result's type as DynBox and widen
+    // every value downstream of it, such as a loop-carried int (HF-821).
+    if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
+        lowering_changed |= super::pass_manager::run_late_lowering(func, tti);
+    }
     lowering_changed |= prepare_final_operation_reachability(func, tti);
     emit_drop_function_audit(
         "before-drop-pass",

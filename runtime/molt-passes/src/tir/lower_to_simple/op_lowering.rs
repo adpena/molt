@@ -338,7 +338,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::UnboxVal => Some(unary_op(molt_ir::OpKind::Unbox, op, out_var)),
         // The final lowering stage runs only for targets whose backend consumes
         // final TIR (FinalLowering::FinalTir), so its ops never reach SimpleIR.
-        OpCode::IsInlineInt | OpCode::UnboxInlineInt | OpCode::CallRuntime => unreachable!(
+        OpCode::IsInlineInt
+        | OpCode::UnboxInlineInt
+        | OpCode::IsBoolWord
+        | OpCode::UnboxBoolWord
+        | OpCode::BoxInlineInt
+        | OpCode::CallRuntime => unreachable!(
             "{:?} is a final-TIR op; a SimpleIR target never runs the late lowering stage",
             op.opcode
         ),

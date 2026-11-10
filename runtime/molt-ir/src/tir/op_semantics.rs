@@ -282,6 +282,18 @@ fn op_instance_facts_from_types<T: OperandTypes + ?Sized>(
         return Some(facts);
     }
     let rule = opcode_type_refine_operand_type_rule_table(opcode);
+    if rule == TypeRefineOperandTypeRule::BoxVal {
+        // A bool, float or None is an immediate word: boxing it builds bits and
+        // allocates nothing. Only a full-width int can need a heap object. The
+        // result type is the BoxVal rule's own, so the fact refines effects only.
+        let operand = operand_types.get(0)?;
+        return matches!(operand, TirType::Bool | TirType::F64 | TirType::None).then(|| {
+            facts(
+                Some(TirType::Box(Box::new(operand.clone()))),
+                OPCODE_EFFECTS_PURE,
+            )
+        });
+    }
     let primitive_effects = primitive_operator_effects(opcode, operand_types);
     if !matches!(
         rule,
@@ -881,5 +893,22 @@ mod tests {
             );
         }
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn boxing_an_immediate_is_pure_and_keeps_the_box_result_type() {
+        for operand in [TirType::Bool, TirType::F64, TirType::None] {
+            let facts = op_instance_facts(OpCode::BoxVal, std::slice::from_ref(&operand))
+                .expect("an immediate operand has instance facts");
+            assert_eq!(facts.effects, OPCODE_EFFECTS_PURE, "{operand:?}");
+            assert_eq!(facts.result_type, Some(TirType::Box(Box::new(operand))));
+        }
+        // A full-width int may need a heap object: no fact, the table's floor.
+        for operand in [TirType::I64, TirType::DynBox, TirType::Str] {
+            assert!(
+                op_instance_facts(OpCode::BoxVal, std::slice::from_ref(&operand)).is_none(),
+                "{operand:?}"
+            );
+        }
     }
 }
