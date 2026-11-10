@@ -78,8 +78,11 @@ GROUNDED_PROGRESS = (
 NO_ENDING_ON_PROMISES = (
     "COMPLETE THE ASSIGNMENT: check your last paragraph against the assigned deliverable and "
     "stop condition. Finish that deliverable and return it; a bounded audit or review ends with "
-    "its findings. The parent owns integration and resolves reserved-path conflicts and "
-    "unsettled semantic decisions."
+    "its findings. Diagnose ordinary obstacles (errors, timeouts, a failing test, a regression "
+    "your own change causes, a flaky tool) and work through them; they are not reasons to stop. "
+    "Stop only for a deliberate blocker: a reserved path, a decision that widens the verified "
+    "subset or the owner's scope, or a destructive or external action. The parent owns "
+    "integration and resolves reserved-path conflicts and unsettled semantic decisions."
 )
 
 VERIFY_CHANGED_CONTRACT = (
