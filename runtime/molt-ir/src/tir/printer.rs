@@ -302,6 +302,8 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::TypeGuard => "type_guard",
         OpCode::IsInlineInt => "is_inline_int",
         OpCode::UnboxInlineInt => "unbox_inline_int",
+        OpCode::IsBoolWord => "is_bool_word",
+        OpCode::UnboxBoolWord => "unbox_bool_word",
         OpCode::CallRuntime => "call_runtime",
         OpCode::IncRef => "inc_ref",
         OpCode::DecRef => "dec_ref",

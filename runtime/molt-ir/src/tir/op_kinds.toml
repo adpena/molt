@@ -1490,6 +1490,8 @@ gvn_always_numberable_opcodes = [
     # Late-TIR primitives: pure and total on every word (HF-821).
     "IsInlineInt",
     "UnboxInlineInt",
+    "IsBoolWord",
+    "UnboxBoolWord",
 ]
 
 gvn_type_gated_numberable_opcodes = [
@@ -1543,7 +1545,13 @@ gvn_numberable_attr_key_opcodes = [
 # final_tir_opcodes: produced only by the late lowering stage of TIR for targets
 # whose backend consumes final TIR (HF-821). They never cross the SimpleIR wire
 # and carry no frontend facts.
-final_tir_opcodes = ["IsInlineInt", "UnboxInlineInt", "CallRuntime"]
+final_tir_opcodes = [
+    "IsInlineInt",
+    "UnboxInlineInt",
+    "IsBoolWord",
+    "UnboxBoolWord",
+    "CallRuntime",
+]
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
 # useful as a proven-map seed. This is intentionally separate from
@@ -1644,6 +1652,7 @@ fast_path_expansion_rules = [
     { opcode = "InplaceAdd", rule = "int_add" },
     { opcode = "Sub", rule = "int_sub" },
     { opcode = "InplaceSub", rule = "int_sub" },
+    { opcode = "Bool", rule = "truthiness" },
 ]
 
 value_range_transfer_rules = [
@@ -3635,6 +3644,30 @@ name = "UnboxInlineInt"
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["i64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IsBoolWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "UnboxBoolWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
 may_throw = false
 side_effecting = false
 purity = "pure"

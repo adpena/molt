@@ -497,9 +497,11 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         OpCode::Pos | OpCode::BitNot => (unary_result, true),
         // Late-TIR primitives read their operands as boxed words. UnboxInlineInt
         // produces a raw word by construction, independent of operand carriers.
-        OpCode::IsInlineInt | OpCode::UnboxInlineInt | OpCode::CallRuntime => {
-            (IntegerOperandObservation::Always, false)
-        }
+        OpCode::IsInlineInt
+        | OpCode::UnboxInlineInt
+        | OpCode::IsBoolWord
+        | OpCode::UnboxBoolWord
+        | OpCode::CallRuntime => (IntegerOperandObservation::Always, false),
         OpCode::Add
         | OpCode::InplaceAdd
         | OpCode::Sub

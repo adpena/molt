@@ -196,6 +196,8 @@ pub enum OpCode {
     // Late-TIR representation primitives and the cold runtime edge (HF-821)
     IsInlineInt,
     UnboxInlineInt,
+    IsBoolWord,
+    UnboxBoolWord,
     CallRuntime,
     // Refcount
     IncRef,

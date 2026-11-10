@@ -443,3 +443,59 @@ fn late_lowered_boxed_add_selects_the_inline_int_lane() {
         .verify()
         .expect("late-lowered function verifies in LLVM");
 }
+
+/// Late-lowered truthiness (HF-821 C3): `bool(x)` on a boxed word tests the
+/// bool tag and reads its low bit, then the int tag and compares the payload
+/// with zero, and only then calls `molt_is_truthy`.
+#[test]
+fn late_lowered_truthiness_tests_bool_and_int_words_inline() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "late_truth".into(),
+        vec![TirType::DynBox],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let truth = func.fresh_value();
+    func.value_types.insert(truth, TirType::Bool);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block
+        .ops
+        .push(TirOp::new(OpCode::Bool, vec![ValueId(0)], vec![truth]));
+    block.terminator = Terminator::Return {
+        values: vec![truth],
+    };
+
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    assert!(crate::tir::pass_manager::run_late_lowering(&mut func, &tti));
+    crate::tir::type_refine::refine_types(&mut func);
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    let ir = llvm_fn.print_to_string().to_string();
+    let bool_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_BOOL);
+    let int_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_INT);
+    assert!(ir.contains_execution(&bool_tag), "bool tag test: {ir}");
+    assert!(
+        ir.contains_execution("and i64 %0, 1"),
+        "low bit of the bool word: {ir}"
+    );
+    assert!(ir.contains_execution(&int_tag), "int tag test: {ir}");
+    assert!(
+        ir.contains_execution("icmp ne i64"),
+        "payload compared with zero: {ir}"
+    );
+    assert!(
+        ir.contains_execution("molt_is_truthy"),
+        "cold runtime truthiness: {ir}"
+    );
+    backend
+        .module
+        .verify()
+        .expect("late-lowered truthiness verifies in LLVM");
+}

@@ -123,7 +123,11 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::DeleteVar | OpCode::TypeGuard => emit_lir_identity_copy(ctx, op),
         // WASM consumes final TIR only after the late stage covers its lane
         // parity checklist (HF-821); until then the stage never runs for it.
-        OpCode::IsInlineInt | OpCode::UnboxInlineInt | OpCode::CallRuntime => unreachable!(
+        OpCode::IsInlineInt
+        | OpCode::UnboxInlineInt
+        | OpCode::IsBoolWord
+        | OpCode::UnboxBoolWord
+        | OpCode::CallRuntime => unreachable!(
             "{:?} is a final-TIR op; the WASM target does not run the late lowering stage",
             tir_op.opcode
         ),
