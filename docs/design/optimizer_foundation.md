@@ -149,8 +149,8 @@ Status: settled round-two design, 2026-11-10. The integrator's 07:05Z Correction
 authorizes implementation in steps (a)–(d). The settled decisions immediately
 below override conflicting proposals in the recorded measurement discussion.
 The earlier 01:00Z Correction
-supersedes the first proposal's structural-retention list. No compiler change
-is implemented by this design. The findings ledger owns qualification; Claude
+supersedes the first proposal's structural-retention list. Step (a) is complete;
+step (c) implements heap-literal reuse, with the qualification limits below. The findings ledger owns qualification; Claude
 integrator owns review, integration and retirement. The assigned worker owns
 the measurements and proofs. D0 remains diagnostic-only; guarded-call admission
 and the inliner's execution-context gate remain HF-824's work.
@@ -217,8 +217,8 @@ Findings 7–9 complete the consumer inventory:
 Findings 10–11 correct the mechanism: SCCP refuses a fold when ANY outgoing edge
 targets a loop header, not merely the selected edge. type_guard_hoist,
 refcount_elim and dead_store_elim also precede SCCP. module_phase.rs reruns the
-whole pipeline on promoted functions. Current GVN never replaces a constant
-with Copy, even in one block. Correct owner paths are
+whole pipeline on promoted functions. Baseline GVN never replaces a constant
+with Copy, even in one block; step (c) admits only generated heap code literals. Correct owner paths are
 passes/alias_analysis/mod.rs and tir/type_refine.rs. The serializer skeleton's
 bases must match its six existing serialization mixins. Ordering is not a
 prerequisite without a measured buyer. Keep all earlier numerical observations
@@ -244,6 +244,52 @@ static sites, including conditional paths, not dynamic per-iteration totals.
 Full per-module refusal/counter records and loop call inventories stay in the
 private report. They authorize the settled step (c), not a backend edit or a
 claim that literal construction alone explains the whole instruction delta.
+
+### Step (c) implementation and measured limits
+
+GVN now uses the existing generated owned-literal classifier to admit ConstStr,
+ConstBytes and ConstBigInt to its scoped table. Immediate constants retain
+block-local numbering and backend representation. Replacements collects a
+HashSet<ValueId> of original unbound heap literal results only when GVN has
+replacements, then leaves two such literals transparent. Either bound producer
+keeps the ordinary independent-owner rule. Other passes retain their existing
+record/finish path and pay no new full-function literal scan. No new string-keyed
+attribute, registry, lifetime oracle, pass ordering or backend path is added.
+
+INFERRED representation/cost: the existing scoped HashMaps and iterative
+undo-based dominator walk remain. The added ownership-admission scan is O(ops)
+with expected O(literals) HashSet work/storage; payload hashing, key allocation,
+representation, dominator and alias-analysis costs remain explicit. There is no
+new fixpoint or cache. VERIFIED optimized replay on the same largest raw Regex
+Redux input: 2,366 functions / 489,412 input operations; 29,306 GVN replacements,
+0.529530 s GVN, 5.690126 s summed ordinary pipeline intervals and 412,797 output
+ops. Child wall 15.60 s, guarded tree peak 1,619.55 MiB. Baseline ordinary GVN
+was 0.266632 s with no replacements and normal pipeline 5.652728 s / 466,720
+output ops. These are single observations under host load, not a latency
+improvement, memory attribution or a statistical comparison. New per-table
+allocation and stack attribution remain unmeasured.
+
+VERIFIED: 19 selected GVN lib tests pass in dev-fast/default features, including
+real terminal-drop ownership and exception-only/sibling scope boundaries;
+these are not whole-crate/reverse-dependency qualification. The six retained
+fixtures plus midend_literal_materialization_identity pass explicitly on native,
+LLVM and WASM (21 backend observations), with a closed guard. All 246 opcode
+generator tests pass and both opcode projections are current.
+
+The first instruction cell, native bench_calls, has new-on/base-on -1.205773%,
+new-raw/new-on +0.057949%, and new-raw/base-on -1.143359%, against the unchanged
+0.264038% A/A envelope. Thus its raw-arm loss closes, but its beneficial on-arm
+change is not strictly neutral. The integrator's 07:05Z oracle explicitly says
+on must remain within that envelope; acceptance of an improvement outside it
+is pending clarification. Do not call this full-corpus acceptance. No other
+post-change instruction cell, deletion, whole-crate matrix or implementation
+precheck is qualified by these observations.
+
+VERIFIED native bench_calls inspection products have text identical to both
+new measured arms. Their loops have 429/431 static instructions and identical
+call-site maps (one inc-ref, six dec-ref sites per loop region), compared with
+baseline 554/723 instructions. Conditional/cold paths are included; neither
+static sites nor the instruction change prove dynamic calls per iteration.
 
 ### Problem and measured scope
 
@@ -438,9 +484,21 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     ...
 }
+
+// Existing ownership authority: passes/ownership_lattice_min/replacement.rs.
+impl Replacements {
+    /// Requires: original typed producers and their existing binding metadata.
+    /// Ensures: generated owned-literal roles alone admit SSA ids; the extra
+    /// scan and HashSet storage occur only for GVN with replacements (I-2, I-5).
+    pub(crate) fn with_literal_reuse(func: &TirFunction) -> Self { ... }
+
+    /// Requires: GVN proved exact payload identity and scoped dominance.
+    /// Ensures: two original unbound literals share the terminal drop root;
+    /// either binding or another producer retains ordinary record/finish
+    /// ownership. No second lifetime mechanism or new attrs (I-1, I-2, I-5).
+    pub(crate) fn record_equivalent(&mut self, replaced: &TirOp, leader: ValueId) { ... }
+}
 ```
-
-
 
 All new semantic facts in this design have closed Rust types and typed SSA
 identities. `list[MoltOp]` and `list[SimpleIROp]` are existing typed transports.
@@ -456,8 +514,8 @@ research and [LLVM SCCP](https://llvm.org/docs/Passes.html#sccp-sparse-condition
 and [GVN](https://llvm.org/docs/Passes.html#gvn-global-value-numbering) explain
 these owners' purposes; they do not prove Molt equivalence.
 
-INFERRED source precision inventory, to distinguish from measured causality:
-GVN numbers constants only within a block and never performs constant
+INFERRED baseline-source precision inventory, to distinguish from measured causality:
+Before step (c), GVN numbers constants only within a block and never performs constant
 Copy replacements, even within that block, because of representation/exception-only reachability
 constraints. Python CSE also merges admitted constant materializations across
 blocks. Rust memory GVN covers proven typed-slot `LoadAttr`, not Python's

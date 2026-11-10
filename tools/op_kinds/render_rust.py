@@ -1884,8 +1884,8 @@ def _render_gvn_numbering_role(opcodes: list[dict], data: dict) -> str:
     lines = [
         "/// GVN numbering role by opcode. `Always` joins the scoped dominator\n",
         "/// value table directly; `TypeGated` requires primitive operand proof at\n",
-        "/// the use site; `ValueKeyedConstant` receives same-block local value\n",
-        "/// numbers only; `Never` is not numbered. EXHAUSTIVE over OpCode.\n",
+        "/// the use site; `ValueKeyedConstant` uses exact payload identity and\n",
+        "/// owned-literal admission; `Never` is not numbered. EXHAUSTIVE over OpCode.\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
         "pub enum GvnNumberingRole {\n",
         "    Never,\n",

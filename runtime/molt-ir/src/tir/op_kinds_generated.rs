@@ -39719,8 +39719,8 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
 
 /// GVN numbering role by opcode. `Always` joins the scoped dominator
 /// value table directly; `TypeGated` requires primitive operand proof at
-/// the use site; `ValueKeyedConstant` receives same-block local value
-/// numbers only; `Never` is not numbered. EXHAUSTIVE over OpCode.
+/// the use site; `ValueKeyedConstant` uses exact payload identity and
+/// owned-literal admission; `Never` is not numbered. EXHAUSTIVE over OpCode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GvnNumberingRole {
     Never,

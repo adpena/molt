@@ -1494,8 +1494,9 @@ literal_payload_opcodes = [
 # transforms that can share the scoped dominator value table without extra
 # operand proof. Type-gated ops are deterministic computations only when all
 # operands are primitive; gvn.rs checks that per value. Value-keyed constants
-# receive same-block local value numbers only, because backend-native constant
-# materialization is representation-sensitive. gvn_numberable_attr_key_opcodes
+# use the generated owned-literal classifier to admit heap payloads to the
+# scoped table; immediate constants keep same-block local numbers because their
+# backend-native materialization is representation-sensitive. gvn_numberable_attr_key_opcodes
 # covers non-constant numbered ops whose semantic equivalence includes an attr
 # payload (TypeGuard's expected type, today). Each row names the exact payload
 # key GVN may extract; omitted/malformed attrs fail closed to identity numbering

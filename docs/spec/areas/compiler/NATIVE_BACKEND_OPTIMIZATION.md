@@ -123,6 +123,12 @@ storage and never snapshots mutable lists or dictionaries. Frontend joins,
 convergence comparisons, static truth, and constant CSE use typed literal keys:
 `1`, `True`, `1.0`, signed zero, and distinct NaN payloads cannot be conflated by
 host Python equality. Equal literal values do not prove Python object identity.
+For generated heap **code-literal** producers, GVN's Rust payload keys and
+scoped dominance permit reuse of the first materialization; this is a literal
+admission rule, not an equality proof for arbitrary runtime objects.
+`ownership_lattice_min::Replacements` preserves an independent reference when
+either literal binds a Python local; two unbound literals share the terminal
+drop root. The first constructor and its exception edge remain.
 
 Unary lowering must honor both operand and result carriers. Negating
 `i64::MIN`, including the negative arm of `abs`, needs a BigInt; deferred boxing

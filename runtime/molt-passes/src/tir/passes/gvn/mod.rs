@@ -7,6 +7,8 @@
 //! Equal values are not equal owners: where the second result held a heap
 //! reference of its own, its Copy is an owned alias that keeps it
 //! (`ownership_lattice_min::Replacements`, design 20 §1.2).
+//! Two unbound heap literals may instead share the leader's ownership under
+//! that same authority; a binding on either producer keeps independent owners.
 //!
 //! Algorithm: dominator-tree-scoped hash-based value numbering.  A scoped
 //! hash table is maintained as the dominator tree is walked in pre-order.
@@ -18,7 +20,8 @@
 //! (same `a + b` in entry and a dominated body block) without ever exposing
 //! a value to a non-dominated sibling.
 //!
-//! Only pure (side-effect-free) operations are candidates for numbering.
+//! Pure operations and generated heap code literals are candidates for numbering.
+//! Heap-literal reuse preserves the first constructor and its exception edge.
 //! Side-effecting ops (calls, stores, imports) are always preserved.
 //!
 //! Reference: Briggs, Cooper, Simpson — "Value Numbering" (1997).

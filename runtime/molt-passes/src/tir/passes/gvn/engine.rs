@@ -5,6 +5,7 @@ use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     GvnNumberingRole, opcode_gvn_numbering_role_table, opcode_gvn_value_key_spec_table,
+    opcode_owned_literal_payload_kind_table,
 };
 use crate::tir::ops::{Dialect, OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::Replacements;
@@ -138,17 +139,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // popping this block off the dominator stack.
                 let mut key_undo: Vec<(ValueKey, Option<ValueId>)> = Vec::new();
                 let mut vn_undo: Vec<(ValueId, Option<ValueId>)> = Vec::new();
-                // Constants are intentionally not replaced by Copy ops:
-                // backend-native constant materialization is representation
-                // sensitive, and cross-block constant copies can violate the
-                // stricter post-lowering dominance verifier for exception-only
-                // handler blocks.  We still give same-block duplicate constants
-                // a block-local value number so expressions like two adjacent
-                // `i + 1` computations CSE without emitting a constant Copy or
-                // leaking the constant leader into dominated child blocks.
-                // Heap literals remain fallible materializations; numbering
-                // equal successful values never deletes either allocation or
-                // its exception edge.
+                // Immediate constants keep backend-native representation and
+                // block-local numbering. Heap literals use the existing scoped
+                // table and strict/exception-aware dominance checks below.
+                // Their first constructor remains; Replacements owns whether
+                // a redundant materialization needs an independent binding ref.
                 let mut local_const_key_to_leader: HashMap<ValueKey, ValueId> = HashMap::new();
                 let mut local_value_number: HashMap<ValueId, ValueId> = HashMap::new();
 
@@ -172,7 +167,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             );
                             effects.consistent && effects.effect_free
                         }
-                        GvnNumberingRole::ValueKeyedConstant | GvnNumberingRole::Never => false,
+                        GvnNumberingRole::ValueKeyedConstant => {
+                            opcode_owned_literal_payload_kind_table(op.opcode).is_some()
+                        }
+                        GvnNumberingRole::Never => false,
                     };
 
                     if !numberable {
@@ -296,7 +294,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     if replacements.is_empty() {
         return stats;
     }
-    let mut owners = Replacements::new(func);
+    let mut owners = Replacements::with_literal_reuse(func);
     for (bid, op_idx, leader) in &replacements {
         if let Some(block) = func.blocks.get_mut(bid)
             && *op_idx < block.ops.len()
@@ -313,7 +311,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 source_span: None,
             };
             replacement.inherit_source_from(&old);
-            owners.record(&old);
+            owners.record_equivalent(&old, *leader);
             block.ops[*op_idx] = replacement;
             stats.values_changed += 1;
         }
