@@ -1076,6 +1076,79 @@ def runtime_raw_abi_specs(data: dict) -> list[dict]:
     return [specs[symbol] for symbol in sorted(specs)]
 
 
+RUNTIME_FN_FORMS = ("boxed", "raw_call", "helper")
+
+
+def runtime_fn_specs(data: dict) -> list[dict]:
+    """One typed identity per runtime entry compiled code may call by name.
+
+    Every backend names a runtime entry by this identity instead of spelling
+    its symbol (HF-384, HF-485). The rows are the boxed calls (object operands,
+    runtime_boxed_call_specs) and every import whose machine signature is all
+    i64 words with at most one i64 result, the same on wasm32 and on 64-bit
+    native targets. An import with a wasm32 pointer or length word proves no
+    native signature, so it gets no identity here.
+
+    Each row carries its word arity, its return contract (one of
+    RUNTIME_RETURN_CONTRACTS, from runtime_import_return_specs), and its form:
+    "boxed" (a generic call target whose operands and result are Python
+    values), "raw_call" (a generic call target whose raw result is bound
+    as-is) or "helper" (a machine helper only a backend's own lowering calls).
+    """
+    contracts = runtime_import_return_specs(data)
+    raw = {spec["runtime_name"]: spec["arity"] for spec in runtime_raw_abi_specs(data)}
+    rows: dict[str, dict] = {}
+    for spec in runtime_boxed_call_specs(data):
+        result = (
+            "void"
+            if spec["result"] == "void"
+            else spec.get("ownership", "owned_object")
+        )
+        rows[spec["runtime_name"]] = {
+            "runtime_name": spec["runtime_name"],
+            "params": spec["arity"],
+            "result": result,
+            "form": "boxed",
+        }
+    for entry in data["import"]:
+        signature = data["static_type"][entry["type"]]
+        if any(param != "i64" for param in signature["params"]) or signature[
+            "results"
+        ] not in ([], ["i64"]):
+            continue
+        symbol = _runtime_export_name_or_raise(entry)
+        params = len(signature["params"])
+        result = contracts[entry["name"]]
+        form = "raw_call" if symbol in raw else "helper"
+        prior = rows.get(symbol)
+        if prior is None:
+            rows[symbol] = {
+                "runtime_name": symbol,
+                "params": params,
+                "result": result,
+                "form": form,
+            }
+            continue
+        if form == "raw_call" or (prior["params"], prior["result"]) != (params, result):
+            raise WasmAbiManifestError(
+                f"runtime entry {symbol!r} has conflicting call contracts: "
+                f"{prior['form']} {prior['params']} -> {prior['result']} and "
+                f"{form} {params} -> {result}"
+            )
+    if len(rows) > 0xFFFF:
+        raise WasmAbiManifestError("RuntimeFn identities exceed the u16 index")
+    return [rows[symbol] for symbol in sorted(rows)]
+
+
+def _runtime_export_name_or_raise(entry: dict) -> str:
+    symbol = runtime_export_name(entry)
+    if symbol is None:
+        raise WasmAbiManifestError(
+            f"import {entry.get('name')!r} has no runtime export"
+        )
+    return symbol
+
+
 def runtime_operation_return_specs(data: dict) -> dict[str, str]:
     """Project runtime returns onto exact operation spellings.
 

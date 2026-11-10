@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime_import_abi::{RuntimeImportSignature, RuntimeReturnAbi};
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,20 +105,14 @@ impl SimpleBackend {
     pub(crate) fn import_runtime_func_id_split(
         module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-        signature: RuntimeImportSignature,
+        function: RuntimeFn,
     ) -> cranelift_module::FuncId {
-        let params = vec![types::I64; signature.param_count];
-        match signature.return_abi {
-            RuntimeReturnAbi::I64 => Self::import_func_id_split(
-                module,
-                import_ids,
-                signature.name,
-                &params,
-                &[types::I64],
-            ),
-            RuntimeReturnAbi::Void => {
-                Self::import_func_id_split(module, import_ids, signature.name, &params, &[])
-            }
-        }
+        let params = vec![types::I64; function.params()];
+        let returns: &[types::Type] = if function.returns_word() {
+            &[types::I64]
+        } else {
+            &[]
+        };
+        Self::import_func_id_split(module, import_ids, function.symbol(), &params, returns)
     }
 }

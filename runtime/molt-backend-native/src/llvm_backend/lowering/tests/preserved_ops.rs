@@ -2198,7 +2198,7 @@ fn generated_runtime_call_agreement_imports_declared_llvm_function() {
         .iter()
         .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
     {
-        let abi = call.function().boxed_abi();
+        let abi = call.boxed_abi();
         for bound in [false, true] {
             for opcode in if call == RuntimeCall::Iter {
                 vec![OpCode::Copy, OpCode::GetIter]
@@ -2208,13 +2208,13 @@ fn generated_runtime_call_agreement_imports_declared_llvm_function() {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
                 std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-                    .insert(abi.symbol.into());
+                    .insert(abi.symbol().into());
                 // A wrong s_value cannot override the generated op meaning.
                 let mut func = runtime_call_shape_function(
                     opcode,
                     kind,
                     "molt_store_index",
-                    abi.arity,
+                    abi.arity(),
                     bound,
                     false,
                 );
@@ -2237,7 +2237,7 @@ fn generated_runtime_call_agreement_imports_declared_llvm_function() {
                     .to_string();
                 backend.module.verify().expect("contract LLVM module");
                 assert!(
-                    ir.contains_execution(&format!("call i64 @{}(", abi.symbol)),
+                    ir.contains_execution(&format!("call i64 @{}(", abi.symbol())),
                     "{call:?}: {ir}"
                 );
                 assert!(

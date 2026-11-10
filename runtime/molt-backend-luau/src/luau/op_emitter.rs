@@ -41,12 +41,7 @@ impl LuauBackend {
         }
         let function = call.function();
         let args = op.args.as_deref().unwrap_or(&[]);
-        assert_eq!(
-            args.len(),
-            function.boxed_abi().arity,
-            "{} contract arity",
-            op.kind
-        );
+        assert_eq!(args.len(), function.params(), "{} contract arity", op.kind);
         let args = args
             .iter()
             .map(|arg| sanitize_ident(arg))

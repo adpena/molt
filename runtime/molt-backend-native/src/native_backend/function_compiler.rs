@@ -1,10 +1,10 @@
 use super::*;
 use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, MOLT_REFCOUNT_ADMISSION};
 use crate::tir::simple_def_use::simple_ir_binding;
 use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 // Per-op-family Cranelift codegen handlers lifted out of `compile_func_inner`
 // (decomposition program M1). Scalar carrier/boxing helpers live in
@@ -467,14 +467,14 @@ impl SimpleBackend {
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            MOLT_DEC_REF_OBJ,
+            RuntimeFn::DecRefObj,
         );
         let local_inc_ref_slow = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            MOLT_INC_REF_OBJ,
+            RuntimeFn::IncRefObj,
         );
 
         // Import the exception-pending function for check_exception.
@@ -1515,15 +1515,14 @@ impl SimpleBackend {
                     }
                     // The ABI manifest admits this complete positional boxed-call family.
                     fc::NativeOpFamily::BoxedRuntimeCalls => {
-                        let abi =
-                            molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind)
-                                .expect("generated boxed-call family must have an ABI");
+                        let abi = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(op.kind)
+                            .expect("generated boxed-call family must have an ABI");
                         let args = op.args.as_deref().unwrap_or(&[]);
-                        assert_eq!(args.len(), abi.arity, "{} boxed-call arity", op.kind);
+                        assert_eq!(args.len(), abi.arity(), "{} boxed-call arity", op.kind);
                         shared::emit_operand_transaction_call(
                             &op,
                             args,
-                            abi.symbol,
+                            abi.symbol(),
                             &mut self.module,
                             &mut self.import_ids,
                             &mut builder,
@@ -2432,7 +2431,7 @@ impl SimpleBackend {
                 &mut self.import_ids,
                 builder,
                 &mut import_refs,
-                MOLT_REFCOUNT_ADMISSION,
+                RuntimeFn::RefcountAdmission,
             )
         });
         builder.seal_all_blocks();

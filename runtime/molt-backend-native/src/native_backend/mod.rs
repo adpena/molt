@@ -62,8 +62,7 @@ fn declare_python_execution_function(
         return declare_runtime_execution_function(module, logical, signature);
     }
     assert!(
-        molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(logical, signature.params.len())
-            .is_none(),
+        molt_ir::runtime_fn_generated::runtime_boxed_abi(logical, signature.params.len()).is_none(),
         "runtime callable `{logical}` has no execution ABI classification"
     );
     let mut physical = signature.clone();

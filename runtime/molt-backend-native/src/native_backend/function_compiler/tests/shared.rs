@@ -287,13 +287,13 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
 
 #[test]
 fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
-    use molt_ir::runtime_boxed_abi_generated::{RUNTIME_BOXED_OP_KINDS, runtime_boxed_op_abi};
+    use molt_ir::runtime_fn_generated::{RUNTIME_BOXED_OP_KINDS, runtime_boxed_op_abi};
     for &kind in RUNTIME_BOXED_OP_KINDS {
         let abi = runtime_boxed_op_abi(kind).unwrap();
         for bound in [false, true] {
             let op = OpIR {
                 args: Some(
-                    (0..abi.arity)
+                    (0..abi.arity())
                         .map(|i| if i % 2 == 0 { "wide" } else { "wider" }.into())
                         .collect(),
                 ),
@@ -306,7 +306,7 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
                     super::super::shared::emit_operand_transaction_call(
                         &op,
                         op.args.as_deref().unwrap(),
-                        abi.symbol,
+                        abi.symbol(),
                         &mut backend.module,
                         &mut backend.import_ids,
                         builder,
@@ -329,9 +329,9 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
                 2,
                 "{kind}"
             );
-            let calls = import_calls(&function, &ids, abi.symbol);
+            let calls = import_calls(&function, &ids, abi.symbol());
             assert_eq!(calls.len(), 1, "{kind}: {}", function.display());
-            assert_eq!(attached_arguments(&function, calls[0]).len(), abi.arity);
+            assert_eq!(attached_arguments(&function, calls[0]).len(), abi.arity());
             assert_eq!(
                 import_calls(&function, &ids, "molt_inc_ref_obj").len(),
                 0,
@@ -354,8 +354,8 @@ fn generated_runtime_call_agreement_imports_declared_native_function() {
         .iter()
         .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
     {
-        let abi = call.function().boxed_abi();
-        let params = (0..abi.arity)
+        let abi = call.boxed_abi();
+        let params = (0..abi.arity())
             .map(|i| format!("arg{i}"))
             .collect::<Vec<_>>();
         for bound in [false, true] {
@@ -391,7 +391,7 @@ fn generated_runtime_call_agreement_imports_declared_native_function() {
             let object = SimpleBackend::new().compile(ir);
             let symbols = native_object_symbols(&object.bytes).undefined;
             assert!(
-                symbols.contains(physical_runtime_symbol(abi.symbol)),
+                symbols.contains(physical_runtime_symbol(abi.symbol())),
                 "{call:?}: {symbols:?}"
             );
             assert!(
@@ -414,8 +414,8 @@ fn generated_runtime_call_agreement_jit_admits_declared_import_before_relocation
         .iter()
         .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
     {
-        let abi = call.function().boxed_abi();
-        let args = (0..abi.arity)
+        let abi = call.boxed_abi();
+        let args = (0..abi.arity())
             .map(|i| format!("arg{i}"))
             .collect::<Vec<_>>();
         let ir = SimpleIR {
@@ -449,7 +449,7 @@ fn generated_runtime_call_agreement_jit_admits_declared_import_before_relocation
         assert!(
             symbols
                 .iter()
-                .any(|symbol| symbol == physical_runtime_symbol(abi.symbol)),
+                .any(|symbol| symbol == physical_runtime_symbol(abi.symbol())),
             "{call:?}: {symbols:?}"
         );
         assert!(

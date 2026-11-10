@@ -1,8 +1,5 @@
 use super::*;
-use crate::runtime_import_abi::{
-    MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ,
-    MOLT_REFCOUNT_ADMISSION, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
-};
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use molt_tir::trampolines::TaskCompletion;
 
 #[cfg(feature = "native-backend")]
@@ -101,7 +98,7 @@ impl SimpleBackend {
                     Self::task_poll_identity(module, &mut builder, func_name, Linkage::Import);
 
                 let task_callee =
-                    Self::import_runtime_func_id_split(module, import_ids, MOLT_TASK_NEW);
+                    Self::import_runtime_func_id_split(module, import_ids, RuntimeFn::TaskNew);
                 let task_local = module.declare_func_in_func(task_callee, builder.func);
                 let size_val = builder.ins().iconst(types::I64, closure_size);
                 let kind_val = builder.ins().iconst(types::I64, runtime_task_kind);
@@ -128,8 +125,11 @@ impl SimpleBackend {
                 builder.seal_block(allocation_success_block);
 
                 if payload_slots > 0 {
-                    let inc_ref_obj_callee =
-                        Self::import_runtime_func_id_split(module, import_ids, MOLT_INC_REF_OBJ);
+                    let inc_ref_obj_callee = Self::import_runtime_func_id_split(
+                        module,
+                        import_ids,
+                        RuntimeFn::IncRefObj,
+                    );
                     let local_inc_ref_obj = NativeRefcountSite {
                         slow: module.declare_func_in_func(inc_ref_obj_callee, builder.func),
                         admission,
@@ -172,7 +172,7 @@ impl SimpleBackend {
                         let get_callee = Self::import_runtime_func_id_split(
                             module,
                             import_ids,
-                            MOLT_CANCEL_TOKEN_GET_CURRENT,
+                            RuntimeFn::CancelTokenGetCurrent,
                         );
                         let get_local = module.declare_func_in_func(get_callee, builder.func);
                         let get_call = builder.ins().call(get_local, &[]);
@@ -181,7 +181,7 @@ impl SimpleBackend {
                         let reg_callee = Self::import_runtime_func_id_split(
                             module,
                             import_ids,
-                            MOLT_TASK_REGISTER_EXECUTION,
+                            RuntimeFn::TaskRegisterExecution,
                         );
                         let reg_local = module.declare_func_in_func(reg_callee, builder.func);
                         let inherited = builder.ins().iconst(types::I64, box_none());
@@ -194,7 +194,7 @@ impl SimpleBackend {
                         let asyncgen_callee = Self::import_runtime_func_id_split(
                             module,
                             import_ids,
-                            MOLT_ASYNCGEN_NEW,
+                            RuntimeFn::AsyncgenNew,
                         );
                         let asyncgen_local =
                             module.declare_func_in_func(asyncgen_callee, builder.func);
@@ -204,7 +204,7 @@ impl SimpleBackend {
                         let dec_ref_callee = Self::import_runtime_func_id_split(
                             module,
                             import_ids,
-                            MOLT_DEC_REF_OBJ,
+                            RuntimeFn::DecRefObj,
                         );
                         let local_dec_ref =
                             module.declare_func_in_func(dec_ref_callee, builder.func);
@@ -298,8 +298,11 @@ impl SimpleBackend {
         }
 
         materialize_refcount_admission(&mut builder, admission, |builder| {
-            let id =
-                Self::import_runtime_func_id_split(module, import_ids, MOLT_REFCOUNT_ADMISSION);
+            let id = Self::import_runtime_func_id_split(
+                module,
+                import_ids,
+                RuntimeFn::RefcountAdmission,
+            );
             module.declare_func_in_func(id, builder.func)
         });
         builder.seal_all_blocks();

@@ -590,7 +590,8 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
 
 #[test]
 fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
-    use crate::wasm_abi_generated::{WASM_NUMERIC_RUNTIME_SELECTORS, WasmRuntimeReturn};
+    use crate::wasm_abi_generated::WASM_NUMERIC_RUNTIME_SELECTORS;
+    use molt_ir::runtime_fn_generated::RuntimeReturnContract;
 
     let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
@@ -599,7 +600,7 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
     for spec in WASM_NUMERIC_RUNTIME_SELECTORS {
         let import = spec.selection.import;
         let (params, _) = import.machine_signature();
-        assert_eq!(import.return_contract(), WasmRuntimeReturn::OwnedObject);
+        assert_eq!(import.return_contract(), RuntimeReturnContract::OwnedObject);
         assert!(params.iter().all(|ty| *ty == wasm_encoder::ValType::I64));
         for (shape, out) in [
             ("absent", None),

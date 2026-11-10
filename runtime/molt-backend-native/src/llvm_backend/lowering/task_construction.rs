@@ -5,12 +5,10 @@
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use crate::runtime_import_abi::{
-    MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
-};
 use inkwell::builder::Builder;
 use inkwell::values::{IntValue, PointerValue};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 enum CompletionImports<'ctx> {
@@ -41,16 +39,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let completion = match layout.completion() {
             TaskCompletion::ReturnTask => CompletionImports::ReturnTask,
             TaskCompletion::RegisterCancelToken => CompletionImports::Register {
-                token: self.ensure_runtime_import(MOLT_CANCEL_TOKEN_GET_CURRENT),
-                register: self.ensure_runtime_import(MOLT_TASK_REGISTER_EXECUTION),
+                token: self.ensure_runtime_import(RuntimeFn::CancelTokenGetCurrent),
+                register: self.ensure_runtime_import(RuntimeFn::TaskRegisterExecution),
             },
             TaskCompletion::WrapAsyncGen => CompletionImports::Wrap {
-                wrap: self.ensure_runtime_import(MOLT_ASYNCGEN_NEW),
+                wrap: self.ensure_runtime_import(RuntimeFn::AsyncgenNew),
                 release: self.ensure_refcount_helper(RefcountOperation::Release),
             },
         };
         TaskConstructorImports {
-            allocate: self.ensure_runtime_import(MOLT_TASK_NEW),
+            allocate: self.ensure_runtime_import(RuntimeFn::TaskNew),
             kind: crate::native_task_runtime_kind_bits(layout.runtime_kind()),
             completion,
         }

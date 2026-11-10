@@ -2,7 +2,7 @@ use super::super::lir_context::LirLowerCtx;
 use super::super::lir_scalar::emit_get_boxed_for_repr;
 use super::super::runtime_calls::{LirFixedRuntimeCall, LirRuntimeCall};
 use crate::wasm::body::WasmLirFallbackReason;
-use crate::wasm_abi_generated::WasmRuntimeReturn;
+use molt_ir::runtime_fn_generated::RuntimeReturnContract;
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::AttrValue;
 use molt_tir::tir::values::ValueId;
@@ -155,13 +155,13 @@ pub(in crate::wasm::lir_fast) fn emit_lir_runtime_discard(
     call: LirRuntimeCall,
 ) {
     match call.import().return_contract() {
-        WasmRuntimeReturn::OwnedObject | WasmRuntimeReturn::PollResult => {
+        RuntimeReturnContract::OwnedObject | RuntimeReturnContract::PollResult => {
             ctx.emit_runtime_call(LirRuntimeCall::DecRefObj);
         }
-        WasmRuntimeReturn::BorrowedObject | WasmRuntimeReturn::RawBits => {
+        RuntimeReturnContract::BorrowedObject | RuntimeReturnContract::RawBits => {
             ctx.instructions.push(Instruction::Drop);
         }
-        WasmRuntimeReturn::Void => {}
+        RuntimeReturnContract::Void => {}
         contract => panic!(
             "WASM LIR import {:?} requires dedicated {contract:?} lifetime custody",
             call.import()
@@ -183,7 +183,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(
         emit_lir_runtime_discard(ctx, call);
         return;
     };
-    if contract == WasmRuntimeReturn::RawBits {
+    if contract == RuntimeReturnContract::RawBits {
         let (_, results) = call.import().machine_signature();
         let raw_type = match result.repr {
             LirRepr::I64 => Some(ValType::I64),
@@ -200,9 +200,9 @@ pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(
         return;
     }
     let owned = match contract {
-        WasmRuntimeReturn::OwnedObject | WasmRuntimeReturn::PollResult => true,
-        WasmRuntimeReturn::BorrowedObject => false,
-        WasmRuntimeReturn::Void => panic!(
+        RuntimeReturnContract::OwnedObject | RuntimeReturnContract::PollResult => true,
+        RuntimeReturnContract::BorrowedObject => false,
+        RuntimeReturnContract::Void => panic!(
             "void WASM LIR import {:?} cannot bind a result",
             call.import()
         ),

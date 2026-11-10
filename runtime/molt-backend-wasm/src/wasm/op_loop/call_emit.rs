@@ -21,10 +21,10 @@ pub(super) fn emit_op_loop_runtime_call(
     op: &OpIR,
     call: OpLoopRuntimeCallSpec,
 ) {
-    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind) {
+    if let Some(abi) = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(op.kind) {
         assert_eq!(
             op.args.as_deref().unwrap_or(&[]).len(),
-            abi.arity,
+            abi.arity(),
             "{} boxed-call arity",
             op.kind,
         );

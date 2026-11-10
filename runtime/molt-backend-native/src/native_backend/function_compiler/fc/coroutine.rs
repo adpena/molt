@@ -1,6 +1,6 @@
 use super::super::*;
-use crate::runtime_import_abi::MOLT_TASK_NEW;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use molt_tir::trampolines::TaskConstructorLayout;
 
 // Single-source kind authority for [`handle_coroutine_op`], consulted by
@@ -185,7 +185,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             let task_callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                MOLT_TASK_NEW,
+                RuntimeFn::TaskNew,
             );
             let task_local = module.declare_func_in_func(task_callee, builder.func);
             let kind_val = builder.ins().iconst(

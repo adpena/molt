@@ -2,22 +2,22 @@ use super::attributes::MEMORY_READ;
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
-use crate::runtime_import_abi::{
-    RuntimeImportSignature, RuntimeReturnAbi, TRAMPOLINE_RUNTIME_IMPORTS,
-};
+use crate::runtime_import_abi::{RuntimeReturnAbi, TRAMPOLINE_RUNTIME_IMPORTS};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::context::Context;
 use inkwell::types::FunctionType;
 use inkwell::values::FunctionValue;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use std::collections::HashSet;
 
 fn runtime_function_type<'ctx>(
     ctx: &'ctx Context,
-    signature: RuntimeImportSignature,
+    param_count: usize,
+    return_abi: RuntimeReturnAbi,
 ) -> FunctionType<'ctx> {
     let i64_ty = ctx.i64_type();
-    let params = vec![i64_ty.into(); signature.param_count];
-    match signature.return_abi {
+    let params = vec![i64_ty.into(); param_count];
+    match return_abi {
         RuntimeReturnAbi::I64 => i64_ty.fn_type(&params, false),
         RuntimeReturnAbi::Void => ctx.void_type().fn_type(&params, false),
     }
@@ -130,34 +130,35 @@ fn shared_runtime_helper_imports_have_llvm_abi_authority() {
     let module = ctx.create_module("test_shared_runtime_helpers");
     declare_runtime_functions(&ctx, &module);
 
-    for signature in TRAMPOLINE_RUNTIME_IMPORTS {
+    for &function in TRAMPOLINE_RUNTIME_IMPORTS {
+        let return_abi = RuntimeReturnAbi::of(function);
         let func = module
-            .get_execution_function(signature.name)
+            .get_execution_function(function.symbol())
             .unwrap_or_else(|| {
                 assert_eq!(
-                    runtime_import_return_abi(signature.name, signature.param_count),
-                    Some(signature.return_abi),
+                    runtime_import_return_abi(function.symbol(), function.params()),
+                    Some(return_abi),
                     "{} should be declared or classified",
-                    signature.name
+                    function.symbol()
                 );
                 declare_conservative_runtime_function(
                     &ctx,
                     &module,
-                    signature.name,
-                    runtime_function_type(&ctx, *signature),
+                    function.symbol(),
+                    runtime_function_type(&ctx, function.params(), return_abi),
                 )
             });
-        assert_eq!(logical_parameter_types(func).len(), signature.param_count);
-        match signature.return_abi {
+        assert_eq!(logical_parameter_types(func).len(), function.params());
+        match return_abi {
             RuntimeReturnAbi::I64 => {
                 let ret_ty = func
                     .get_type()
                     .get_return_type()
-                    .unwrap_or_else(|| panic!("{} should return i64", signature.name));
+                    .unwrap_or_else(|| panic!("{} should return i64", function.symbol()));
                 assert!(
                     ret_ty.is_int_type(),
                     "{} should return an integer",
-                    signature.name
+                    function.symbol()
                 );
                 assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
             }
@@ -165,7 +166,7 @@ fn shared_runtime_helper_imports_have_llvm_abi_authority() {
                 assert!(
                     func.get_type().get_return_type().is_none(),
                     "{} should return void",
-                    signature.name
+                    function.symbol()
                 );
             }
         }
@@ -185,11 +186,9 @@ fn unchecked_iterator_has_no_llvm_machine_abi() {
 }
 
 #[test]
-fn fixed_runtime_imports_do_not_overlap_conservative_fallbacks() {
-    let conservative: HashSet<&str> = CONSERVATIVE_RUNTIME_IMPORTS
-        .iter()
-        .map(|signature| signature.name)
-        .collect();
+fn fixed_runtime_imports_agree_with_the_generated_runtime_identity() {
+    // A fixed declaration adds LLVM attributes; its word signature must be the
+    // generated RuntimeFn's, or the two authorities disagree about one symbol.
     let mut fixed_names = HashSet::new();
     for spec in fixed::FIXED_RUNTIME_IMPORTS {
         assert!(
@@ -197,11 +196,21 @@ fn fixed_runtime_imports_do_not_overlap_conservative_fallbacks() {
             "fixed LLVM runtime import `{}` appears more than once",
             spec.name,
         );
-        assert!(
-            !conservative.contains(spec.name),
-            "fixed LLVM runtime import `{}` must not also live in the conservative fallback table",
-            spec.name,
-        );
+        let fixed::FixedRuntimeSignature::Boxed {
+            param_count,
+            return_abi,
+        } = spec.signature
+        else {
+            continue;
+        };
+        if let Some(function) = RuntimeFn::from_symbol(spec.name) {
+            assert_eq!(
+                (function.params(), RuntimeReturnAbi::of(function)),
+                (param_count, return_abi),
+                "fixed LLVM runtime import `{}` disagrees with RuntimeFn",
+                spec.name,
+            );
+        }
     }
 }
 
@@ -215,16 +224,11 @@ fn buffer_shape_accessors_return_boxed_integers() {
             Some(RuntimeReturnAbi::I64)
         );
         assert_eq!(runtime_import_return_abi(name, 2), None);
-        let signature = RuntimeImportSignature {
-            name,
-            param_count: 1,
-            return_abi: RuntimeReturnAbi::I64,
-        };
         let function = declare_conservative_runtime_function(
             &ctx,
             &module,
             name,
-            runtime_function_type(&ctx, signature),
+            runtime_function_type(&ctx, 1, RuntimeReturnAbi::I64),
         );
         assert_eq!(logical_parameter_types(function).len(), 1);
         assert_eq!(
@@ -241,9 +245,12 @@ fn buffer_shape_accessors_return_boxed_integers() {
 
 #[test]
 fn generated_boxed_contracts_supply_machine_abis_without_native_whitelists() {
-    use molt_ir::runtime_boxed_abi_generated::{RUNTIME_BOXED_ABIS, RuntimeBoxedReturn};
+    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
-    for abi in RUNTIME_BOXED_ABIS {
+    for abi in RuntimeFn::ALL
+        .iter()
+        .filter_map(|function| function.boxed_abi())
+    {
         let result = match abi.result {
             RuntimeBoxedReturn::OwnedValue
             | RuntimeBoxedReturn::BorrowedValue
@@ -251,17 +258,10 @@ fn generated_boxed_contracts_supply_machine_abis_without_native_whitelists() {
             RuntimeBoxedReturn::Void => RuntimeReturnAbi::Void,
         };
         assert_eq!(
-            runtime_import_return_abi(abi.symbol, abi.arity),
+            runtime_import_return_abi(abi.symbol(), abi.arity()),
             Some(result),
             "{}",
-            abi.symbol
-        );
-        assert!(
-            !CONSERVATIVE_RUNTIME_IMPORTS
-                .iter()
-                .any(|sig| sig.name == abi.symbol),
-            "{} duplicates the generated boxed ABI authority",
-            abi.symbol
+            abi.symbol()
         );
     }
 }
@@ -277,13 +277,6 @@ fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() 
             "{}",
             abi.symbol
         );
-        assert!(
-            !CONSERVATIVE_RUNTIME_IMPORTS
-                .iter()
-                .any(|sig| sig.name == abi.symbol),
-            "{} duplicates the generated callable ABI authority",
-            abi.symbol
-        );
     }
     // Compiler calls use the exact five-object transport independently of the
     // observable Python callable's retained trampoline-table dispatch.
@@ -293,11 +286,11 @@ fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() 
         Some(RuntimeReturnAbi::I64)
     );
     assert_eq!(runtime_import_return_abi(symbol, 4), None);
-    let boxed = molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, 5)
+    let boxed = molt_ir::runtime_fn_generated::runtime_boxed_abi(symbol, 5)
         .expect("explicit compiler boxed-call admission");
     assert_eq!(
         boxed.result,
-        molt_ir::runtime_boxed_abi_generated::RuntimeBoxedReturn::OwnedValue
+        molt_ir::runtime_fn_generated::RuntimeBoxedReturn::OwnedValue
     );
     // Some callables also own a fixed declaration with stronger attributes.
     // Its hand-written signature must agree with the generated callable ABI,
@@ -309,14 +302,7 @@ fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() 
         else {
             continue;
         };
-        let expected = runtime_function_type(
-            &ctx,
-            RuntimeImportSignature {
-                name: abi.symbol,
-                param_count: abi.arity,
-                return_abi: RuntimeReturnAbi::I64,
-            },
-        );
+        let expected = runtime_function_type(&ctx, abi.arity, RuntimeReturnAbi::I64);
         assert_eq!(
             function.get_type().print_to_string().to_string(),
             crate::llvm_backend::execution_abi::runtime_execution_type(abi.symbol, expected)
@@ -330,27 +316,30 @@ fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() 
 
 #[test]
 fn generated_raw_contracts_supply_machine_abis_without_native_whitelists() {
-    use molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi;
     use molt_ir::runtime_callable_abi_generated::runtime_callable_abi;
-    use molt_ir::runtime_raw_abi_generated::{RUNTIME_RAW_ABIS, runtime_raw_abi};
+    use molt_ir::runtime_fn_generated::{
+        RuntimeCallForm, RuntimeFn, runtime_boxed_abi, runtime_raw_abi,
+    };
 
-    for abi in RUNTIME_RAW_ABIS {
+    for &function in RuntimeFn::ALL
+        .iter()
+        .filter(|function| function.form() == RuntimeCallForm::RawCall)
+    {
+        let symbol = function.symbol();
         assert_eq!(
-            runtime_import_return_abi(abi.symbol, abi.arity),
+            runtime_import_return_abi(symbol, function.params()),
             Some(RuntimeReturnAbi::I64),
-            "{}",
-            abi.symbol
+            "{symbol}"
         );
         assert!(
-            runtime_boxed_abi(abi.symbol, abi.arity).is_none()
-                && runtime_callable_abi(abi.symbol).is_none(),
-            "{} raw bits must not also claim object semantics",
-            abi.symbol
+            runtime_boxed_abi(symbol, function.params()).is_none()
+                && runtime_callable_abi(symbol).is_none(),
+            "{symbol} raw bits must not also claim object semantics"
         );
     }
     // The host init entry the CLI calls directly: zero words in, raw bits out.
     assert_eq!(
-        runtime_raw_abi("molt_runtime_init", 0).map(|abi| abi.arity),
+        runtime_raw_abi("molt_runtime_init", 0).map(RuntimeFn::params),
         Some(0)
     );
     assert!(runtime_raw_abi("molt_runtime_init", 1).is_none());
@@ -358,7 +347,7 @@ fn generated_raw_contracts_supply_machine_abis_without_native_whitelists() {
 
 #[test]
 fn raw_integer_carriers_do_not_authorize_boxed_calls() {
-    use molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi;
+    use molt_ir::runtime_fn_generated::runtime_boxed_abi;
 
     for (symbol, arity) in [
         ("molt_int_from_i64", 1),
@@ -399,13 +388,7 @@ fn field_accessor_runtime_import_family_has_one_conservative_abi() {
             !is_runtime_import_abi(name, param_count, RuntimeReturnAbi::Void),
             "{name}"
         );
-        assert_eq!(
-            CONSERVATIVE_RUNTIME_IMPORTS
-                .iter()
-                .filter(|sig| sig.name == name)
-                .count(),
-            1
-        );
+        assert!(RuntimeFn::from_symbol(name).is_some(), "{name}");
     }
 }
 
@@ -840,16 +823,11 @@ fn dynamic_namespace_mapping_imports_keep_conservative_attributes() {
             runtime_import_return_abi(name, arity),
             Some(RuntimeReturnAbi::I64)
         );
-        let signature = RuntimeImportSignature {
-            name,
-            param_count: arity,
-            return_abi: RuntimeReturnAbi::I64,
-        };
         let function = declare_conservative_runtime_function(
             &ctx,
             &module,
             name,
-            runtime_function_type(&ctx, signature),
+            runtime_function_type(&ctx, arity, RuntimeReturnAbi::I64),
         );
         assert!(has_fn_attr(function, "nounwind"));
         for attr in ["willreturn", "memory", "readonly", "readnone"] {

@@ -5,7 +5,7 @@
 
 //! Target-neutral ABI for runtime functions exposed as Python callables.
 //! Arguments and results use the boxed i64 machine carrier.
-//! Ownership and poll-result refinements remain in runtime_boxed_abi_generated.
+//! Ownership and poll-result refinements remain in runtime_fn_generated.
 //! Raw i64 entrypoints are not Python callables.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

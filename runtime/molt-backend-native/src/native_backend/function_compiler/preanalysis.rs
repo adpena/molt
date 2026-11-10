@@ -81,14 +81,14 @@ pub(in crate::native_backend::function_compiler) fn import_runtime_func_ref(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
     local_refs: &mut NativeFunctionImports,
-    signature: crate::runtime_import_abi::RuntimeImportSignature,
+    function: molt_ir::runtime_fn_generated::RuntimeFn,
 ) -> FuncRef {
-    let func_id = SimpleBackend::import_runtime_func_id_split(module, import_ids, signature);
-    if let Some(func_ref) = local_refs.get(signature.name) {
+    let func_id = SimpleBackend::import_runtime_func_id_split(module, import_ids, function);
+    if let Some(func_ref) = local_refs.get(function.symbol()) {
         return *func_ref;
     }
     let func_ref = module.declare_func_in_func(func_id, builder.func);
-    local_refs.insert(signature.name, func_ref);
+    local_refs.insert(function.symbol(), func_ref);
     func_ref
 }
 

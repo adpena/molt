@@ -27,7 +27,6 @@ pub(crate) use container_runtime_selector::{
     WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
-pub(crate) use import_metadata::WasmRuntimeReturn;
 #[cfg(test)]
 pub(crate) use import_registry::wasm_runtime_export_name;
 pub(crate) use import_registry::{IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_import};

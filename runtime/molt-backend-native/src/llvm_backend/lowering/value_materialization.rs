@@ -2194,17 +2194,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
     }
 
-    pub(super) fn ensure_runtime_import(
-        &self,
-        signature: RuntimeImportSignature,
-    ) -> FunctionValue<'ctx> {
-        match signature.return_abi {
-            RuntimeReturnAbi::I64 => {
-                self.ensure_runtime_i64_fn(signature.name, signature.param_count)
-            }
-            RuntimeReturnAbi::Void => {
-                self.ensure_runtime_void_fn(signature.name, signature.param_count)
-            }
+    pub(super) fn ensure_runtime_import(&self, function: RuntimeFn) -> FunctionValue<'ctx> {
+        if function.returns_word() {
+            self.ensure_runtime_i64_fn(function.symbol(), function.params())
+        } else {
+            self.ensure_runtime_void_fn(function.symbol(), function.params())
         }
     }
 

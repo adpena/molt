@@ -1,6 +1,6 @@
 use super::super::*;
 use molt_ir::OpKind;
-use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
 
 // Single-source kind authority for [`handle_call_op`], consulted by
 // `op_family::native_op_family`. Mirror the `match op.kind` arms below.

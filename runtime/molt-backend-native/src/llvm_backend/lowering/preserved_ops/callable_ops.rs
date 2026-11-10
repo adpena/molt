@@ -1,8 +1,8 @@
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 // Handler-owned routing slice. `code_new` and the CallArgs push/expand
 // steps are exact `molt_<kind>` boxed-ABI calls and take the shared admitted
@@ -415,7 +415,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 // Dedicated task-wrapper ABI; a machine i64 declaration does
                 // not authorize generic boxed-call admission for this symbol.
-                let wrap = self.ensure_runtime_import(MOLT_ASYNCGEN_NEW);
+                let wrap = self.ensure_runtime_import(RuntimeFn::AsyncgenNew);
                 self.emit_borrowed_runtime_call(
                     op,
                     wrap,

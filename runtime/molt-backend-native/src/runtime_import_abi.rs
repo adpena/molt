@@ -1,59 +1,41 @@
+//! Machine return shapes of runtime imports. Each entry's identity, word
+//! arity and return contract come from the generated `RuntimeFn` table
+//! (`molt_ir::runtime_fn_generated`); this module only projects them.
+
+use molt_ir::runtime_fn_generated::RuntimeFn;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeReturnAbi {
     I64,
     Void,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RuntimeImportSignature {
-    pub(crate) name: &'static str,
-    pub(crate) param_count: usize,
-    pub(crate) return_abi: RuntimeReturnAbi,
-}
-
-pub(crate) const fn runtime_sig(
-    name: &'static str,
-    param_count: usize,
-    return_abi: RuntimeReturnAbi,
-) -> RuntimeImportSignature {
-    RuntimeImportSignature {
-        name,
-        param_count,
-        return_abi,
+impl RuntimeReturnAbi {
+    pub(crate) const fn of(function: RuntimeFn) -> Self {
+        if function.returns_word() {
+            Self::I64
+        } else {
+            Self::Void
+        }
     }
 }
 
-pub(crate) const MOLT_DEC_REF_OBJ: RuntimeImportSignature =
-    runtime_sig("molt_dec_ref_obj", 1, RuntimeReturnAbi::Void);
-pub(crate) const MOLT_INC_REF_OBJ: RuntimeImportSignature =
-    runtime_sig("molt_inc_ref_obj", 1, RuntimeReturnAbi::Void);
-pub(crate) const MOLT_REFCOUNT_ADMISSION: RuntimeImportSignature =
-    runtime_sig("molt_refcount_admission", 0, RuntimeReturnAbi::I64);
-pub(crate) const MOLT_TASK_NEW: RuntimeImportSignature =
-    runtime_sig("molt_task_new", 3, RuntimeReturnAbi::I64);
-pub(crate) const MOLT_CANCEL_TOKEN_GET_CURRENT: RuntimeImportSignature =
-    runtime_sig("molt_cancel_token_get_current", 0, RuntimeReturnAbi::I64);
-pub(crate) const MOLT_TASK_REGISTER_EXECUTION: RuntimeImportSignature =
-    runtime_sig("molt_task_register_execution", 3, RuntimeReturnAbi::I64);
-pub(crate) const MOLT_ASYNCGEN_NEW: RuntimeImportSignature =
-    runtime_sig("molt_asyncgen_new", 1, RuntimeReturnAbi::I64);
-
 #[cfg(test)]
-pub(crate) const NATIVE_RUNTIME_HELPER_IMPORTS: &[RuntimeImportSignature] = &[
-    MOLT_DEC_REF_OBJ,
-    MOLT_INC_REF_OBJ,
-    MOLT_REFCOUNT_ADMISSION,
-    MOLT_TASK_NEW,
-    MOLT_CANCEL_TOKEN_GET_CURRENT,
-    MOLT_TASK_REGISTER_EXECUTION,
-    MOLT_ASYNCGEN_NEW,
+pub(crate) const NATIVE_RUNTIME_HELPER_IMPORTS: &[RuntimeFn] = &[
+    RuntimeFn::DecRefObj,
+    RuntimeFn::IncRefObj,
+    RuntimeFn::RefcountAdmission,
+    RuntimeFn::TaskNew,
+    RuntimeFn::CancelTokenGetCurrent,
+    RuntimeFn::TaskRegisterExecution,
+    RuntimeFn::AsyncgenNew,
 ];
 
 #[cfg(all(test, feature = "llvm"))]
-pub(crate) const TRAMPOLINE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
-    MOLT_INC_REF_OBJ,
-    MOLT_TASK_NEW,
-    MOLT_CANCEL_TOKEN_GET_CURRENT,
-    MOLT_TASK_REGISTER_EXECUTION,
-    MOLT_ASYNCGEN_NEW,
+pub(crate) const TRAMPOLINE_RUNTIME_IMPORTS: &[RuntimeFn] = &[
+    RuntimeFn::IncRefObj,
+    RuntimeFn::TaskNew,
+    RuntimeFn::CancelTokenGetCurrent,
+    RuntimeFn::TaskRegisterExecution,
+    RuntimeFn::AsyncgenNew,
 ];

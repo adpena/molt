@@ -32,7 +32,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         }
         builder
             .build_execution_call(
-                self.ensure_runtime_import(crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION),
+                self.ensure_runtime_import(
+                    molt_ir::runtime_fn_generated::RuntimeFn::RefcountAdmission,
+                ),
                 &[],
                 "rc_admission",
             )
@@ -93,8 +95,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         let builder = self.backend.context.create_builder();
         builder.position_at_end(self.backend.context.append_basic_block(function, "entry"));
         let slow = self.ensure_runtime_import(match operation {
-            RefcountOperation::Retain => MOLT_INC_REF_OBJ,
-            RefcountOperation::Release => MOLT_DEC_REF_OBJ,
+            RefcountOperation::Retain => RuntimeFn::IncRefObj,
+            RefcountOperation::Release => RuntimeFn::DecRefObj,
         });
         let mut emitter = LlvmRefcountBuilder {
             backend: self.backend,

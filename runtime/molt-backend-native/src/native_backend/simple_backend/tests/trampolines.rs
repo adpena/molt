@@ -1,9 +1,9 @@
 use super::*;
 use crate::TrampolineSpec;
-use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
 use cranelift_module::Linkage;
 use molt_codegen_abi::inline_refcount::RefcountStorage;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use molt_tir::trampolines::TrampolineTaskKind;
 
 #[derive(Clone, Copy, Debug)]
@@ -165,10 +165,12 @@ fn assert_task_allocation_guard(
     );
 
     if task_kind == TrampolineTaskKind::AsyncGen {
-        let wrap_calls =
-            call_sites_for_import(function, compiled.import_ids[MOLT_ASYNCGEN_NEW.name]);
+        let wrap_calls = call_sites_for_import(
+            function,
+            compiled.import_ids[RuntimeFn::AsyncgenNew.symbol()],
+        );
         let release_calls =
-            call_sites_for_import(function, compiled.import_ids[MOLT_DEC_REF_OBJ.name]);
+            call_sites_for_import(function, compiled.import_ids[RuntimeFn::DecRefObj.symbol()]);
         assert_eq!(wrap_calls.len(), 1, "{clif}");
         assert_eq!(release_calls.len(), 1, "{clif}");
         assert_eq!(calls[calls.len() - 2], wrap_calls[0], "{clif}");
@@ -243,7 +245,7 @@ fn task_trampolines_emit_runtime_keys_and_compiled_code_addresses() {
             let function = &compiled.function;
             let calls = call_sites_for_import(
                 function,
-                compiled.import_ids[crate::runtime_import_abi::MOLT_TASK_NEW.name],
+                compiled.import_ids[molt_ir::runtime_fn_generated::RuntimeFn::TaskNew.symbol()],
             );
             assert_eq!(calls.len(), 1);
             let poll = attached_arguments(function, calls[0].1)[0];

@@ -1,9 +1,10 @@
 use super::*;
-use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_TASK_NEW, NATIVE_RUNTIME_HELPER_IMPORTS};
+use crate::runtime_import_abi::NATIVE_RUNTIME_HELPER_IMPORTS;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;
 use molt_ir::OpKind;
 use molt_ir::runtime_callable_abi_generated::runtime_execution_abi;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 fn cfg_reaches(
     cfg: &ControlFlowGraph,
@@ -726,7 +727,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
         let dominators =
             cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
         let allocator =
-            call_sites_for_import(function, compiled.import_ids[MOLT_TASK_NEW.name])[0].1;
+            call_sites_for_import(function, compiled.import_ids[RuntimeFn::TaskNew.symbol()])[0].1;
         let mut stores = 0;
         for block in function.layout.blocks() {
             for inst in function.layout.block_insts(block) {
@@ -797,7 +798,8 @@ fn native_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             }
             let compiled = compile_function_to_clif_with_imports(functions, "task_identity_probe");
             let function = &compiled.function;
-            let calls = call_sites_for_import(function, compiled.import_ids[MOLT_TASK_NEW.name]);
+            let calls =
+                call_sites_for_import(function, compiled.import_ids[RuntimeFn::TaskNew.symbol()]);
             assert_eq!(calls.len(), 1);
             let poll = attached_arguments(function, calls[0].1)[0];
             assert_eq!(
@@ -873,7 +875,7 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
             "task_guard_cleanup_probe",
         );
         let function = &compiled.function;
-        let task_new = compiled.import_ids[MOLT_TASK_NEW.name];
+        let task_new = compiled.import_ids[RuntimeFn::TaskNew.symbol()];
         let task_calls = call_sites_for_import(function, task_new);
         assert_eq!(
             task_calls.len(),
@@ -882,7 +884,7 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
             function.display()
         );
         let prior_task = function.dfg.first_result(task_calls[0].1);
-        let dec_ref_obj = compiled.import_ids[MOLT_DEC_REF_OBJ.name];
+        let dec_ref_obj = compiled.import_ids[RuntimeFn::DecRefObj.symbol()];
         let releases: Vec<_> = call_sites_for_import(function, dec_ref_obj)
             .into_iter()
             .filter(|(_, inst)| {
@@ -981,11 +983,11 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
         "dynamic_br_if_cleanup_probe",
     );
     let function = &compiled.function;
-    let task_new = compiled.import_ids[MOLT_TASK_NEW.name];
+    let task_new = compiled.import_ids[RuntimeFn::TaskNew.symbol()];
     let task_calls = call_sites_for_import(function, task_new);
     assert_eq!(task_calls.len(), 1, "{}", function.display());
     let owned_task = function.dfg.first_result(task_calls[0].1);
-    let dec_ref_obj = compiled.import_ids[MOLT_DEC_REF_OBJ.name];
+    let dec_ref_obj = compiled.import_ids[RuntimeFn::DecRefObj.symbol()];
     let release_blocks: BTreeSet<_> = call_sites_for_import(function, dec_ref_obj)
         .into_iter()
         .filter(|(_, inst)| {
@@ -1198,7 +1200,7 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
         let exit_calls = call_sites_for_import(function, compiled.import_ids["molt_trace_exit"]);
         assert_eq!(exit_calls.len(), 1, "{}", function.display());
         let anchor_releases =
-            call_sites_for_import(function, compiled.import_ids[MOLT_DEC_REF_OBJ.name])
+            call_sites_for_import(function, compiled.import_ids[RuntimeFn::DecRefObj.symbol()])
                 .into_iter()
                 .filter(|(block, inst)| {
                     let operand = attached_arguments(function, *inst)[0];
@@ -1573,12 +1575,12 @@ fn native_backend_import_ids_are_cached_by_symbol() {
     let first = SimpleBackend::import_runtime_func_id_split(
         &mut backend.module,
         &mut backend.import_ids,
-        MOLT_DEC_REF_OBJ,
+        RuntimeFn::DecRefObj,
     );
     let second = SimpleBackend::import_runtime_func_id_split(
         &mut backend.module,
         &mut backend.import_ids,
-        MOLT_DEC_REF_OBJ,
+        RuntimeFn::DecRefObj,
     );
 
     assert_eq!(first, second);
@@ -1637,7 +1639,7 @@ fn marked_finally_observer_imports_both_edges_of_the_inline_work_gate() {
 fn native_runtime_helper_import_descriptors_are_unique() {
     let names: BTreeSet<&str> = NATIVE_RUNTIME_HELPER_IMPORTS
         .iter()
-        .map(|signature| signature.name)
+        .map(|function| function.symbol())
         .collect();
 
     assert_eq!(names.len(), NATIVE_RUNTIME_HELPER_IMPORTS.len());

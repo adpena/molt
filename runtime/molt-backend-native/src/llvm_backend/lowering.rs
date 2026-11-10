@@ -24,11 +24,9 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue, PhiValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_boxed_abi_generated::{
-    RuntimeBoxedAbi, RuntimeBoxedReturn, runtime_boxed_abi,
+use molt_ir::runtime_fn_generated::{
+    RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn, runtime_boxed_abi, runtime_raw_abi,
 };
-#[cfg(feature = "llvm")]
-use molt_ir::runtime_raw_abi_generated::{RuntimeRawAbi, runtime_raw_abi};
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
@@ -40,9 +38,7 @@ use crate::llvm_backend::runtime_imports::{
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
-use crate::runtime_import_abi::{
-    MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, RuntimeImportSignature, RuntimeReturnAbi,
-};
+use crate::runtime_import_abi::RuntimeReturnAbi;
 #[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
 #[cfg(feature = "llvm")]

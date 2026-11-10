@@ -217,7 +217,7 @@ fn assert_task_allocation_admission(compiled: &CompiledFunctionClif) -> (Value, 
     let function = &compiled.function;
     let calls = call_sites_for_import(
         function,
-        compiled.import_ids[crate::runtime_import_abi::MOLT_TASK_NEW.name],
+        compiled.import_ids[molt_ir::runtime_fn_generated::RuntimeFn::TaskNew.symbol()],
     );
     assert_eq!(calls.len(), 1, "{}", function.display());
     assert_task_allocation_admission_for(compiled, calls[0])
@@ -304,7 +304,7 @@ fn assert_refcount_word_access_is_admitted(compiled: &CompiledFunctionClif) -> V
     let function = &compiled.function;
     let admissions = compiled
         .import_ids
-        .get(crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION.name)
+        .get(molt_ir::runtime_fn_generated::RuntimeFn::RefcountAdmission.symbol())
         .map_or_else(Vec::new, |&id| call_sites_for_import(function, id));
     let accesses = refcount_word_accesses(function);
     assert_eq!(

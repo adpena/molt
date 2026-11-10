@@ -118,27 +118,27 @@ mod tests {
 
     #[test]
     fn import_return_contracts_agree_with_machine_and_shared_boxed_abis() {
-        use crate::wasm_abi_generated::WasmRuntimeReturn;
-        use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+        use molt_ir::runtime_fn_generated::RuntimeReturnContract;
+        use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
         use wasm_encoder::ValType;
 
         for spec in IMPORT_REGISTRY {
             let (params, results) = spec.import.machine_signature();
             let contract = spec.import.return_contract();
             if results.is_empty() {
-                assert_eq!(contract, WasmRuntimeReturn::Void, "{}", spec.name);
+                assert_eq!(contract, RuntimeReturnContract::Void, "{}", spec.name);
             } else if results != [ValType::I64] {
-                assert_eq!(contract, WasmRuntimeReturn::RawBits, "{}", spec.name);
+                assert_eq!(contract, RuntimeReturnContract::RawBits, "{}", spec.name);
             } else {
-                assert_ne!(contract, WasmRuntimeReturn::Void, "{}", spec.name);
+                assert_ne!(contract, RuntimeReturnContract::Void, "{}", spec.name);
             }
             if let Some(boxed) = runtime_boxed_abi(spec.import.runtime_export_name(), params.len())
             {
                 let expected = match boxed.result {
-                    RuntimeBoxedReturn::OwnedValue => WasmRuntimeReturn::OwnedObject,
-                    RuntimeBoxedReturn::BorrowedValue => WasmRuntimeReturn::BorrowedObject,
-                    RuntimeBoxedReturn::PollValue => WasmRuntimeReturn::PollResult,
-                    RuntimeBoxedReturn::Void => WasmRuntimeReturn::Void,
+                    RuntimeBoxedReturn::OwnedValue => RuntimeReturnContract::OwnedObject,
+                    RuntimeBoxedReturn::BorrowedValue => RuntimeReturnContract::BorrowedObject,
+                    RuntimeBoxedReturn::PollValue => RuntimeReturnContract::PollResult,
+                    RuntimeBoxedReturn::Void => RuntimeReturnContract::Void,
                 };
                 assert_eq!(contract, expected, "{}", spec.name);
             }
@@ -147,75 +147,87 @@ mod tests {
 
     #[test]
     fn import_return_contract_preserves_provider_ownership_and_protocols() {
-        use crate::wasm_abi_generated::WasmRuntimeReturn;
+        use molt_ir::runtime_fn_generated::RuntimeReturnContract;
         for (import, expected) in [
             (
                 WasmRuntimeImport::IntFromI64,
-                WasmRuntimeReturn::OwnedObject,
+                RuntimeReturnContract::OwnedObject,
             ),
-            (WasmRuntimeImport::IntAsI64, WasmRuntimeReturn::RawBits),
+            (WasmRuntimeImport::IntAsI64, RuntimeReturnContract::RawBits),
             (
                 WasmRuntimeImport::ExceptionPending,
-                WasmRuntimeReturn::RawBits,
+                RuntimeReturnContract::RawBits,
             ),
             (
                 WasmRuntimeImport::AsyncWorkPollAndExceptionPending,
-                WasmRuntimeReturn::RawBits,
+                RuntimeReturnContract::RawBits,
             ),
             (
                 WasmRuntimeImport::DictSet,
-                WasmRuntimeReturn::BorrowedObject,
+                RuntimeReturnContract::BorrowedObject,
             ),
             (
                 WasmRuntimeImport::StoreIndex,
-                WasmRuntimeReturn::BorrowedObject,
+                RuntimeReturnContract::BorrowedObject,
             ),
             (
                 WasmRuntimeImport::GuardType,
-                WasmRuntimeReturn::BorrowedObject,
+                RuntimeReturnContract::BorrowedObject,
             ),
             (
                 WasmRuntimeImport::AllocClass,
-                WasmRuntimeReturn::UnpublishedObject,
+                RuntimeReturnContract::UnpublishedObject,
             ),
             (
                 WasmRuntimeImport::ScratchAlloc,
-                WasmRuntimeReturn::ScratchAllocation,
+                RuntimeReturnContract::ScratchAllocation,
             ),
             (
                 WasmRuntimeImport::RuntimeExecutionEnter,
-                WasmRuntimeReturn::ExecutionToken,
+                RuntimeReturnContract::ExecutionToken,
             ),
-            (WasmRuntimeImport::FuturePoll, WasmRuntimeReturn::PollResult),
-            (WasmRuntimeImport::IoWait, WasmRuntimeReturn::PollResult),
+            (
+                WasmRuntimeImport::FuturePoll,
+                RuntimeReturnContract::PollResult,
+            ),
+            (WasmRuntimeImport::IoWait, RuntimeReturnContract::PollResult),
             (
                 WasmRuntimeImport::ChanRecvBlocking,
-                WasmRuntimeReturn::PollResult,
+                RuntimeReturnContract::PollResult,
             ),
-            (WasmRuntimeImport::ChanSend, WasmRuntimeReturn::PollResult),
+            (
+                WasmRuntimeImport::ChanSend,
+                RuntimeReturnContract::PollResult,
+            ),
             (
                 WasmRuntimeImport::StreamReaderRead,
-                WasmRuntimeReturn::PollResult,
+                RuntimeReturnContract::PollResult,
             ),
             (
                 WasmRuntimeImport::StreamReaderReadline,
-                WasmRuntimeReturn::PollResult,
+                RuntimeReturnContract::PollResult,
             ),
             (
                 WasmRuntimeImport::StreamSendObj,
-                WasmRuntimeReturn::PollResult,
+                RuntimeReturnContract::PollResult,
             ),
-            (WasmRuntimeImport::WsSendObj, WasmRuntimeReturn::PollResult),
+            (
+                WasmRuntimeImport::WsSendObj,
+                RuntimeReturnContract::PollResult,
+            ),
             (
                 WasmRuntimeImport::GpuThreadId,
-                WasmRuntimeReturn::OwnedObject,
+                RuntimeReturnContract::OwnedObject,
             ),
-            (WasmRuntimeImport::PrintNewline, WasmRuntimeReturn::Void),
+            (WasmRuntimeImport::PrintNewline, RuntimeReturnContract::Void),
         ] {
             assert_eq!(import.return_contract(), expected, "{}", import.name());
         }
         for spec in super::POLL_TABLE_IMPORTS {
-            assert_eq!(spec.import.return_contract(), WasmRuntimeReturn::PollResult);
+            assert_eq!(
+                spec.import.return_contract(),
+                RuntimeReturnContract::PollResult
+            );
         }
         assert!("chan_drop".parse::<molt_ir::OpKind>().is_err());
         assert!(op_loop_runtime_call(molt_ir::OpKind::AllocClass, false).is_none());
@@ -344,8 +356,9 @@ mod tests {
 
     #[test]
     fn shared_boxed_text_calls_project_canonical_abi_without_marked_variants() {
-        use crate::wasm_abi_generated::{OpLoopRuntimeArgSpec, WasmRuntimeReturn};
-        use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_op_abi};
+        use crate::wasm_abi_generated::OpLoopRuntimeArgSpec;
+        use molt_ir::runtime_fn_generated::RuntimeReturnContract;
+        use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_op_abi};
         for (plain_kind, slice_kind, plain_symbol, slice_symbol) in [
             (
                 molt_ir::OpKind::StringFind,
@@ -424,15 +437,15 @@ mod tests {
                 [(plain_kind, 2, plain_symbol), (slice_kind, 6, slice_symbol)]
             {
                 let abi = runtime_boxed_op_abi(kind).unwrap();
-                assert_eq!(abi.symbol, expected_symbol);
-                assert_eq!(abi.arity, arity);
+                assert_eq!(abi.symbol(), expected_symbol);
+                assert_eq!(abi.arity(), arity);
                 assert_eq!(abi.result, RuntimeBoxedReturn::OwnedValue);
                 let plain = op_loop_runtime_call(kind, false).unwrap();
                 assert_eq!(plain, op_loop_runtime_call(kind, true).unwrap());
-                assert_eq!(plain.import.runtime_export_name(), abi.symbol);
+                assert_eq!(plain.import.runtime_export_name(), abi.symbol());
                 assert_eq!(
                     plain.import.return_contract(),
-                    WasmRuntimeReturn::OwnedObject
+                    RuntimeReturnContract::OwnedObject
                 );
                 super::assert_runtime_i64_call(plain.import, arity);
                 assert_eq!(

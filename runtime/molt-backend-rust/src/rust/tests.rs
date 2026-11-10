@@ -2394,8 +2394,8 @@ fn generated_runtime_call_agreement_preserves_rust_target_refusals() {
             call.realization(TargetKind::Rust),
             RuntimeCallRealization::Unsupported
         );
-        let abi = call.function().boxed_abi();
-        let args = (0..abi.arity)
+        let abi = call.boxed_abi();
+        let args = (0..abi.arity())
             .map(|i| format!("arg{i}"))
             .collect::<Vec<_>>();
         let ir = SimpleIR {

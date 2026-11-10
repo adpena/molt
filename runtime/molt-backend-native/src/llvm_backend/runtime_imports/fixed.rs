@@ -4,7 +4,7 @@ use super::attributes::{add_memory_read, add_nounwind, add_willreturn};
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use crate::llvm_backend::execution_abi::{execution_symbol, runtime_execution_type};
 #[cfg(feature = "llvm")]
-use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, RuntimeReturnAbi};
+use crate::runtime_import_abi::RuntimeReturnAbi;
 #[cfg(feature = "llvm")]
 use inkwell::AddressSpace;
 #[cfg(feature = "llvm")]
@@ -15,6 +15,8 @@ use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, FunctionType};
 #[cfg(feature = "llvm")]
 use inkwell::values::FunctionValue;
+#[cfg(feature = "llvm")]
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,8 +225,8 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_inplace_bit_and", 2, ATTR_NONE),
     i64_ret("molt_inplace_bit_or", 2, ATTR_NONE),
     i64_ret("molt_inplace_bit_xor", 2, ATTR_NONE),
-    void_ret(MOLT_INC_REF_OBJ.name, 1, ATTR_WILLRETURN),
-    void_ret(MOLT_DEC_REF_OBJ.name, 1, ATTR_WILLRETURN),
+    void_ret(RuntimeFn::IncRefObj.symbol(), 1, ATTR_WILLRETURN),
+    void_ret(RuntimeFn::DecRefObj.symbol(), 1, ATTR_WILLRETURN),
     i64_ret("molt_alloc", 1, ATTR_WILLRETURN),
     i64_ret("molt_object_publish_initialized", 1, ATTR_WILLRETURN),
     i64_ret("molt_get_attr_name", 2, ATTR_NONE),
