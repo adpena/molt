@@ -164,7 +164,7 @@ LLVM A/B loop anatomy for bench_sum and bench_dict, including runtime calls,
 reference-count sites and literal materializations. (b) Fix additional B
 refusals at promotion's compensation owner or by ordering check_exception_elim
 relative to promotion in build_default_pipeline. Do not extend string-keyed slot
-matching. Prove the on arm neutral within A/A envelopes on the entire corpus;
+matching. Prove no on-arm regression above A/A envelopes across the corpus;
 report raw-arm closure or shrinkage per program and backend. (c) Only residual
 above-envelope cells authorize heap-literal GVN. (d) Delete the Python boundary
 and all consumers in one commit only when no unaccepted above-envelope cell
@@ -231,8 +231,9 @@ native and thirteen LLVM above-envelope programs were built in both arms.
 All 44 builds completed with closed guards. Existing promotion counters report
 zero promoted slots in every observed module; the refusal logs show no new B
 refusal. Their user module chunks hit the same function-wide ModuleGetGlobal
-wildcard gate. The missing compensation hypothesis is not supported by these
-cells. Step (b) requires no change; do not broaden the string-keyed gate.
+wildcard gate. That gate is stage-3 work outside this slice. The missing
+compensation hypothesis is not supported by these cells. Step (b) requires no
+change; do not broaden the string-keyed gate.
 
 VERIFIED LLVM loop anatomy, with text sections identical to all four measured
 release products: bench_sum A/B have 337/433 static loop instructions, 2/6
@@ -276,14 +277,31 @@ fixtures plus midend_literal_materialization_identity pass explicitly on native,
 LLVM and WASM (21 backend observations), with a closed guard. All 246 opcode
 generator tests pass and both opcode projections are current.
 
-The first instruction cell, native bench_calls, has new-on/base-on -1.205773%,
-new-raw/new-on +0.057949%, and new-raw/base-on -1.143359%, against the unchanged
-0.264038% A/A envelope. Thus its raw-arm loss closes, but its beneficial on-arm
-change is not strictly neutral. The integrator's 07:05Z oracle explicitly says
-on must remain within that envelope; acceptance of an improvement outside it
-is pending clarification. Do not call this full-corpus acceptance. No other
-post-change instruction cell, deletion, whole-crate matrix or implementation
-precheck is qualified by these observations.
+The integrator's 08:51Z Correction accepts beneficial changes beyond the
+A/A envelope: neutrality means no above-envelope regression. Nine current
+native cells were completed with five alternating baseline/on/raw triples and
+exact CPython stdout/exit checks. Eight have no above-envelope regression;
+bench_while is the first failure: new-on/base-on -1.458010%, raw/on +0.161167%,
+raw/base-on -1.315332%, against its unchanged 0.011276% envelope. Both new arms
+improve on baseline, but this does not waive the separate raw/on obligation.
+The batch stopped at that cell. The other thirteen native cells and current
+LLVM/WASM instruction cells remain unqualified; no deletion or implementation
+precheck was run.
+
+VERIFIED lost fact: the raw loop retains a pending-exception observation at its
+header before the first ModuleGetGlobal; on eliminates it. Text-matched native
+inspection has 289/293 loop instructions and 56/57 branches, with identical
+runtime-call maps (four release sites; no retain/literal constructor sites).
+The extra raw header is ldur/ldrb/tst/b.ne, reached by the backedge. Supplementary
+normal-pipeline replay preserves the distinction: raw source-op 17 is a
+resultless Copy origin=line before the loop and source-op 20 remains a header
+CheckException; on has an outside-loop check and removes the header check.
+The effects oracle conservatively treats non-value-forwarding Copy as impure,
+so the non-raising LINE fact used by Python coalescing is not available to
+check_exception_elim. INFERRED causal owner is canonical metadata effects and
+check_exception_elim/ordering; no product counterfactual or fix is qualified.
+Asynchronous-work polling and traceback/exception custody must remain intact.
+The explicit post-(c) stop condition blocks deletion pending integrator action.
 
 VERIFIED native bench_calls inspection products have text identical to both
 new measured arms. Their loops have 429/431 static instructions and identical
@@ -680,6 +698,11 @@ must include these producers, consumers, fakes and generated projections:
   `midend_stage`, SCCPResult, CanonicalizationState and dead sentinels/helpers
   with their last reader. Audit definite-assignment and unique-result helpers
   for other actual consumers before deletion.
+- Required async/generator lowering in visitors/async_gen.py also calls
+  _rewrite_aliases_in_arg from midend_canonicalization.py to substitute fresh
+  frame-reload SSA values recursively in argument payloads. Preserve that
+  operation at its lowering owner while deleting the optimizer helper/API;
+  do not retain a mid-end compatibility mixin. No implementation is made yet.
 - Pressure bookkeeping: `_TrackedOpsList` and tracking fields in `_types.py`,
   `lowering/generator_state.py`, `visitors/statement_scope.py`; their only
   pressure output is `monolith_pressure_level`. Delete bookkeeping and callers,
