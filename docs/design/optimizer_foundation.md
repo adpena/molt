@@ -388,15 +388,21 @@ and WASM, with ordinary owned entries, payload validation and bounded storage;
 any fix must preserve those contracts. It is in reserved
 `runtime/molt-runtime/src`, and LLVM literal lowering is also reserved. No GVN
 exception or layout padding is introduced to recover fortunate cache buckets.
-The brief explicitly excludes reserved descendants and returns their conflicts
-to the integrator. This is an ownership stop, not acceptance of the regression.
+The 11:34Z Correction explicitly accepts this ChainMap cell with its cause
+named: HF-507 address-layout-dependent literal-cache collisions, not a lost
+TIR fact. GVN sharing is correct; HF-507 owns the literal-table repair in its
+reserved lane. The observed loss remains recorded, not fixed or reclassified
+as noise. Evidence: logs/agents/lane-hf773-slice-d/artifacts/report-e.md and
+evidence-e-llvm-localization.tar.gz (359 members, all readback verified;
+SHA-256 2a8e59b43594a14a2e6e7d44f204f3c6a304ce140f46a71f6901749be6bcea3d).
 
-No deletion or precheck runs after this failed oracle. An unapplied deletion
-draft based on `9c8a163c40` is preserved privately; its rendered projections and
-Ruff checks do not qualify its migrated readers or final wire boundary. Claude
-integrator owns the reserved-path disposition, integration and retirement. No
-product fix or regression test for this cache mechanism has been made. The
-typed nothrow fix does not waive the separate LLVM regression.
+Continue the remaining corpus, then deletion and plain precheck-only. A newly
+regressing cell is accepted under the same disposition only when the same
+tracing establishes this cache cause; any different cause stops the batch.
+An unapplied deletion draft based on `9c8a163c40` is preserved privately; its
+rendered projections and Ruff checks do not qualify migrated readers or the
+final wire boundary. No cache fix or regression test for this mechanism is
+claimed. Claude integrator owns integration, HF-507 routing and retirement.
 
 VERIFIED native bench_calls inspection products have text identical to both
 new measured arms. Their loops have 429/431 static instructions and identical
