@@ -233,6 +233,41 @@ def test_primitive_program_is_its_own_project_inside_a_checkout(
     assert _find_project_root(program) == out.resolve()
 
 
+@pytest.mark.parametrize(
+    "status,stops",
+    [
+        ("build_failed", False),
+        ("signal_exit", False),
+        ("infrastructure_error", True),
+        ("timeout", True),
+        ("rss_limit_exceeded", True),
+    ],
+)
+def test_only_compiler_failures_become_build_failed_axes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str, stops: bool
+) -> None:
+    """A host stop never becomes a LOST axis, so it can never turn a run RED."""
+    failure = pi.bench.MoltFailure(
+        phase="build", status=status, returncode=2, timed_out=False, elapsed_s=0.1
+    )
+    monkeypatch.setattr(pi.bench, "prepare_molt_binary", lambda *a, **k: failure)
+    workload = next(w for w in pi.workloads(pi.Tier.HOURLY) if w.name == "bench_sum")
+    ctx = {
+        "counter": pi.Counter.PERF.value,
+        "scratch": str(tmp_path),
+        "programs": str(tmp_path),
+        "timeout": 30,
+        "repeats": pi.MIN_REPEATS,
+        "cpython": sys.executable,
+    }
+    if stops:
+        with pytest.raises(RuntimeError, match=f"build stopped by {status}"):
+            pi._measure(workload, ctx)
+    else:
+        (axis,) = pi._measure(workload, ctx)["axes"]
+        assert axis["unmeasured"] == pi.Unmeasured.BUILD_FAILED
+
+
 # --- comparison ----------------------------------------------------------------
 
 

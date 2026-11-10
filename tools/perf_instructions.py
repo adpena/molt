@@ -126,6 +126,13 @@ class Phase(StrEnum):
     WHOLE = "whole"
 
 
+# The bench build statuses that are the compiler's own failure: a refused
+# program or a crashed compiler. Every other status (infrastructure_error,
+# timeout, rss_limit_exceeded, daemon_crash, orphaned_processes_cleaned)
+# depends on the host and stops the run instead of becoming an axis verdict.
+COMPILER_BUILD_FAILURES = frozenset({"build_failed", "signal_exit"})
+
+
 class Unmeasured(StrEnum):
     BUILD_FAILED = "build_failed"
     RUN_FAILED = "run_failed"  # after one rerun
@@ -829,10 +836,14 @@ def _measure(workload: Workload, ctx: Mapping[str, Any]) -> dict[str, Any]:
         )
         entry["build_s"] = round(time.monotonic() - started, 3)
         if isinstance(binary, bench.MoltFailure):
-            payload = bench.molt_failure_payload(binary)
-            entry["axes"] = unmeasured(
-                Unmeasured.BUILD_FAILED, json.dumps(payload, sort_keys=True)
-            )
+            payload = json.dumps(bench.molt_failure_payload(binary), sort_keys=True)
+            if binary.status not in COMPILER_BUILD_FAILURES:
+                # A host refusal, guard failure, timeout or memory stop is not
+                # evidence about the compiler: stop the run (invariant 5).
+                raise RuntimeError(
+                    f"{workload.name}: build stopped by {binary.status}: {payload[-1000:]}"
+                )
+            entry["axes"] = unmeasured(Unmeasured.BUILD_FAILED, payload)
             return entry
         try:
             problems = profile_binding_problems(

@@ -49,7 +49,9 @@ K/10 operations and recursion K/100 depth-100 traversals. CPython 3.12.16
 (`-I`) runs each workload once for output only; `compat.comparison.
 compare_outputs` (exact stdout, stderr and exit) decides `OUTPUT_DIFFERS`. The
 measured program's exit, signal or timeout is rerun once and then
-`RUN_FAILED`; a counter, guard or toolchain failure stops the run.
+`RUN_FAILED`. A compile error or compiler crash is `BUILD_FAILED`; a build the
+host stops (capacity refusal, timeout, memory limit, guard failure) and any
+counter or toolchain failure stop the run, so a host fault is never RED.
 
 **Records and the store.** The farm store is the one authority:
 `storage_path(<checkout>, "benchmark-evidence") / "instructions"` on `molt-gate`.

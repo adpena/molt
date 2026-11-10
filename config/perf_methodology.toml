@@ -36,8 +36,10 @@ schema = "molt-perf-methodology-v1"
 # v36: the instruction axis moves to tools/perf_instructions.py: Molt counts on
 # the farm against the nearest measured ancestor, CPython for output only, no
 # ratchet; the board-vs-history chain is retired (HF-222).
-version = 36
-content_sha256 = "521fbb71f0d9070ce80db7b6d21c37e9509b946e13d674c8b988929d243dc1c7"
+# v37: a build that molt.disk_capacity refuses is infrastructure_error, not
+# build_failed, so a full host never reads as a compiler failure.
+version = 37
+content_sha256 = "0645c8ce02b0129cd9c93b1b26fccfa1bb0d685683d04ffb9bd781f7f29e9799"
 
 [[methodology]]
 path = "tools/safe_run.py"
