@@ -145,12 +145,105 @@ owns retirement of the overlapping Python and Rust optimizers.
 
 ## Python SCCP/CSE retirement (HF-773 slice E)
 
-Status: round-two proposal, 2026-11-10. The integrator's 01:00Z Correction
+Status: settled round-two design, 2026-11-10. The integrator's 07:05Z Correction
+authorizes implementation in steps (a)–(d). The settled decisions immediately
+below override conflicting proposals in the recorded measurement discussion.
+The earlier 01:00Z Correction
 supersedes the first proposal's structural-retention list. No compiler change
 is implemented by this design. The findings ledger owns qualification; Claude
 integrator owns review, integration and retirement. The assigned worker owns
 the measurements and proofs. D0 remains diagnostic-only; guarded-call admission
 and the inliner's execution-context gate remain HF-824's work.
+
+### Settled implementation decisions (07:05Z)
+
+Implement in order, with one commit per step and a stop on the first failed
+oracle: (a) compare existing module-slot promotion diagnostics for A/on and
+B/raw on the nine native and thirteen LLVM above-envelope programs; capture
+LLVM A/B loop anatomy for bench_sum and bench_dict, including runtime calls,
+reference-count sites and literal materializations. (b) Fix additional B
+refusals at promotion's compensation owner or by ordering check_exception_elim
+relative to promotion in build_default_pipeline. Do not extend string-keyed slot
+matching. Prove the on arm neutral within A/A envelopes on the entire corpus;
+report raw-arm closure or shrinkage per program and backend. (c) Only residual
+above-envelope cells authorize heap-literal GVN. (d) Delete the Python boundary
+and all consumers in one commit only when no unaccepted above-envelope cell
+remains; stop at green precheck. Claude owns integration and retirement.
+
+GVN owns literal identity and its existing `Replacements`
+(`passes/ownership_lattice_min/replacement.rs`) owns ownership:
+ConstStr, ConstBytes and ConstBigInt may enter the existing dominator-scoped
+table; a replacement stays transparent only when both literals are unbound.
+Terminal drop insertion releases at the alias class's last use. None and small
+integers are immediate words. The existing `bound_local` string-keyed attribute
+is debt with a typed home outside this slice; add no new string-keyed attribute.
+There is no shared lifetime oracle and no new refcount_elim mechanism. Rust's
+op_kinds.toml literal roles and gvn/keys.rs are the authority; delete the Python
+literal_identity.py only with its last reader: live namespace/static-truth
+analysis also reads it, so its independent language-lowering duty must survive
+mid-end retirement. Rust does not depend on it. Heap-read aliasing and bigint folding
+have existing owners but no demonstrated buyer here; they are not prerequisites.
+Future bigint folding belongs in an arbitrary-precision SCCP ConstVal variant.
+Backend literal materialization is HF-507's reserved work; native anatomy does
+not explain LLVM losses. A cell whose A/A envelope exceeds its delta is unknown,
+never a performance pass.
+
+Findings 7–9 complete the consumer inventory:
+
+- Keep FRONTEND_EFFECT_PURE_KINDS and FRONTEND_EFFECT_CONTROL_KINDS and their
+  effect authority / [[frontend_effect_kind]] rows for traceback correctness in
+  lowering/frame_locations.py. Migrate FRONTEND_EFFECT_CLASS readers in
+  tools/check_correspondence.py and tests/test_lean_python_correspondence.py /
+  test_lean_rust_correspondence.py; the effect map cannot disappear with CSE.
+- Also retire optimizer-only FRONTEND_OPERATOR_OPCODE, frontend_operator_facts,
+  _FRONTEND_OPERATOR_EFFECTS, frontend_predicate_facts,
+  COMPARISON_SCALAR_DOMAINS, FRONTEND_COMMUTATIVE_DOMAINS,
+  frontend_can_reorder_commutative and FRONTEND_INTRINSIC_SCALAR_ARITIES.
+  Include tools/op_kinds/primitive_effects.py in GoldfishContext. Heap READS/WRITES
+  kind sets have test readers only. Regenerate frontend Python and TIR Rust
+  op_kinds_generated through tools/gen_op_kinds.py; preserve every Rust-consumed
+  row, including predicate semantics read by value_identity.rs.
+- Include src/molt/cli/entrypoint_parser.py stage choices, debug_helpers.py,
+  config/public_contract_v1.surface.json, tests/translation_validation/README.md;
+  _new_tracked_ops(count_function=True) callers in module_lifecycle.py and
+  function_lifecycle.py; tools/agent_coordination.py and
+  tests/test_agent_coordination.py's frontend proof selector;
+  formal/lean/MoltTIR/Passes/{JoinCanon,EdgeThread}.lean;
+  tools/bench_wasm.py's retired knobs and
+  tests/test_bench_wasm_runtime_build_flags.py; docs/spec/STATUS.md,
+  foundation/56_dx_buildspeed_tooling.md, dx_doctrine_100yr.md,
+  cli-reference.md and 0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md.
+
+Findings 10–11 correct the mechanism: SCCP refuses a fold when ANY outgoing edge
+targets a loop header, not merely the selected edge. type_guard_hoist,
+refcount_elim and dead_store_elim also precede SCCP. module_phase.rs reruns the
+whole pipeline on promoted functions. Current GVN never replaces a constant
+with Copy, even in one block. Correct owner paths are
+passes/alias_analysis/mod.rs and tir/type_refine.rs. The serializer skeleton's
+bases must match its six existing serialization mixins. Ordering is not a
+prerequisite without a measured buyer. Keep all earlier numerical observations
+bound to their recorded source; they do not prove these proposed fixes.
+
+### Step (a) result and step (b) disposition
+
+VERIFIED at the settled design's source, with no compiler changes: the nine
+native and thirteen LLVM above-envelope programs were built in both arms.
+All 44 builds completed with closed guards. Existing promotion counters report
+zero promoted slots in every observed module; the refusal logs show no new B
+refusal. Their user module chunks hit the same function-wide ModuleGetGlobal
+wildcard gate. The missing compensation hypothesis is not supported by these
+cells. Step (b) requires no change; do not broaden the string-keyed gate.
+
+VERIFIED LLVM loop anatomy, with text sections identical to all four measured
+release products: bench_sum A/B have 337/433 static loop instructions, 2/6
+string materialization calls and 11/14 release slow-path call sites. bench_dict's
+first loop has 259/360 instructions, 1/5 materialization calls and 8/12 release
+sites; its second has 366/469 instructions, 2/6 materializations and 12/15
+release sites. LLVM inlines RC fast paths with runtime slow calls; these are
+static sites, including conditional paths, not dynamic per-iteration totals.
+Full per-module refusal/counter records and loop call inventories stay in the
+private report. They authorize the settled step (c), not a backend edit or a
+claim that literal construction alone explains the whole instruction delta.
 
 ### Problem and measured scope
 
@@ -251,13 +344,14 @@ VERIFIED completed cells; raw/on median instruction delta / observed A/A envelop
    MISSING/unbound reads, callbacks, arbitrary-precision arithmetic, singleton
    and heap identity, releases and resume transport. Value equality alone does
    not prove that two fallible heap materializations may be merged. Reuse must
-   satisfy `compiler_analysis/literal_identity.py` and the native optimization
+   satisfy Rust `op_kinds.toml` and `gvn/keys.rs` and the native optimization
    contract's immutable-literal identity rule, producer-derived exact facts,
    representation and ownership rules, and both exception-aware dominance and
    strict-CFG use reachability. The existing
    `foundation/20_rc-ownership-drop-insertion.md` contract owns reference
    boundaries. Use existing ownership replacements; never
-   introduce a transparent heap alias to obtain a cheaper count. An annotation
+   introduce an alias without the existing Replacements proof for two unbound
+   heap literals. An annotation
    or a runtime tag hint that returns mismatched inputs is not an exact-type
    or nullness proof.
 3. **Raw lowering, no permissive repair.** Delete `_run_ir_midend_passes`, its
@@ -272,7 +366,8 @@ VERIFIED completed cells; raw/on median instruction delta / observed A/A envelop
 4. **Precision and order are different obligations.** `build_default_pipeline`
    alone owns ordering and analysis invalidation. It currently runs SCCP after
    canonicalization, unboxing, block versioning, GVN, LICM, memory GVN and SROA,
-   with no later GVN. A precision fix cannot be claimed complete if the useful
+   type_guard_hoist, refcount_elim and dead_store_elim, with no later GVN.
+   A precision fix cannot be claimed complete if the useful
    fact arrives after its consumer. Measure a finite ordering change against
    the buying program; keep one pass implementation and one manager. Do not
    reproduce the Python fixed-point driver or add new convergence/budget
@@ -296,7 +391,14 @@ removed. This is a specification skeleton, not an executable stub.
 
 ```python
 # src/molt/frontend/lowering/serialization.py
-class SerializationMixin(GeneratorMixinBase):
+class SerializationMixin(
+    SerializationBasicOpsMixin,
+    SerializationFunctionOpsMixin,
+    SerializationExceptionOpsMixin,
+    SerializationObjectAttrOpsMixin,
+    SerializationCollectionOpsMixin,
+    SerializationLoopStringAsyncOpsMixin,
+):
     def map_ops_to_json(
         self,
         ops: list[MoltOp],
@@ -338,17 +440,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 }
 ```
 
-```rust
-// runtime/molt-passes/src/tir/passes/refcount_elim/engine.rs
-/// Requires: valid SSA and the existing shared ownership/lifetime facts (I-2).
-/// Ensures: only proven redundant temporary ownership is elided; Python binding,
-/// exception and observable lifetime boundaries remain distinct (I-2, I-5).
-/// Missing proof preserves the owner; no transparent alias or loose attrs
-/// manufacture admissibility (I-1, I-2, I-5).
-pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    ...
-}
-```
+
 
 All new semantic facts in this design have closed Rust types and typed SSA
 identities. `list[MoltOp]` and `list[SimpleIROp]` are existing typed transports.
@@ -365,8 +457,8 @@ and [GVN](https://llvm.org/docs/Passes.html#gvn-global-value-numbering) explain
 these owners' purposes; they do not prove Molt equivalence.
 
 INFERRED source precision inventory, to distinguish from measured causality:
-GVN intentionally numbers constants only within a block and avoids constant
-Copy replacements because of representation/exception-only reachability
+GVN numbers constants only within a block and never performs constant
+Copy replacements, even within that block, because of representation/exception-only reachability
 constraints. Python CSE also merges admitted constant materializations across
 blocks. Rust memory GVN covers proven typed-slot `LoadAttr`, not Python's
 broader LEN, INDEX, CONTAINS, attribute and TYPE_OF alias classes. Python folds
@@ -397,25 +489,16 @@ construction call site inside its natural loop. These are static sites,
 including possible conditional paths, not dynamic call totals. Existing
 allocation, dispatch and handle-resolution counters match across arms.
 
-The first gap therefore spans GVN's scoped `ValueKey` identity and the existing
-`ownership_lattice_min`, `refcount_elim` and terminal drop owners. Generic
-`Replacements` preserves replaced heap owners and can retain the measured RC
-traffic; adding owned copies alone is not a demonstrated fix. Proposed rule:
-retire a redundant **unbound compiler-temporary** literal definition and
-substitute its uses only when the shared identity/lifetime oracle proves the
-owner redundant, including metadata uses, representation, exception-aware and
-strict-CFG dominance, and observable lifetime boundaries. Bound locals and
-unproved lifetimes retain their existing ownership. Keep the first constructor
-and exception edge; never manufacture a transparent heap alias to reduce a
-count. Any new admission belongs in the existing generated role/key authority
-and typed SSA/ownership facts, not loose attrs. Independent rebinding, deletion,
-callback/finalizer, identity and exception oracles must prove the boundary.
-This ownership-elision proof is a load-bearing review decision, not a measured
-Rust implementation. A concrete egress rejection goes to HF-821; Python CSE or
-permissive repair cannot conceal it.
+The native sites narrow the candidates but do not establish the dominant cause.
+The settled implementation order above first tests module-slot promotion and
+its compensation refusals. Only remaining cells authorize GVN heap-literal
+reuse, whose ownership rule belongs in existing Replacements. No shared
+lifetime oracle or refcount_elim extension is proposed. Independent rebinding,
+deletion, callback, identity and exception oracles must prove its boundary.
+Literal construction costs in reserved backend paths remain HF-507's work.
 
 Loop threading is a separate **egress obligation**, not a missing SCCP solver.
-`passes/sccp/mod.rs` refuses to fold a conditional with a loop-header target
+`passes/sccp/mod.rs` refuses to fold a conditional when ANY edge targets a loop header
 because `lower_to_simple` reconstructs structured loops. Record protected
 folds and their cost separately from constant and ordering gaps. HF-821 owns
 that egress; do not rebuild Python threading or cross its reserved lowering
@@ -546,17 +629,17 @@ must include these producers, consumers, fakes and generated projections:
 - Rust owners: `passes/{sccp,gvn,dce,block_arg_prune,check_exception_elim}`,
   `copy_prop.rs`, `canonicalize.rs`, `mem_gvn.rs`, `effects.rs`,
   `value_identity.rs`, `ownership_lattice_min/{mod,replacement}.rs`, `refcount_elim`,
-  `alias_analysis.rs`, `type_refine.rs` and `pass_manager.rs`. Preserve the
+  `passes/alias_analysis/mod.rs`, `tir/type_refine.rs` and `pass_manager.rs`. Preserve the
   module/terminal phase order and existing analysis-invalidation authorities.
 - Existing immutable-literal identity authority:
-  `src/molt/compiler_analysis/literal_identity.py` and
+  Rust `op_kinds.toml` and `gvn/keys.rs`, with
   `docs/spec/areas/compiler/NATIVE_BACKEND_OPTIMIZATION.md`. Value equality
   cannot replace its identity/representation admission.
 - Opcode/property generation: `runtime/molt-ir/src/tir/op_kinds.toml`,
-  `tools/gen_op_kinds.py`, `tools/op_kinds/{render_python,frontend_validate}.py`
+  `tools/gen_op_kinds.py`, `tools/op_kinds/{render_python,frontend_validate,primitive_effects}.py`
   and generated frontend tables. Retire optimizer-only
   FRONTEND_PREDICATE_SEMANTICS, FRONTEND_INTRINSIC_SCALAR_RESULTS,
-  FRONTEND_EFFECT_CLASS and FRONTEND_TRUTHINESS_CONTROL_KINDS plus their rows
+  FRONTEND_TRUTHINESS_CONTROL_KINDS plus their rows
   of frontend-only metadata and validators, preserving opcode entities and
   properties still consumed by TIR. Keep CHECK_EXCEPTION_SKIP_KINDS and
   FRONTEND_ARBITRARY_HEAP_EFFECT, which language lowering reads.
