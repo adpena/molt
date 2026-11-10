@@ -26,15 +26,16 @@ import sys
 from typing import Iterable
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_ROOT = REPO_ROOT / "runtime"
-
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+REPO_ROOT = _REPO_ROOT
+RUNTIME_ROOT = REPO_ROOT / "runtime"
 
 from molt.rust_source_scan import (  # noqa: E402
     _rust_delimiter_ends,

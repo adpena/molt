@@ -812,7 +812,14 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     )
 
     assert builders.count("alloc_object_zeroed_unpublished_with_aux(") >= 2
-    assert 'pub extern "C" fn molt_object_publish_initialized' in builders
+    # HF-198: the runtime body is attached and its C export is generated.
+    assert "fn molt_object_publish_initialized_attached_body(" in builders
+    attached_export = (
+        ROOT / "runtime/molt-runtime/src/attached_exports_generated/object/builders.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        'pub unsafe extern "C" fn molt_object_publish_initialized(' in attached_export
+    )
     unpublished_allocator = allocator.split(
         "fn alloc_object_zeroed_with_aux_policy", 1
     )[1].split("pub(crate) fn alloc_object(", 1)[0]
@@ -820,7 +827,7 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
         "initialize_flags_gc_unpublished(header, 0)"
     ) < unpublished_allocator.index("gc_track_if_cyclic")
     assert "gc_mark_unpublished" not in allocator
-    arena_alloc = _rust_function(arena, "molt_arena_alloc_object")
+    arena_alloc = _rust_function(arena, "molt_arena_alloc_object_attached_body")
     assert "crate::object::alloc_scoped_boxed_object(_py, size_bits" in arena_alloc
     assert "initialize_flags_gc_unpublished" not in arena_alloc
     scoped_allocator = _rust_function(allocator, "alloc_scoped_boxed_object")
@@ -839,7 +846,7 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert "gc_mark_unpublished" not in scoped_allocator
     assert "gc_mark_unpublished" not in arena
     assert cranelift.count('"molt_object_publish_initialized"') >= 2
-    assert 'get_function("molt_object_publish_initialized")' in llvm
+    assert 'get_execution_function("molt_object_publish_initialized")' in llvm
     assert "WasmRuntimeImport::ObjectPublishInitialized" in wasm
     assert "molt_ir::OpKind::Alloc | molt_ir::OpKind::AllocClass => {}" in wasm
     assert "molt_ir::OpKind::StackAlloc => panic!(" in wasm
