@@ -184,7 +184,8 @@ def test_a_tool_change_selects_the_repository_policy_gates():
 
 def test_importers_needing_landing_built_artifacts_are_left_to_the_landing() -> None:
     # The real manifest: the WASM export-signature test consumes the runtime
-    # pair that wasm.build.shared-runtime builds from the committed tree.
+    # pair that the compiler build wasm.build.shared-runtime makes from the
+    # committed tree.
     from tools.consumer_gate import ROOT
 
     deps = consumer_gate.landing_built_tests(
@@ -192,6 +193,9 @@ def test_importers_needing_landing_built_artifacts_are_left_to_the_landing() -> 
         [
             "tests/test_wasm_runtime_call_signature_authority.py",
             "tests/tools/test_consumer_gate.py",
+            # repository.docs-tests orders after repository checks, which build
+            # nothing: the generator test still runs before the commit.
+            "tests/test_gen_wasm_abi.py",
         ],
     )
     assert deps == {

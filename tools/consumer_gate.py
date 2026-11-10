@@ -150,25 +150,44 @@ def run_static_gates(root: Path, commands: list[str]) -> list[str]:
 def landing_built_tests(
     root: Path, importers: Sequence[str]
 ) -> dict[str, tuple[str, ...]]:
-    """Importer test files whose proof-plan command needs artifacts built first.
+    """Importer test files whose proof-plan command needs a compiler build first.
 
-    A pytest command with `dependencies` in tools/proof_plan.toml consumes what
-    those commands produce (for example, the checkout's compiled WASM runtime
-    pair). The proof executor builds them from the committed tree, so no
-    pre-commit run can provide them: the landing runs these tests. A checkout
-    with no proof plan declares no dependencies.
+    A pytest command consumes what its dependency closure in
+    tools/proof_plan.toml produces. Only a compiler build (resource class
+    `compiler-build-resource`, for example the checkout's WASM runtime pair)
+    makes an artifact that a pre-commit run cannot provide: the proof executor
+    builds it from the committed tree, so the landing runs these tests.
+    Ordering dependencies on checks keep a test in the pre-commit run. A
+    checkout with no proof plan declares no builds.
     """
     from tools.proof_plan import ProofPlan
 
     manifest = root / "tools" / "proof_plan.toml"
     if not manifest.is_file():
         return {}
+    commands = {command.id: command for command in ProofPlan.load(manifest).commands}
+
+    def builds(command_id: str) -> tuple[str, ...]:
+        found: list[str] = []
+        pending = list(commands[command_id].dependencies)
+        seen: set[str] = set()
+        while pending:
+            dependency = pending.pop()
+            if dependency in seen:
+                continue
+            seen.add(dependency)
+            if commands[dependency].data["resource_class"] == "compiler-build-resource":
+                found.append(dependency)
+            pending.extend(commands[dependency].dependencies)
+        return tuple(sorted(found))
+
     owners: dict[str, tuple[str, ...]] = {}
-    for command in ProofPlan.load(manifest).commands:
-        if not command.dependencies:
+    for command in commands.values():
+        needed = builds(command.id) if command.pytest_targets else ()
+        if not needed:
             continue
         for target in command.pytest_targets:
-            owners.setdefault(target.split("::", 1)[0], command.dependencies)
+            owners.setdefault(target.split("::", 1)[0], needed)
     return {test: owners[test] for test in importers if test in owners}
 
 
