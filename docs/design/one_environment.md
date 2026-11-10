@@ -7,6 +7,11 @@ and a small fixed landing suite, in staged deletions.
 
 ## Problem (measured 2026-11-07)
 
+- Development images accumulate until stage 3 lands: the retired HF-694 retention branch's
+  inventory counted 174 images (26.47 GiB) on one host, all under 30 days old, because
+  custody_layout.py keeps them `Regenerable(month)`. Stage 3's single synced environment per
+  key removes the pile-up; until then the cheap lever is that one retention age, not a new
+  cleaner.
 - One checkout had five Python environments (checkout `.venv`, content-keyed development image,
   pinned controller `.venv`, CI's bare provisioned `python3`, each farm host's image). They drifted
   the same day: `.venv` stayed on 3.12.15 after the pin moved to 3.12.16; CI's proof executor had
