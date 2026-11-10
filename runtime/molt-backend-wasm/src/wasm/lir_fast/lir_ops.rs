@@ -127,6 +127,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord
         | OpCode::UnboxBoolWord
+        | OpCode::BoxInlineInt
         | OpCode::CallRuntime => unreachable!(
             "{:?} is a final-TIR op; the WASM target does not run the late lowering stage",
             tir_op.opcode

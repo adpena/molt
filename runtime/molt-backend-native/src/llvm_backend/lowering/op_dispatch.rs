@@ -153,6 +153,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(op.results[0], truth.into());
                 self.value_types.insert(op.results[0], TirType::Bool);
             }
+            OpCode::BoxInlineInt => {
+                let value = self.ensure_i64(self.resolve(op.operands[0]));
+                let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);
+                self.values.insert(op.results[0], word.into());
+                self.value_types.insert(op.results[0], TirType::DynBox);
+            }
             OpCode::CallRuntime => {
                 let runtime = op
                     .runtime

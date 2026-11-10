@@ -178,6 +178,7 @@ _SCCP_CONSTANT_EVAL_RULES = {
 _FAST_PATH_EXPANSION_RULES = {
     "int_add": "IntAdd",
     "int_sub": "IntSub",
+    "int_compare": "IntCompare",
     "truthiness": "Truthiness",
 }
 _VALUE_RANGE_TRANSFER_RULES = {

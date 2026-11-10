@@ -198,6 +198,7 @@ pub enum OpCode {
     UnboxInlineInt,
     IsBoolWord,
     UnboxBoolWord,
+    BoxInlineInt,
     CallRuntime,
     // Refcount
     IncRef,

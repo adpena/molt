@@ -1492,6 +1492,7 @@ gvn_always_numberable_opcodes = [
     "UnboxInlineInt",
     "IsBoolWord",
     "UnboxBoolWord",
+    "BoxInlineInt",
 ]
 
 gvn_type_gated_numberable_opcodes = [
@@ -1550,6 +1551,7 @@ final_tir_opcodes = [
     "UnboxInlineInt",
     "IsBoolWord",
     "UnboxBoolWord",
+    "BoxInlineInt",
     "CallRuntime",
 ]
 
@@ -1652,6 +1654,12 @@ fast_path_expansion_rules = [
     { opcode = "InplaceAdd", rule = "int_add" },
     { opcode = "Sub", rule = "int_sub" },
     { opcode = "InplaceSub", rule = "int_sub" },
+    { opcode = "Eq", rule = "int_compare" },
+    { opcode = "Ne", rule = "int_compare" },
+    { opcode = "Lt", rule = "int_compare" },
+    { opcode = "Le", rule = "int_compare" },
+    { opcode = "Gt", rule = "int_compare" },
+    { opcode = "Ge", rule = "int_compare" },
     { opcode = "Bool", rule = "truthiness" },
 ]
 
@@ -3627,6 +3635,8 @@ result_absorbs_operands = false
 # Late-TIR representation primitives (HF-821): produced only by the final
 # lowering stage for targets whose backend consumes final TIR. IsInlineInt is
 # total; UnboxInlineInt is total and meaningful where IsInlineInt holds.
+# BoxInlineInt is its inverse: the inline-int word of a value proven to fit the
+# inline window (RawI64Safe); it allocates nothing and cannot raise.
 [[opcode]]
 name = "IsInlineInt"
 may_call_python = false
@@ -3668,6 +3678,18 @@ name = "UnboxBoolWord"
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BoxInlineInt"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["dynbox"]
 may_throw = false
 side_effecting = false
 purity = "pure"

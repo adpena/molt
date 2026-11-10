@@ -124,8 +124,8 @@ fn the_slow_arm_keeps_the_ops_attributes_and_span() {
     assert_eq!(call.origin, None);
 }
 
-/// `return x + c` over one boxed parameter and the constant `c`.
-fn add_constant(c: i64) -> (TirFunction, ValueId, ValueId) {
+/// `return x <op> c` over one boxed parameter and the constant `c`.
+fn with_constant(opcode: OpCode, c: i64) -> (TirFunction, ValueId, ValueId) {
     let mut func = TirFunction::new(
         "f".into(),
         vec![TirType::DynBox],
@@ -142,11 +142,9 @@ fn add_constant(c: i64) -> (TirFunction, ValueId, ValueId) {
         attrs: AttrDict::from([("value".into(), AttrValue::Int(c))]),
         ..TirOp::new(OpCode::ConstInt, vec![], vec![constant])
     });
-    block.ops.push(TirOp::new(
-        OpCode::Add,
-        vec![ValueId(0), constant],
-        vec![result],
-    ));
+    block
+        .ops
+        .push(TirOp::new(opcode, vec![ValueId(0), constant], vec![result]));
     block.terminator = Terminator::Return {
         values: vec![result],
     };
@@ -155,7 +153,7 @@ fn add_constant(c: i64) -> (TirFunction, ValueId, ValueId) {
 
 #[test]
 fn a_boxed_plus_inline_safe_constant_tests_only_the_boxed_operand() {
-    let (mut func, constant, _) = add_constant(1);
+    let (mut func, constant, _) = with_constant(OpCode::Add, 1);
     assert_eq!(run(&mut func).values_changed, 1);
     assert_valid(&func);
     let tests = ops(&func, OpCode::IsInlineInt);
@@ -172,7 +170,7 @@ fn a_boxed_plus_inline_safe_constant_tests_only_the_boxed_operand() {
     let boxes: Vec<_> = func.blocks[slow]
         .ops
         .iter()
-        .filter(|op| op.opcode == OpCode::BoxVal)
+        .filter(|op| op.opcode == OpCode::BoxInlineInt)
         .collect();
     assert_eq!(boxes.len(), 1);
     assert_eq!(boxes[0].operands, [constant]);
@@ -186,7 +184,7 @@ fn a_boxed_plus_inline_safe_constant_tests_only_the_boxed_operand() {
 fn a_constant_outside_the_inline_window_keeps_its_lowering() {
     // 2**46 is past the inline payload: the sum need not be exact in i64 terms
     // of two 47-bit values, so the op keeps its current lowering.
-    let (mut func, _, _) = add_constant(1 << 46);
+    let (mut func, _, _) = with_constant(OpCode::Add, 1 << 46);
     assert_eq!(run(&mut func).values_changed, 0);
     assert_eq!(func.blocks.len(), 1);
 }
@@ -454,4 +452,147 @@ fn truthiness_after_an_add_reuses_the_int_tag_test() {
         .filter(|(_, op)| op.operands == [ValueId(0)])
         .count();
     assert_eq!(tests_of_a, 1);
+}
+
+const COMPARISONS: [(OpCode, RuntimeFn); 6] = [
+    (OpCode::Eq, RuntimeFn::Eq),
+    (OpCode::Ne, RuntimeFn::Ne),
+    (OpCode::Lt, RuntimeFn::Lt),
+    (OpCode::Le, RuntimeFn::Le),
+    (OpCode::Gt, RuntimeFn::Gt),
+    (OpCode::Ge, RuntimeFn::Ge),
+];
+
+#[test]
+fn a_boxed_comparison_compares_payloads_and_boxes_the_raw_bool() {
+    for (opcode, runtime) in COMPARISONS {
+        let (mut func, _) = binary(opcode, [TirType::DynBox, TirType::DynBox]);
+        assert_eq!(run(&mut func).values_changed, 1, "{opcode:?}");
+        assert_valid(&func);
+        assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 2);
+        // Only the fast arm compares in TIR; the slow arm calls the entry.
+        let compares = ops(&func, opcode);
+        assert_eq!(compares.len(), 1, "{opcode:?}");
+        let (fast, compare) = &compares[0];
+        assert_eq!(func.value_types[&compare.results[0]], TirType::Bool);
+        for operand in &compare.operands {
+            assert_eq!(func.value_types[operand], TirType::I64);
+        }
+        let fast_ops: Vec<OpCode> = func.blocks[fast].ops.iter().map(|op| op.opcode).collect();
+        assert_eq!(
+            fast_ops,
+            [
+                OpCode::UnboxInlineInt,
+                OpCode::UnboxInlineInt,
+                opcode,
+                OpCode::BoxVal
+            ]
+        );
+        let calls = ops(&func, OpCode::CallRuntime);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1.runtime, Some(runtime));
+        assert_eq!(calls[0].1.operands, [ValueId(0), ValueId(1)]);
+    }
+}
+
+#[test]
+fn a_comparison_with_a_literal_tests_only_the_boxed_operand() {
+    // `n < 2`: the literal compares as it is and is boxed only for the entry.
+    let (mut func, constant, _) = with_constant(OpCode::Lt, 2);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    let tests = ops(&func, OpCode::IsInlineInt);
+    assert_eq!(tests.len(), 1);
+    assert_eq!(tests[0].1.operands, [ValueId(0)]);
+    let (_, compare) = &ops(&func, OpCode::Lt)[0];
+    assert_eq!(compare.operands[1], constant);
+    let (_, call) = &ops(&func, OpCode::CallRuntime)[0];
+    assert_eq!(call.runtime, Some(RuntimeFn::Lt));
+    assert_eq!(call.operands[0], ValueId(0));
+    assert_ne!(
+        call.operands[1], constant,
+        "the entry takes the boxed literal"
+    );
+}
+
+#[test]
+fn raw_operand_comparisons_keep_their_lowering() {
+    // Parameters travel as boxed words; two raw producers are the backend's
+    // raw compare, not a boxed fast path.
+    for (opcode, _) in COMPARISONS {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let [lhs, rhs, result] = [func.fresh_value(), func.fresh_value(), func.fresh_value()];
+        func.value_types.insert(lhs, TirType::I64);
+        func.value_types.insert(rhs, TirType::I64);
+        func.value_types.insert(result, TirType::DynBox);
+        let entry = func.entry_block;
+        let block = func.blocks.get_mut(&entry).unwrap();
+        for (value, c) in [(lhs, 3), (rhs, 4)] {
+            block.ops.push(TirOp {
+                attrs: AttrDict::from([("value".into(), AttrValue::Int(c))]),
+                ..TirOp::new(OpCode::ConstInt, vec![], vec![value])
+            });
+        }
+        block
+            .ops
+            .push(TirOp::new(opcode, vec![lhs, rhs], vec![result]));
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        assert_eq!(run(&mut func).values_changed, 0, "{opcode:?}");
+        assert_eq!(func.blocks.len(), 1);
+    }
+}
+
+#[test]
+fn only_the_runtime_call_of_a_comparison_may_raise() {
+    // The join's CheckException keeps the original op's declared source (a
+    // comparison's is Unwind); any other op that could raise would mix a fresh
+    // Origin into it, which the exception-region verifier rejects.
+    for (opcode, _) in COMPARISONS {
+        let (mut boxed, _) = binary(opcode, [TirType::DynBox, TirType::DynBox]);
+        let (mut literal, _, _) = with_constant(opcode, 2);
+        for func in [&mut boxed, &mut literal] {
+            run(func);
+            assert_valid(func);
+        }
+        let const_ints = std::collections::HashMap::new();
+        for func in [&boxed, &literal] {
+            for op in func.blocks.values().flat_map(|block| &block.ops) {
+                if matches!(op.opcode, OpCode::CallRuntime | OpCode::ConstInt) {
+                    continue;
+                }
+                assert!(
+                    !crate::tir::passes::check_exception_elim::classify::op_may_raise(
+                        &func.value_types,
+                        &const_ints,
+                        op
+                    ),
+                    "{opcode:?}: {:?} may raise",
+                    op.opcode
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_terminal_phase_keeps_the_expanded_results_type() {
+    // `return x + 1` with x an int parameter (a boxed word, typed I64). The
+    // terminal phase refines types, then expands; the join must keep I64, or
+    // every use downstream (a loop-carried counter, `n == 0`) widens to DynBox.
+    let (mut func, _, result) = with_constant(OpCode::Add, 1);
+    func.param_types = vec![TirType::I64];
+    func.value_types.insert(ValueId(0), TirType::I64);
+    func.value_types.insert(result, TirType::I64);
+    func.return_type = TirType::I64;
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    crate::tir::drop_phase::finalize_function_drops(&mut func, &tti);
+    assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 1, "the add expands");
+    assert_eq!(func.value_types[&result], TirType::I64);
 }

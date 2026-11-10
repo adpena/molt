@@ -168,7 +168,8 @@ fn propagate_boxed_immortal_carriers(func: &TirFunction, repr: &mut HashMap<Valu
             if op.results.len() != 1 {
                 continue;
             }
-            if op.opcode == OpCode::BoxVal && op.operands.len() == 1 {
+            if matches!(op.opcode, OpCode::BoxVal | OpCode::BoxInlineInt) && op.operands.len() == 1
+            {
                 add(op.results[0], Rule::Box(op.operands[0]));
             } else if op.operands.len() == 1
                 && (op.opcode == OpCode::IncRef
@@ -501,6 +502,7 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord
         | OpCode::UnboxBoolWord
+        | OpCode::BoxInlineInt
         | OpCode::CallRuntime => (IntegerOperandObservation::Always, false),
         OpCode::Add
         | OpCode::InplaceAdd

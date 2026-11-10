@@ -18,9 +18,15 @@
 //! ^join(%r):  the rest of the block, then its terminator
 //! ```
 //!
+//! A comparison (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`) takes the same shape. Its
+//! fast arm compares the two payloads, which order exactly as the ints do, and
+//! boxes the raw `Bool` as a bool word; the slow arm calls the comparison's
+//! runtime entry, which runs the rich-comparison protocol.
+//!
 //! One operand may instead be a raw value in the inline window (`RawI64Safe`,
 //! such as the literal in `n - 1`). It needs no tag test and feeds the fast arm
-//! as it is; the slow arm boxes it for the runtime entry, which takes words.
+//! as it is; the slow arm boxes it with `BoxInlineInt` (which cannot raise) for
+//! the runtime entry, which takes words.
 //!
 //! Truthiness, `Bool` on a boxed word:
 //!
@@ -80,9 +86,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         };
         let split = split(func, block, index);
         let join = match expansion {
-            Expansion::IntArith { fast, operands } => {
-                expand_int_arith(func, block, split, fast, operands)
-            }
+            Expansion::IntArith {
+                fast,
+                raw,
+                operands,
+            } => expand_int_arith(func, block, split, fast, raw, operands),
             Expansion::Truthiness => expand_truthiness(func, block, split),
         };
         stats.ops_added += 6;
@@ -95,11 +103,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
 /// What the stage does with one op, from the generated
 /// `fast_path_expansion_rules` table.
-#[derive(Clone, Copy)]
 enum Expansion {
-    /// Integer add or subtract; in-place forms share the binary fast arm.
+    /// Integer add, subtract or comparison; in-place forms share the binary
+    /// fast arm. `fast` computes on the payloads and yields a `raw` value.
     IntArith {
         fast: OpCode,
+        raw: TirType,
         operands: [IntOperand; 2],
     },
     Truthiness,
@@ -135,7 +144,7 @@ fn expansion_of(op: &TirOp, repr: &HashMap<ValueId, Repr>) -> Option<Expansion> 
     if !op.has_valid_shape() || op.results.len() != 1 {
         return None;
     }
-    let int_arith = |fast| {
+    let int_arith = |fast, raw| {
         let [lhs, rhs] = op.operands[..] else {
             return None;
         };
@@ -144,11 +153,17 @@ fn expansion_of(op: &TirOp, repr: &HashMap<ValueId, Repr>) -> Option<Expansion> 
         (operands.contains(&IntOperand::Boxed)
             && is_boxed_word(repr, op.results[0])
             && op.numeric_runtime().is_some())
-        .then_some(Expansion::IntArith { fast, operands })
+        .then_some(Expansion::IntArith {
+            fast,
+            raw,
+            operands,
+        })
     };
     match opcode_fast_path_expansion_rule_table(op.opcode) {
-        FastPathExpansionRule::IntAdd => int_arith(OpCode::Add),
-        FastPathExpansionRule::IntSub => int_arith(OpCode::Sub),
+        FastPathExpansionRule::IntAdd => int_arith(OpCode::Add, TirType::I64),
+        FastPathExpansionRule::IntSub => int_arith(OpCode::Sub, TirType::I64),
+        // A comparison on two payloads is the same comparison on raw values.
+        FastPathExpansionRule::IntCompare => int_arith(op.opcode, TirType::Bool),
         FastPathExpansionRule::Truthiness => (op.operands.len() == 1
             && is_boxed_word(repr, op.operands[0]))
         .then_some(Expansion::Truthiness),
@@ -270,6 +285,7 @@ fn expand_int_arith(
     block: BlockId,
     split: Split,
     fast: OpCode,
+    raw_ty: TirType,
     kinds: [IntOperand; 2],
 ) -> BlockId {
     let Split {
@@ -327,10 +343,10 @@ fn expand_int_arith(
             ));
         }
     }
-    let sum = fresh_typed(func, TirType::I64);
+    let raw = fresh_typed(func, raw_ty);
     let fast_result = fresh_typed(func, TirType::DynBox);
-    fast_ops.push(new_op(fast, payloads.to_vec(), vec![sum], span));
-    fast_ops.push(new_op(OpCode::BoxVal, vec![sum], vec![fast_result], span));
+    fast_ops.push(new_op(fast, payloads.to_vec(), vec![raw], span));
+    fast_ops.push(new_op(OpCode::BoxVal, vec![raw], vec![fast_result], span));
     func.blocks.insert(
         fast_block,
         new_block(fast_block, fast_ops, branch(join, fast_result)),
@@ -338,14 +354,16 @@ fn expand_int_arith(
 
     // The slow arm is the original op's semantics: it keeps its attributes
     // (exception source, location) and calls the op's typed runtime entry,
-    // which takes boxed words, so an inline-safe operand is boxed first.
+    // which takes boxed words, so an inline-safe operand is boxed first, by
+    // BoxInlineInt: a fresh raise there would mix an Origin source into the
+    // join's check, which keeps the original op's declared source.
     let mut slow_ops = Vec::new();
     let mut words = operands;
     for i in 0..2 {
         if kinds[i] == IntOperand::InlineSafe {
             words[i] = fresh_typed(func, TirType::DynBox);
             slow_ops.push(new_op(
-                OpCode::BoxVal,
+                OpCode::BoxInlineInt,
                 vec![operands[i]],
                 vec![words[i]],
                 span,
