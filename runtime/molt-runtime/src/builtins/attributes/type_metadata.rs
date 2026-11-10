@@ -252,8 +252,7 @@ fn static_text_signature(py: &PyToken<'_>, class_bits: u64) -> Option<&'static s
         (roots.filter, 13, "(function, iterable, /)"),
     ]
     .into_iter()
-    .filter(|&(owner, since, _)| owner == class_bits && since <= minor)
-    .last()
+    .rfind(|&(owner, since, _)| owner == class_bits && since <= minor)
     .map(|(_, _, signature)| signature)
 }
 
