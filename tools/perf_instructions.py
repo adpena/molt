@@ -761,6 +761,25 @@ def primitive_build_env(
     return env
 
 
+def workload_inputs(
+    workload: Workload, programs: Path
+) -> tuple[Path, list[str], list[str]]:
+    """The script, run arguments and build arguments a workload is admitted with.
+
+    Every workload is admitted against the repository root, so its entry is
+    the repository-relative path; a primitive's program lives in `programs`.
+    """
+    if workload.primitive is not None:
+        return (
+            programs / f"{workload.name}.py",
+            [str(workload.primitive.iterations)],
+            [],
+        )
+    assert workload.bench is not None
+    script = ROOT / workload.bench
+    return script, application_run_args(script), molt_args_for_benchmark(script)
+
+
 def _measure(workload: Workload, ctx: Mapping[str, Any]) -> dict[str, Any]:
     """Build once, run MIN_REPEATS times per axis, check output; one record entry."""
     counter = Counter(ctx["counter"])
@@ -770,24 +789,16 @@ def _measure(workload: Workload, ctx: Mapping[str, Any]) -> dict[str, Any]:
     lane = profile_selection_for_backend("native", "release-output")
     if lane.backend != "native":
         raise ValueError("instruction builds must use the native backend")
+    programs = Path(ctx["programs"])
+    script, run_args, molt_args = workload_inputs(workload, programs)
     if workload.primitive is not None:
-        programs = Path(ctx["programs"])
-        script = programs / f"{workload.name}.py"
-        project = programs
-        run_args = [str(workload.primitive.iterations)]
-        molt_args: list[str] = []
         build_env = primitive_build_env(os.environ, lane.environment(), programs)
     else:
         build_env = dict(os.environ, PYTHONHASHSEED="0", MOLT_KEEP_SYMBOLS="1")
         build_env.update(lane.environment())
-        assert workload.bench is not None
-        script = ROOT / workload.bench
-        project = ROOT
-        run_args = application_run_args(script)
-        molt_args = molt_args_for_benchmark(script)
     entry: dict[str, Any] = {"name": workload.name, "build_s": None, "run_s": None}
     with admit_benchmark_workload(
-        script, project_root=project, run_args=run_args, molt_args=molt_args
+        script, project_root=ROOT, run_args=run_args, molt_args=molt_args
     ) as admitted:
         identity = admitted.record
 
@@ -955,6 +966,14 @@ def measure_record(
                 (programs / f"{workload.name}.py").write_text(
                     workload.primitive.program(), encoding="utf-8"
                 )
+        # Admit every workload before any build: a malformed workload stops
+        # the run in seconds, not after the build slots drain.
+        for workload in selected:
+            script, run_args, molt_args = workload_inputs(workload, programs)
+            with admit_benchmark_workload(
+                script, project_root=ROOT, run_args=run_args, molt_args=molt_args
+            ):
+                pass
         plan = plan_resource_pressure(
             prefix="MOLT_BENCH",
             max_compile_slots=MAX_COMPILE_SLOTS,

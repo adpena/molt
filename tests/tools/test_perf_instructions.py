@@ -124,6 +124,28 @@ def test_registry_partitions_every_program_into_one_tier() -> None:
     assert (empty.phases(), empty.arguments()) == ((pi.Phase.STARTUP,), (0,))
 
 
+def test_every_registry_workload_admits_before_any_build(tmp_path: Path) -> None:
+    """The run admits every workload up front; each one must admit cleanly."""
+    from tools.bench_evidence import (
+        admit_benchmark_workload,
+        workload_identity_problems,
+    )
+
+    for tier in pi.Tier:
+        for workload in pi.workloads(tier):
+            if workload.primitive is not None:
+                (tmp_path / f"{workload.name}.py").write_text(
+                    workload.primitive.program(), encoding="utf-8"
+                )
+            script, run_args, molt_args = pi.workload_inputs(workload, tmp_path)
+            with admit_benchmark_workload(
+                script, project_root=pi.ROOT, run_args=run_args, molt_args=molt_args
+            ) as admitted:
+                assert workload_identity_problems(admitted.record) == []
+                if workload.bench is not None:
+                    assert admitted.record["entry"] == workload.bench
+
+
 def test_the_instrument_is_exactly_the_imported_measurement_path() -> None:
     """The run identity hashes INSTRUMENT; a new import must join it."""
     source = (REPO_ROOT / "tools/perf_instructions.py").read_text(encoding="utf-8")
