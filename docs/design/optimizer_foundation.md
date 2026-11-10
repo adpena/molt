@@ -342,22 +342,60 @@ separate on-arm neutrality obligation. Twenty LLVM and 21 available WASM
 instruction cells remain unmeasured, with baseline WASM Regex Redux still
 unavailable. High-noise cells remain unknown for small performance differences.
 
-VERIFIED localization: baseline/current LLVM on-arm frontend inputs are
-byte-identical (SHA-256 15ad0baaa10c0b55facbd79d9538e416bcd0730457765a59923b88e3addc831b)
-and use the same immutable runtime generation. The failure is downstream of
-Python lowering. Supplementary actual-backend fact graphs are byte-identical
-for ChainMap.__getitem__ and get; the caller and __contains__ have fewer
-string producers and release sites. Retained archive-candidate anatomy shows
-850/692 static caller-loop instructions and six/one string materialization
-sites, while full-caller stack-memory sites rise 241/267. Linked-text equality
-and a causal dynamic attribution are not established. Extended literal lifetime
-or register placement is a hypothesis, not a named proven lost fact. The report
-explicitly leaves the cause unlocalized rather than inventing one.
+VERIFIED 10:46Z localization: the base, GVN-only (`347859a4d1`) and Line
+(`9c8a163c40`) bisect identifies GVN as the trigger. Five interleaved triples
+give median paired instruction deltas GVN/base +1.418557%, Line/base
++1.404056%, Line/GVN -0.007825%; the three base/base controls are within the
+original 0.072614% envelope. A second controlled build of all three source
+versions in the same plain source snapshot, sharing one immutable runtime,
+gives +1.297825%, +1.399371%, -0.012574%, respectively. Its base/base controls
+are -0.248005%, +0.023489%, -0.267451%; the fresh-base/old-base controls are
++0.254738%, +0.106730%, +0.160425%. Those variations are recorded, not used
+to widen the original envelope. All 39 complete executions match CPython
+stdout/exit and close their guards. Every frontend input is byte-identical
+(SHA-256 15ad0baaa10c0b55facbd79d9538e416bcd0730457765a59923b88e3addc831b).
+
+VERIFIED anatomy now reads the actual symbolized measured binaries, rather
+than archive candidates. Base/GVN/Line caller natural loops have 850/713/692
+static instructions, 6/1/1 string-constructor sites, 26/21/21 release slow-call
+sites and 24/27/28 stack-memory sites. The latter include ABI slots and do
+not prove register spills. Conditional sites are not dynamic calls per
+iteration. The caller frame shrinks from 0x190 to 0x150 bytes with GVN.
+
+VERIFIED dynamic mechanism: the existing string-constructor trace, cropped
+to 1,000 complete steady loop intervals in unchanged base/GVN binaries,
+records 35,000/22,000 constructor calls but 9,000/12,000 literal-cache misses.
+The GVN layout makes `self`/`maps` collide in slot 20 and the collections
+filename/generator qualified name collide in slot 24. Each pair now repeatedly
+evicts itself. `const_data_cache.rs:44-46` masks a multiplied address to five
+bits; higher address bits cannot affect the 32-slot index. Equal-length
+literals 32 bytes apart therefore systematically collide. Its insert replaces
+the sole slot entry (58-66). `builtins/strings.rs:1803-1836` sends a miss through
+validation, alloc_string and cache insertion. Not every miss allocates:
+identifier strings can hit the separate interner (`object/builders.rs:2299-2344`).
+For the three non-identifier payloads (filename, qualified name, `<genexpr>`),
+misses rise from 1,000 to 5,000 per 1,000 intervals: four additional
+non-interned string construction paths per iteration (builders.rs:2378-2388).
+The two intentionally time-bounded traces close their guards; they are
+diagnostic prefixes, not completed-program or timing proofs.
+
+INFERRED owner: data-layout-sensitive runtime literal-cache churn explains
+additional dynamic work despite GVN reducing constructor/release sites. An
+isolated cache-policy counterfactual has not run, so the entire instruction
+delta is not attributed exclusively to it and register-placement contributions
+remain unquantified. The canonical cache serves String/Bytes/BigInt on native
+and WASM, with ordinary owned entries, payload validation and bounded storage;
+any fix must preserve those contracts. It is in reserved
+`runtime/molt-runtime/src`, and LLVM literal lowering is also reserved. No GVN
+exception or layout padding is introduced to recover fortunate cache buckets.
+The brief explicitly excludes reserved descendants and returns their conflicts
+to the integrator. This is an ownership stop, not acceptance of the regression.
 
 No deletion or precheck runs after this failed oracle. An unapplied deletion
 draft based on `9c8a163c40` is preserved privately; its rendered projections and
 Ruff checks do not qualify its migrated readers or final wire boundary. Claude
-integrator owns the regression disposition, integration and retirement. The
+integrator owns the reserved-path disposition, integration and retirement. No
+product fix or regression test for this cache mechanism has been made. The
 typed nothrow fix does not waive the separate LLVM regression.
 
 VERIFIED native bench_calls inspection products have text identical to both
