@@ -43,11 +43,14 @@ def test_boxed_projection_does_not_infer_semantics_from_machine_facts() -> None:
 
 
 def test_dedicated_machine_facts_do_not_mirror_generated_boxed_contracts() -> None:
-    conservative, duplicates = AUDIT.runtime_import_abi_facts(include_fixed=False)
+    # Helpers and raw calls come from the generated RuntimeFn table, which
+    # gives each entry one form, so no machine fact can mirror a boxed one.
+    dedicated, duplicates = AUDIT.runtime_import_abi_facts(include_fixed=False)
+    boxed = AUDIT.runtime_boxed_abi_facts()
     assert not duplicates
-    assert not conservative.keys() & AUDIT.runtime_boxed_abi_facts().keys()
-    assert ("molt_asyncgen_new", 1) in conservative
-    assert ("molt_asyncgen_new", 1) not in AUDIT.runtime_boxed_abi_facts()
+    assert not dedicated.keys() & boxed.keys()
+    assert dedicated[("molt_asyncgen_new", 1)].return_abi == "I64"
+    assert ("molt_asyncgen_new", 1) not in boxed
 
 
 def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:
@@ -64,29 +67,20 @@ def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:
 
 
 def test_runtime_import_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None:
-    conservative_imports = tmp_path / "abi_facts.rs"
     fixed_imports = tmp_path / "fixed.rs"
-    constants = tmp_path / "runtime_import_abi.rs"
-    conservative_imports.write_text(
+    fixed_imports.write_text(
         "\n".join(
             [
-                "pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[",
-                'runtime_sig("molt_alpha", 1, RuntimeReturnAbi::I64),',
-                'runtime_sig("molt_alpha", 1, RuntimeReturnAbi::Void),',
+                "pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[",
+                'i64_ret("molt_alpha", 1, ATTR_NONE),',
+                'void_ret("molt_alpha", 1, ATTR_NONE),',
                 "];",
             ]
         ),
         encoding="utf-8",
     )
-    fixed_imports.write_text(
-        "pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[];",
-        encoding="utf-8",
-    )
-    constants.write_text("", encoding="utf-8")
 
-    facts, duplicates = AUDIT.runtime_import_abi_facts(
-        conservative_imports, fixed_imports, constants
-    )
+    facts, duplicates = AUDIT.runtime_import_abi_facts(fixed_imports)
 
     assert facts[("molt_alpha", 1)] == AUDIT.AbiFact(
         "molt_alpha",
@@ -100,13 +94,7 @@ def test_runtime_import_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None
 def test_runtime_import_abi_facts_reads_custom_fixed_pointer_params(
     tmp_path: Path,
 ) -> None:
-    conservative_imports = tmp_path / "abi_facts.rs"
     fixed_imports = tmp_path / "fixed.rs"
-    constants = tmp_path / "runtime_import_abi.rs"
-    conservative_imports.write_text(
-        "pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[];",
-        encoding="utf-8",
-    )
     fixed_imports.write_text(
         "\n".join(
             [
@@ -122,11 +110,7 @@ def test_runtime_import_abi_facts_reads_custom_fixed_pointer_params(
         ),
         encoding="utf-8",
     )
-    constants.write_text("", encoding="utf-8")
-
-    facts, duplicates = AUDIT.runtime_import_abi_facts(
-        conservative_imports, fixed_imports, constants
-    )
+    facts, duplicates = AUDIT.runtime_import_abi_facts(fixed_imports)
 
     assert facts[("molt_ptr_pair", 2)] == AUDIT.AbiFact(
         "molt_ptr_pair",

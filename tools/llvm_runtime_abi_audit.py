@@ -34,13 +34,9 @@ bind_repository_imports(__file__)
 ROOT = Path(__file__).resolve().parents[1]
 
 
-RUNTIME_IMPORT_ABI_FACTS_RS = (
-    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
-)
 RUNTIME_IMPORT_FIXED_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/fixed.rs"
 )
-RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
 
 ABI_I64_RETURNS = {"u64", "i64"}
 ABI_I32_RETURNS = {"u32", "i32"}
@@ -282,20 +278,25 @@ def _insert_abi_fact(
         facts[key] = fact
 
 
-def runtime_import_signature_constants(
-    path: Path = RUNTIME_IMPORT_ABI_RS,
-) -> dict[str, AbiFact]:
-    text = path.read_text(encoding="utf-8")
-    out: dict[str, AbiFact] = {}
-    for const, symbol, arity, return_abi in re.findall(
-        r"pub\(crate\)\s+const\s+([A-Z][A-Z0-9_]*)\s*:\s*"
-        r"RuntimeImportSignature\s*=\s*runtime_sig\(\s*"
-        r'"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)\s*;',
-        text,
-        re.DOTALL,
-    ):
-        out[const] = AbiFact(symbol, int(arity), return_abi, ("I64",) * int(arity))
-    return out
+def _insert_fixed_abi_fact(
+    facts: dict[tuple[str, int], AbiFact],
+    duplicates: list[DuplicateAbiFact],
+    generated: set[tuple[str, int]],
+    fact: AbiFact,
+) -> None:
+    """A fixed declaration may restate one generated entry with stronger LLVM
+    attributes; it must agree with it. Any other repeat is a duplicate."""
+    key = (fact.symbol, fact.arity)
+    if key in generated:
+        generated.discard(key)
+        if facts[key] != fact:
+            duplicates.append(
+                DuplicateAbiFact(
+                    fact.symbol, fact.arity, facts[key].return_abi, fact.return_abi
+                )
+            )
+        return
+    _insert_abi_fact(facts, duplicates, fact)
 
 
 def fixed_runtime_param_abi_constants(fixed_text: str) -> dict[str, tuple[str, ...]]:
@@ -312,41 +313,34 @@ def fixed_runtime_param_abi_constants(fixed_text: str) -> dict[str, tuple[str, .
 
 
 def runtime_import_abi_facts(
-    conservative_path: Path = RUNTIME_IMPORT_ABI_FACTS_RS,
     fixed_path: Path = RUNTIME_IMPORT_FIXED_RS,
-    constants_path: Path = RUNTIME_IMPORT_ABI_RS,
     *,
     include_fixed: bool = True,
 ) -> tuple[dict[tuple[str, int], AbiFact], tuple[DuplicateAbiFact, ...]]:
-    conservative_text = conservative_path.read_text(encoding="utf-8")
-    fixed_text = fixed_path.read_text(encoding="utf-8") if include_fixed else ""
-    constants = runtime_import_signature_constants(constants_path)
-    fixed_param_constants = fixed_runtime_param_abi_constants(fixed_text)
+    """Machine facts of native runtime imports.
+
+    Every runtime entry the boxed projection does not own (helpers and raw
+    calls) comes from the generated RuntimeFn table, the one identity
+    authority; the hand-written fixed declarations add pointer and narrow
+    shapes. A fixed declaration of a generated entry must agree with it.
+    """
+    from tools.wasm_abi_gen.manifest import load_manifest, runtime_fn_specs
+
     facts: dict[tuple[str, int], AbiFact] = {}
     duplicates: list[DuplicateAbiFact] = []
-    for match in re.finditer(
-        r"runtime_sig\(\s*"
-        r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
-        r"(?P<arity>\d+)\s*,\s*"
-        r"RuntimeReturnAbi::(?P<abi>I64|Void)\s*,?\s*\)",
-        conservative_text,
-        re.DOTALL,
-    ):
-        fact = AbiFact(
-            match.group("name"),
-            int(match.group("arity")),
-            match.group("abi"),
-            ("I64",) * int(match.group("arity")),
-        )
-        _insert_abi_fact(facts, duplicates, fact)
-    for line in conservative_text.splitlines():
-        stripped = line.split("//", maxsplit=1)[0].strip()
-        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)\s*,", stripped)
-        if match is None:
+    for spec in runtime_fn_specs(load_manifest()):
+        if spec["form"] == "boxed":
             continue
-        const = match.group(1)
-        if const in constants:
-            _insert_abi_fact(facts, duplicates, constants[const])
+        arity = spec["params"]
+        return_abi = "Void" if spec["result"] == "void" else "I64"
+        _insert_abi_fact(
+            facts,
+            duplicates,
+            AbiFact(spec["runtime_name"], arity, return_abi, ("I64",) * arity),
+        )
+    generated = set(facts)
+    fixed_text = fixed_path.read_text(encoding="utf-8") if include_fixed else ""
+    fixed_param_constants = fixed_runtime_param_abi_constants(fixed_text)
     for match in re.finditer(
         r"\b(?P<ctor>i64_ret|void_ret)\(\s*"
         r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
@@ -361,24 +355,7 @@ def runtime_import_abi_facts(
             return_abi,
             ("I64",) * int(match.group("arity")),
         )
-        _insert_abi_fact(facts, duplicates, fact)
-    for match in re.finditer(
-        r"\b(?P<ctor>i64_ret|void_ret)\(\s*"
-        r"(?P<const>[A-Z][A-Z0-9_]*)\.name\s*,\s*"
-        r"(?P<arity>\d+)\s*,",
-        fixed_text,
-        re.DOTALL,
-    ):
-        const = match.group("const")
-        if const not in constants:
-            continue
-        fact = constants[const]
-        expected_return = "I64" if match.group("ctor") == "i64_ret" else "Void"
-        if (
-            fact.arity == int(match.group("arity"))
-            and fact.return_abi == expected_return
-        ):
-            _insert_abi_fact(facts, duplicates, fact)
+        _insert_fixed_abi_fact(facts, duplicates, generated, fact)
     for match in re.finditer(
         r"\bcustom\(\s*"
         r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
@@ -396,7 +373,7 @@ def runtime_import_abi_facts(
             match.group("abi"),
             param_abis,
         )
-        _insert_abi_fact(facts, duplicates, fact)
+        _insert_fixed_abi_fact(facts, duplicates, generated, fact)
     return facts, tuple(sorted(duplicates))
 
 
@@ -512,15 +489,11 @@ def validate_classified_facts(
 
 
 def run_audit(root: Path = ROOT) -> AuditResult:
-    conservative_imports = root / RUNTIME_IMPORT_ABI_FACTS_RS.relative_to(ROOT)
     fixed_imports = root / RUNTIME_IMPORT_FIXED_RS.relative_to(ROOT)
-    runtime_import_abi = root / RUNTIME_IMPORT_ABI_RS.relative_to(ROOT)
     runtime_roots = runtime_src_roots(root)
     exports = runtime_exports(runtime_roots)
     aliases = runtime_type_aliases(runtime_roots)
-    facts, duplicates = runtime_import_abi_facts(
-        conservative_imports, fixed_imports, runtime_import_abi
-    )
+    facts, duplicates = runtime_import_abi_facts(fixed_imports)
     boxed = runtime_boxed_abi_facts()
     classified_fact_issues = list(
         validate_classified_facts(
@@ -528,19 +501,7 @@ def run_audit(root: Path = ROOT) -> AuditResult:
         )
     )
 
-    # Fixed declarations retain stronger attributes; matching generated/fixed
-    # facts are therefore legitimate. Conservative mirrors must be deleted.
-    conservative, _ = runtime_import_abi_facts(
-        conservative_imports, fixed_imports, runtime_import_abi, include_fixed=False
-    )
     duplicates = list(duplicates)
-    for key, fact in conservative.items():
-        if key in boxed:
-            duplicates.append(
-                DuplicateAbiFact(
-                    fact.symbol, fact.arity, "conservative", "generated-boxed"
-                )
-            )
     for key in facts.keys() & boxed.keys():
         if facts[key] != boxed[key]:
             fact = facts[key]
