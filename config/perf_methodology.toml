@@ -39,7 +39,7 @@ schema = "molt-perf-methodology-v1"
 # v37: a build that molt.disk_capacity refuses is infrastructure_error, not
 # build_failed, so a full host never reads as a compiler failure.
 version = 37
-content_sha256 = "28722fed49fff8418a3e503e736a374c5d582b822a0de30d3278ba0d291889e4"
+content_sha256 = "819037ea8e753227541c632194b2540274c89c2a10ea002e859f7fa31f851f5d"
 
 [[methodology]]
 path = "tools/safe_run.py"
