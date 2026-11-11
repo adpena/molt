@@ -357,12 +357,8 @@ pub(crate) fn molt_class_frame_exit_attached_body(_py: &crate::PyToken<'_>) -> u
         if entered && exception_pending(py) {
             // Propagation out of the class body is a call-site Origin in its
             // caller, just as a real class-body function returning an error.
-            let homes = FRAME_STACK.with(|stack| {
-                stack
-                    .borrow()
-                    .last()
-                    .map_or(0, |entry| entry.bindings.homes_base() as u64)
-            });
+            let homes = crate::builtins::frames::frame_stack_top_entry()
+                .map_or(0, |entry| entry.bindings.homes_base() as u64);
             crate::builtins::exceptions::molt_exception_frame_origin_attached_body(py, homes);
         }
         MoltObject::none().bits()

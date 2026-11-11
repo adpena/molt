@@ -16,7 +16,7 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
-| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8) | native-stack frame records (lane call-anatomy-phase2) | HF-185, HF-261 |
+| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`) | generated inline push and pop on Cranelift, LLVM and WASM (lane call-anatomy-phase2) | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a) | guarded call promotion design (HF-773 slice D) | HF-507, HF-79, HF-200 |
 | 4 inline caches | not started | - | - | HF-202, HF-206 |
@@ -647,6 +647,13 @@ both modes (the "reference meaning" rule of HF-485). `Proven` sites carry the pr
 identity; the premise checker refuses the build when a write to the slot appears.
 
 ### 4.3 Frame records and lazy frame objects
+
+Settled 2026-11-10: records live in the per-thread frame arena that already holds the binding
+homes (stable addresses, the same on every backend), not in the native stack frame; the record
+retains its function and code, as CPython 3.12 holds `f_funcobj` and `f_code` strong. Step 1
+(landed) makes the record chain headed by `ThreadRecord.frame_top` the runtime's one frame
+authority (`molt-runtime/src/builtins/frames/records.rs`); step 2 generates the push and pop
+inline. The original sketch follows.
 
 A function whose frame can be observed keeps a `FrameRecord` in its own native stack frame (on
 WASM, in the shadow stack):

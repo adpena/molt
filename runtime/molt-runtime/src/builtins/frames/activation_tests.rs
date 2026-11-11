@@ -190,14 +190,14 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         // Throw before first execution: exactly one owned target frame, no
         // compiled-entry handoff, and a traceback payload that outlives it.
         // The frame's bindings are the task's, read through its payload.
-        let depth = FRAME_STACK.with(|stack| stack.borrow().len());
+        let depth = crate::builtins::frames::records::depth();
         let owners = [refs(globals), refs(builtins)];
         let snapshot_of =
             |bindings: u64| bindings::frame_bindings_snapshot(py, bindings).expect("frame locals");
         let payload = {
             let scope = unsafe { ActivationFrameScope::enter(py, ptr) }.expect("admitted");
-            let top = FRAME_STACK.with(|stack| *stack.borrow().last().unwrap());
-            assert_eq!(FRAME_STACK.with(|stack| stack.borrow().len()), depth + 1);
+            let top = crate::builtins::frames::frame_stack_top_entry().unwrap();
+            assert_eq!(crate::builtins::frames::records::depth(), depth + 1);
             assert_eq!(
                 [
                     top.code_bits,
@@ -219,7 +219,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
             drop(scope);
             payload
         };
-        assert_eq!(FRAME_STACK.with(|stack| stack.borrow().len()), depth);
+        assert_eq!(crate::builtins::frames::records::depth(), depth);
         let entry =
             unsafe { traceback_payload_frame_entry(obj_from_bits(payload).as_ptr().unwrap()) };
         assert_eq!(entry.code_bits, code);
@@ -310,9 +310,9 @@ fn coroutine_locals_use_the_same_layout_without_generator_control() {
         dec_ref_bits(py, created);
         // A runtime-native coroutine has no code identity and never fabricates
         // a Python frame, even before first execution.
-        let depth = FRAME_STACK.with(|stack| stack.borrow().len());
+        let depth = crate::builtins::frames::records::depth();
         drop(unsafe { ActivationFrameScope::enter(py, ptr) }.expect("inert scope"));
-        assert_eq!(FRAME_STACK.with(|stack| stack.borrow().len()), depth);
+        assert_eq!(crate::builtins::frames::records::depth(), depth);
         crate::task_mark_done(py, ptr);
         let done = unsafe { activation_locals_bits(py, ptr) }.expect("done coroutine");
         assert_eq!(lookup(py, done, x), None);
@@ -595,14 +595,10 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
         }
         frame_stack_push_owned(py, code, globals, builtins, 0);
         assert!(frame_stack_enter_homes(py, FramePlan::default()));
-        FRAME_STACK.with(|stack| {
-            stack
-                .borrow()
-                .last()
-                .unwrap()
-                .bindings
-                .set_location(locations::LocationId::from_word(1))
-        });
+        super::frame_stack_top_entry()
+            .unwrap()
+            .bindings
+            .set_location(locations::LocationId::from_word(1));
         let lazy = frame_stack_trace_payload_bits(py).unwrap();
         let prior = crate::builtins::exceptions::alloc_exception(
             py,
@@ -652,14 +648,10 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             );
             crate::clear_exception(py);
         }
-        FRAME_STACK.with(|stack| {
-            stack
-                .borrow()
-                .last()
-                .unwrap()
-                .bindings
-                .set_location(locations::LocationId::from_word(2))
-        });
+        super::frame_stack_top_entry()
+            .unwrap()
+            .bindings
+            .set_location(locations::LocationId::from_word(2));
         let prefix = frame_stack_trace_payload_prepend_bits(py, eager).unwrap();
         let observed =
             traceback_payload_to_traceback_bits(py, prefix).expect("materialized traceback");

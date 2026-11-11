@@ -88,7 +88,7 @@ fn enter_frame(py: &PyToken<'_>, code: u64, slots: usize) -> (*mut u64, usize) {
             .expect("frame homes address fits the target");
     assert!(!exception_pending(py));
     assert!(!homes.is_null() || slots == 0);
-    let index = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
+    let index = crate::builtins::frames::records::depth() - 1;
     (homes, index)
 }
 
@@ -580,10 +580,10 @@ fn an_observer_takes_over_the_bindings_of_an_exiting_frame() {
             assert_eq!(live[1].0, "second");
             assert_eq!(live.len(), 2, "an unbound slot is omitted");
             assert_eq!(refs(first), 2, "the home, not the live payload, owns it");
-            let depth = FRAME_STACK.with(|stack| stack.borrow().len());
+            let depth = crate::builtins::frames::records::depth();
             frame_stack_pop(py);
             assert!(!exception_pending(py));
-            assert_eq!(FRAME_STACK.with(|stack| stack.borrow().len()), depth - 1);
+            assert_eq!(crate::builtins::frames::records::depth(), depth - 1);
             // The frame object took the home's reference over.
             assert_eq!(refs(first), 2);
             assert_eq!(bound(py, payload)[0].1, first);

@@ -326,7 +326,7 @@ pub(crate) fn molt_exception_clear_attached_body(_py: &crate::PyToken<'_>) -> u6
                 eprintln!("molt exc clear backtrace (reason unset):");
                 eprintln!("{:?}", Backtrace::force_capture());
             }
-            let frame = FRAME_STACK.with(|stack| stack.borrow().last().copied());
+            let frame = crate::builtins::frames::frame_stack_top_entry();
             if let Some(frame) = frame
                 && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
             {

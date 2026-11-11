@@ -11,7 +11,7 @@ use crate::object::{
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{BuiltinExc, ExcKind, ModuleExc};
 use crate::{
-    FRAME_STACK, MoltHeader, PtrSlot, RuntimeState, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST,
+    MoltHeader, PtrSlot, RuntimeState, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST,
     TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_bytes, alloc_class_obj, alloc_list,
     alloc_string, alloc_tuple, builtin_classes, builtin_func_bits, bytes_like_slice,
     call_callable1, class_break_cycles, class_dict_bits, class_name_bits, class_name_for_error,
@@ -2612,9 +2612,9 @@ pub(crate) fn exception_context_fallback_pop(_py: &PyToken<'_>) {
 }
 
 pub(crate) fn exception_stack_push() {
-    let handler_frame_index = FRAME_STACK.with(|stack| stack.borrow().len().saturating_sub(1));
+    // Only the number of handler levels is ever read; a level carries no value.
     EXCEPTION_STACK.with(|stack| {
-        stack.borrow_mut().push(handler_frame_index);
+        stack.borrow_mut().push(0);
     });
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         stack.borrow_mut().push(MoltObject::none().bits());
@@ -2623,13 +2623,8 @@ pub(crate) fn exception_stack_push() {
         let depth = exception_stack_depth();
         let baseline = exception_stack_baseline_get();
         let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
-        let (code_bits, line) = FRAME_STACK
-            .with(|stack| {
-                stack
-                    .borrow()
-                    .last()
-                    .map(|frame| (frame.code_bits, frame.source_line()))
-            })
+        let (code_bits, line) = crate::builtins::frames::frame_stack_top_entry()
+            .map(|frame| (frame.code_bits, frame.source_line()))
             .unwrap_or((0, 0));
         eprintln!(
             "molt exc stack push task=0x{:x} depth={} baseline={} frame=0x{:x} line={}",
@@ -2709,13 +2704,8 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
         }
         if trace {
             let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
-            let (code_bits, line) = FRAME_STACK
-                .with(|stack| {
-                    stack
-                        .borrow()
-                        .last()
-                        .map(|frame| (frame.code_bits, frame.source_line()))
-                })
+            let (code_bits, line) = crate::builtins::frames::frame_stack_top_entry()
+                .map(|frame| (frame.code_bits, frame.source_line()))
                 .unwrap_or((0, 0));
             eprintln!(
                 "molt exc stack pop noop task=0x{:x} depth={} baseline={} frame=0x{:x} line={}",
@@ -2737,13 +2727,8 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
         let after_depth = exception_stack_depth();
         let baseline = exception_stack_baseline_get();
         let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
-        let (code_bits, line) = FRAME_STACK
-            .with(|stack| {
-                stack
-                    .borrow()
-                    .last()
-                    .map(|frame| (frame.code_bits, frame.source_line()))
-            })
+        let (code_bits, line) = crate::builtins::frames::frame_stack_top_entry()
+            .map(|frame| (frame.code_bits, frame.source_line()))
             .unwrap_or((0, 0));
         eprintln!(
             "molt exc stack pop task=0x{:x} depth={}=>{} baseline={} frame=0x{:x} line={}",
@@ -2940,21 +2925,16 @@ pub(crate) fn molt_exception_frame_origin_attached_body(
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let owns_activation = expected_homes != 0
-            && FRAME_STACK.with(|stack| {
-                // Inline class regions have their own Python frames while
-                // borrowing the enclosing compiled activation's SSA homes.
-                // Only that typed chain may connect a cold Origin to the top
-                // frame; an intervening function/runtime frame still refuses it.
-                for entry in stack.borrow().iter().rev() {
-                    if entry.bindings.homes_base() as u64 == expected_homes {
-                        return true;
-                    }
-                    if !entry.is_class_body() {
-                        break;
-                    }
-                }
-                false
-            });
+            // Inline class regions have their own Python frames while
+            // borrowing the enclosing compiled activation's SSA homes. Only
+            // that typed chain may connect a cold Origin to the top frame; an
+            // intervening function/runtime frame still refuses it.
+            && crate::builtins::frames::records::innermost_first()
+                .map(crate::builtins::frames::records::FrameRecord::entry)
+                .find(|entry| {
+                    entry.bindings.homes_base() as u64 == expected_homes || !entry.is_class_body()
+                })
+                .is_some_and(|entry| entry.bindings.homes_base() as u64 == expected_homes);
         if owns_activation && exception_pending(py) {
             let selected = ExceptionValue::adopt(py, exception_last_pending_bits(py));
             with_saved_raised_exception(py, || {
@@ -3007,14 +2987,10 @@ pub(crate) fn record_exception(py: &PyToken<'_>, ptr: *mut u8) {
         }
         RaisedSnapshot::None => None,
     };
-    FRAME_STACK.with(|stack| {
-        let position = stack
-            .borrow()
-            .last()
-            .and_then(|entry| entry.source_position());
-        LAST_EXCEPTION_COL.with(|cell| {
-            *cell.borrow_mut() = position.map_or((-1, -1), |site| (site.column, site.end_column))
-        });
+    let position =
+        crate::builtins::frames::frame_stack_top_entry().and_then(|entry| entry.source_position());
+    LAST_EXCEPTION_COL.with(|cell| {
+        *cell.borrow_mut() = position.map_or((-1, -1), |site| (site.column, site.end_column))
     });
     // CPython errors.c::_PyErr_SetObject chains the handled exception. A
     // displaced raised indicator is not an implicit exception context.

@@ -14,7 +14,6 @@ use crate::call::{
     StaticmethodCallTarget, lookup_call_attr, require_call_attr, resolve_staticmethod_call_target,
 };
 use crate::state::recursion::RecursionGuard;
-use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_TYPE_NEW_INIT, CALL_BIND_IC_HIT_COUNT,
     CALL_BIND_IC_MISS_COUNT, HEADER_FLAG_FUNC_REQUIRES_BINDER,
@@ -349,7 +348,7 @@ pub(crate) unsafe fn call_bind_with_arguments(
         }
         let Some(call_ptr) = call_obj.as_ptr() else {
             if trace {
-                if let Some(frame) = FRAME_STACK.with(|stack| stack.borrow().last().copied())
+                if let Some(frame) = crate::builtins::frames::frame_stack_top_entry()
                     && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
                 {
                     let (name_bits, file_bits) =

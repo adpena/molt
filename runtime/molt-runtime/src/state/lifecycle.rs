@@ -40,10 +40,10 @@ use crate::object::utf8_cache::{
 };
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
-    CURRENT_TOKEN, EXCEPTION_STACK, FRAME_STACK, GENERATOR_RAISE, GilGuard, GilReleaseGuard,
-    MoltObject, PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT,
-    TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string, builtin_classes_retire_identities,
-    builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_type_cache,
+    CURRENT_TOKEN, EXCEPTION_STACK, GENERATOR_RAISE, GilGuard, GilReleaseGuard, MoltObject,
+    PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE,
+    TYPE_ID_MODULE, alloc_string, builtin_classes_retire_identities, builtin_classes_shutdown,
+    call_callable0, clear_exception, clear_exception_type_cache,
     clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
     dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
     exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush_attached_body,
@@ -132,9 +132,8 @@ fn order_destructor_thread_locals(touched: &std::cell::Cell<bool>) {
     let _ = PARSE_ARENA.try_with(|_| {});
     let _ = crate::REPR_SET.try_with(|_| {});
     // The guard's teardown exits every frame the thread still has, which
-    // releases the bindings their homes own: the frame stack and the home
-    // arena must outlive it.
-    let _ = FRAME_STACK.try_with(|_| {});
+    // releases the bindings their homes own: the frame arena, which holds
+    // the frame records and the homes, must outlive it.
     crate::builtins::frames::touch_frame_home_tls_lifetime();
     let _ = TLS_GUARD.try_with(|_| {});
     // This sentinel is deliberately initialized last. Rust destroys TLS in
@@ -637,9 +636,9 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     let contexts = CONTEXT_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
-    let frames = FRAME_STACK
-        .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
-        .unwrap_or_default();
+    // Copy the abandoned frames out and unlink them; nothing reads a record
+    // of this thread again.
+    let frames = crate::builtins::frames::records::abandon_all();
     // A handoff is borrowed from its invoker, which no longer runs.
     super::execution_tls().pending_invocation.set(0);
     let _ = TRACE_FRAME_PUSH_STACK.try_with(|stack| {
@@ -663,8 +662,10 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // Every TLS owner and execution marker is detached before Python can run.
     // In particular no RefCell borrow survives a decref that can repopulate the
     // same context/exception stack from a finalizer.
-    changed |=
-        !contexts.is_empty() || !frames.is_empty() || !active.is_empty() || !fallback.is_empty();
+    changed |= !contexts.is_empty()
+        || !frames.entries.is_empty()
+        || !active.is_empty()
+        || !fallback.is_empty();
     if let Some(bits) = exception {
         dec_ref_bits(_py, bits);
     }
@@ -684,9 +685,10 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // object that shares its bindings takes them over, otherwise they are
     // released in the target's order, and its homes go back only after those
     // releases finish. The stack is already unlinked above.
-    for frame in frames.into_iter().rev() {
+    for frame in &frames.entries {
         frame.exit(_py);
     }
+    frames.free();
     changed |= crate::builtins::exceptions::clear_thread_unraisable_state(_py);
     crate::concurrency::execution::retire_idle_compiled_scope_storage();
     crate::builtins::frames::clear_frame_home_tls_storage();
