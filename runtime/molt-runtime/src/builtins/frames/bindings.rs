@@ -313,14 +313,13 @@ fn history_keeps(bits: u64) -> bool {
         .is_some_and(|ptr| unsafe { !(*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_IMMORTAL) })
 }
 
-/// Where a frame entry's homes end in the arena; restored at the entry's exit.
+/// Where a frame's record begins in the arena; restored at its pop.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(crate) struct HomeMark {
     chunk: u32,
     used: u32,
 }
 
-#[derive(Default)]
 struct HomeArena {
     chunks: Vec<Box<[u64]>>,
     chunk: usize,
@@ -328,7 +327,16 @@ struct HomeArena {
 }
 
 impl HomeArena {
-    fn take(&mut self, words: usize) -> Option<(*mut u64, HomeMark)> {
+    const fn new() -> Self {
+        Self {
+            chunks: Vec::new(),
+            chunk: 0,
+            used: 0,
+        }
+    }
+
+    /// `words` words whose contents the caller overwrites in full.
+    fn take_uninit(&mut self, words: usize) -> Option<(*mut u64, HomeMark)> {
         let mark = HomeMark {
             chunk: u32::try_from(self.chunk).ok()?,
             used: u32::try_from(self.used).ok()?,
@@ -366,7 +374,6 @@ impl HomeArena {
         }
         let chunk = &mut self.chunks[self.chunk];
         let homes = &mut chunk[self.used..self.used + words];
-        homes.fill(0);
         self.used += words;
         Some((homes.as_mut_ptr(), mark))
     }
@@ -378,14 +385,15 @@ impl HomeArena {
 }
 
 thread_local! {
-    static HOME_ARENA: std::mem::ManuallyDrop<RefCell<HomeArena>> = std::mem::ManuallyDrop::new(RefCell::new(HomeArena::default()));
+    static HOME_ARENA: std::mem::ManuallyDrop<RefCell<HomeArena>> = const { std::mem::ManuallyDrop::new(RefCell::new(HomeArena::new())) };
 }
 
-/// Take `words` zeroed arena words for a frame record. `None`: the arena could
-/// not grow, or the thread's storage is already being destroyed.
-pub(super) fn arena_take(words: usize) -> Option<(*mut u64, HomeMark)> {
+/// Take `words` arena words for a frame record and its homes, which the push
+/// writes in full. `None`: the arena could not grow, or the thread's storage
+/// is already being destroyed.
+pub(super) fn arena_take_record(words: usize) -> Option<(*mut u64, HomeMark)> {
     HOME_ARENA
-        .try_with(|arena| arena.borrow_mut().take(words))
+        .try_with(|arena| arena.borrow_mut().take_uninit(words))
         .ok()
         .flatten()
 }
@@ -406,7 +414,7 @@ pub(crate) fn clear_frame_home_tls_storage() {
     HOME_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
         assert_eq!(arena.used, 0, "retiring homes of a live compiled frame");
-        *arena = HomeArena::default();
+        *arena = HomeArena::new();
     });
 }
 
@@ -423,7 +431,6 @@ pub(crate) struct FrameBindings {
     homes: usize,
     home_count: u32,
     policy: FramePolicy,
-    mark: HomeMark,
 }
 
 impl FrameBindings {
@@ -439,24 +446,30 @@ impl FrameBindings {
         }
     }
 
-    /// Take the homes `plan` calls for, for the frame entry being pushed.
-    /// `None`: the arena could not grow, or the thread's storage is already
-    /// being destroyed.
-    pub(crate) fn enter(plan: FramePlan) -> Option<Self> {
-        let mut bindings = Self {
+    /// The words a frame of `plan` keeps after its record: its location word,
+    /// then its homes. `None`: the count overflows.
+    pub(crate) fn storage_words(plan: FramePlan) -> Option<usize> {
+        home_words(plan.homes as usize)?.checked_add(1)
+    }
+
+    /// The bindings of the frame being pushed over `storage`, the
+    /// [`Self::storage_words`] words that follow its record. The record owns
+    /// that storage and returns it at its pop.
+    ///
+    /// # Safety
+    /// `storage` addresses `storage_words(plan)` writable words.
+    pub(crate) unsafe fn over(plan: FramePlan, storage: *mut u64) -> Self {
+        unsafe {
+            *storage = LocationId::ABSENT.word();
+            std::ptr::write_bytes(storage.add(1), 0, plan.homes as usize * FRAME_HOME_WORDS);
+        }
+        Self {
             optimized: plan.optimized,
             policy: plan.policy,
+            homes: unsafe { storage.add(1) } as usize,
+            home_count: plan.homes,
             ..Self::default()
-        };
-        {
-            let words = home_words(plan.homes as usize)?.checked_add(1)?;
-            let (homes, mark) = arena_take(words)?;
-            unsafe { *homes = LocationId::ABSENT.word() };
-            bindings.homes = unsafe { homes.add(1) } as usize;
-            bindings.home_count = plan.homes;
-            bindings.mark = mark;
         }
-        Some(bindings)
     }
 
     pub(crate) fn homes_base(self) -> usize {
@@ -485,15 +498,6 @@ impl FrameBindings {
     pub(crate) fn set_location(self, location: LocationId) {
         if self.homes != 0 {
             unsafe { *(self.location_address() as *mut u64) = location.word() }
-        }
-    }
-
-    /// Return the homes of an entry whose bindings already left them
-    /// ([`frame_bindings_exit`]). The arena outlives every frame of its
-    /// thread ([`touch_frame_home_tls_lifetime`]), so it is still there.
-    pub(crate) fn exit(self) {
-        if self.homes != 0 {
-            arena_give_back(self.mark);
         }
     }
 }
@@ -891,10 +895,12 @@ pub(crate) fn molt_frame_homes_attached_body(_py: &crate::PyToken<'_>, min_count
             return 0;
         }
         let min_count = usize::try_from(min_count).unwrap_or(usize::MAX);
-        let homes = super::frame_stack_top_entry().and_then(|entry| {
-            let bindings = entry.bindings;
-            (bindings.homes != 0 && bindings.home_count as usize >= min_count)
-                .then_some(bindings.homes)
+        let homes = records::top().and_then(|record| {
+            record.read(|entry| {
+                let bindings = entry.bindings;
+                (bindings.homes != 0 && bindings.home_count as usize >= min_count)
+                    .then_some(bindings.homes)
+            })
         });
         match homes {
             Some(homes) => homes as u64,
@@ -1016,8 +1022,8 @@ pub(crate) fn molt_frame_home_take_attached_body(_py: &crate::PyToken<'_>, home:
 /// copy, so a rebinding or a proxy write is what `super()` sees. `Ok(None)`:
 /// the slot is unbound (`arg[0] deleted`). `Err`: an exception is pending.
 pub(crate) fn frame_argument_zero(py: &PyToken<'_>) -> Result<Option<u64>, ()> {
-    let home = super::frame_stack_top_entry()
-        .map(|entry| entry.bindings.homes as *mut u64)
+    let home = records::top()
+        .map(|record| record.read(|entry| entry.bindings.homes as *mut u64))
         .filter(|homes| !homes.is_null());
     let Some(pair) = home else {
         return invalid(py, "super(): the executing frame has no argument-zero home");

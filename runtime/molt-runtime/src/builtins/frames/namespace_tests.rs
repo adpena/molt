@@ -875,8 +875,14 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
         for bits in [code, globals, builtins] {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, code, globals, builtins, 0);
-        assert!(frame_stack_enter_homes(py, FramePlan::default()));
+        assert!(frame_stack_enter(
+            py,
+            code,
+            globals,
+            builtins,
+            0,
+            FramePlan::default()
+        ));
         frame_stack_set_locals_dict(py, locals);
         let snapshot = FrameStackSnapshot::capture(py, |len| len - 1..len).unwrap();
         frame_stack_pop(py);

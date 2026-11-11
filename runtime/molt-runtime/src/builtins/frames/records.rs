@@ -16,7 +16,7 @@
 use std::ptr::NonNull;
 
 use super::FrameEntry;
-use super::bindings::{HomeMark, arena_give_back, arena_take};
+use super::bindings::{HomeMark, arena_give_back, arena_take_record};
 
 #[repr(C)]
 struct Node {
@@ -52,6 +52,13 @@ impl FrameRecord {
     /// A copy of the record's frame facts. Borrowed edges: the record owns them.
     pub(crate) fn entry(self) -> FrameEntry {
         unsafe { (*self.0.as_ptr()).entry }
+    }
+
+    /// Read the record's frame facts in place, without copying the entry.
+    /// `read` must not run Python code or touch the chain.
+    #[inline]
+    pub(crate) fn read<R>(self, read: impl FnOnce(&FrameEntry) -> R) -> R {
+        read(unsafe { &(*self.0.as_ptr()).entry })
     }
 
     /// Change the record's frame facts in place. `change` must not run Python
@@ -98,18 +105,23 @@ pub(crate) fn entries(range: std::ops::Range<usize>) -> Option<Vec<FrameEntry>> 
     Some(entries)
 }
 
-/// Link `entry` as the executing frame. `None`: the arena could not grow or
-/// the thread's storage is being destroyed; nothing was linked and the caller
-/// still owns the entry's edges.
-pub(crate) fn push(entry: FrameEntry) -> Option<FrameRecord> {
-    let (words, mark) = arena_take(NODE_WORDS)?;
+/// Link the frame `entry` builds as the executing frame, with `extra`
+/// uninitialized words after its record (its location word and homes), in one
+/// arena transaction. `entry` receives the address of those words. `None`:
+/// the arena could not grow or the thread's storage is being destroyed;
+/// nothing was linked and `entry` did not run.
+pub(crate) fn push(
+    extra: usize,
+    entry: impl FnOnce(*mut u64) -> FrameEntry,
+) -> Option<FrameRecord> {
+    let (words, mark) = arena_take_record(NODE_WORDS.checked_add(extra)?)?;
     let node = words.cast::<Node>();
     let tls = tls();
     unsafe {
         node.write(Node {
             prev: tls.frame_top.get(),
             mark,
-            entry,
+            entry: entry(words.add(NODE_WORDS)),
         });
     }
     tls.frame_top.set(node as usize as u64);
@@ -175,9 +187,7 @@ pub(crate) fn abandon_all() -> Abandoned {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{
-        FramePlan, frame_stack_enter_homes, frame_stack_pop, frame_stack_push_owned,
-    };
+    use super::super::{FramePlan, frame_stack_enter, frame_stack_pop, frame_stack_push_owned};
     use super::*;
 
     /// A runtime context frame: no code, so it owns no edge.
@@ -191,16 +201,19 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let base = depth();
             let outer_top = top();
-            push(py);
-            let first = top().unwrap();
-            // Homes taken between records must not disturb the chain.
-            assert!(frame_stack_enter_homes(
+            // Homes taken with a record must not disturb the chain.
+            assert!(frame_stack_enter(
                 py,
+                0,
+                0,
+                0,
+                0,
                 FramePlan {
                     homes: 3,
                     ..FramePlan::default()
                 }
             ));
+            let first = top().unwrap();
             push(py);
             let second = top().unwrap();
             assert_eq!(depth(), base + 2);
@@ -237,9 +250,12 @@ mod tests {
             first.update(|entry| entry.location_snapshot = None);
             // More homes than one arena chunk holds forces a fresh chunk.
             for _ in 0..40 {
-                push(py);
-                assert!(frame_stack_enter_homes(
+                assert!(frame_stack_enter(
                     py,
+                    0,
+                    0,
+                    0,
+                    0,
                     FramePlan {
                         homes: 1000,
                         ..FramePlan::default()

@@ -268,14 +268,6 @@ pub(crate) fn molt_trace_enter_slot_attached_body(_py: &crate::PyToken<'_>, code
                 code_id, code_bits, name, file
             );
         }
-        frame_stack_push_owned(
-            _py,
-            code_bits,
-            binding.globals_bits,
-            builtins_bits,
-            activation_bits,
-        );
-        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(true));
         // A synchronous activation of an optimized body keeps its bindings in
         // homes its code slot's plan sizes; a stateful activation's bindings
         // live in its task payload. The pushed entry is popped by this
@@ -291,7 +283,16 @@ pub(crate) fn molt_trace_enter_slot_attached_body(_py: &crate::PyToken<'_>, code
         } else {
             crate::builtins::frames::FramePlan::default()
         };
-        if !crate::builtins::frames::frame_stack_enter_homes(_py, plan) {
+        let entered = crate::builtins::frames::frame_stack_enter(
+            _py,
+            code_bits,
+            binding.globals_bits,
+            builtins_bits,
+            activation_bits,
+            plan,
+        );
+        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(true));
+        if !entered {
             crate::record_memory_error_without_allocation(_py);
             return MoltObject::none().bits();
         }
@@ -340,9 +341,16 @@ pub(crate) fn molt_class_frame_enter_attached_body(
         for bits in [code_bits, globals_bits, builtins_bits] {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, 0);
+        let entered = crate::builtins::frames::frame_stack_enter(
+            py,
+            code_bits,
+            globals_bits,
+            builtins_bits,
+            0,
+            plan,
+        );
         TRACE_FRAME_PUSH_STACK.with(|stack| *stack.borrow_mut().last_mut().unwrap() = true);
-        if !crate::builtins::frames::frame_stack_enter_homes(py, plan) {
+        if !entered {
             crate::record_memory_error_without_allocation(py);
         }
         MoltObject::none().bits()

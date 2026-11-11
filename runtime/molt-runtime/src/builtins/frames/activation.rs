@@ -924,8 +924,14 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
         for bits in [code_bits, globals_bits, builtins_bits, task] {
             inc_ref_bits(py, bits);
         }
-        super::frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, task);
-        if !super::frame_stack_enter_homes(py, super::FramePlan::default()) {
+        if !super::frame_stack_enter(
+            py,
+            code_bits,
+            globals_bits,
+            builtins_bits,
+            task,
+            super::FramePlan::default(),
+        ) {
             super::frame_stack_pop(py);
             crate::record_memory_error_without_allocation(py);
             return Err(());

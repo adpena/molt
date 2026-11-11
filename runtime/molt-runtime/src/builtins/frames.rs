@@ -123,9 +123,7 @@ impl Drop for PythonFrameContextSnapshot<'_, '_> {
 pub(crate) fn frame_python_context_snapshot<'a, 'py>(
     py: &'a PyToken<'py>,
 ) -> PythonFrameContextSnapshot<'a, 'py> {
-    let context = frame_stack_top_entry()
-        .map(|entry| entry.python_context)
-        .unwrap_or_default();
+    let context = frame_stack_top(|entry| entry.python_context).unwrap_or_default();
     context.retain(py);
     PythonFrameContextSnapshot { py, context }
 }
@@ -377,10 +375,17 @@ pub(crate) fn frame_stack_top_entry() -> Option<FrameEntry> {
     records::top().map(records::FrameRecord::entry)
 }
 
+/// One fact of the executing frame, read in place.
+#[inline]
+fn frame_stack_top<R>(read: impl FnOnce(&FrameEntry) -> R) -> Option<R> {
+    records::top().map(|record| record.read(read))
+}
+
 /// Transfer an explicitly owned code/namespace triple to the sole Python
-/// frame: link its record as the executing frame. A thread whose frame arena
-/// cannot hold one more record cannot run Python at all, as a thread that
-/// cannot grow CPython's data stack cannot.
+/// frame: link its record as the executing frame, with no binding homes (a
+/// runtime namespace context). A thread whose frame arena cannot hold one
+/// more record cannot run Python at all, as a thread that cannot grow
+/// CPython's data stack cannot.
 pub(crate) fn frame_stack_push_owned(
     _py: &PyToken<'_>,
     code_bits: u64,
@@ -389,7 +394,7 @@ pub(crate) fn frame_stack_push_owned(
     activation_bits: u64,
 ) {
     crate::gil_assert();
-    records::push(FrameEntry {
+    records::push(0, |_| FrameEntry {
         code_bits,
         location_snapshot: None,
         locals_bits: 0,
@@ -402,29 +407,52 @@ pub(crate) fn frame_stack_push_owned(
     .expect("frame arena cannot hold a frame record");
 }
 
-/// Give the entry just pushed for a synchronous activation the homes its code
-/// slot's `plan` calls for. `false`: the arena could not grow; the entry keeps
-/// no homes and its exit still pops it.
-pub(crate) fn frame_stack_enter_homes(py: &PyToken<'_>, plan: FramePlan) -> bool {
-    let Some(mut bindings) = bindings::FrameBindings::enter(plan) else {
-        return false;
+/// Link the frame of an activation with the location word and homes its
+/// `plan` calls for, in one arena transaction; the edges transfer as in
+/// [`frame_stack_push_owned`]. `false`: the arena could not hold the homes.
+/// The frame is linked without them, so a `MemoryError` traceback keeps it,
+/// and its exit still pops it.
+pub(crate) fn frame_stack_enter(
+    py: &PyToken<'_>,
+    code_bits: u64,
+    globals_bits: u64,
+    builtins_bits: u64,
+    activation_bits: u64,
+    plan: FramePlan,
+) -> bool {
+    crate::gil_assert();
+    let entry = |bindings| FrameEntry {
+        code_bits,
+        location_snapshot: None,
+        locals_bits: 0,
+        globals_bits,
+        builtins_bits,
+        activation_bits,
+        python_context: PythonFrameContext::default(),
+        bindings,
     };
-    let record = records::top().expect("frame entry was just pushed");
-    record.update(|entry| {
-        if let Some(task) = obj_from_bits(entry.activation_bits).as_ptr() {
-            bindings.set_location(LocationId::from_word(
-                crate::object::aux_header::object_frame_location(task),
-            ));
-            let payload = crate::object::aux_header::object_frame_bindings_bits(task);
-            if let Some(ptr) = obj_from_bits(payload).as_ptr() {
-                inc_ref_bits(py, payload);
-                bindings.payload_bits = payload;
-                bindings::lend_location(ptr, bindings.location_address());
+    let linked = bindings::FrameBindings::storage_words(plan).and_then(|words| {
+        records::push(words, |storage| {
+            let mut bindings = unsafe { bindings::FrameBindings::over(plan, storage) };
+            if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
+                bindings.set_location(LocationId::from_word(
+                    crate::object::aux_header::object_frame_location(task),
+                ));
+                let payload = crate::object::aux_header::object_frame_bindings_bits(task);
+                if let Some(ptr) = obj_from_bits(payload).as_ptr() {
+                    inc_ref_bits(py, payload);
+                    bindings.payload_bits = payload;
+                    bindings::lend_location(ptr, bindings.location_address());
+                }
             }
-        }
-        entry.bindings = bindings;
+            entry(bindings)
+        })
     });
-    true
+    if linked.is_some() {
+        return true;
+    }
+    frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, activation_bits);
+    false
 }
 
 /// A synchronous Python body implemented by a runtime plan. It has the same
@@ -467,7 +495,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
         for bits in context {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, code, globals, builtins, 0);
+        let entered = frame_stack_enter(py, code, globals, builtins, 0, plan);
         let depth = records::depth() - 1;
         let mut frame = Self {
             py,
@@ -476,7 +504,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
             code,
             depth,
         };
-        if !frame_stack_enter_homes(py, plan) {
+        if !entered {
             crate::record_memory_error_without_allocation(py);
             return Err(());
         }
@@ -578,7 +606,7 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
 }
 
 pub(crate) fn frame_stack_active_activation_bits() -> u64 {
-    frame_stack_top_entry().map_or(0, |entry| entry.activation_bits)
+    frame_stack_top(|entry| entry.activation_bits).unwrap_or(0)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -587,13 +615,13 @@ pub(crate) fn frame_stack_active_code_bits() -> u64 {
 }
 
 pub(crate) fn frame_stack_active_globals_bits() -> u64 {
-    frame_stack_top_entry().map_or(0, |entry| entry.globals_bits)
+    frame_stack_top(|entry| entry.globals_bits).unwrap_or(0)
 }
 
 /// A present frame owns its captured namespace, including unavailable (zero)
 /// bootstrap state. Only absence of a frame permits interpreter defaults.
 pub(crate) fn frame_stack_active_builtins() -> Option<u64> {
-    frame_stack_top_entry().map(|entry| entry.builtins_bits)
+    frame_stack_top(|entry| entry.builtins_bits)
 }
 
 pub(crate) fn frame_stack_active_builtins_bits() -> u64 {
@@ -603,7 +631,7 @@ pub(crate) fn frame_stack_active_builtins_bits() -> u64 {
 /// The active frame's globals and builtins, the pair `molt_module_get_global`
 /// consults, read in one frame-stack access. `None` without a frame.
 pub(crate) fn frame_stack_active_namespaces() -> Option<(u64, u64)> {
-    frame_stack_top_entry().map(|entry| (entry.globals_bits, entry.builtins_bits))
+    frame_stack_top(|entry| (entry.globals_bits, entry.builtins_bits))
 }
 
 impl FrameEntry {
@@ -679,7 +707,6 @@ impl FrameEntry {
         } else {
             bindings::frame_bindings_exit(py, &self.bindings);
         }
-        self.bindings.exit();
         self.release(py);
     }
 }
