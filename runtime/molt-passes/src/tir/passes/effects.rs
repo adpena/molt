@@ -142,6 +142,7 @@ mod tests {
                 operands: vec![],
                 results: vec![],
                 attrs: AttrDict::new(),
+                runtime: None,
                 source_span: None,
             };
             let effects = op_effects_with_types(&op, &HashMap::new());

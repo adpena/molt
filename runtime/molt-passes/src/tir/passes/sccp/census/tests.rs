@@ -12,6 +12,7 @@ fn operation(opcode: OpCode, operands: &[u32], result: u32) -> TirOp {
         operands: operands.iter().copied().map(ValueId).collect(),
         results: vec![ValueId(result)],
         attrs: AttrDict::new(),
+        runtime: None,
         source_span: None,
     }
 }

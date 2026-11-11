@@ -979,6 +979,7 @@ fn heap_literal(opcode: OpCode, result: ValueId, bound: bool) -> TirOp {
                 attrs.insert("s_value".into(), AttrValue::Str("literal-λ".into()));
                 attrs
             },
+            runtime: None,
             source_span: None,
         },
         OpCode::ConstBytes | OpCode::ConstBigInt => {
@@ -1113,6 +1114,7 @@ fn heap_literals_keep_sibling_and_exception_only_definitions() {
             operands: vec![],
             results: vec![],
             attrs: AttrDict::new(),
+            runtime: None,
             source_span: None,
         };
         check.attrs.insert("value".into(), AttrValue::Int(70));
