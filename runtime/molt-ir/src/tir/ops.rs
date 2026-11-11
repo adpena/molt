@@ -197,6 +197,8 @@ pub enum OpCode {
     IsInlineInt,
     UnboxInlineInt,
     IsBoolWord,
+    IsFloatWord,
+    UnboxFloatWord,
     UnboxBoolWord,
     BoxInlineInt,
     CodeIs,

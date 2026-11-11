@@ -288,6 +288,8 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::IsInlineInt => "is_inline_int",
         OpCode::UnboxInlineInt => "unbox_inline_int",
         OpCode::IsBoolWord => "is_bool_word",
+        OpCode::IsFloatWord => "is_float_word",
+        OpCode::UnboxFloatWord => "unbox_float_word",
         OpCode::UnboxBoolWord => "unbox_bool_word",
         OpCode::BoxInlineInt => "box_inline_int",
         OpCode::CodeIs => "code_is",

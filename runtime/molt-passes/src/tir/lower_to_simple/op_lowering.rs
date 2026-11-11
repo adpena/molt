@@ -341,6 +341,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::IsInlineInt
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord
+        | OpCode::IsFloatWord
+        | OpCode::UnboxFloatWord
         | OpCode::UnboxBoolWord
         | OpCode::BoxInlineInt
         | OpCode::CodeIs

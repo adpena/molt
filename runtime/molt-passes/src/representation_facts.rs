@@ -501,6 +501,8 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         OpCode::IsInlineInt
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord
+        | OpCode::IsFloatWord
+        | OpCode::UnboxFloatWord
         | OpCode::UnboxBoolWord
         | OpCode::BoxInlineInt
         | OpCode::CodeIs

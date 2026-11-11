@@ -79,8 +79,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     TirType::F64 => self
                         .backend
                         .builder
+                        // `bool(nan)` is True: unordered-or-unequal to zero.
                         .build_float_compare(
-                            inkwell::FloatPredicate::ONE,
+                            inkwell::FloatPredicate::UNE,
                             operand.into_float_value(),
                             self.backend.context.f64_type().const_float(0.0),
                             "bool_f64",
@@ -136,6 +137,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let raw = nanbox::boxed_word::generate_unbox_inline_int(&mut self.words(), word);
                 self.values.insert(op.results[0], raw.into());
                 self.value_types.insert(op.results[0], TirType::I64);
+            }
+            OpCode::IsFloatWord => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let is_float = nanbox::boxed_word::generate_is_float(&mut self.words(), word);
+                self.values.insert(op.results[0], is_float.into());
+                self.value_types.insert(op.results[0], TirType::Bool);
+            }
+            OpCode::UnboxFloatWord => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let raw = self
+                    .backend
+                    .builder
+                    .build_bit_cast(word, self.backend.context.f64_type(), "unbox_float")
+                    .unwrap();
+                self.values.insert(op.results[0], raw);
+                self.value_types.insert(op.results[0], TirType::F64);
             }
             OpCode::IsBoolWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
