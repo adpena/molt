@@ -50,6 +50,8 @@ fn check_context(context: u64) {{
 }}
 #[unsafe(export_name = "{pending_fast}")] pub extern "C" fn molt_exception_pending_fast(context: u64) -> u64 {{ check_context(context); 0 }}
 #[unsafe(export_name = "{work_poll}")] pub extern "C" fn molt_async_work_poll_and_exception_pending(context: u64) -> u64 {{ check_context(context); 0 }}
+// The cold edge of an Origin check; nothing raises here, so it is never taken.
+#[unsafe(export_name = "{frame_origin}")] pub extern "C" fn molt_exception_frame_origin(context: u64, _homes: u64) -> u64 {{ check_context(context); unreachable!() }}
 #[used] #[unsafe(export_name = "{abi}")] pub static ABI: u8 = 0;
 unsafe extern "C" {{
     #[link_name = "{init_sys}"] fn molt_init_sys(context: u64) -> u64;
@@ -80,6 +82,7 @@ fn main() {{
             trace_exit = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_trace_exit").unwrap().physical_symbol,
             pending_fast = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_pending_fast").unwrap().physical_symbol,
             work_poll = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_async_work_poll_and_exception_pending").unwrap().physical_symbol,
+            frame_origin = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_frame_origin").unwrap().physical_symbol,
             init_sys = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_init_sys"),
             context_record_offset = molt_codegen_abi::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
             exception_offset = molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET,

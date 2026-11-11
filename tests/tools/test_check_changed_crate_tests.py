@@ -76,12 +76,18 @@ def test_hf205_cell_is_compiler_authorities_dev_fast_with_its_config(
     assert "--profile dev-fast" in joined
     assert "--config profile.dev-fast.package.cranelift-codegen.opt-level=0" in joined
     assert "--no-default-features" in argv
-    assert "-p molt-backend -p molt-backend-native --lib --no-fail-fast" in joined
+    assert "-p molt-backend -p molt-backend-native --lib --test " in joined
+    # The source's integration targets that a selected crate owns run too;
+    # one that only an unselected crate owns would make Cargo refuse the cell.
+    owned = libs["molt-backend"].tests | libs["molt-backend-native"].tests
+    assert cell.tests and cell.tests <= owned
+    assert {"daemon_server", "native_batch_worker_spawn"} <= cell.tests
+    assert "wasm_link_facts_cli" not in cell.tests
     # Name filters drop; the plan's known-red exclusions and harness flags stay.
     libtest = argv[argv.index("--") + 1 :]
     assert "--include-ignored" in libtest and "--test-threads=1" in libtest
     assert "read::coff::coff_extended_relocations" in libtest
-    assert "--bins" not in argv and "--test" not in argv and "--timings" not in argv
+    assert "--bins" not in argv and "--timings" not in argv
     # molt-wasm-facts is not selected, so its qualified feature narrows the cell.
     assert cell.dropped == {"molt-wasm-facts/host-tool"}
     profiles = {
@@ -290,3 +296,47 @@ def test_cells_carry_their_sources_toolchains(plan, libs) -> None:
     selection = _select(plan, libs, "molt-backend-native")
     (llvm,) = [cell for cell in selection.cells if "rule:backend-llvm" in cell.sources]
     assert {"llvm-sdk", "clang", "llvm-config"} <= llvm.toolchains
+
+
+def test_a_declared_integration_target_runs_only_where_a_selected_crate_owns_it() -> (
+    None
+):
+    libs = {
+        "a": gate.Library(present=True, harnessed=True, tests=frozenset({"it"})),
+        "b": gate.Library(present=True, harnessed=True, tests=frozenset({"other"})),
+    }
+    source = gate.parse_source(
+        "rule:x",
+        ["cargo", "test", "-p", "a", "-p", "b", "--test", "it", "--test", "other"],
+        host=HOST,
+    )
+    assert source is not None and source.tests == ("it", "other")
+    (cell,) = gate.select(
+        [source], _reach("a"), libs, None, experimental=frozenset()
+    ).cells
+    assert cell.tests == {"it"}
+    assert cell.argv()[-4:-2] == ("--test", "it")
+
+
+def test_accounting_requires_and_checks_each_integration_summary() -> None:
+    manifest = ROOT / "runtime" / "molt-ir" / "Cargo.toml"
+    lib = [
+        _artifact(manifest, "/t/dev-fast/deps/molt_ir-0123abcd"),
+        "     Running unittests src/lib.rs (target/dev-fast/deps/molt_ir-0123abcd)",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; "
+        "finished in 0.10s",
+    ]
+    failing = [
+        "     Running tests/contracts.rs (target/dev-fast/deps/contracts-77)",
+        "test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; "
+        "0 filtered out; finished in 0.01s",
+    ]
+    result = gate.account(
+        lib + failing, {"molt-ir": "molt-ir"}, ROOT, ["contracts", "missing"]
+    )
+    # The integration summary never counts as the lib's.
+    assert result.counts == {"molt-ir": {"passed": 5, "failed": 0, "ignored": 0}}
+    assert result.problems == [
+        "integration test contracts: 2 failed",
+        "integration test missing: no summary (build or run failed)",
+    ]
