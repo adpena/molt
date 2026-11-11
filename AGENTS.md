@@ -18,6 +18,8 @@ over stale prose or precedent.
   landing and retirement are separate facts. Resolve/report custody blockers and retain evidence.
 - Reuse existing work before creating an isolated lane. New isolated work uses the managed
   lane/landing queue lifecycle in `docs/ops/INTEGRATION.md`, which owns automatic retirement.
+- A defect you meet is yours, pre-existing or not. "Fails on main too" says who caused it, never
+  who fixes it: fix it, or give it an owner and a slot the same day.
 - Questions and reviews authorize inspection; change requests authorize scoped fixes and checks. Name completion and its integration owner.
 - Pause only for user-only input, a real scope change or unauthorized destructive, irreversible,
   privileged or externally consequential action. Proceed with authorized safe, reversible work.
@@ -37,6 +39,9 @@ over stale prose or precedent.
 - Keep one canonical authority per fact, transition, owner, protocol or generated table, in code and
   documents. Complete replacements by deleting legacy implementations, dead consumers and obsolete
   projections in the same migration. No internal compatibility lanes, shims, duplicate registries or speculative fallbacks.
+- Write an operation's meaning once: a late-TIR expansion into primitives every backend lowers,
+  else one `molt-codegen-abi` generator. A backend holds instruction selection only. Migrate
+  duplicate backend lanes to that shared lowering; add none. Build each backend with its feature on.
 - **Incomplete consumer migration blocks landing.** Authority/schema/API/ABI/identity/ownership changes
   are indivisible. Reconcile WIP; migrate callers, projections, fixtures, build/install/release paths,
   docs and backend/target/platform cells together. Search obsolete contracts before costly validation.
@@ -59,6 +64,9 @@ over stale prose or precedent.
 - Identity is typed, never spelled; lifecycles are typed state machines; rewrites prove themselves
   against the formal model. One source generates closed types that rustc and `ty` enforce. Detail:
   `docs/design/foundation/typed_identity_state_machines.md`.
+- A string match is a compile-time decision made again at run time. A runtime entry, callee,
+  global, attribute or representation travels as a typed id, slot, offset or guarded code address,
+  never as a name to look up. Strings serve reflection and messages. Spelled-identity sites only fall.
 - Every registered entity needs a proven producer; retire its consumers with its last producer.
   `tools/op_kinds/census.py` proves op kinds. Test filters need a producer in the selected crate/features.
 
@@ -110,7 +118,9 @@ over stale prose or precedent.
   and CPython. Removing a fast path without a general replacement is a regression. Recover speed
   through proven/guarded bindings and inlining, never name-matched lowering.
 - Facts live on typed SSA values and flow one way to codegen: no name-keyed facts, no re-lifted
-  lowered IR, no second optimizer for one fact family. Compiled code carries the execution context,
+  lowered IR, no second optimizer for one fact family. A fact proven before a lowering is carried
+  across it, not re-derived from shape. A lost fact must not fall to the generic runtime in
+  silence: the pass that refuses says why in a build diagnostic. Compiled code carries the execution context,
   inlines common fast paths and calls the runtime directly instead of re-entering it per operation.
 
 ## Work with the live repository
