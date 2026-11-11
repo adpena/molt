@@ -847,6 +847,18 @@ fn raw_i64_safe_value_seed(
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
+            // The late lowering stage proved these results before it split
+            // blocks. A fresh range analysis cannot see the loop through the
+            // split, and a value's range does not change when its block does.
+            if op.has_inline_int_proof() {
+                seed.extend(
+                    op.results
+                        .iter()
+                        .copied()
+                        .filter(|&result| is_raw_i64_semantic_candidate(value_types, result)),
+                );
+                continue;
+            }
             // CheckedAdd/CheckedMul are full-range overflow-peel carriers.
             // They are seeded as RawI64FullDeopt, never as RawI64Safe.
             // A `Shl`/`Shr` result is a sound raw-i64 carrier only when its

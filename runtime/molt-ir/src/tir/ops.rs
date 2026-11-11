@@ -512,6 +512,11 @@ pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
 /// LocationId that an Origin check's cold edge stores before capture
 /// (call_anatomy.md, "Location publication cost", M1).
 pub const FRAME_LOCATION_ATTR: &str = "frame_location";
+/// Proof carried into final TIR: every integer result of this op fits the
+/// inline-int47 window. The late lowering stage records it before it splits
+/// blocks, because the range analysis that found the proof reads loop shape
+/// and the split hides that shape from a later run.
+pub const INLINE_INT_PROOF_ATTR: &str = "inline_int_proof";
 
 /// Attribute projection of a call's typed per-operand custody: the
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with
@@ -832,6 +837,23 @@ impl TirOp {
                 self.attrs.remove(ARGUMENT_CUSTODY_ATTR);
             }
         }
+    }
+
+    /// Whether this op carries the late stage's proof that its integer results
+    /// fit the inline-int47 window.
+    #[inline]
+    pub fn has_inline_int_proof(&self) -> bool {
+        matches!(
+            self.attrs.get(INLINE_INT_PROOF_ATTR),
+            Some(AttrValue::Bool(true))
+        )
+    }
+
+    /// Record that every integer result of this op fits the inline-int47
+    /// window. Only the late lowering stage may call it, with the proof in hand.
+    pub fn mark_inline_int_proof(&mut self) {
+        self.attrs
+            .insert(INLINE_INT_PROOF_ATTR.into(), AttrValue::Bool(true));
     }
 
     /// Whether this operation is also the canonical pending-call/eval-breaker

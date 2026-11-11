@@ -41,8 +41,10 @@
 //! ^join(%t):  the rest of the block, then its terminator
 //! ```
 //!
-//! The original result id becomes the join's argument, so no use is renamed and
-//! no existing value changes representation. An in-place op on two ints has no
+//! The original result id becomes the join's argument, so no use is renamed.
+//! No existing value changes representation: before it splits a block, the
+//! stage marks each op whose integer results are proven inline
+//! (`record_inline_int_proofs`), and the representation plan reads the mark. An in-place op on two ints has no
 //! dunder to try, so both forms share the fast arm; the slow arm calls the op's
 //! own runtime entry (`TirOp::numeric_runtime`), which tries `__i<op>__` first.
 //! A failed heap box or a raising `__bool__` leaves a pending exception, which
@@ -73,6 +75,15 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     };
     let vr = crate::representation_facts::value_range_for(func);
     let repr = crate::representation_facts::repr_by_value_for(func, Some(&vr));
+    if !func.blocks.values().any(|block| {
+        block
+            .ops
+            .iter()
+            .any(|op| expansion_of(op, &repr, targets).is_some())
+    }) {
+        return stats;
+    }
+    record_inline_int_proofs(func, &repr);
     let mut pending: Vec<BlockId> = func.blocks.keys().copied().collect();
     pending.sort_unstable_by(|a, b| b.cmp(a));
     while let Some(block) = pending.pop() {
@@ -100,6 +111,48 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         pending.push(join);
     }
     stats
+}
+
+/// Record on each op the proof that its integer results fit the inline window.
+///
+/// The range analysis proves a loop's induction variable from the loop's
+/// shape: a guard block, a body path and a latch. Expansion splits body
+/// blocks, so an analysis that runs afterwards (drop insertion, a backend's
+/// carrier plan) no longer recognizes the loop and would carry the variable
+/// as a possible big int: reference counts on every iteration and a runtime
+/// call for `i < n` and `i + 1`. The proof is about the value, not the block
+/// it sits in, so it stays true; this stage is the last point where it can be
+/// read, and the op is where it travels. Phis and copies need no mark: the
+/// plan derives them from their sources.
+fn record_inline_int_proofs(func: &mut TirFunction, repr: &HashMap<ValueId, Repr>) {
+    let is_int = |func: &TirFunction, value: ValueId| {
+        matches!(
+            func.value_types.get(&value),
+            Some(TirType::I64 | TirType::BigInt)
+        )
+    };
+    let proven: Vec<(BlockId, usize)> = func
+        .blocks
+        .iter()
+        .flat_map(|(&block, body)| {
+            body.ops
+                .iter()
+                .enumerate()
+                .map(move |(index, op)| (block, index, op))
+        })
+        .filter(|(_, _, op)| {
+            let mut ints = op.results.iter().filter(|&&r| is_int(func, r)).peekable();
+            ints.peek().is_some() && ints.all(|r| repr.get(r) == Some(&Repr::RawI64Safe))
+        })
+        .map(|(block, index, _)| (block, index))
+        .collect();
+    for (block, index) in proven {
+        func.blocks
+            .get_mut(&block)
+            .expect("the block was just scanned")
+            .ops[index]
+            .mark_inline_int_proof();
+    }
 }
 
 /// What the stage does with one op, from the generated
