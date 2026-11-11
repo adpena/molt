@@ -1549,7 +1549,6 @@ macro_rules! attached_symbol {
     ("molt_frame_f_locals_get") => { "molt_frame_f_locals_get__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_home_load") => { "molt_frame_home_load__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_home_take") => { "molt_frame_home_take__molt_context_a8c6010e2cbb56a1" };
-    ("molt_frame_homes") => { "molt_frame_homes__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_locals_begin") => { "molt_frame_locals_begin__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_locals_proxy_contains") => { "molt_frame_locals_proxy_contains__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_locals_proxy_copy") => { "molt_frame_locals_proxy_copy__molt_context_a8c6010e2cbb56a1" };
@@ -1568,6 +1567,8 @@ macro_rules! attached_symbol {
     ("molt_frame_locals_proxy_update") => { "molt_frame_locals_proxy_update__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_locals_proxy_values") => { "molt_frame_locals_proxy_values__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_locals_set") => { "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1" };
+    ("molt_frame_record_enter") => { "molt_frame_record_enter__molt_context_a8c6010e2cbb56a1" };
+    ("molt_frame_record_exit") => { "molt_frame_record_exit__molt_context_a8c6010e2cbb56a1" };
     ("molt_frozenset_add") => { "molt_frozenset_add__molt_context_a8c6010e2cbb56a1" };
     ("molt_frozenset_builtin") => { "molt_frozenset_builtin__molt_context_a8c6010e2cbb56a1" };
     ("molt_frozenset_copy_method") => { "molt_frozenset_copy_method__molt_context_a8c6010e2cbb56a1" };
@@ -3530,8 +3531,6 @@ macro_rules! attached_symbol {
     ("molt_tk_widget_bind_callback_unregister") => { "molt_tk_widget_bind_callback_unregister__molt_context_a8c6010e2cbb56a1" };
     ("molt_token_payload") => { "molt_token_payload__molt_context_a8c6010e2cbb56a1" };
     ("molt_tokenize_scan") => { "molt_tokenize_scan__molt_context_a8c6010e2cbb56a1" };
-    ("molt_trace_enter_slot") => { "molt_trace_enter_slot__molt_context_a8c6010e2cbb56a1" };
-    ("molt_trace_exit") => { "molt_trace_exit__molt_context_a8c6010e2cbb56a1" };
     ("molt_trace_set_line") => { "molt_trace_set_line__molt_context_a8c6010e2cbb56a1" };
     ("molt_traceback_exception_chain_payload") => { "molt_traceback_exception_chain_payload__molt_context_a8c6010e2cbb56a1" };
     ("molt_traceback_exception_suppress_context") => { "molt_traceback_exception_suppress_context__molt_context_a8c6010e2cbb56a1" };

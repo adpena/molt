@@ -5,7 +5,8 @@
     "ops": [
       {
         "kind": "trace_enter_slot",
-        "s_value": "__main____vector_add"
+        "s_value": "__main____vector_add",
+        "value": 5
       },
       {
         "kind": "check_exception",
@@ -67,19 +68,6 @@
       {
         "kind": "const_none",
         "out": "v86"
-      },
-      {
-        "kind": "const",
-        "out": "v87",
-        "value": 3
-      },
-      {
-        "args": [
-          "v86",
-          "v87",
-          "v86"
-        ],
-        "kind": "frame_context_set"
       },
       {
         "col_offset": 4,

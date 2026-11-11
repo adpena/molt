@@ -55,31 +55,36 @@ pub(crate) struct NativeRefcountSite {
 pub(crate) fn emit_refcount(builder: &mut FunctionBuilder, value: Value, site: NativeRefcountSite) {
     let storage = RefcountStorage::for_build(molt_codegen_abi::MOLT_REFCOUNT_ATOMIC);
     let mut emitter = NativeRefcountBuilder {
-        builder,
+        words: NativeWords { builder },
         site,
         slow_block: None,
     };
     generate_refcount(&mut emitter, value, site.admission, site.operation, storage);
     if let Some(slow) = emitter.slow_block {
-        let continuation = emitter.builder.create_block();
-        emitter.builder.ins().jump(continuation, &[]);
-        emitter.builder.switch_to_block(slow);
-        emitter.builder.seal_block(slow);
-        emitter.builder.set_cold_block(slow);
-        emitter.builder.ins().call(site.slow, &[value]);
-        emitter.builder.ins().jump(continuation, &[]);
-        emitter.builder.seal_block(continuation);
-        emitter.builder.switch_to_block(continuation);
+        let continuation = emitter.words.builder.create_block();
+        emitter.words.builder.ins().jump(continuation, &[]);
+        emitter.words.builder.switch_to_block(slow);
+        emitter.words.builder.seal_block(slow);
+        emitter.words.builder.set_cold_block(slow);
+        emitter.words.builder.ins().call(site.slow, &[value]);
+        emitter.words.builder.ins().jump(continuation, &[]);
+        emitter.words.builder.seal_block(continuation);
+        emitter.words.builder.switch_to_block(continuation);
     }
 }
 
 struct NativeRefcountBuilder<'a, 'b> {
-    builder: &'a mut FunctionBuilder<'b>,
+    words: NativeWords<'a, 'b>,
     site: NativeRefcountSite,
     slow_block: Option<Block>,
 }
 
-impl WordBuilder for NativeRefcountBuilder<'_, '_> {
+/// Cranelift's one spelling of 64-bit word instructions.
+pub(crate) struct NativeWords<'a, 'b> {
+    pub(crate) builder: &'a mut FunctionBuilder<'b>,
+}
+
+impl WordBuilder for NativeWords<'_, '_> {
     type Word = Value;
     type Predicate = Value;
 
@@ -115,20 +120,26 @@ impl WordBuilder for NativeRefcountBuilder<'_, '_> {
     }
 }
 
+impl<'a, 'b> WordBuilder for NativeRefcountBuilder<'a, 'b> {
+    molt_codegen_abi::forward_word_builder!(words: NativeWords<'a, 'b>);
+}
+
 impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
     fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
         molt_codegen_abi::PointerWidth::Bits64
     }
     fn load_header_u32(&mut self, pointer: Value, offset: i32) -> Value {
         let value = self
+            .words
             .builder
             .ins()
             .load(types::I32, MemFlagsData::new(), pointer, offset);
-        self.builder.ins().uextend(types::I64, value)
+        self.words.builder.ins().uextend(types::I64, value)
     }
     fn store_header_u32(&mut self, pointer: Value, offset: i32, value: Value) {
-        let value = self.builder.ins().ireduce(types::I32, value);
-        self.builder
+        let value = self.words.builder.ins().ireduce(types::I32, value);
+        self.words
+            .builder
             .ins()
             .store(MemFlagsData::new(), value, pointer, offset);
     }
@@ -136,8 +147,8 @@ impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
         assert_eq!(operation, self.site.operation);
         let block = *self
             .slow_block
-            .get_or_insert_with(|| self.builder.create_block());
-        self.builder.ins().jump(block, &[]);
+            .get_or_insert_with(|| self.words.builder.create_block());
+        self.words.builder.ins().jump(block, &[]);
     }
     fn if_else(
         &mut self,
@@ -145,35 +156,41 @@ impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
         yes: impl FnOnce(&mut Self),
         no: impl FnOnce(&mut Self),
     ) {
-        let yes_block = self.builder.create_block();
-        let no_block = self.builder.create_block();
-        let continuation = self.builder.create_block();
-        self.builder
+        let yes_block = self.words.builder.create_block();
+        let no_block = self.words.builder.create_block();
+        let continuation = self.words.builder.create_block();
+        self.words
+            .builder
             .ins()
             .brif(condition, yes_block, &[], no_block, &[]);
-        self.builder.seal_block(yes_block);
-        self.builder.seal_block(no_block);
-        self.builder.switch_to_block(yes_block);
+        self.words.builder.seal_block(yes_block);
+        self.words.builder.seal_block(no_block);
+        self.words.builder.switch_to_block(yes_block);
         yes(self);
         if !self.terminated() {
-            self.builder.ins().jump(continuation, &[]);
+            self.words.builder.ins().jump(continuation, &[]);
         }
-        self.builder.switch_to_block(no_block);
+        self.words.builder.switch_to_block(no_block);
         no(self);
         if !self.terminated() {
-            self.builder.ins().jump(continuation, &[]);
+            self.words.builder.ins().jump(continuation, &[]);
         }
-        self.builder.seal_block(continuation);
-        self.builder.switch_to_block(continuation);
+        self.words.builder.seal_block(continuation);
+        self.words.builder.switch_to_block(continuation);
     }
 }
 
 impl NativeRefcountBuilder<'_, '_> {
     fn terminated(&self) -> bool {
-        self.builder
+        self.words
+            .builder
             .current_block()
-            .and_then(|block| self.builder.func.layout.last_inst(block))
-            .is_some_and(|inst| self.builder.func.dfg.insts[inst].opcode().is_terminator())
+            .and_then(|block| self.words.builder.func.layout.last_inst(block))
+            .is_some_and(|inst| {
+                self.words.builder.func.dfg.insts[inst]
+                    .opcode()
+                    .is_terminator()
+            })
     }
 }
 

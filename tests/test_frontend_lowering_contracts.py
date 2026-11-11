@@ -400,7 +400,15 @@ def test_local_frame_entry_is_typed_checked_and_serialization_is_deterministic()
         ops = data["ops"]
         failure_label = data["frame_entry_failure_label"]
         assert ops[0].kind == "TRACE_ENTER_SLOT", name
-        assert ops[0].args == [name]
+        # The code owner; a synchronous frame adds its home count and clear
+        # order, which size its inline record push. A stateful activation's
+        # frame is runtime-linked and carries none.
+        assert ops[0].args[0] == name
+        if "stateful_frame_plan" in data:
+            assert len(ops[0].args) == 1, name
+        else:
+            (frame_shape,) = ops[0].args[1:]
+            assert isinstance(frame_shape, int) and frame_shape >= 0, name
         assert ops[1].kind == "CHECK_EXCEPTION", name
         assert ops[1].args == [failure_label]
         cleanup = next(
@@ -422,7 +430,12 @@ def test_local_frame_entry_is_typed_checked_and_serialization_is_deterministic()
         if function["name"] not in local_functions:
             continue
         ops = function["ops"]
-        assert ops[0] == {"kind": "trace_enter_slot", "s_value": function["name"]}
+        source_entry = gen.funcs_map[function["name"]]["ops"][0]
+        expected = {"kind": "trace_enter_slot", "s_value": function["name"]}
+        if len(source_entry.args) == 2:
+            # The frame shape travels as the wire op's `value`.
+            expected["value"] = source_entry.args[1]
+        assert ops[0] == expected
         assert ops[1]["kind"] == "check_exception"
         entry_cleanup = next(
             index

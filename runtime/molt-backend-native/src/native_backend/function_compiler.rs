@@ -512,8 +512,52 @@ impl SimpleBackend {
             .iter()
             .any(|op| matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc));
         let has_async_work_polls = func_ir.ops.iter().any(OpIR::reads_pending_work_word);
-        let needs_thread_record =
-            inline_exception_checks || makes_direct_python_calls || has_async_work_polls;
+        let frame_home_slots = func_ir
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind,
+                    OpKind::FrameHomeStore
+                        | OpKind::FrameHomeCell
+                        | OpKind::FrameHomePrivateCell
+                        | OpKind::FrameHomeLoad
+                        | OpKind::FrameHomeTake
+                        | OpKind::FrameHomeClear
+                )
+            })
+            .filter_map(|op| op.value)
+            .max()
+            .map(|slot| slot + 1)
+            .or_else(|| {
+                // A publication or a check's cold `frame_location` store
+                // needs the location word, even with no binding homes.
+                func_ir
+                    .ops
+                    .iter()
+                    .any(|op| op.kind == OpKind::FrameSetLocation || op.frame_location.is_some())
+                    .then_some(0)
+            });
+        let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        // A synchronous frame's entry carries its home count and clear order
+        // and pushes its record inline; every other frame is runtime-linked.
+        let frame_shape = func_ir
+            .ops
+            .iter()
+            .find(|op| op.kind == OpKind::TraceEnterSlot)
+            .and_then(|op| op.value)
+            .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value);
+        debug_assert!(
+            frame_shape.is_none_or(|shape| frame_home_slots.unwrap_or(0) <= i64::from(shape.homes)),
+            "compiled frame addresses more homes than its entry declares"
+        );
+        // An inline push and pop work on the thread record's arena; a split
+        // chunk reads the frame it runs in from it.
+        let needs_thread_record = inline_exception_checks
+            || makes_direct_python_calls
+            || has_async_work_polls
+            || frame_shape.is_some()
+            || (frame_home_slots.is_some() && !has_frame_slot);
         let thread_record_slot = needs_thread_record.then(|| {
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
         });
@@ -809,12 +853,30 @@ impl SimpleBackend {
         // branch to the shared return. A leading function-frame entry is emitted
         // immediately below; module frames retain their IR-positioned binding
         // prologue because their trace_enter_slot is not the leading op.
-        let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        // The base of the record this invocation entered, zero until it does.
         let owned_frame_entered = has_frame_slot.then(|| {
-            let entered = builder.declare_var(types::I8);
-            let inactive = builder.ins().iconst(types::I8, 0);
+            let entered = builder.declare_var(types::I64);
+            let inactive = builder.ins().iconst(types::I64, 0);
             builder.def_var(entered, inactive);
             entered
+        });
+        let frame_sites = has_frame_slot.then(|| NativeFrameSites {
+            retain: local_inc_ref_obj,
+            release: local_dec_ref_obj,
+            enter: import_runtime_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                RuntimeFn::FrameRecordEnter,
+            ),
+            exit: import_runtime_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                RuntimeFn::FrameRecordExit,
+            ),
         });
         let leading_frame_entry_op_idx = func_ir
             .ops
@@ -864,8 +926,10 @@ impl SimpleBackend {
             emit_owned_execution_frame_enter(
                 entered,
                 code_owner,
+                frame_shape,
+                frame_sites.expect("a frame entry has its sites"),
+                thread_record_slot,
                 &mut self.module,
-                &mut self.import_ids,
                 &mut builder,
             );
         }
@@ -878,32 +942,6 @@ impl SimpleBackend {
         // before any home op runs. A split chunk has no entry: it borrows the
         // homes of the frame it runs in at its own entry and, if none are lent,
         // returns at once through the prologue-failure exit.
-        let frame_home_slots = func_ir
-            .ops
-            .iter()
-            .filter(|op| {
-                matches!(
-                    op.kind,
-                    OpKind::FrameHomeStore
-                        | OpKind::FrameHomeCell
-                        | OpKind::FrameHomePrivateCell
-                        | OpKind::FrameHomeLoad
-                        | OpKind::FrameHomeTake
-                        | OpKind::FrameHomeClear
-                )
-            })
-            .filter_map(|op| op.value)
-            .max()
-            .map(|slot| slot + 1)
-            .or_else(|| {
-                // A publication or a check's cold `frame_location` store
-                // needs the location word, even with no binding homes.
-                func_ir
-                    .ops
-                    .iter()
-                    .any(|op| op.kind == OpKind::FrameSetLocation || op.frame_location.is_some())
-                    .then_some(0)
-            });
         let enters_later = leading_frame_code_owner.is_none()
             && func_ir
                 .ops
@@ -923,9 +961,8 @@ impl SimpleBackend {
                 let base = fc::funcobj::emit_frame_homes_lend(
                     homes,
                     cold_homes,
-                    slots,
-                    &mut self.module,
-                    &mut self.import_ids,
+                    owned_frame_entered,
+                    thread_record_slot,
                     &mut builder,
                 );
                 if leading_frame_exception_check_idx.is_none() {
@@ -1653,6 +1690,8 @@ impl SimpleBackend {
                             owned_frame_entered,
                             frame_homes,
                             cold_frame_homes,
+                            frame_sites,
+                            thread_record_slot,
                             leading_frame_entry_op_idx,
                             is_block_filled,
                             rc_authority,
@@ -2351,14 +2390,10 @@ impl SimpleBackend {
 
         literal_hoists.release_anchors(&mut builder, pointer_type, local_dec_ref_obj);
 
-        emit_owned_execution_frame_exit(
-            owned_frame_entered,
-            &mut self.module,
-            &mut self.import_ids,
-            &mut builder,
-            &mut import_refs,
-            &mut sealed_blocks,
-        );
+        if let (Some(entered), Some(sites)) = (owned_frame_entered, frame_sites) {
+            let base = builder.use_var(entered);
+            emit_frame_record_pop(&mut builder, sites, thread_record_slot, base, frame_shape);
+        }
 
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the join-slot
         // exit-teardown is the memory-phi arm of the native value-tracking RC — it

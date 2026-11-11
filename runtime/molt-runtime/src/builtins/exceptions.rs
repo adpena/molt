@@ -2930,11 +2930,8 @@ pub(crate) fn molt_exception_frame_origin_attached_body(
             // that typed chain may connect a cold Origin to the top frame; an
             // intervening function/runtime frame still refuses it.
             && crate::builtins::frames::records::innermost_first()
-                .map(crate::builtins::frames::records::FrameRecord::entry)
-                .find(|entry| {
-                    entry.bindings.homes_base() as u64 == expected_homes || !entry.is_class_body()
-                })
-                .is_some_and(|entry| entry.bindings.homes_base() as u64 == expected_homes);
+                .find(|record| record.base() as u64 == expected_homes || !record.is_class_body())
+                .is_some_and(|record| record.base() as u64 == expected_homes);
         if owns_activation && exception_pending(py) {
             let selected = ExceptionValue::adopt(py, exception_last_pending_bits(py));
             with_saved_raised_exception(py, || {
@@ -2987,8 +2984,8 @@ pub(crate) fn record_exception(py: &PyToken<'_>, ptr: *mut u8) {
         }
         RaisedSnapshot::None => None,
     };
-    let position =
-        crate::builtins::frames::frame_stack_top_entry().and_then(|entry| entry.source_position());
+    let position = crate::builtins::frames::records::top()
+        .and_then(crate::builtins::frames::records::FrameRecord::source_position);
     LAST_EXCEPTION_COL.with(|cell| {
         *cell.borrow_mut() = position.map_or((-1, -1), |site| (site.column, site.end_column))
     });

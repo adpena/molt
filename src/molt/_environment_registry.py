@@ -7107,16 +7107,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_TRACE_TRACE_ENTER_SLOT",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
-      "summary": "Set to exactly 1 to trace the trace-enter slot path of builtin call dispatch to stderr; the value is read once per process; unset or any other value stays silent.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_TRACE_TRACE_EXIT_PENDING",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",

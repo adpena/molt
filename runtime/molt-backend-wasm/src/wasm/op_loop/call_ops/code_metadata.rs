@@ -55,6 +55,8 @@ pub(super) fn emit_code_metadata_call_op(
                         .expect("admitted trace_enter_slot symbol"),
                 )
                 .expect("admitted compiled-code slot binding") as i64,
+            op.value
+                .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value),
             call_ctx.import_ids,
             call_ctx.reloc_enabled,
         ),

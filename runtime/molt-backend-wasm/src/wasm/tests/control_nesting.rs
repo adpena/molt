@@ -150,8 +150,16 @@ fn count_ops(wasm: &[u8], matches: impl Fn(&Operator<'_>) -> bool) -> usize {
     count
 }
 
+/// The guest's loops: the module's own generated bodies (the frame record
+/// push and pop) loop over a frame's homes in every module.
 fn loop_count(wasm: &[u8]) -> usize {
-    count_ops(wasm, |op| matches!(op, Operator::Loop { .. }))
+    let loops = |wasm: &[u8]| count_ops(wasm, |op| matches!(op, Operator::Loop { .. }));
+    static MODULE_BODIES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let module_bodies = *MODULE_BODIES.get_or_init(|| {
+        let ops = vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])];
+        loops(&emit(wasm_test_function("molt_main", vec![], None, ops)))
+    });
+    loops(wasm) - module_bodies
 }
 
 /// A forward-only flat function has no selector; the tree selects with

@@ -858,7 +858,11 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             name="__annotate__",
             qualname=self._annotate_qualname(),
             trace_lineno=None,
-            posonly_params=["format"],
+            # PEP 649/749 makes the evaluator format an actual Python argument.
+            # Earlier lazy type evaluators have no Python argument: `format`
+            # is only Molt's transport and their code declares no parameter,
+            # so zero-argument `super()` in them finds no argument zero.
+            posonly_params=["format"] if self.target_python >= (3, 14) else [],
             pos_or_kw_params=[],
             kwonly_params=[],
             vararg=None,

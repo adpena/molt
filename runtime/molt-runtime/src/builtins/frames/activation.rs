@@ -899,7 +899,7 @@ pub(crate) unsafe fn activation_frame_clear(
 /// consume, and no user code runs.
 pub(crate) struct ActivationFrameScope<'a, 'py> {
     py: &'a PyToken<'py>,
-    depth: Option<usize>,
+    record: Option<super::records::FrameRecord>,
 }
 
 impl<'a, 'py> ActivationFrameScope<'a, 'py> {
@@ -913,11 +913,11 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
             crate::object::aux_header::object_frame_context_bits(ptr);
         if code_bits == 0 {
             // Runtime-native tasks own no Python frame to report.
-            return Ok(Self { py, depth: None });
+            return Ok(Self { py, record: None });
         }
         match admit_compiled_namespace(py, code_bits, globals_bits) {
             Err(()) => return Err(()),
-            Ok(None) => return Ok(Self { py, depth: None }),
+            Ok(None) => return Ok(Self { py, record: None }),
             Ok(Some(_)) => {}
         }
         let task = MoltObject::from_ptr(ptr).bits();
@@ -936,21 +936,22 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
             crate::record_memory_error_without_allocation(py);
             return Err(());
         }
-        let depth = crate::builtins::frames::records::depth() - 1;
         Ok(Self {
             py,
-            depth: Some(depth),
+            record: super::records::top(),
         })
     }
 }
 
 impl Drop for ActivationFrameScope<'_, '_> {
     fn drop(&mut self) {
-        let Some(depth) = self.depth else {
+        if self.record.is_none() {
             return;
-        };
-        let len = crate::builtins::frames::records::depth();
-        assert_eq!(len, depth + 1, "activation frame custody is not LIFO");
+        }
+        assert!(
+            super::records::top() == self.record,
+            "activation frame custody is not LIFO"
+        );
         super::frame_stack_pop(self.py);
     }
 }

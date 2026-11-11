@@ -1952,7 +1952,8 @@ mod json_parse_tests {
                 "without a program binding",
             ),
             (0, 1, "value", serde_json::json!(0), "forbids numeric"),
-            (1, 0, "value", serde_json::json!(0), "forbids numeric"),
+            // A frame entry's value is its frame shape, never an identity.
+            (1, 0, "value", serde_json::json!(-1), "nonnegative integer"),
             (0, 2, "value", serde_json::json!(0), "forbids numeric"),
             (
                 0,

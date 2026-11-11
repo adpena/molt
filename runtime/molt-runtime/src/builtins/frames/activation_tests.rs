@@ -447,7 +447,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let baseline = refs(task);
                 let guard = FrameInvocationGuard::for_activation(py, ptr);
                 assert_eq!(refs(task), baseline, "a handoff borrows its activation");
-                crate::molt_trace_enter_slot_attached_body(py, slot);
+                crate::builtins::frames::compiled_entry::enter(py, slot);
                 assert_eq!(frame_stack_active_activation_bits(), task);
                 assert_eq!(
                     refs(task),
@@ -564,7 +564,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 assert_eq!(lookup(py, recorded, x), Some(raw_cell));
                 assert_eq!(lookup(py, recorded, body), Some(int(29)));
                 dec_ref_bits(py, recorded);
-                crate::molt_trace_exit_attached_body(py);
+                crate::builtins::frames::compiled_entry::exit(py);
                 drop(guard);
                 assert_eq!(refs(task), baseline);
                 dec_ref_bits(py, task);

@@ -26,6 +26,17 @@ fn emit(mut function: FunctionIR) -> Vec<u8> {
 // This checks the property that changes engine tiering, not a textual source
 // shape: an acyclic guest must not contain branches to a WASM loop.
 fn direct_loop_edges(wasm: &[u8]) -> usize {
+    // The module's own generated bodies (the frame record push and pop) loop
+    // over a frame's homes in every module; the guest's edges are the rest.
+    static MODULE_BODIES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let module_bodies = *MODULE_BODIES.get_or_init(|| {
+        let ops = vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])];
+        module_loop_edges(&emit(wasm_test_function("molt_main", vec![], None, ops)))
+    });
+    module_loop_edges(wasm) - module_bodies
+}
+
+fn module_loop_edges(wasm: &[u8]) -> usize {
     let mut count = 0;
     for payload in Parser::new(0).parse_all(wasm) {
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {

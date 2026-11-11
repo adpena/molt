@@ -11,6 +11,7 @@ mod control_flow;
 mod data_segments;
 mod final_functions;
 mod frame_locals;
+pub(crate) mod frame_record;
 mod function_emitter;
 mod function_frame;
 pub(crate) mod lir_fast;
