@@ -1136,17 +1136,41 @@ fn expansion_keeps_the_exact_type_of_the_result_it_joins() {
     );
 }
 
-/// `x * y` on boxed words: multiplication has only the float arm (an int
-/// product of two payloads can leave i64), so an int pair takes the runtime.
+/// `x * y` on boxed words: the int arm multiplies the payloads with an
+/// overflow test and leaves for the runtime on overflow; the float arm
+/// multiplies the floats. The product of two inline payloads is planned as a
+/// full-range raw int and boxes through the overflow-safe path.
 #[test]
-fn boxed_mul_takes_only_the_float_arm() {
+fn boxed_mul_checks_overflow_in_its_int_arm() {
     let (mut func, _) = binary(OpCode::Mul, [TirType::DynBox, TirType::DynBox]);
     assert_eq!(run(&mut func).values_changed, 1);
     assert_valid(&func);
-    assert!(ops(&func, OpCode::IsInlineInt).is_empty());
+    assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 2);
     assert_eq!(ops(&func, OpCode::IsFloatWord).len(), 2);
-    let calls = ops(&func, OpCode::CallRuntime);
-    assert_eq!(calls[0].1.runtime, Some(RuntimeFn::Mul));
+    let checked = ops(&func, OpCode::CheckedMul);
+    assert_eq!(checked.len(), 1);
+    let (int_arm, mul) = &checked[0];
+    let [product, overflow] = mul.results[..] else {
+        panic!("CheckedMul yields a value and a flag");
+    };
+    let slow = ops(&func, OpCode::CallRuntime)[0].0;
+    assert_eq!(
+        ops(&func, OpCode::CallRuntime)[0].1.runtime,
+        Some(RuntimeFn::Mul)
+    );
+    let Terminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = &func.blocks[int_arm].terminator
+    else {
+        panic!("the int arm branches on overflow");
+    };
+    assert_eq!((*cond, *then_block), (overflow, slow));
+    assert_eq!(block_opcodes(&func, *else_block), [OpCode::BoxVal]);
+    assert_eq!(plan(&func)[&product], Repr::RawI64FullDeopt);
+    assert_eq!(ops(&func, OpCode::Mul).len(), 1, "the float arm's product");
 }
 
 /// An operand proven an exact int takes no float arm, and one proven an exact

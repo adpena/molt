@@ -99,3 +99,33 @@ ys = [1.0 - float(i) / 11 for i in range(100)]
 print(dot(xs, ys), dot([NAN, 1.0], [1.0, 1.0]) != dot([NAN, 1.0], [1.0, 1.0]))
 print(energy([[0.0, 0.0, 1.0, 2.0, 3.0], [1.0, 1.0, -0.5, 0.25, 2.0]]))
 print(energy([[0.0, 0.0, NAN, 2.0, 3.0]]))
+
+
+# Multiplication's int arm: products inside the inline window, across it,
+# across i64 (overflow leaves for the runtime), signs, bools and subclasses.
+EDGE = 2**46
+
+
+def times(a, b):
+    return a * b
+
+
+def times_in_place(a, b):
+    a *= b
+    return a
+
+
+for a in (0, 1, -1, 3, -7, EDGE - 1, -EDGE, 2**31, 3037000499, 3037000500, True):
+    for b in (0, 1, -1, 2, EDGE - 1, -EDGE, 2**31, 3037000500, False):
+        print(a, b, times(a, b), times_in_place(a, b))
+
+
+class M(int):
+    def __mul__(self, other):
+        return "M.mul"
+
+    def __rmul__(self, other):
+        return "M.rmul"
+
+
+print(times(M(2), 3), times(3, M(2)), times(2, 2.5), times(2.5, 2), times("ab", 3))

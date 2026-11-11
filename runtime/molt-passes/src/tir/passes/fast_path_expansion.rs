@@ -4,8 +4,9 @@
 //! primitive comes from molt-codegen-abi's shared generators.
 //!
 //! `Add`, `Sub`, `Mul` and their in-place forms on boxed words take an
-//! inline-int arm and a float arm (multiplication only the float arm, until
-//! its int arm can test overflow):
+//! inline-int arm and a float arm. Two 47-bit payloads add and subtract
+//! exactly in i64; their product may not, so the multiplication arm uses
+//! `CheckedMul` and leaves for the runtime on overflow:
 //!
 //! ```text
 //!   %r = Add %a, %b                          ; both boxed words
@@ -375,9 +376,12 @@ fn expansion_of(
             Some((OpCode::Sub, TirType::I64)),
             Some((OpCode::Sub, TirType::F64)),
         ),
-        // The int product of two inline payloads can leave i64; its arm waits
-        // for an overflow test cheaper than the runtime call.
-        FastPathExpansionRule::NumericMul => numeric(None, Some((OpCode::Mul, TirType::F64))),
+        // The int product of two inline payloads can leave i64: CheckedMul
+        // tests the overflow and the arm leaves for the runtime on it.
+        FastPathExpansionRule::NumericMul => numeric(
+            Some((OpCode::CheckedMul, TirType::I64)),
+            Some((OpCode::Mul, TirType::F64)),
+        ),
         // A comparison on two payloads is the same comparison on raw values;
         // float comparisons keep IEEE order, so NaN compares unequal.
         FastPathExpansionRule::NumericCompare => numeric(
@@ -596,7 +600,30 @@ fn expand_numeric(
             }
         }
         let raw = fresh_typed(func, arm.raw.clone());
-        fast_ops.push(new_op(arm.fast, payloads.to_vec(), vec![raw], span));
+        // A checked op yields an overflow flag beside its value; on overflow
+        // the arm leaves for the runtime, which computes the big int.
+        let fast_block = if arm.fast == OpCode::CheckedMul {
+            let overflow = fresh_typed(func, TirType::Bool);
+            fast_ops.push(new_op(
+                arm.fast,
+                payloads.to_vec(),
+                vec![raw, overflow],
+                span,
+            ));
+            let box_block = func.fresh_block();
+            func.blocks.insert(
+                fast_block,
+                new_block(
+                    fast_block,
+                    std::mem::take(&mut fast_ops),
+                    cond_branch(overflow, slow, box_block),
+                ),
+            );
+            box_block
+        } else {
+            fast_ops.push(new_op(arm.fast, payloads.to_vec(), vec![raw], span));
+            fast_block
+        };
         let fast_result = if raw_result {
             raw
         } else {
