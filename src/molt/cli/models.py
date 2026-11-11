@@ -657,6 +657,9 @@ class _FrontendIntegrationState:
     # module whose stamp or layout guard names each symbol.
     class_definition_owners: dict[str, str] = field(default_factory=dict)
     class_definition_references: dict[str, str] = field(default_factory=dict)
+    # Each module's global slot layout (call_anatomy.md 4.5), derived from its
+    # own lowered body; the module registry carries it to the runtime.
+    global_layouts: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass

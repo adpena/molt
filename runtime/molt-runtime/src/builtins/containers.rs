@@ -883,12 +883,14 @@ pub(crate) struct DictStorage {
     pub(crate) live: usize,
     pub(crate) usable: usize,
     pub(crate) kind: DictKeyKind,
+    /// A module namespace's slot table, or null (call_anatomy.md 4.5).
+    pub(crate) slots: *mut crate::builtins::namespace_slots::NamespaceSlots,
 }
 
 const _: () = {
     assert!(std::mem::size_of::<DictEntry>() == 24);
     assert!(std::mem::size_of::<SetEntry>() == 16);
-    assert!(std::mem::size_of::<DictStorage>() == 5 * std::mem::size_of::<usize>());
+    assert!(std::mem::size_of::<DictStorage>() == 6 * std::mem::size_of::<usize>());
     assert!(std::mem::size_of::<HashStorage<SetEntry>>() == 4 * std::mem::size_of::<usize>());
 };
 

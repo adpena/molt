@@ -136,6 +136,7 @@ pub(crate) fn initialize_module_namespace(
         }
     }
     unsafe { module_set_name_bits(py, module_ptr, name_bits) };
+    crate::builtins::namespace_slots::bind_module_namespace(py, namespace_ptr, name_bits);
     none
 }
 

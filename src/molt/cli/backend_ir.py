@@ -477,6 +477,7 @@ def _build_module_registry(
     native_module_init_specs: Sequence[_ExternalNativeModuleInitSpec],
     generated_native_init_modules: Collection[str],
     spawn_enabled: bool,
+    global_layouts: Mapping[str, tuple[str, ...]],
 ) -> ModuleRegistry:
     """Derive the per-build ModuleRegistry from the binary-image closure plan.
 
@@ -520,6 +521,7 @@ def _build_module_registry(
                 is_package=module_graph[name].name == "__init__.py",
                 # The origin is the module's own reported path (HF-372).
                 origin=logical_source_path_by_module[name],
+                globals=global_layouts.get(name, ()),
             )
         )
     for name, portions in sorted(namespace_portions_by_module.items()):
@@ -590,6 +592,7 @@ def _build_module_registry(
                 # no separate trampoline init on the registry lane.
                 init_symbol=SimpleTIRGenerator.module_init_symbol(entry_module),
                 origin=logical_source_path_by_module[entry_module],
+                globals=global_layouts.get(entry_module, ()),
             )
         )
     return build_module_registry(entries)
@@ -2238,6 +2241,7 @@ def _prepare_backend_ir(
                 native_module_init_specs=native_module_init_specs,
                 generated_native_init_modules=generated_native_init_modules,
                 spawn_enabled=spawn_enabled,
+                global_layouts=integration_state.global_layouts,
             )
         except ValueError as exc:
             return None, fail(

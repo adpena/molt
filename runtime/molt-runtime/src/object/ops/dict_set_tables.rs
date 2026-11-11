@@ -37,6 +37,7 @@ pub(crate) unsafe fn dict_commit_reset(py: &PyToken<'_>, ptr: *mut u8) {
             crate::object::backing::tracked_vec_bump_mutation_epoch(table);
         }
         crate::builtins::binding_guards::note_namespace_reset(py, ptr);
+        crate::builtins::namespace_slots::note_rebuild(py, ptr);
     }
 }
 
@@ -228,6 +229,7 @@ unsafe fn dict_replace_value(
         }
         // Publish the slot and tracking state before releasing the old edge.
         dict_entries(ptr)[value_index].value = new_bits;
+        crate::builtins::namespace_slots::note_replace(ptr, value_index, new_bits);
         crate::builtins::binding_guards::note_namespace_rebind(
             _py,
             ptr,
@@ -1160,6 +1162,8 @@ unsafe fn dict_resize(
         // addresses and table length are unchanged. Reuse the index backing's
         // existing generation rather than the row epoch of ordinary mutations.
         crate::object::backing::tracked_vec_bump_mutation_epoch(storage.table);
+        // Compaction moved rows: the slot table's row indices follow them.
+        crate::builtins::namespace_slots::note_rebuild(py, ptr);
         true
     }
 }
@@ -2145,6 +2149,7 @@ unsafe fn dict_append_reserved_entry(
         dict_storage(ptr).live += 1;
         dict_commit_insertion(py, ptr, key, value);
         crate::builtins::binding_guards::note_namespace_insert(py, ptr, key);
+        crate::builtins::namespace_slots::note_insert(py, ptr, index, key, hash.get());
         crate::object::field_storage::debug::dictionary(
             py,
             "dict_insert",
@@ -2762,6 +2767,7 @@ unsafe fn dict_remove_row<'a, 'py>(
         dict_storage(ptr).live -= 1;
         dict_commit_structure(ptr);
         crate::builtins::binding_guards::note_namespace_rebind(py, ptr, row.key);
+        crate::builtins::namespace_slots::note_remove(ptr, probe.row);
         if dict_len(ptr) == 0 {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
