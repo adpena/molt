@@ -15,7 +15,8 @@
 //! `molt_trace_enter_slot` takes the homes of an optimized code object's
 //! synchronous activation from a thread-local arena, zeroed, as its code
 //! slot's [`FramePlan`] says; the frame's exit returns them. Frames nest, so
-//! the arena is a stack. Compiled code borrows the base address from
+//! the arena is a stack. The same arena holds each frame's record
+//! ([`super::records`]), taken before its homes. Compiled code borrows the base address from
 //! `molt_frame_homes` only once the entry succeeded. Compiled code owns
 //! nothing a home holds: a store hands its operand's reference to the home,
 //! publishes the new pair, then releases the displaced reference (CPython's
@@ -61,13 +62,14 @@ use molt_codegen_abi::{
 use molt_obj_model::MoltObject;
 
 use super::locations::LocationId;
+use super::records;
 use crate::builtins::exceptions::raise_key_error_with_key;
 use crate::object::HEADER_FLAG_IMMORTAL;
 use crate::object::cells::{cell_detach_value, cell_ptr_from_bits, cell_value_bits};
 use crate::object::code_layout::code_slots;
 use crate::object::layout::{CO_OPTIMIZED, code_flags};
 use crate::{
-    FRAME_STACK, MoltHeader, PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_STRING,
+    MoltHeader, PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_STRING,
     alloc_dict_with_pairs, alloc_object, dec_ref_bits, dict_del_in_place, dict_set_in_place,
     exception_pending, header_from_obj_ptr, inc_ref_bits, is_missing_bits, missing_bits,
     obj_from_bits, object_mark_has_ptrs, object_type_id, raise_exception,
@@ -311,14 +313,13 @@ fn history_keeps(bits: u64) -> bool {
         .is_some_and(|ptr| unsafe { !(*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_IMMORTAL) })
 }
 
-/// Where a frame entry's homes end in the arena; restored at the entry's exit.
+/// Where a frame's record begins in the arena; restored at its pop.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(crate) struct HomeMark {
     chunk: u32,
     used: u32,
 }
 
-#[derive(Default)]
 struct HomeArena {
     chunks: Vec<Box<[u64]>>,
     chunk: usize,
@@ -326,7 +327,16 @@ struct HomeArena {
 }
 
 impl HomeArena {
-    fn take(&mut self, words: usize) -> Option<(*mut u64, HomeMark)> {
+    const fn new() -> Self {
+        Self {
+            chunks: Vec::new(),
+            chunk: 0,
+            used: 0,
+        }
+    }
+
+    /// `words` words whose contents the caller overwrites in full.
+    fn take_uninit(&mut self, words: usize) -> Option<(*mut u64, HomeMark)> {
         let mark = HomeMark {
             chunk: u32::try_from(self.chunk).ok()?,
             used: u32::try_from(self.used).ok()?,
@@ -364,7 +374,6 @@ impl HomeArena {
         }
         let chunk = &mut self.chunks[self.chunk];
         let homes = &mut chunk[self.used..self.used + words];
-        homes.fill(0);
         self.used += words;
         Some((homes.as_mut_ptr(), mark))
     }
@@ -376,7 +385,23 @@ impl HomeArena {
 }
 
 thread_local! {
-    static HOME_ARENA: std::mem::ManuallyDrop<RefCell<HomeArena>> = std::mem::ManuallyDrop::new(RefCell::new(HomeArena::default()));
+    static HOME_ARENA: std::mem::ManuallyDrop<RefCell<HomeArena>> = const { std::mem::ManuallyDrop::new(RefCell::new(HomeArena::new())) };
+}
+
+/// Take `words` arena words for a frame record and its homes, which the push
+/// writes in full. `None`: the arena could not grow, or the thread's storage
+/// is already being destroyed.
+pub(super) fn arena_take_record(words: usize) -> Option<(*mut u64, HomeMark)> {
+    HOME_ARENA
+        .try_with(|arena| arena.borrow_mut().take_uninit(words))
+        .ok()
+        .flatten()
+}
+
+/// Return everything taken since `mark`. The arena outlives every frame of
+/// its thread ([`touch_frame_home_tls_lifetime`]).
+pub(super) fn arena_give_back(mark: HomeMark) {
+    let _ = HOME_ARENA.try_with(|arena| arena.borrow_mut().give_back(mark));
 }
 
 /// Initialize permanent storage; the attached thread-state drain retires its
@@ -389,7 +414,7 @@ pub(crate) fn clear_frame_home_tls_storage() {
     HOME_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
         assert_eq!(arena.used, 0, "retiring homes of a live compiled frame");
-        *arena = HomeArena::default();
+        *arena = HomeArena::new();
     });
 }
 
@@ -406,7 +431,6 @@ pub(crate) struct FrameBindings {
     homes: usize,
     home_count: u32,
     policy: FramePolicy,
-    mark: HomeMark,
 }
 
 impl FrameBindings {
@@ -422,27 +446,30 @@ impl FrameBindings {
         }
     }
 
-    /// Take the homes `plan` calls for, for the frame entry being pushed.
-    /// `None`: the arena could not grow, or the thread's storage is already
-    /// being destroyed.
-    pub(crate) fn enter(plan: FramePlan) -> Option<Self> {
-        let mut bindings = Self {
+    /// The words a frame of `plan` keeps after its record: its location word,
+    /// then its homes. `None`: the count overflows.
+    pub(crate) fn storage_words(plan: FramePlan) -> Option<usize> {
+        home_words(plan.homes as usize)?.checked_add(1)
+    }
+
+    /// The bindings of the frame being pushed over `storage`, the
+    /// [`Self::storage_words`] words that follow its record. The record owns
+    /// that storage and returns it at its pop.
+    ///
+    /// # Safety
+    /// `storage` addresses `storage_words(plan)` writable words.
+    pub(crate) unsafe fn over(plan: FramePlan, storage: *mut u64) -> Self {
+        unsafe {
+            *storage = LocationId::ABSENT.word();
+            std::ptr::write_bytes(storage.add(1), 0, plan.homes as usize * FRAME_HOME_WORDS);
+        }
+        Self {
             optimized: plan.optimized,
             policy: plan.policy,
+            homes: unsafe { storage.add(1) } as usize,
+            home_count: plan.homes,
             ..Self::default()
-        };
-        {
-            let words = home_words(plan.homes as usize)?.checked_add(1)?;
-            let (homes, mark) = HOME_ARENA
-                .try_with(|arena| arena.borrow_mut().take(words))
-                .ok()
-                .flatten()?;
-            unsafe { *homes = LocationId::ABSENT.word() };
-            bindings.homes = unsafe { homes.add(1) } as usize;
-            bindings.home_count = plan.homes;
-            bindings.mark = mark;
         }
-        Some(bindings)
     }
 
     pub(crate) fn homes_base(self) -> usize {
@@ -471,15 +498,6 @@ impl FrameBindings {
     pub(crate) fn set_location(self, location: LocationId) {
         if self.homes != 0 {
             unsafe { *(self.location_address() as *mut u64) = location.word() }
-        }
-    }
-
-    /// Return the homes of an entry whose bindings already left them
-    /// ([`frame_bindings_exit`]). The arena outlives every frame of its
-    /// thread ([`touch_frame_home_tls_lifetime`]), so it is still there.
-    pub(crate) fn exit(self) {
-        if self.homes != 0 {
-            let _ = HOME_ARENA.try_with(|arena| arena.borrow_mut().give_back(self.mark));
         }
     }
 }
@@ -553,33 +571,29 @@ fn alloc_payload(
     Ok(MoltObject::from_ptr(ptr).bits())
 }
 
-/// The payload of the Python frame at `FRAME_STACK[index]`, attaching one on
+/// The payload of the Python frame `index` records above the outermost, attaching one on
 /// first observation. Borrowed: a synchronous frame's entry owns it, a
 /// stateful frame's task does. `Ok(0)`: the entry has no optimized Python
 /// bindings (a runtime context, a module body). No stack borrow is held
 /// across the allocation; an entry that a reentrant finalizer changed keeps
 /// its state and the fresh payload is dropped.
 pub(crate) fn frame_bindings_observe(py: &PyToken<'_>, index: usize) -> Result<u64, ObserveError> {
-    let candidate = FRAME_STACK.with(|stack| {
-        stack
-            .borrow()
-            .get(index)
-            .map(|entry| (entry.code_bits, entry.activation_bits, entry.bindings))
-    });
+    let candidate = records::at(index)
+        .map(records::FrameRecord::entry)
+        .map(|entry| (entry.code_bits, entry.activation_bits, entry.bindings));
     let Some((code_bits, activation_bits, bindings)) = candidate else {
         return Ok(0);
     };
     if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
         let payload = frame_bindings_attach_activation(py, task, true)?;
-        FRAME_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            if let Some(entry) = stack.get_mut(index)
-                && entry.bindings.payload_bits == 0
-            {
-                inc_ref_bits(py, payload);
-                entry.bindings.payload_bits = payload;
-            }
-        });
+        if let Some(record) = records::at(index) {
+            record.update(|entry| {
+                if entry.bindings.payload_bits == 0 {
+                    inc_ref_bits(py, payload);
+                    entry.bindings.payload_bits = payload;
+                }
+            });
+        }
         return Ok(payload);
     }
     if code_bits == 0 || bindings.payload_bits != 0 {
@@ -614,22 +628,20 @@ pub(crate) fn frame_bindings_observe(py: &PyToken<'_>, index: usize) -> Result<u
             LOCATION_POINTER_WORD,
         ) = bindings.location_address() as u64;
     }
-    let installed = FRAME_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        match stack.get_mut(index) {
-            Some(entry)
-                if entry.code_bits == code_bits
-                    && entry.bindings.homes == bindings.homes
-                    && entry.bindings.payload_bits == 0 =>
+    let installed = records::at(index).and_then(|record| {
+        record.update(|entry| {
+            if entry.code_bits == code_bits
+                && entry.bindings.homes == bindings.homes
+                && entry.bindings.payload_bits == 0
             {
                 entry.bindings.payload_bits = payload;
                 Some(payload)
-            }
-            Some(entry) if entry.bindings.homes == bindings.homes => {
+            } else if entry.bindings.homes == bindings.homes {
                 Some(entry.bindings.payload_bits)
+            } else {
+                None
             }
-            _ => None,
-        }
+        })
     });
     match installed {
         Some(bits) if bits == payload => Ok(payload),
@@ -672,15 +684,10 @@ pub(crate) fn frame_bindings_attach_activation(
         task as usize as u64,
     )?;
     let ptr = obj_from_bits(payload).as_ptr().unwrap();
-    let live = FRAME_STACK.with(|stack| {
-        stack
-            .borrow()
-            .iter()
-            .rev()
-            .find(|entry| entry.activation_bits == MoltObject::from_ptr(task).bits())
-            .map(|entry| entry.bindings.location_address())
-            .unwrap_or(0)
-    });
+    let live = records::innermost_first()
+        .map(records::FrameRecord::entry)
+        .find(|entry| entry.activation_bits == MoltObject::from_ptr(task).bits())
+        .map_or(0, |entry| entry.bindings.location_address());
     unsafe {
         *word(ptr, LOCATION_POINTER_WORD) = live as u64;
         *word(ptr, LOCATION_FROZEN_WORD) = crate::object::aux_header::object_frame_location(task);
@@ -888,8 +895,8 @@ pub(crate) fn molt_frame_homes_attached_body(_py: &crate::PyToken<'_>, min_count
             return 0;
         }
         let min_count = usize::try_from(min_count).unwrap_or(usize::MAX);
-        let homes = FRAME_STACK.with(|stack| {
-            stack.borrow().last().and_then(|entry| {
+        let homes = records::top().and_then(|record| {
+            record.read(|entry| {
                 let bindings = entry.bindings;
                 (bindings.homes != 0 && bindings.home_count as usize >= min_count)
                     .then_some(bindings.homes)
@@ -1015,13 +1022,9 @@ pub(crate) fn molt_frame_home_take_attached_body(_py: &crate::PyToken<'_>, home:
 /// copy, so a rebinding or a proxy write is what `super()` sees. `Ok(None)`:
 /// the slot is unbound (`arg[0] deleted`). `Err`: an exception is pending.
 pub(crate) fn frame_argument_zero(py: &PyToken<'_>) -> Result<Option<u64>, ()> {
-    let home = FRAME_STACK.with(|stack| {
-        stack
-            .borrow()
-            .last()
-            .map(|entry| entry.bindings.homes as *mut u64)
-            .filter(|homes| !homes.is_null())
-    });
+    let home = records::top()
+        .map(|record| record.read(|entry| entry.bindings.homes as *mut u64))
+        .filter(|homes| !homes.is_null());
     let Some(pair) = home else {
         return invalid(py, "super(): the executing frame has no argument-zero home");
     };

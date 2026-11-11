@@ -655,11 +655,10 @@ pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errn
 pub use crate::builtins::fcntl::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_globals_bits, frame_stack_pop,
-    frame_stack_push_owned, molt_class_body_builtins, molt_class_frame_set_location,
-    molt_code_set_class_body, molt_frame_class_locals_set, molt_getframe, molt_globals_builtin,
-    molt_locals_builtin, molt_locals_builtin_attached_body, traceback_payload_code_bits,
-    traceback_payload_col, traceback_payload_end_col, traceback_payload_line,
-    traceback_payload_next_bits,
+    molt_class_body_builtins, molt_class_frame_set_location, molt_code_set_class_body,
+    molt_frame_class_locals_set, molt_getframe, molt_globals_builtin, molt_locals_builtin,
+    molt_locals_builtin_attached_body, traceback_payload_code_bits, traceback_payload_col,
+    traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_fnmatch::*;
@@ -844,10 +843,10 @@ pub(crate) use crate::state::names::{NameId, RuntimeNames};
 pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
-    CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, EXPECTED_LIVE_OBJECTS, FRAME_STACK, PARSE_ARENA,
-    REPR_DEPTH, REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, leak_assertion_enabled,
-    process_memory_snapshot, profile_enabled, profile_enabled_unchecked, profile_hit,
-    profile_hit_bytes, profile_hit_bytes_unchecked, profile_hit_unchecked, recursion_guard_enter,
+    CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, EXPECTED_LIVE_OBJECTS, PARSE_ARENA, REPR_DEPTH,
+    REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, leak_assertion_enabled, process_memory_snapshot,
+    profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
+    profile_hit_bytes_unchecked, profile_hit_unchecked, recursion_guard_enter,
     recursion_guard_exit, recursion_limit_get, recursion_limit_set,
 };
 #[allow(unused_imports)]

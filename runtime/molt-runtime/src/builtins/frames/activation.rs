@@ -38,9 +38,9 @@ use crate::state::runtime_state::{
     StatefulLocalSlot, StatefulLocalsLayout, StatefulLocalsLease, release_stateful_locals_layout,
 };
 use crate::{
-    FRAME_STACK, PyToken, TYPE_ID_GENERATOR, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs,
-    dec_ref_bits, exception_pending, inc_ref_bits, is_missing_bits, missing_bits, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, to_i64,
+    PyToken, TYPE_ID_GENERATOR, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs, dec_ref_bits,
+    exception_pending, inc_ref_bits, is_missing_bits, missing_bits, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, to_i64,
 };
 
 /// Edges retained across an allocation that may run finalizers. Released
@@ -924,13 +924,19 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
         for bits in [code_bits, globals_bits, builtins_bits, task] {
             inc_ref_bits(py, bits);
         }
-        super::frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, task);
-        if !super::frame_stack_enter_homes(py, super::FramePlan::default()) {
+        if !super::frame_stack_enter(
+            py,
+            code_bits,
+            globals_bits,
+            builtins_bits,
+            task,
+            super::FramePlan::default(),
+        ) {
             super::frame_stack_pop(py);
             crate::record_memory_error_without_allocation(py);
             return Err(());
         }
-        let depth = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
+        let depth = crate::builtins::frames::records::depth() - 1;
         Ok(Self {
             py,
             depth: Some(depth),
@@ -943,7 +949,7 @@ impl Drop for ActivationFrameScope<'_, '_> {
         let Some(depth) = self.depth else {
             return;
         };
-        let len = FRAME_STACK.with(|stack| stack.borrow().len());
+        let len = crate::builtins::frames::records::depth();
         assert_eq!(len, depth + 1, "activation frame custody is not LIFO");
         super::frame_stack_pop(self.py);
     }
