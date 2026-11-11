@@ -31,6 +31,7 @@ pub(crate) fn op_effects_with_types(
         }
         if let Some(kind) = op.origin {
             let mut effects = crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
+            effects.nothrow = crate::tir::op_kinds_generated::copy_kind_is_nothrow_table(kind);
             // Callback capability is independent from ownership and marker
             // categories. Trace lifecycle returns no owner while acquiring
             // namespaces and releasing frame-held references.
@@ -126,6 +127,34 @@ mod tests {
         opcode_effects_table, opcode_gvn_numbering_role_table,
         opcode_type_refine_operand_type_rule_table,
     };
+
+    #[test]
+    fn location_marker_is_nothrow_without_becoming_pure() {
+        use crate::tir::ops::{AttrDict, Dialect};
+        for (kind, nothrow, may_call_python) in [
+            (molt_ir::OpKind::Line, true, false),
+            (molt_ir::OpKind::BuiltinFunc, false, true),
+        ] {
+            let op = TirOp {
+                origin: Some(kind),
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![],
+                results: vec![],
+                attrs: AttrDict::new(),
+                runtime: None,
+                source_span: None,
+            };
+            let effects = op_effects_with_types(&op, &HashMap::new());
+            assert_eq!(effects.nothrow, nothrow, "{kind:?}");
+            assert_eq!(effects.may_call_python, may_call_python, "{kind:?}");
+            assert!(!effects.effect_free && !effects.consistent, "{kind:?}");
+            assert!(op_has_observable_effect_when_dead_with_types(
+                &op,
+                &HashMap::new()
+            ));
+        }
+    }
 
     #[test]
     fn builtin_reference_lookup_keeps_opaque_effects_without_allocation_facts() {

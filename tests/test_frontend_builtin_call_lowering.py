@@ -3195,8 +3195,12 @@ def test_imported_known_vararg_function_call_uses_live_published_value() -> None
     imported_typevar_loads = {
         op["out"]
         for op in main_ops
-        if op.get("kind") == "module_get_global" and op["args"] == [module, key]
+        if op.get("kind") == "module_get_global"
+        and op["args"][0] == module
+        and const_str.get(op["args"][1]) == const_str[key]
     }
+    # Equal source keys need not share a frontend SSA literal: Rust GVN owns
+    # literal sharing. The live binding still belongs to this exact module.
     assert imported_typevar_loads, (
         "calls must observe the live published module binding"
     )

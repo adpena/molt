@@ -36,7 +36,6 @@ _MODULE_CACHE_NAMES = (
     "_scoped_known_func_kinds",
     "_scoped_known_modules",
     "_scoped_lowering_input_view",
-    "_scoped_pgo_hot_function_names",
     "_scoped_type_facts",
     "_type_facts_cache_payload",
     "_validate_module_func_default_payload",

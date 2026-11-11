@@ -312,6 +312,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         python_first_arg: str | MoltValue | None = None,
         stateful_frame_plan: StatefulFunctionFramePlan | None = None,
         code_slots: CodeSlotDeclaration | None = None,
+        source_node: ast.FunctionDef | None = None,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
@@ -319,7 +320,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                 param_types=param_types or [],
                 return_abi="value",
                 return_hint=None,
-                ops=self._new_tracked_ops(count_function=True),
+                ops=[],
             )
         else:
             self.funcs_map[name]["params"] = params or []
@@ -327,6 +328,13 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             self.funcs_map[name]["return_abi"] = "value"
             self.funcs_map[name].setdefault("return_hint", None)
             self.funcs_map[name]["ops"].clear()
+        # A body origin belongs to this exact source generation. Methods and
+        # ordinary functions share this publication boundary; restarting a
+        # synthetic body must not inherit an earlier source attestation.
+        self.funcs_map[name].pop("gpu_body_origin", None)
+        if source_node is not None:
+            if origin := self._gpu_body_origin_candidates.get(id(source_node)):
+                self.funcs_map[name]["gpu_body_origin"] = dict(origin)
         if stateful_frame_plan is None:
             self.funcs_map[name].pop("stateful_frame_plan", None)
         else:

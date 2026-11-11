@@ -1922,8 +1922,7 @@ it" is bisection archaeology.
 **The fact (two parts):**
 1. **One filter authority `MOLT_DX_DUMP=fn:pass:stage`** parsed once, consumed by
    *both* the Python frontend TIR dump (`src/molt/debug/ir.py`, which already has
-   `--function`/`--pass`/`--stage` filtering and `pre-midend`/`post-midend`
-   stages) *and* the backend TIR/CLIF printers (`molt-tir` printer + the
+   `--function` filtering at one frontend serialization boundary) *and* the backend TIR/CLIF printers (`molt-tir` printer + the
    `MOLT_DUMP_CLIF*` family). A `DxDumpFilter` struct (Rust) +
    `DxDumpFilter` dataclass (Python) sharing one documented grammar; old env vars
    become back-compat aliases (the doc-08 Phase-1c `TirDumpConfig` design,
@@ -2108,7 +2107,8 @@ move-only commit with G1–G6:
 - **5a.** `DxDumpFilter` grammar (`fn:pass:stage`, any field optional) — one Rust
   struct in the `molt-tir` printer + one Python dataclass in
   `src/molt/debug/dx_dump.py`. Reuse `debug/ir.py`'s existing
-  function/pass/stage filtering (it already does `pre-midend`/`post-midend`).
+  function filtering. Pass/stage selection would be a new backend feature;
+  the retired Python optimizer had separate before/after views.
 - **5b.** Route the backend `TIR_DUMP`/`MOLT_TIR_DUMP`/`MOLT_DUMP_IR` +
   `MOLT_DUMP_CLIF*` family through `DxDumpFilter`; old vars = back-compat aliases
   (doc-08 Phase-1c `TirDumpConfig`, generalized to span frontend+backend+CLIF).

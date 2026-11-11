@@ -18,7 +18,6 @@ from molt.cli.models import (
     _FrontendModuleResultTimings,
     _FrontendParallelLayerState,
     _FrontendIntegrationState,
-    _MidendDiagnosticsState,
 )
 from molt.cli.module_source import _ModuleSourceLease
 from molt.frontend import SimpleTIRGenerator
@@ -65,7 +64,6 @@ def test_serial_layer_result_records_cache_hits_as_cache_hits(tmp_path: Path) ->
     error = frontend_execution._consume_frontend_serial_layer_result(
         record_frontend_parallel_worker_timing=record_worker_timing,
         integrate_module_frontend_result=lambda *args, **kwargs: None,
-        accumulate_midend_diagnostics=lambda *args, **kwargs: None,
         fail=lambda *args, **kwargs: None,
         json_output=True,
         layer_state=_FrontendParallelLayerState(),
@@ -108,68 +106,6 @@ def test_serial_layer_result_records_cache_hits_as_cache_hits(tmp_path: Path) ->
     ]
 
 
-def test_module_result_consumer_keeps_canonical_records_and_diagnostic_names(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "m.py"
-    path.write_bytes(b"VALUE = 1\n")
-    lease = _ModuleSourceLease.path_backed(path)
-    generator = SimpleTIRGenerator(module_name="m")
-    generator.visit(ast.parse(path.read_bytes()))
-    document = generator.to_json(scope="module")
-    result = frontend_worker._module_frontend_payload(
-        generator,
-        document,
-        source_sha256=lease.source_sha256,
-        visit_s=0.0,
-        lower_s=0.0,
-        total_s=0.0,
-    )
-    # Diagnostics retain the frontend's internal function identity until their
-    # existing receiver projects a module-qualified display name.
-    result["midend_policy_outcomes_by_function"] = {"molt_main": {"degrade_events": []}}
-    result["midend_pass_stats_by_function"] = {"molt_main": {"fold": {"visited": 1}}}
-    state = _FrontendIntegrationState(functions=[], known_classes={})
-    diagnostics = _MidendDiagnosticsState(
-        policy_outcomes_by_function={}, pass_stats_by_function={}
-    )
-    error = frontend_execution._consume_frontend_module_result(
-        "m",
-        path,
-        result,
-        source_lease=lease,
-        record_frontend_timing=None,
-        integrate_module_frontend_result=partial(
-            frontend_integration._integrate_module_frontend_result_with_state, state
-        ),
-        accumulate_midend_diagnostics=partial(
-            frontend_integration._accumulate_midend_diagnostics_with_state, diagnostics
-        ),
-        fail=lambda *args, **kwargs: pytest.fail(
-            f"module consumption failed: {args!r}"
-        ),
-        json_output=True,
-    )
-    assert error is None
-    for borrowed, integrated in zip(
-        document["functions"], state.functions, strict=True
-    ):
-        assert integrated is borrowed
-        assert integrated["ops"] is borrowed["ops"]
-    for name, row in document["function_metadata"].items():
-        assert state.function_metadata[name] is row
-    symbol = SimpleTIRGenerator.module_init_symbol("m")
-    assert symbol in state.global_code_ids and "molt_main" not in state.global_code_ids
-    assert set(diagnostics.policy_outcomes_by_function) == {f"m::{symbol}"}
-    coverage = diagnostics.policy_outcomes_by_function[f"m::{symbol}"]["coverage"]
-    assert coverage["status"] == "skipped"
-    assert coverage["input_ops"] is None
-    assert coverage["reasons"] == ["missing_outcome"]
-    assert diagnostics.pass_stats_by_function == {
-        f"m::{symbol}": {"fold": {"visited": 1}}
-    }
-
-
 @pytest.mark.parametrize("defect", ["missing_stamp", "wrong_stamp", "wrong_path"])
 def test_result_generation_refusal_precedes_integration(
     tmp_path: Path, defect: str
@@ -205,7 +141,6 @@ def test_result_generation_refusal_precedes_integration(
         integrate_module_frontend_result=lambda *args, **kwargs: integrated.append(
             args
         ),
-        accumulate_midend_diagnostics=lambda *args, **kwargs: diagnosed.append(args),
         fail=fail,
         json_output=True,
     )
@@ -292,7 +227,6 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
         integrate_module_frontend_result=partial(
             frontend_integration._integrate_module_frontend_result_with_state, state
         ),
-        accumulate_midend_diagnostics=lambda *_a, **_k: None,
         fail=lambda *args, **kwargs: pytest.fail(f"seed consumption failed: {args!r}"),
         json_output=True,
     )
@@ -347,3 +281,47 @@ def test_optional_parallel_persistence_refusal_returns_empty_seed_tuple(
     )
     assert result == ()
     assert isinstance(result, tuple)
+
+
+def test_module_result_consumer_keeps_canonical_records(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "m.py"
+    path.write_bytes(b"VALUE = 1\n")
+    lease = _ModuleSourceLease.path_backed(path)
+    generator = SimpleTIRGenerator(module_name="m")
+    generator.visit(ast.parse(path.read_bytes()))
+    document = generator.to_json(scope="module")
+    result = frontend_worker._module_frontend_payload(
+        generator,
+        document,
+        source_sha256=lease.source_sha256,
+        visit_s=0.0,
+        lower_s=0.0,
+        total_s=0.0,
+    )
+    state = _FrontendIntegrationState(functions=[], known_classes={})
+    error = frontend_execution._consume_frontend_module_result(
+        "m",
+        path,
+        result,
+        source_lease=lease,
+        record_frontend_timing=None,
+        integrate_module_frontend_result=partial(
+            frontend_integration._integrate_module_frontend_result_with_state, state
+        ),
+        fail=lambda *args, **kwargs: pytest.fail(
+            f"module consumption failed: {args!r}"
+        ),
+        json_output=True,
+    )
+    assert error is None
+    for borrowed, integrated in zip(
+        document["functions"], state.functions, strict=True
+    ):
+        assert integrated is borrowed
+        assert integrated["ops"] is borrowed["ops"]
+    for name, row in document["function_metadata"].items():
+        assert state.function_metadata[name] is row
+    symbol = SimpleTIRGenerator.module_init_symbol("m")
+    assert symbol in state.global_code_ids and "molt_main" not in state.global_code_ids

@@ -1073,11 +1073,6 @@ nonzero result; an existing build failure keeps its primary error and code.
   - `--diagnostics-file <path>`
   - Example:
     `uv run python3 -m molt.cli build --build-profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
-  - Midend payloads include tiering telemetry (`tier_base_summary`,
-    `promoted_functions`, `promotion_source_summary`,
-    `promotion_hotspots_top`) for PGO-guided tier promotion audits.
-  - Disable hot-function tier promotion explicitly with
-    `MOLT_MIDEND_HOT_TIER_PROMOTION=0` when doing controlled A/B pass studies.
 - Queue lanes (daemon warm queue, opt-in):
   - `--cases dev_queue_daemon_on dev_queue_daemon_off`
   - each queue case performs warmup runs before the measured attempt

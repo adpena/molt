@@ -168,7 +168,7 @@ def test_frontend_serialization_rejects_invalid_publication_marker(
         )
     ]
     with pytest.raises(ValueError, match="publication boundary"):
-        generator.to_json(scope="module", midend_stage="pre-midend")
+        generator.to_json(scope="module")
 
 
 @pytest.mark.parametrize("marker_count", [0, 1, 2])
@@ -192,7 +192,7 @@ def test_frontend_serialization_rejects_missing_or_orphan_or_duplicate_publicati
         for _ in range(marker_count)
     ]
     with pytest.raises(ValueError, match="publication boundary"):
-        generator.to_json(scope="module", midend_stage="pre-midend")
+        generator.to_json(scope="module")
 
 
 @pytest.mark.parametrize(

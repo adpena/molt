@@ -27,7 +27,6 @@ _QUINT_DIR = _REPO_ROOT / "formal" / "quint"
 _MODELS: dict[str, str] = {
     "molt_build_determinism": "Inv",
     "molt_runtime_determinism": "Inv",
-    "molt_midend_pipeline": "inv",
     "molt_calling_convention": "Inv",
     # molt_cross_version excluded: has a known Quint parse error (QNT404)
     "molt_luau_transpiler": "Inv",

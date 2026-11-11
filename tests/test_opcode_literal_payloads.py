@@ -39,7 +39,7 @@ def test_literal_payload_refuses_stale_and_noncanonical_carriers(payload):
         integer_literal_payload(payload)
 
 
-def test_arbitrary_literals_and_optimizer_facts_do_not_use_decimal_conversion():
+def test_arbitrary_literals_do_not_use_decimal_conversion() -> None:
     previous = sys.get_int_max_str_digits()
     try:
         sys.set_int_max_str_digits(640)
@@ -54,13 +54,6 @@ def test_arbitrary_literals_and_optimizer_facts_do_not_use_decimal_conversion():
             assert context.json_ops == [
                 {"kind": "const_bigint", "bytes": list(payload), "out": "big"}
             ]
-            from molt.frontend.lowering.midend_dataflow import primitive_const_values
-
-            assert primitive_const_values({"big": op}) == {"big": signed}
-            assert gen._const_cache_key_for_op(op) == (
-                "CONST_BIGINT",
-                ("bytes", payload),
-            )
         tree = ast.parse("0x1" + "0" * 5000, mode="eval")
         before = tree.body.value
         key = literal_ast_dump(tree)

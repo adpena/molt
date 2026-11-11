@@ -166,23 +166,6 @@ def _build_diagnostics() -> dict[str, object]:
                 }
             ],
         },
-        "midend": {
-            "requested_profile": "dev",
-            "effective_profiles": ["dev"],
-            "function_count": 1,
-            "degraded_functions": 0,
-            "promoted_functions": 0,
-            "policy_config": {"tier": "dev"},
-            "pass_wall_time_ranked": [{"pass": "type_refine", "ms_total": 2.0}],
-            "pass_hotspots_top": [
-                {
-                    "module": "app",
-                    "function": "main",
-                    "pass": "type_refine",
-                    "ms_total": 2.0,
-                }
-            ],
-        },
     }
 
 

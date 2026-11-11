@@ -384,11 +384,8 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             def start_chunk() -> str:
                 symbol = self._new_module_chunk_symbol()
                 chunk_ops = self.funcs_map[symbol]["ops"]
-                old_ops = self.funcs_map["molt_main"]["ops"]
+
                 self.funcs_map["molt_main"]["ops"] = chunk_ops
-                self._adjust_module_pressure_counts(
-                    ops_delta=len(chunk_ops) - len(old_ops)
-                )
                 self.current_ops = chunk_ops
                 self.function_exception_label = self.next_label()
                 self.module_obj = module_param
@@ -399,11 +396,8 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 self._emit_function_exception_handler(
                     inherited_execution_context=True,
                 )
-                old_ops = self.funcs_map["molt_main"]["ops"]
+
                 self.funcs_map["molt_main"]["ops"] = wrapper_ops
-                self._adjust_module_pressure_counts(
-                    ops_delta=len(wrapper_ops) - len(old_ops)
-                )
                 call_out = MoltValue(self.next_var(), type_hint="Any")
                 emit_wrapper(
                     MoltOp(
@@ -443,11 +437,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             if current_chunk is not None:
                 flush_chunk(current_chunk)
 
-            old_ops = self.funcs_map["molt_main"]["ops"]
             self.funcs_map["molt_main"]["ops"] = wrapper_ops
-            self._adjust_module_pressure_counts(
-                ops_delta=len(wrapper_ops) - len(old_ops)
-            )
             self.current_ops = wrapper_ops
             self.function_exception_label = wrapper_exception_label
             self.module_obj = wrapper_module_obj

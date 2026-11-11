@@ -189,7 +189,6 @@ def _compile_env(**forced: str) -> ProcessEnvironment:
     """Compile-step environment: ambient selections win over compile defaults."""
     env = ProcessEnvironmentBuilder(_base_env())
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     env.update(forced)
     return ProcessEnvironment(env)
 

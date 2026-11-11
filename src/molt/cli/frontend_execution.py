@@ -21,21 +21,20 @@ from typing import (
 
 from molt import compiler_process
 from molt import input_report as _input_report
-from molt.frontend import ClassId, ClassInfo, SimpleTIRGenerator
+from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import frontend_integration as _frontend_integration
 from molt.cli import frontend_worker as _frontend_worker
-from molt.cli.build_request import BuildProfile, TypeHintPolicy
+from molt.cli.build_request import TypeHintPolicy
 from molt.cli.models import (
     _FrontendIntegrationState,
     _FrontendLayerPlan,
     _FrontendModuleResultTimings,
     _FrontendParallelConfig,
     _FrontendParallelLayerState,
-    _MidendDiagnosticsState,
     _ModuleGraphMetadata,
     _PreparedFrontendRunTicket,
     _ScopedLoweringInputs,
@@ -96,11 +95,8 @@ class _FrontendLayerExecutionContext:
     module_deps: dict[str, set[str]]
     source_modules: Collection[str]
     module_chunk_max_ops: int
-    optimization_profile: str
-    pgo_hot_function_names: Collection[str]
     known_modules_sorted: tuple[str, ...]
     stdlib_allowlist_sorted: tuple[str, ...]
-    pgo_hot_function_names_sorted: tuple[str, ...]
     module_dep_closures: dict[str, frozenset[str]]
     module_graph_metadata: "_ModuleGraphMetadata"
     module_chunking: bool
@@ -121,7 +117,6 @@ class _FrontendLayerRuntimeHooks:
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]]
     record_frontend_timing: Callable[..., None]
     integrate_module_frontend_result: Callable[..., str | None]
-    accumulate_midend_diagnostics: Callable[..., None]
     fail: Callable[..., _CliFailure]
     json_output: bool
     run_serial_frontend_lower: Callable[
@@ -153,11 +148,8 @@ def _prepare_frontend_execution(
     native_python_exports: Collection[str] = (),
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
-    optimization_profile: BuildProfile,
-    pgo_hot_function_names: set[str],
     known_modules_sorted: tuple[str, ...],
     stdlib_allowlist_sorted: tuple[str, ...],
-    pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
     module_graph_metadata: _ModuleGraphMetadata,
     module_chunking: bool,
@@ -172,8 +164,6 @@ def _prepare_frontend_execution(
     warnings: list[str],
     frontend_parallel_details: dict[str, Any],
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
     target_python: TargetPythonVersion,
     target_sys_platform: str | None,
     scc_serial_modules: frozenset[str] = frozenset(),
@@ -201,11 +191,8 @@ def _prepare_frontend_execution(
         module_deps=module_deps,
         source_modules=source_modules,
         module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=optimization_profile,
-        pgo_hot_function_names=pgo_hot_function_names,
         known_modules_sorted=known_modules_sorted,
         stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         module_dep_closures=module_dep_closures,
         module_graph_metadata=module_graph_metadata,
         module_chunking=module_chunking,
@@ -236,11 +223,8 @@ def _prepare_frontend_execution(
         source_modules=source_modules,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=optimization_profile,
-        pgo_hot_function_names=pgo_hot_function_names,
         known_modules_sorted=known_modules_sorted,
         stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         module_dep_closures=module_dep_closures,
         scoped_lowering_inputs=scoped_lowering_inputs,
         module_graph_metadata=module_graph_metadata,
@@ -257,10 +241,6 @@ def _prepare_frontend_execution(
     integration_state = _FrontendIntegrationState(
         functions=[],
         known_classes=known_classes,
-    )
-    midend_diagnostics_state = _MidendDiagnosticsState(
-        policy_outcomes_by_function=midend_policy_outcomes_by_function,
-        pass_stats_by_function=midend_pass_stats_by_function,
     )
 
     def _run_serial_frontend_lower(
@@ -286,10 +266,6 @@ def _prepare_frontend_execution(
         integrate_module_frontend_result=functools.partial(
             _frontend_integration._integrate_module_frontend_result_with_state,
             integration_state,
-        ),
-        accumulate_midend_diagnostics=functools.partial(
-            _frontend_integration._accumulate_midend_diagnostics_with_state,
-            midend_diagnostics_state,
         ),
         fail=fail,
         json_output=json_output,
@@ -425,7 +401,6 @@ def _run_frontend_serial_disabled_layers(
         run_serial_frontend_lower=runtime_hooks.run_serial_frontend_lower,
         record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
         integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,
-        accumulate_midend_diagnostics=runtime_hooks.accumulate_midend_diagnostics,
         fail=runtime_hooks.fail,
         json_output=runtime_hooks.json_output,
         layer_state=serial_layer_state,
@@ -467,11 +442,8 @@ def _run_frontend_parallel_layer_batches(
     native_python_exports: Collection[str] = (),
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
     known_modules_sorted: tuple[str, ...],
     stdlib_allowlist_sorted: tuple[str, ...],
-    pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
     module_graph_metadata: _ModuleGraphMetadata,
     module_chunking: bool,
@@ -517,11 +489,8 @@ def _run_frontend_parallel_layer_batches(
                 native_python_exports=native_python_exports,
                 module_deps=module_deps,
                 module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
                 known_modules_sorted=known_modules_sorted,
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
                 module_graph_metadata=module_graph_metadata,
                 module_chunking=module_chunking,
@@ -665,7 +634,6 @@ def _consume_frontend_module_result(
     result_timings: _FrontendModuleResultTimings | None = None,
     record_frontend_timing: Callable[..., None] | None,
     integrate_module_frontend_result: Callable[..., str | None],
-    accumulate_midend_diagnostics: Callable[..., None],
     fail: Callable[..., _CliFailure],
     json_output: bool,
 ) -> _CliFailure | None:
@@ -692,30 +660,6 @@ def _consume_frontend_module_result(
     )
     if integration_error is not None:
         return fail(integration_error, json_output, command="build")
-    outcomes = dict(result.get("midend_policy_outcomes_by_function", {}))
-    # The integrated function inventory is independent of optimizer outcomes.
-    # Old cached modules must not disappear from the coverage denominator.
-    module_init = SimpleTIRGenerator.module_init_symbol(module_name)
-    for function in result["functions"]:
-        symbol = function["name"]
-        name = "molt_main" if symbol == module_init else symbol
-        outcome = dict(outcomes.get(name, {}))
-        if "coverage" not in outcome:
-            outcome["coverage"] = {
-                "status": "skipped",
-                "input_ops": None,
-                "output_ops": len(function["ops"]),
-                "reasons": ["missing_outcome"],
-            }
-        outcomes[name] = outcome
-    accumulate_midend_diagnostics(
-        module_name,
-        policy_outcomes_by_func=outcomes,
-        pass_stats_by_func=cast(
-            dict[str, dict[str, dict[str, Any]]],
-            result.get("midend_pass_stats_by_function", {}),
-        ),
-    )
     return None
 
 
@@ -725,7 +669,6 @@ def _consume_frontend_parallel_layer_result(
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
     record_frontend_timing: Callable[..., None],
     integrate_module_frontend_result: Callable[..., str | None],
-    accumulate_midend_diagnostics: Callable[..., None],
     fail: Callable[..., _CliFailure],
     json_output: bool,
     project_root: Path | None,
@@ -765,7 +708,6 @@ def _consume_frontend_parallel_layer_result(
         result_timings=result_timings,
         record_frontend_timing=record_frontend_timing,
         integrate_module_frontend_result=integrate_module_frontend_result,
-        accumulate_midend_diagnostics=accumulate_midend_diagnostics,
         fail=fail,
         json_output=json_output,
     )
@@ -775,7 +717,6 @@ def _consume_frontend_serial_layer_result(
     *,
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
     integrate_module_frontend_result: Callable[..., str | None],
-    accumulate_midend_diagnostics: Callable[..., None],
     fail: Callable[..., _CliFailure],
     json_output: bool,
     layer_state: _FrontendParallelLayerState,
@@ -806,7 +747,6 @@ def _consume_frontend_serial_layer_result(
         result_timings=result_timings,
         record_frontend_timing=None,
         integrate_module_frontend_result=integrate_module_frontend_result,
-        accumulate_midend_diagnostics=accumulate_midend_diagnostics,
         fail=fail,
         json_output=json_output,
     )
@@ -827,7 +767,6 @@ def _run_frontend_serial_layer_modules(
     ],
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
     integrate_module_frontend_result: Callable[..., str | None],
-    accumulate_midend_diagnostics: Callable[..., None],
     fail: Callable[..., _CliFailure],
     json_output: bool,
     layer_state: _FrontendParallelLayerState,
@@ -847,7 +786,6 @@ def _run_frontend_serial_layer_modules(
         consume_error = _consume_frontend_serial_layer_result(
             record_frontend_parallel_worker_timing=record_frontend_parallel_worker_timing,
             integrate_module_frontend_result=integrate_module_frontend_result,
-            accumulate_midend_diagnostics=accumulate_midend_diagnostics,
             fail=fail,
             json_output=json_output,
             layer_state=layer_state,
@@ -911,11 +849,8 @@ def _run_frontend_layer(
                 native_python_exports=execution_context.native_python_exports,
                 module_deps=execution_context.module_deps,
                 module_chunk_max_ops=execution_context.module_chunk_max_ops,
-                optimization_profile=execution_context.optimization_profile,
-                pgo_hot_function_names=execution_context.pgo_hot_function_names,
                 known_modules_sorted=execution_context.known_modules_sorted,
                 stdlib_allowlist_sorted=execution_context.stdlib_allowlist_sorted,
-                pgo_hot_function_names_sorted=execution_context.pgo_hot_function_names_sorted,
                 module_dep_closures=execution_context.module_dep_closures,
                 module_graph_metadata=execution_context.module_graph_metadata,
                 module_chunking=execution_context.module_chunking,
@@ -970,7 +905,6 @@ def _run_frontend_layer(
                 record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
                 record_frontend_timing=runtime_hooks.record_frontend_timing,
                 integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,
-                accumulate_midend_diagnostics=runtime_hooks.accumulate_midend_diagnostics,
                 fail=runtime_hooks.fail,
                 json_output=runtime_hooks.json_output,
                 project_root=execution_context.project_root,
@@ -993,7 +927,6 @@ def _run_frontend_layer(
             run_serial_frontend_lower=runtime_hooks.run_serial_frontend_lower,
             record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
             integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,
-            accumulate_midend_diagnostics=runtime_hooks.accumulate_midend_diagnostics,
             fail=runtime_hooks.fail,
             json_output=runtime_hooks.json_output,
             layer_state=layer_state,

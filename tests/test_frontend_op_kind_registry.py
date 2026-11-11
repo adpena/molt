@@ -85,7 +85,6 @@ def test_serializer_uses_registry_wire_names_in_json_and_messagepack(kind) -> No
                 result=MoltValue("out"),
             )
         ],
-        run_midend=False,
     )
     assert ops[0]["kind"] == FRONTEND_WIRE_KIND[kind]
     assert {op["kind"] for op in ops} <= SIMPLEIR_REGISTERED_KINDS
@@ -258,12 +257,13 @@ def test_census_records_every_identifier_literal_as_a_mention(
     assert not census.produced
 
 
-@pytest.mark.parametrize("run_midend", [False, True])
 @pytest.mark.parametrize("kind", ["CONST_MISSING", "NEW_UNREGISTERED_OP"])
 @pytest.mark.parametrize("has_result", [False, True])
 def test_serialization_rejects_unknown_kinds_before_optimization(
-    run_midend: bool, kind: str, has_result: bool
+    kind: str, has_result: bool
 ) -> None:
+    # Deliberately invalid spellings are outside the closed FrontendOpKind
+    # universe; this boundary test must supply the raw, untrusted string.
     operation = MoltOp(
         kind=kind,
         args=[],
@@ -271,7 +271,7 @@ def test_serialization_rejects_unknown_kinds_before_optimization(
     )
     with pytest.raises(ValueError) as error:
         SimpleTIRGenerator().map_ops_to_json(
-            [operation], function_name="broken_function", run_midend=run_midend
+            [operation], function_name="broken_function"
         )
     assert kind in str(error.value)
     assert "broken_function" in str(error.value)
@@ -295,7 +295,6 @@ def test_registered_kind_cannot_be_dropped_by_missing_serializer(
         generator.map_ops_to_json(
             [MoltOp(kind="CONST", args=[1], result=MoltValue("result"))],
             function_name="broken_function",
-            run_midend=False,
         )
 
 
@@ -315,25 +314,7 @@ def test_serializer_cannot_emit_unregistered_wire_kind(
         generator.map_ops_to_json(
             [MoltOp(kind="CONST", args=[1], result=MoltValue("result"))],
             function_name="broken_function",
-            run_midend=False,
         )
-
-
-def test_midend_cannot_introduce_unregistered_frontend_kind(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    generator = SimpleTIRGenerator()
-    monkeypatch.setattr(
-        generator,
-        "_run_ir_midend_passes",
-        lambda operations: [
-            MoltOp(kind="MIDEND_TYPO", args=[], result=MoltValue("none"))
-        ],
-    )
-    with pytest.raises(
-        ValueError, match="broken_function.*unregistered frontend.*MIDEND_TYPO"
-    ):
-        generator.map_ops_to_json([], function_name="broken_function")
 
 
 @pytest.mark.parametrize("preserved", [["cast", "cast"], [None], "cast"])

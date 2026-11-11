@@ -46,7 +46,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
+from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS  # noqa: E402
 
 
 # Parsing helpers
@@ -154,7 +154,7 @@ def lean_syntax_text() -> str:
 
 @pytest.fixture(scope="module")
 def python_effect_ops() -> set[str]:
-    return set(FRONTEND_EFFECT_CLASS)
+    return set(FRONTEND_REGISTERED_KINDS)
 
 
 def _lean_binop_python_name(name: str) -> str | None:

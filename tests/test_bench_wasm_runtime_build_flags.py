@@ -28,7 +28,6 @@ def test_wasm_benchmark_preserves_one_admitted_build_attempt(
     env = {
         "CARGO_TARGET_DIR": str(tmp_path / "target"),
         "MOLT_BUILD_STATE_DIR": str(tmp_path / "control"),
-        "MOLT_MIDEND_MAX_ROUNDS": "12",
     }
     original_env = dict(env)
     output = tmp_path / "output.wasm"

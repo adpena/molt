@@ -403,7 +403,6 @@ class _ScopedLoweringInputs:
     native_callable_exports_by_module: dict[str, dict[str, dict[str, Any]]]
     native_python_exports_by_module: dict[str, tuple[str, ...]]
     native_support_function_roots_by_module: dict[str, tuple[str, ...]]
-    pgo_hot_function_names_by_module: dict[str, tuple[str, ...]]
     type_facts_by_module: dict[str, TypeFacts | None]
 
 
@@ -412,7 +411,6 @@ class _ScopedLoweringInputView:
     known_modules: tuple[str, ...]
     known_func_defaults: dict[str, dict[str, Any]]
     known_func_kinds: dict[str, dict[str, str]]
-    pgo_hot_function_names: tuple[str, ...]
     type_facts: TypeFacts | None
     direct_call_modules: tuple[str, ...] = ()
     native_callable_exports: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -427,8 +425,6 @@ class _ScopedLoweringInputView:
     )
     native_python_exports_payload: list[str] = field(default_factory=list)
     native_python_exports_set: frozenset[str] = field(default_factory=frozenset)
-    pgo_hot_function_names_payload: list[str] = field(default_factory=list)
-    pgo_hot_function_names_set: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         if not self.known_modules_payload and self.known_modules:
@@ -470,18 +466,6 @@ class _ScopedLoweringInputView:
             )
         if not isinstance(self.body_selection, ModuleBodySelection):
             raise ValueError("lowering requires a module body selection")
-        if not self.pgo_hot_function_names_payload and self.pgo_hot_function_names:
-            object.__setattr__(
-                self,
-                "pgo_hot_function_names_payload",
-                list(self.pgo_hot_function_names),
-            )
-        if not self.pgo_hot_function_names_set and self.pgo_hot_function_names:
-            object.__setattr__(
-                self,
-                "pgo_hot_function_names_set",
-                frozenset(self.pgo_hot_function_names),
-            )
 
 
 @dataclass(frozen=True)
@@ -644,11 +628,8 @@ class _SerialFrontendLoweringContext:
     source_modules: Collection[str]
     module_chunking: bool
     module_chunk_max_ops: int
-    optimization_profile: str
-    pgo_hot_function_names: Collection[str]
     known_modules_sorted: tuple[str, ...]
     stdlib_allowlist_sorted: tuple[str, ...]
-    pgo_hot_function_names_sorted: tuple[str, ...]
     module_dep_closures: dict[str, frozenset[str]]
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
     module_graph_metadata: "_ModuleGraphMetadata"
@@ -676,12 +657,6 @@ class _FrontendIntegrationState:
     # module whose stamp or layout guard names each symbol.
     class_definition_owners: dict[str, str] = field(default_factory=dict)
     class_definition_references: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
-class _MidendDiagnosticsState:
-    policy_outcomes_by_function: dict[str, dict[str, Any]]
-    pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
 
 
 @dataclass
@@ -762,8 +737,6 @@ class _BuildDiagnosticsContext:
     allocation_diagnostics_enabled: bool
     frontend_parallel_details: Mapping[str, Any]
     profile: str
-    midend_policy_outcomes_by_function: Mapping[str, dict[str, Any]]
-    midend_pass_stats_by_function: Mapping[str, dict[str, dict[str, Any]]]
     backend_daemon_health: Mapping[str, Any] | None
     backend_daemon_cached: bool | None
     backend_daemon_cache_tier: str | None
@@ -1889,8 +1862,6 @@ class _PreparedBuildConfig:
     pgo_profile_path: Path | None
     runtime_feedback_summary: RuntimeFeedbackSummary | None
     runtime_feedback_path: Path | None
-    pgo_hot_function_names: set[str]
-    pgo_hot_function_names_sorted: tuple[str, ...]
     pgo_profile_payload: dict[str, Any] | None
     runtime_feedback_payload: dict[str, Any] | None
     cargo_timeout: float | None
@@ -1930,8 +1901,6 @@ class _PreparedBuildPreamble:
     frontend_timing_enabled: bool
     frontend_timing_threshold: float
     frontend_module_timings: list[dict[str, Any]]
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]]
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
     frontend_parallel_details: dict[str, Any]
     diagnostics_start: float
     phase_starts: dict[str, float]

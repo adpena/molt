@@ -74,7 +74,7 @@ Every emitted module location is a projection of that path: `__file__`,
 fact-graph source sites), deferred compile warnings, the module registry origin
 (`runpy`), and the traceback source registry in the native entry stub. That
 registry lists only files that some module reports as its own path. Stdlib
-type-hint trust and the stdlib midend policy select on the logical stdlib
+type-hint trust selects on the logical stdlib
 prefix, not on a path spelling.
 
 How other toolchains solve it:

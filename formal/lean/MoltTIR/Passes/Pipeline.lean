@@ -5,8 +5,8 @@
   end-to-end correctness theorem: the composed transformation preserves
   expression semantics.
 
-  Corresponds to the midend pass pipeline in Molt's compiler
-  (SimpleTIRGenerator._run_ir_midend_passes).
+  Models an abstract TIR transform. Rust owns production optimization in
+  runtime/molt-passes/src/tir/passes; source correspondence remains unproved.
 -/
 import MoltTIR.Passes.ConstFoldCorrect
 import MoltTIR.Passes.SCCPCorrect

@@ -338,7 +338,6 @@ def test_native_object_publication_is_one_admitted_transaction(
     preamble = NS(
         diagnostics_enabled=False,
         phase_starts={},
-        midend_policy_outcomes_by_function={},
         warnings=[],
         backend_daemon_config_digest=None,
         backend_daemon_cached=None,
@@ -352,8 +351,6 @@ def test_native_object_publication_is_one_admitted_transaction(
         pgo_profile_path=None,
         runtime_feedback_summary=None,
         runtime_feedback_path=None,
-        pgo_hot_function_names=set(),
-        pgo_hot_function_names_sorted=(),
         pgo_profile_payload=None,
         runtime_feedback_payload=None,
         cargo_timeout=None,

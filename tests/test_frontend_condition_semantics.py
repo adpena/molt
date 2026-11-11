@@ -1,6 +1,6 @@
 """Execute the frontend's structured expression IR against Python callbacks.
 
-This intentionally stops before the midend/backends: it makes truth-observation
+This intentionally stops before the TIR backends: it makes truth-observation
 regressions a seconds-scale test, not a substitute for native/WASM differential
 execution of the sibling corpus.
 """

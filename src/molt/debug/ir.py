@@ -6,12 +6,9 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from molt.frontend import SimpleTIRGenerator
-
-
-VALID_STAGES = ("pre-midend", "post-midend", "all")
 
 
 def _ops_fingerprint(ops_json: list[dict[str, Any]]) -> str:
@@ -81,24 +78,15 @@ def _compile_snapshot(
     source: str,
     *,
     source_path: Path | None,
-    midend_stage: Literal["pre-midend", "post-midend"],
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     filename = str(source_path) if source_path is not None else "<stdin>"
     tree = ast.parse(source, filename=filename)
     generator = SimpleTIRGenerator(source_path=_reported_source_path(source_path))
     generator.visit(tree)
-    ir_json = generator.to_json(midend_stage=midend_stage)
-    return (
-        list(ir_json.get("functions", [])),
-        dict(generator.midend_pass_stats_by_function),
-    )
+    return list(generator.to_json().get("functions", []))
 
 
-def _normalize_function_entry(
-    function: dict[str, Any],
-    *,
-    pass_stats: dict[str, Any] | None,
-) -> dict[str, Any]:
+def _normalize_function_entry(function: dict[str, Any]) -> dict[str, Any]:
     ops = list(function.get("ops", []))
     normalized: dict[str, Any] = {
         "name": function.get("name", "?"),
@@ -109,10 +97,6 @@ def _normalize_function_entry(
     source_file = function.get("source_file")
     if isinstance(source_file, str) and source_file:
         normalized["source_file"] = source_file
-    if pass_stats:
-        normalized["pass_stats"] = {
-            key: value for key, value in sorted(pass_stats.items())
-        }
     return normalized
 
 
@@ -120,96 +104,39 @@ def _filter_functions(
     functions: list[dict[str, Any]],
     *,
     function_name: str | None,
-    pass_name: str | None,
 ) -> list[dict[str, Any]]:
-    filtered: list[dict[str, Any]] = []
-    for function in functions:
-        if function_name is not None:
-            raw_name = str(function.get("name", ""))
-            normalized_name = raw_name.split("__")[-1]
-            if raw_name != function_name and normalized_name != function_name:
-                continue
-        if pass_name is not None:
-            pass_stats = function.get("pass_stats")
-            if not isinstance(pass_stats, dict) or pass_name not in pass_stats:
-                continue
-        filtered.append(function)
-    return filtered
+    if function_name is None:
+        return functions
+    return [
+        function
+        for function in functions
+        if str(function.get("name", "")) == function_name
+        or _display_function_name(str(function.get("name", ""))) == function_name
+    ]
 
 
 def capture_ir_snapshots(
     source: str,
     *,
     source_path: Path | None = None,
-    stage: str = "all",
     function_name: str | None = None,
     module_name: str | None = None,
-    pass_name: str | None = None,
 ) -> dict[str, Any]:
-    if stage not in VALID_STAGES:
-        raise ValueError(f"unsupported IR dump stage: {stage}")
-    if not _module_matches(module_name, source_path):
-        snapshots: list[dict[str, Any]] = []
-        return {
-            "source": str(source_path) if source_path is not None else "<stdin>",
-            "requested_stage": stage,
-            "timing_ms": 0.0,
-            "snapshots": snapshots,
-            "error": None,
-        }
-
     snapshots: list[dict[str, Any]] = []
     start = time.perf_counter()
-    if stage in {"pre-midend", "all"}:
-        pre_functions, pre_pass_stats = _compile_snapshot(
-            source,
-            source_path=source_path,
-            midend_stage="pre-midend",
-        )
-        normalized_functions = [
-            _normalize_function_entry(
-                function,
-                pass_stats=pre_pass_stats.get(str(function.get("name"))),
-            )
-            for function in pre_functions
-        ]
+    if _module_matches(module_name, source_path):
+        functions = _compile_snapshot(source, source_path=source_path)
         snapshots.append(
             {
-                "stage": "pre-midend",
+                "stage": "frontend",
                 "functions": _filter_functions(
-                    normalized_functions,
+                    [_normalize_function_entry(function) for function in functions],
                     function_name=function_name,
-                    pass_name=pass_name,
                 ),
             }
         )
-    if stage in {"post-midend", "all"}:
-        post_functions, post_pass_stats = _compile_snapshot(
-            source,
-            source_path=source_path,
-            midend_stage="post-midend",
-        )
-        normalized_functions = [
-            _normalize_function_entry(
-                function,
-                pass_stats=post_pass_stats.get(str(function.get("name"))),
-            )
-            for function in post_functions
-        ]
-        snapshots.append(
-            {
-                "stage": "post-midend",
-                "functions": _filter_functions(
-                    normalized_functions,
-                    function_name=function_name,
-                    pass_name=pass_name,
-                ),
-            }
-        )
-
     return {
         "source": str(source_path) if source_path is not None else "<stdin>",
-        "requested_stage": stage,
         "timing_ms": round((time.perf_counter() - start) * 1000.0, 3),
         "snapshots": snapshots,
         "error": None,
@@ -245,19 +172,8 @@ def render_ir_text(result: dict[str, Any]) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Dump Molt IR snapshots.")
     parser.add_argument("source", help="Python source file to compile")
-    parser.add_argument(
-        "--stage",
-        choices=sorted(VALID_STAGES),
-        default="all",
-        help="Which compilation stage(s) to dump.",
-    )
     parser.add_argument("--function", help="Only emit the selected function.")
     parser.add_argument("--module", help="Only emit the selected module.")
-    parser.add_argument(
-        "--pass",
-        dest="pass_name",
-        help="Only emit functions touching the selected pass.",
-    )
     parser.add_argument(
         "--json",
         action="store_true",
@@ -282,10 +198,8 @@ def main(argv: list[str] | None = None) -> int:
     result = capture_ir_snapshots(
         source,
         source_path=source_path,
-        stage=args.stage,
         function_name=args.function,
         module_name=args.module,
-        pass_name=args.pass_name,
     )
     if args.json_output:
         rendered = render_ir_json(result)

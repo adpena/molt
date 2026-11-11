@@ -23,11 +23,10 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
         batch_size,
         batch_ops_budget,
         options.module_context.take(),
+        options.app_callable_manifest.take(),
     );
     let total_batches = plan.total_batches();
-    if options.app_callable_manifest.is_none() {
-        options.app_callable_manifest = Some(std::mem::take(&mut plan.app_callable_manifest));
-    }
+    options.app_callable_manifest = Some(std::mem::take(&mut plan.app_callable_manifest));
 
     let tmp_dir = super::super::create_native_batch_temp_dir()?;
     let compile_result = (|| -> io::Result<(crate::backend_process::input::ContentIdentity, Vec<super::super::NativeWorkerOrigin>)> {

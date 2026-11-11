@@ -11,26 +11,6 @@ from molt.frontend.lowering.function_lifecycle import FunctionLifecycleMixin
 from tools.check_ir_structure import verify_frontend_tir
 
 
-def test_exception_check_coalescing_preserves_origin_before_unwind():
-    from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
-
-    generator = SimpleTIRGenerator(target_python=(3, 12))
-    origin = MoltOp(
-        kind="CHECK_EXCEPTION",
-        args=[7],
-        result=MoltValue("none"),
-        exception_edge=ExceptionEdgeKind.ORIGIN,
-    )
-    unwind = MoltOp(
-        kind="CHECK_EXCEPTION",
-        args=[7],
-        result=MoltValue("none"),
-        exception_edge=ExceptionEdgeKind.UNWIND,
-    )
-    assert generator._coalesce_check_exception_ops([origin, unwind]) == [origin, unwind]
-    assert generator._coalesce_check_exception_ops([origin, origin]) == [origin]
-
-
 def test_location_encoding_is_decoded_by_cpython_without_source_inference():
     from molt.frontend.lowering.frame_locations import SourcePosition, encode_locations
 

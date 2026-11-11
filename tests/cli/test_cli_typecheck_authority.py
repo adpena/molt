@@ -41,7 +41,6 @@ def _prepare(source: Path, *, policy="check", is_wasm=False):
         known_func_defaults={},
         known_func_kinds={},
         native_callable_exports={},
-        pgo_hot_function_names=set(),
         entry_module="entry",
         entry_execution_kind="script",
         namespace_portions_by_module={},

@@ -455,6 +455,30 @@ fn first_check_in_normal_successor_dropped_after_checked_predecessor() {
 }
 
 #[test]
+fn checked_loop_entry_through_line_drops_header_observer() {
+    let mut func = make_two_block_func(
+        vec![
+            make_check_exception(),
+            make_original_kind(molt_ir::OpKind::Line),
+        ],
+        vec![make_check_exception()],
+    );
+    func.blocks.get_mut(&BlockId(1)).unwrap().terminator = Terminator::Branch {
+        target: BlockId(1),
+        args: vec![],
+    };
+    let stats = run(&mut func);
+    assert_eq!(stats.ops_removed, 1);
+    assert!(func.blocks[&BlockId(1)].ops.is_empty());
+    assert!(
+        func.blocks[&BlockId(0)]
+            .ops
+            .iter()
+            .any(|op| op.origin == Some(molt_ir::OpKind::Line))
+    );
+}
+
+#[test]
 fn first_check_in_successor_kept_when_predecessor_may_raise() {
     let mut func = make_two_block_func(
         vec![make_call("foo", ValueId(1))],

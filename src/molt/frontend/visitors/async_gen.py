@@ -21,7 +21,7 @@ from molt.compiler_analysis.python_lexical_scope import (
 import ast
 from dataclasses import replace
 from molt.python_private_names import python_definition_name
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import (
     Any,
 )
@@ -59,6 +59,36 @@ from molt.frontend.value_liveness import ValueLiveness
 
 
 class AsyncGenVisitorMixin(GeneratorMixinBase):
+    @staticmethod
+    def _reload_frame_argument(
+        value: object, reloads: Mapping[str, MoltValue]
+    ) -> object:
+        """Substitute fresh frame-reload SSA values in an operation's input payload.
+
+        Reload results are freshly allocated and cannot name an input, so one
+        substitution is complete; this is suspension transport, not alias CSE.
+        """
+        if isinstance(value, MoltValue):
+            return reloads.get(value.name, value)
+        if isinstance(value, list):
+            return [
+                AsyncGenVisitorMixin._reload_frame_argument(item, reloads)
+                for item in value
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                AsyncGenVisitorMixin._reload_frame_argument(item, reloads)
+                for item in value
+            )
+        if isinstance(value, dict):
+            return {
+                AsyncGenVisitorMixin._reload_frame_argument(
+                    key, reloads
+                ): AsyncGenVisitorMixin._reload_frame_argument(item, reloads)
+                for key, item in value.items()
+            }
+        return value
+
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         if self._class_ns_stack and self._class_ns_stack[-1].class_node is not None:
             self._emit_class_function_definition(self._class_ns_stack[-1], node)
@@ -1234,7 +1264,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 )
                 aliases[name] = value
             args = [
-                self._rewrite_aliases_in_arg(arg, aliases)
+                self._reload_frame_argument(arg, aliases)
                 for arg in op.args[:first_output]
             ]
             outputs = [op.result, *op.args[first_output:]]

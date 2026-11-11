@@ -160,6 +160,14 @@ fn uses_scope_tree(wasm: &[u8]) -> bool {
     count_ops(wasm, |op| matches!(op, Operator::BrTable { .. })) > 0
 }
 
+/// A pad consumes the exception that reached it, as a frontend handler does,
+/// before its own statements can raise. Without it the pad's print would run
+/// with the transferred exception still pending, which the exception-region
+/// verifier rejects as an ambiguous event source.
+fn pad_entry() -> OpIR {
+    wasm_test_op(molt_ir::OpKind::ExceptionClear, None, vec![])
+}
+
 /// The HF-546 shape: each statement check leaves for its own cleanup pad, and
 /// every pad follows the whole body, so all pads are live forward targets.
 fn statements(first_line: i64, count: i64, body: &mut Vec<OpIR>, pads: &mut Vec<OpIR>) {
@@ -167,6 +175,7 @@ fn statements(first_line: i64, count: i64, body: &mut Vec<OpIR>, pads: &mut Vec<
         body.push(marked(molt_ir::OpKind::Line, line));
         body.push(marked(molt_ir::OpKind::CheckException, PAD_LINE + line));
         pads.push(marked(molt_ir::OpKind::Label, PAD_LINE + line));
+        pads.push(pad_entry());
         pads.push(marked(molt_ir::OpKind::Line, PAD_LINE + line));
         pads.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
     }
@@ -211,6 +220,7 @@ fn shared_pad_guest(count: i64) -> Vec<u8> {
     ops.extend([
         wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         marked(molt_ir::OpKind::Label, PAD_LINE),
+        pad_entry(),
         marked(molt_ir::OpKind::Line, PAD_LINE),
         wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
     ]);
@@ -349,6 +359,7 @@ for (const test of config.cases) {
     print_obj(value) { lines.push(Number(value - intBase)); },
     exception_frame_origin(homes) { assert.equal(homes,0n); assert.equal(polls,failAt); return none; },
     exception_pending() { return ++polls === failAt ? 1n : 0n; },
+    exception_clear() { return none; },
     obj_get_state(task) { assert.equal(task, 64n); return savedState; },
     obj_set_state() { throw Error('no state publication in this guest'); },
   };

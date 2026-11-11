@@ -6,11 +6,13 @@ from molt.process_environment import ProcessEnvironmentBuilder
 
 import os
 import sys
+from typing import Literal
 
 import pytest
 from pathlib import Path
 
-from molt.frontend import compile_to_tir
+from molt.frontend import SimpleTIRGenerator, compile_to_tir
+from molt.frontend._types import CodeSlotDeclaration
 from molt.dx import development_artifact_env
 
 from tests.native_process_guard import run_native_test_process
@@ -19,6 +21,99 @@ from tests.native_process_guard import run_native_test_process
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
 SESSION_ID = "pytest-gpu-kernel-compiled"
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_gpu_descriptor_projects_real_frontend_query_calls(captured: bool) -> None:
+    import ast
+    from molt.frontend.lowering.gpu_kernel_descriptor import project_kernel_ops
+
+    query = (
+        "query = gpu.thread_id\n tid = query()" if captured else "tid = gpu.thread_id()"
+    )
+    generator = SimpleTIRGenerator()
+    generator.visit(
+        ast.parse(
+            "import molt.gpu as gpu\n@gpu.kernel\ndef f(a,b,c,n):\n "
+            + query
+            + "\n if tid < n:\n  c[tid] = a[tid] + b[tid]\n"
+        )
+    )
+    function = generator.funcs_map["__main____f"]
+    ops = generator.map_ops_to_json(function["ops"], function_name="f")
+    result = project_kernel_ops(function["params"], ops)
+    assert "unsupported" not in result
+    assert result["buffers"] == ["a", "b", "c"]
+    assert [query["path"] for query in result["query_bindings"]] == [
+        ["gpu", "thread_id"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation", ["wrong_receiver", "missing_receiver", "extra_argument"]
+)
+def test_gpu_descriptor_refuses_broken_frontend_method_pairs(
+    mutation: Literal["wrong_receiver", "missing_receiver", "extra_argument"],
+) -> None:
+    import ast
+    from molt.frontend.lowering.gpu_kernel_descriptor import project_kernel_ops
+
+    generator = SimpleTIRGenerator()
+    generator.visit(
+        ast.parse(
+            "import molt.gpu as gpu\n@gpu.kernel\ndef f(a,b,c,n):\n"
+            " tid = gpu.thread_id()\n if tid < n:\n  c[tid] = a[tid] + b[tid]\n"
+        )
+    )
+    function = generator.funcs_map["__main____f"]
+    ops = generator.map_ops_to_json(function["ops"], function_name="f")
+    call = next(op for op in ops if op["kind"] == "call_loaded_method")
+    if mutation == "wrong_receiver":
+        call["args"][1] = "a"
+    elif mutation == "missing_receiver":
+        call["kind"] = "call_func"
+        call["args"].pop()
+    else:
+        call["args"].append("n")
+    assert "unsupported" in project_kernel_ops(function["params"], ops)
+
+
+@pytest.mark.parametrize("module_name", ["molt.gpu", "struct"])
+def test_gpu_reference_body_origins_have_real_lowering_producers(
+    module_name: str,
+) -> None:
+    import ast
+    from molt.frontend.lowering.gpu_kernel_descriptor import GPU_PYTHON_BODY_REFERENCES
+
+    relative, roles = GPU_PYTHON_BODY_REFERENCES[module_name]
+    source = ROOT / "src/molt" / relative
+    generator = SimpleTIRGenerator(module_name=module_name, source_path=str(source))
+    generator.visit(ast.parse(source.read_text(encoding="utf-8")))
+    generator.to_json()
+    origins = {
+        name: function["gpu_body_origin"]
+        for name, function in generator.funcs_map.items()
+        if "gpu_body_origin" in function
+    }
+    assert {origin["role"] for origin in origins.values()} == set(roles.values())
+    assert len(origins) == len(roles)
+    captured = list(generator._gpu_body_origin_candidates.values())
+    assert all(origin in captured for origin in origins.values())
+    for name in origins:
+        parameters = list(generator.funcs_map[name]["params"])
+        generator.start_function(
+            name,
+            params=parameters,
+            code_slots=CodeSlotDeclaration(
+                parameters=tuple(parameters),
+                varnames=tuple(parameters),
+                cellvars=(),
+                freevars=(),
+            ),
+        )
+        assert "gpu_body_origin" not in generator.funcs_map[name], (
+            "a new synthetic body cannot inherit source-origin evidence"
+        )
 
 
 def _native_env() -> ProcessEnvironmentBuilder:

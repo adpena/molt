@@ -5,7 +5,7 @@ The capsule is an evidence spine, not a new compiler path. It consumes the
 existing authorities:
 
 * build diagnostics for source/module closure, frontend timings, allocation
-  diagnostics, and TIR/midend pass telemetry
+  diagnostics and typed TIR fact graphs
 * TIR fact-graph dumps for value-level representation/call facts
 * binary size analysis for section/symbol footprint
 * output startup/size audit for cold/warm startup evidence
@@ -47,7 +47,7 @@ from molt.compiler_analysis.validation import (  # noqa: E402
 from molt.compiler_analysis.tir_fact_graph import summarize_tir_fact_graph  # noqa: E402
 from tools import binary_size_analysis, fact_graph_dump  # noqa: E402
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CAPSULE_KIND = "molt_analysis_capsule"
 
 
@@ -256,7 +256,6 @@ def _summarize_ir_tir(
     errors: list[str],
     warnings: list[str],
 ) -> dict[str, Any]:
-    midend = _mapping_or_empty(diagnostics.get("midend"))
     fact_summaries: list[dict[str, Any]] = []
     for path, graph in tir_fact_graphs:
         try:
@@ -272,38 +271,7 @@ def _summarize_ir_tir(
             )
         )
 
-    midend_function_count = midend.get("function_count")
-    if (
-        isinstance(midend_function_count, int)
-        and fact_summaries
-        and len(fact_summaries) > midend_function_count
-    ):
-        warnings.append(
-            "more TIR fact graphs were supplied than midend functions report: "
-            f"{len(fact_summaries)} > {midend_function_count}"
-        )
-
     return {
-        "midend": {
-            "requested_profile": _string_or_none(midend.get("requested_profile")),
-            "effective_profiles": _string_list(midend.get("effective_profiles")),
-            "function_count": midend_function_count
-            if isinstance(midend_function_count, int)
-            else None,
-            "degraded_functions": midend.get("degraded_functions")
-            if isinstance(midend.get("degraded_functions"), int)
-            else None,
-            "promoted_functions": midend.get("promoted_functions")
-            if isinstance(midend.get("promoted_functions"), int)
-            else None,
-            "pass_wall_time_ranked": _list_of_mappings(
-                midend.get("pass_wall_time_ranked")
-            )[:20],
-            "pass_hotspots_top": _list_of_mappings(midend.get("pass_hotspots_top"))[
-                :10
-            ],
-            "policy_config": _mapping_or_empty(midend.get("policy_config")),
-        },
         "tir_fact_graphs": fact_summaries,
         "tir_fact_graph_count": len(fact_summaries),
     }
@@ -426,7 +394,6 @@ def _analysis_tools_manifest(
                 "backend_source_site_coverage",
                 "backend_allocation_ownership_events",
                 "allocation_snapshot",
-                "tir_midend_pass_telemetry",
             ],
             "required": True,
         },

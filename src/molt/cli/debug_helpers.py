@@ -272,10 +272,8 @@ def _handle_debug_ir(
     result = capture_ir_snapshots(
         source,
         source_path=source_path,
-        stage=args.stage,
         function_name=args.function,
         module_name=args.module,
-        pass_name=args.pass_name,
     )
     payload = normalize_debug_payload(
         subcommand=subcommand,
@@ -1041,10 +1039,9 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         for key, value in {
             "function": args.function,
             "module": args.module,
-            "pass": args.pass_name,
+            "pass": getattr(args, "pass_name", None),
             "backend": args.backend,
             "profile": args.profile,
-            "stage": getattr(args, "stage", None),
         }.items()
         if value is not None
     }

@@ -98,7 +98,6 @@ def load_table(table_path: Path = TABLE) -> dict:
     seen_domains: set[str] = set()
     seen_scalar_types: dict[str, set[str]] = {
         "tir_types": set(),
-        "frontend_types": set(),
     }
     for domain in domains:
         name = domain.get("name")
@@ -268,27 +267,6 @@ def load_table(table_path: Path = TABLE) -> dict:
         )
         comparison = row.get("predicate_semantics")
         exact_scalar = row.get("exact_scalar_result_type")
-        # Final-TIR ops never exist in the frontend, so they carry no frontend
-        # intrinsic facts.
-        if name in data.get("final_tir_opcodes", []):
-            pass
-        elif exact_scalar is not None or result_type in {
-            "i64",
-            "f64",
-            "bool",
-            "str",
-            "bytes",
-            "none",
-        }:
-            arity = row.get("frontend_intrinsic_scalar_arity")
-            if type(arity) is not int or arity < 0:
-                raise OpKindTableError(
-                    f"opcode {name}: exact scalar requires frontend_intrinsic_scalar_arity"
-                )
-            # Frontend args and TIR SSA operands are distinct transport domains:
-            # lowering can move payload arguments into attrs. The opcode row owns
-            # both shapes; equal opcode identity alone does not prove an
-            # operand-preserving transport and cannot impose equal arities.
         if exact_scalar is not None and (
             exact_scalar not in seen_scalar_types["tir_types"]
             or result_arity != "one"
@@ -995,6 +973,21 @@ def load_table(table_path: Path = TABLE) -> dict:
             "callback_free_copy_kinds requires unique registered spellings"
         )
     exact_int = data.get("exact_int_result_copy_kinds")
+    nothrow = data.get("nothrow_copy_kinds")
+    if (
+        not isinstance(nothrow, list)
+        or any(
+            not isinstance(kind, str)
+            or kind not in registered
+            or kind in mapper_opcode_by_spelling
+            and mapper_opcode_by_spelling[kind] != "Copy"
+            for kind in nothrow
+        )
+        or len(set(nothrow)) != len(nothrow)
+    ):
+        raise OpKindTableError(
+            "nothrow_copy_kinds requires unique registered Copy-carrier spellings"
+        )
     if (
         not isinstance(exact_int, list)
         or any(
@@ -1041,12 +1034,11 @@ def load_table(table_path: Path = TABLE) -> dict:
 
     _validate_terminators(data)
 
-    from .primitive_effects import comparison_warning_pairs, frontend_operator_map
+    from .primitive_effects import comparison_warning_pairs
 
     comparison_warning_pairs(data)
 
     validate_registration(data)
-    frontend_operator_map(data)
     _validate_frontend_tables(data, opcodes)
 
     unknown_requirement_carriers = set(

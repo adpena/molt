@@ -24,6 +24,33 @@ def refused(func, text):
         raise AssertionError("hardware admission unexpectedly succeeded")
 
 
+class FormatSubclass(str):
+    pass
+
+
+class SizeSubclass(int):
+    pass
+
+
+class StorageSubclass(bytes):
+    pass
+
+
+# Implicit builtin class edges are exact; a physical builtin payload carrying
+# an explicit subclass edge must still be refused before device dispatch.
+for field, value, message in [
+    ("_format_char", FormatSubclass("d"), "exact string"),
+    ("_size", SizeSubclass(4), "exact integer"),
+    ("_data", StorageSubclass(a._data), "exact bytes"),
+]:
+    original = getattr(a, field)
+    setattr(a, field, value)
+    try:
+        refused(lambda: vector_add[1, 4](a, b, c, 4), message)
+    finally:
+        setattr(a, field, original)
+
+
 refused(lambda: vector_add[1, 5](a, b, c, 5), "bounds")
 original_query = gpu.thread_id
 gpu.thread_id = lambda: 73

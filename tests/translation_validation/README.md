@@ -31,8 +31,8 @@ that a compiler pass preserves meaning for other programs.
 
 ## Pass-level checks
 
-- `tools/translation_validator.py` checks structural invariants of the Python
-  mid-end after each pass (`src/molt/frontend/tv_hooks.py`).
+- `tools/translation_validator.py` checks the Rust pass-delta records described
+  below. The Python per-pass hooks and snapshots are retired.
 - `runtime/molt-passes/src/tir/translation_validator.rs` checks one narrow
   representation invariant: a surviving value's representation proof only moves
   upward.
@@ -44,9 +44,9 @@ that a compiler pass preserves meaning for other programs.
 
 ## IR snapshots
 
-`molt debug ir` dumps TIR before and after the mid-end for inspection and
-diffing:
-
-```bash
-uv run python3 -m molt.cli debug ir --stage=all --format json --out logs/debug/ir/hello.json examples/hello.py
-```
+`molt debug ir examples/hello.py --format json` exposes one frontend
+serialization view. The Python optimizer and its before/after dumps are retired.
+The existing `tools/translation_validator.py --pass-delta-jsonl <file>` reader
+checks Rust pass-delta records, including representation lattice monotonicity.
+It does not establish semantic equivalence of arbitrary Rust rewrites. The
+bounded typed-integer before/after validator remains HF-800 work.

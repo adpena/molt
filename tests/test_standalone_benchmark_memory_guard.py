@@ -45,7 +45,6 @@ def test_wasm_bench_compile_uses_memory_guard(monkeypatch, tmp_path: Path) -> No
     # an ambient selection.
     monkeypatch.setenv("MOLT_WASM_LINKED", "1")
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
-    monkeypatch.delenv("MOLT_MIDEND_DISABLE", raising=False)
     source = tmp_path / "bench.py"
     source.write_text("print(1)\n", encoding="utf-8")
     out_dir = tmp_path / "out"
@@ -61,7 +60,6 @@ def test_wasm_bench_compile_uses_memory_guard(monkeypatch, tmp_path: Path) -> No
     env = calls[0]["env"]
     assert env["MOLT_WASM_LINKED"] == "0"
     assert env["MOLT_BACKEND_DAEMON"] == "1"
-    assert env["MOLT_MIDEND_DISABLE"] == "1"
 
 
 def test_wasm_bench_main_installs_repo_sentinel(monkeypatch, tmp_path: Path) -> None:

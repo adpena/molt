@@ -354,6 +354,13 @@ mod ffi {
         #[link_name = molt_runtime_core::attached_symbol!("molt_isinstance") ]
         pub(super) fn molt_isinstance(__molt_context: u64, value_bits: u64, class_bits: u64)
         -> u64;
+        #[cfg(any(
+            target_arch = "wasm32",
+            all(target_os = "macos", feature = "metal-backend"),
+            all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+        ))]
+        #[link_name = molt_runtime_core::attached_symbol!("molt_type_of") ]
+        pub(super) fn molt_type_of(__molt_context: u64, value_bits: u64) -> u64;
     }
 }
 
@@ -481,6 +488,17 @@ pub(super) fn builtin_float(_py: &PyToken) -> u64 {
 #[inline]
 pub(super) unsafe fn object_class_bits(_py: &PyToken, ptr: *mut u8) -> u64 {
     unsafe { __molt_gpu_object_class_bits(_py.attached_context(), ptr) }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+pub(super) fn type_of_owned(_py: &PyToken, bits: u64) -> u64 {
+    // The semantic type authority handles implicit builtin class edges and
+    // explicit subclass identities. The caller owns the returned reference.
+    unsafe { ffi::molt_type_of(_py.attached_context(), bits) }
 }
 
 #[inline]

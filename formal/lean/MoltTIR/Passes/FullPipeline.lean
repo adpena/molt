@@ -1,11 +1,11 @@
 /-
-  MoltTIR.Passes.FullPipeline — composition of ALL 8 verified midend passes.
+  MoltTIR.Passes.FullPipeline — composition of eight modeled TIR passes.
 
   Extends Pipeline.lean (which composed only constFold + SCCP) to chain all
   8 midend optimizations and proves the full pipeline preserves expression
   semantics via transitivity of individual pass correctness theorems.
 
-  Pass order (matching SimpleTIRGenerator._run_ir_midend_passes):
+  Model pass order (not the production Rust pipeline order):
     constFold → SCCP → DCE → LICM → CSE → guardHoist → joinCanon → edgeThread
 
   Key insight: passes that transform expressions (constFold, SCCP, CSE)

@@ -42,7 +42,6 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.lowering.builtin_guards import GuardArmKind
-    from molt.frontend.lowering.midend_telemetry import MidendMemoryProfiler
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.compiler_analysis.python_binding_facts import PythonNodeKey
@@ -52,7 +51,6 @@ if TYPE_CHECKING:
 class _GeneratorProtocolAttrs(Protocol):
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
     _VECTOR_REDUCTION_OPS: dict[str, FrontendOpKind]
-    _active_midend_function_name: Any
     _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonNodeKey]] | None
     _class_body_depth: int
     _class_exports: dict[tuple[str, str], ClassId]
@@ -67,13 +65,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _lexical_dependency_cache: PythonDependencyAuthority | None
     _lexical_dependency_index: PythonBindingIndex | None
     _list_int_containers: set[str]
-    _midend_env_snapshot: Any
-    _midend_memory_profiler: MidendMemoryProfiler | None
-    _midend_stats_reported: Any
     _module_attr_type_hints: dict[str, TypeHint]
-    _module_pressure_funcs_map_ref: Any
-    _module_pressure_function_count: Any
-    _module_pressure_total_ops: Any
     _module_provenance_flow_stack: list[tuple[list[dict[str, frozenset[str]]], bool]]
     _next_exact_class_token: int
     _op_by_result: dict[str, MoltOp]

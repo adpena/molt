@@ -16,7 +16,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.frontend import MoltValue
 from molt.frontend.dataclass_init import DataclassInitField
 from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
 from molt.frontend.module_publication import (
@@ -335,7 +335,6 @@ def _build_scoped_lowering_inputs(
     known_modules: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
-    pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
     direct_call_modules: Collection[str] | None = None,
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
@@ -349,7 +348,6 @@ def _build_scoped_lowering_inputs(
     scoped_native_callable_exports_by_module: dict[str, dict[str, dict[str, Any]]] = {}
     scoped_native_python_exports_by_module: dict[str, tuple[str, ...]] = {}
     scoped_native_support_function_roots_by_module: dict[str, tuple[str, ...]] = {}
-    scoped_pgo_hot_function_names_by_module: dict[str, tuple[str, ...]] = {}
     scoped_type_facts_by_module: dict[str, TypeFacts | None] = {}
     source_modules = frozenset(module_names)
     always_known_modules = _always_known_modules(known_modules, source_modules)
@@ -406,9 +404,6 @@ def _build_scoped_lowering_inputs(
                 native_support_function_roots_by_module,
             )
         )
-        scoped_pgo_hot_function_names_by_module[module_name] = (
-            _scoped_pgo_hot_function_names(module_name, pgo_hot_function_names)
-        )
         scoped_type_facts_by_module[module_name] = _scoped_type_facts(
             module_name,
             module_deps=module_deps,
@@ -425,7 +420,6 @@ def _build_scoped_lowering_inputs(
         native_support_function_roots_by_module=(
             scoped_native_support_function_roots_by_module
         ),
-        pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
         type_facts_by_module=scoped_type_facts_by_module,
     )
 
@@ -477,12 +471,10 @@ def _scoped_lowering_input_view(
     known_modules: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
-    pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     known_modules_sorted: tuple[str, ...] | None = None,
-    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     source_modules: Collection[str] | None = None,
     direct_call_modules: Collection[str] | None = None,
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
@@ -605,23 +597,6 @@ def _scoped_lowering_input_view(
         )
     if (
         scoped_lowering_inputs is not None
-        and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
-    ):
-        scoped_pgo_hot_function_names = (
-            scoped_lowering_inputs.pgo_hot_function_names_by_module[module_name]
-        )
-    else:
-        pgo_hot_functions_scope_source: Collection[str]
-        if pgo_hot_function_names_sorted is None:
-            pgo_hot_functions_scope_source = pgo_hot_function_names
-        else:
-            pgo_hot_functions_scope_source = pgo_hot_function_names_sorted
-        scoped_pgo_hot_function_names = _scoped_pgo_hot_function_names(
-            module_name,
-            pgo_hot_functions_scope_source,
-        )
-    if (
-        scoped_lowering_inputs is not None
         and module_name in scoped_lowering_inputs.type_facts_by_module
     ):
         scoped_type_facts = scoped_lowering_inputs.type_facts_by_module[module_name]
@@ -642,7 +617,6 @@ def _scoped_lowering_input_view(
         body_selection=ModuleBodySelection.from_requested_roots(
             scoped_native_support_function_roots
         ),
-        pgo_hot_function_names=scoped_pgo_hot_function_names,
         type_facts=scoped_type_facts,
         known_modules_payload=list(scoped_known_modules),
         known_modules_set=frozenset(scoped_known_modules),
@@ -653,30 +627,7 @@ def _scoped_lowering_input_view(
         ),
         native_python_exports_payload=list(scoped_native_python_exports),
         native_python_exports_set=frozenset(scoped_native_python_exports),
-        pgo_hot_function_names_payload=list(scoped_pgo_hot_function_names),
-        pgo_hot_function_names_set=frozenset(scoped_pgo_hot_function_names),
     )
-
-
-def _scoped_pgo_hot_function_names(
-    module_name: str,
-    pgo_hot_function_names: Collection[str],
-) -> tuple[str, ...]:
-    if not pgo_hot_function_names:
-        return ()
-    module_prefix_a = f"{module_name}::"
-    module_prefix_b = f"{module_name}."
-    init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-    scoped = {
-        symbol
-        for symbol in pgo_hot_function_names
-        if symbol.startswith(module_prefix_a)
-        or symbol.startswith(module_prefix_b)
-        or symbol == init_symbol
-        or symbol == f"{module_name}::{init_symbol}"
-        or symbol == f"{module_name}.{init_symbol}"
-    }
-    return tuple(sorted(scoped))
 
 
 def _module_lowering_metadata_view(
@@ -713,13 +664,11 @@ def _module_lowering_execution_view(
     known_modules: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
-    pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     module_dep_closures: dict[str, frozenset[str]],
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     known_modules_sorted: tuple[str, ...] | None = None,
-    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
     | None = None,
     source_modules: Collection[str] | None = None,
@@ -740,12 +689,10 @@ def _module_lowering_execution_view(
         known_func_kinds=known_func_kinds,
         native_callable_exports=native_callable_exports,
         native_python_exports=native_python_exports,
-        pgo_hot_function_names=pgo_hot_function_names,
         type_facts=type_facts,
         module_dep_closures=module_dep_closures,
         scoped_lowering_inputs=scoped_lowering_inputs,
         known_modules_sorted=known_modules_sorted,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         source_modules=source_modules,
     )
     scoped_known_classes = _scoped_known_classes_view(
@@ -779,7 +726,7 @@ def _frontend_lowering_cache_disabled() -> bool:
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 14
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 11
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 12
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -1324,11 +1271,8 @@ def _module_lowering_context_payload(
     module_deps: dict[str, set[str]],
     module_chunking: bool,
     module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
     known_modules_sorted: tuple[str, ...] | None = None,
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
-    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
@@ -1354,19 +1298,16 @@ def _module_lowering_context_payload(
             native_support_function_roots_by_module=(
                 native_support_function_roots_by_module
             ),
-            pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=known_modules_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             source_modules=source_modules,
         )
     known_modules_sorted = scoped_inputs.known_modules
     direct_call_modules_sorted = scoped_inputs.direct_call_modules
     if stdlib_allowlist_sorted is None:
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
-    pgo_hot_function_names_sorted = scoped_inputs.pgo_hot_function_names
     scoped_known_func_defaults = scoped_inputs.known_func_defaults
     scoped_known_func_kinds = scoped_inputs.known_func_kinds
     scoped_native_callable_exports = scoped_inputs.native_callable_exports
@@ -1385,7 +1326,7 @@ def _module_lowering_context_payload(
     return {
         # The context owns the captured bytes, not a later file stat/hash.
         # Inline text and raw path bytes are distinct source generations.
-        "version": 7,
+        "version": 8,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
@@ -1414,11 +1355,6 @@ def _module_lowering_context_payload(
         "body_selection": scoped_inputs.body_selection.payload(),
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
-        "optimization_profile": optimization_profile,
-        # The product already contains optimized IR and its coverage. A policy
-        # change must not restore a differently optimized standard library.
-        "midend_policy": SimpleTIRGenerator._capture_midend_env_snapshot(),
-        "pgo_hot_functions": pgo_hot_function_names_sorted,
     }
 
 
@@ -1574,11 +1510,8 @@ def _module_lowering_context_digest_for_module(
     module_deps: dict[str, set[str]],
     module_chunking: bool,
     module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
     known_modules_sorted: tuple[str, ...] | None = None,
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
-    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
@@ -1615,11 +1548,8 @@ def _module_lowering_context_digest_for_module(
         module_deps=module_deps,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=optimization_profile,
-        pgo_hot_function_names=pgo_hot_function_names,
         known_modules_sorted=known_modules_sorted,
         stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         module_dep_closures=module_dep_closures,
         scoped_lowering_inputs=scoped_lowering_inputs,
         scoped_inputs=scoped_inputs,
@@ -1858,11 +1788,8 @@ def _load_cached_module_lowering_result(
     module_deps: dict[str, set[str]],
     module_chunking: bool,
     module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
     known_modules_sorted: tuple[str, ...] | None = None,
     stdlib_allowlist_sorted: tuple[str, ...] | None = None,
-    pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
@@ -1902,11 +1829,8 @@ def _load_cached_module_lowering_result(
             module_deps=module_deps,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=optimization_profile,
-            pgo_hot_function_names=pgo_hot_function_names,
             known_modules_sorted=known_modules_sorted,
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             scoped_inputs=scoped_inputs,
@@ -1967,8 +1891,6 @@ def _module_worker_payload(
     module_deps: dict[str, set[str]],
     module_chunking: bool,
     module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
     module_dep_closures: dict[str, frozenset[str]],
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
@@ -1995,12 +1917,10 @@ def _module_worker_payload(
             native_support_function_roots_by_module=(
                 native_support_function_roots_by_module
             ),
-            pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=tuple(known_modules),
-            pgo_hot_function_names_sorted=tuple(pgo_hot_function_names),
             source_modules=source_modules,
         )
     if stdlib_allowlist_payload is None:
@@ -2034,8 +1954,6 @@ def _module_worker_payload(
         "body_selection": scoped_inputs.body_selection.payload(),
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
-        "optimization_profile": optimization_profile,
-        "pgo_hot_functions": scoped_inputs.pgo_hot_function_names_payload,
         "type_facts": scoped_inputs.type_facts,
         "target_python": target_python.short,
         "target_sys_platform": target_sys_platform,

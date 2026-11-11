@@ -206,7 +206,7 @@ def test_class_nonlocal_import_publishes_to_enclosing_cell_not_class_or_module(
     # Raw ops carry LINE markers, not a source_line on each store/load. The
     # serializer is the canonical source-location projection consumed downstream.
     # Inspect that actual consumer and keep its exact cell/return operand chain.
-    lowered = gen.map_ops_to_json(outer["ops"], run_midend=False)
+    lowered = gen.map_ops_to_json(outer["ops"])
     cell_stores = [
         op
         for op in lowered

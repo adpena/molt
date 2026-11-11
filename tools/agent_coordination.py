@@ -381,8 +381,10 @@ PROOF_LANE_RULES = (
         shared_target_root="target",
         priority="P2",
         path_prefixes=("src/molt/frontend/",),
-        commands=("uv run python -m pytest -q tests/test_frontend_midend_passes.py",),
-        reason="frontend lowering changes should prove midend/frontend pass contracts",
+        commands=(
+            "uv run python -m pytest -q tests/test_frontend_frame_home_exception_edges.py",
+        ),
+        reason="frontend lowering changes should prove frame-home exception contracts",
     ),
     ProofLaneRule(
         lane="molt_gpu_targeted",
