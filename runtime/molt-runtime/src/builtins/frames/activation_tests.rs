@@ -593,8 +593,14 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
         for bits in [code, globals, builtins] {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, code, globals, builtins, 0);
-        assert!(frame_stack_enter_homes(py, FramePlan::default()));
+        assert!(frame_stack_enter(
+            py,
+            code,
+            globals,
+            builtins,
+            0,
+            FramePlan::default()
+        ));
         super::frame_stack_top_entry()
             .unwrap()
             .bindings

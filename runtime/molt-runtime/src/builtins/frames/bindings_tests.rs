@@ -6,7 +6,7 @@ use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 use super::*;
-use crate::builtins::frames::{frame_stack_enter_homes, frame_stack_pop, frame_stack_push_owned};
+use crate::builtins::frames::{frame_stack_enter, frame_stack_pop};
 use crate::object::builders::{alloc_code_obj, alloc_tuple};
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::{alloc_string, dict_get_in_place};
@@ -78,9 +78,12 @@ fn plan(homes: usize, policy: FramePolicy) -> FramePlan {
 /// Returns the homes and the entry's stack index.
 fn enter_frame(py: &PyToken<'_>, code: u64, slots: usize) -> (*mut u64, usize) {
     inc_ref_bits(py, code);
-    frame_stack_push_owned(py, code, 0, 0, 0);
-    assert!(frame_stack_enter_homes(
+    assert!(frame_stack_enter(
         py,
+        code,
+        0,
+        0,
+        0,
         plan(slots, FramePolicy::of_runtime(py))
     ));
     let homes =
@@ -136,40 +139,44 @@ fn take_pending(py: &PyToken<'_>) -> u64 {
 
 #[test]
 fn homes_are_a_stack_of_zeroed_words() {
-    let policy = FramePolicy::default();
-    let first = FrameBindings::enter(plan(3, policy)).expect("homes");
-    let second = FrameBindings::enter(plan(2, policy)).expect("homes");
-    assert_eq!(
-        second.homes,
-        first.homes
-            + 3 * FRAME_HOME_WORDS * WORD
-            + (-molt_codegen_abi::FRAME_LOCATION_OFFSET) as usize
-    );
-    unsafe { *(second.homes as *mut u64) = 7 };
-    second.exit();
-    let again = FrameBindings::enter(plan(2, policy)).expect("homes");
-    assert_eq!(again.homes, second.homes, "the exit returned its homes");
-    assert_eq!(
-        unsafe { *(again.homes as *const u64) },
-        0,
-        "homes start unbound"
-    );
-    // A frame larger than a chunk gets its own chunk and returns it.
-    let large = FrameBindings::enter(plan(HOME_CHUNK_WORDS, policy)).expect("large homes");
-    large.exit();
-    again.exit();
-    first.exit();
-    let reused = FrameBindings::enter(plan(3, policy)).expect("homes");
-    assert_eq!(reused.homes, first.homes);
-    reused.exit();
-    // Zero-home functions and modules still lend their canonical location word.
-    for empty in [plan(0, policy), FramePlan::default()] {
-        let bindings = FrameBindings::enter(empty).expect("no homes");
-        assert_ne!(bindings.homes, 0);
-        assert_eq!(bindings.home_count, 0);
-        assert_eq!(bindings.location(), LocationId::ABSENT);
-        bindings.exit();
-    }
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let policy = FramePolicy::default();
+        let enter = |plan: FramePlan| {
+            assert!(frame_stack_enter(py, 0, 0, 0, 0, plan));
+            crate::builtins::frames::frame_stack_top_entry()
+                .unwrap()
+                .bindings
+        };
+        let first = enter(plan(3, policy));
+        let second = enter(plan(2, policy));
+        assert!(second.homes > first.homes + 3 * FRAME_HOME_WORDS * WORD);
+        unsafe { *(second.homes as *mut u64) = 7 };
+        frame_stack_pop(py);
+        let again = enter(plan(2, policy));
+        assert_eq!(again.homes, second.homes, "the pop returned its homes");
+        assert_eq!(
+            unsafe { *(again.homes as *const u64) },
+            0,
+            "homes start unbound"
+        );
+        // A frame larger than a chunk gets its own chunk and returns it.
+        let _large = enter(plan(HOME_CHUNK_WORDS, policy));
+        frame_stack_pop(py);
+        frame_stack_pop(py);
+        frame_stack_pop(py);
+        let reused = enter(plan(3, policy));
+        assert_eq!(reused.homes, first.homes);
+        frame_stack_pop(py);
+        // Zero-home functions and modules still lend their canonical location word.
+        for empty in [plan(0, policy), FramePlan::default()] {
+            let bindings = enter(empty);
+            assert_ne!(bindings.homes, 0);
+            assert_eq!(bindings.home_count, 0);
+            assert_eq!(bindings.location(), LocationId::ABSENT);
+            frame_stack_pop(py);
+        }
+    });
 }
 
 #[test]
@@ -187,9 +194,12 @@ fn origin_capture_owns_its_entry_preserves_multiplicity_and_is_failure_atomic() 
         let globals = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
         inc_ref_bits(py, code);
         inc_ref_bits(py, globals);
-        frame_stack_push_owned(py, code, globals, globals, 0);
-        assert!(frame_stack_enter_homes(
+        assert!(frame_stack_enter(
             py,
+            code,
+            globals,
+            globals,
+            0,
             plan(0, FramePolicy::of_runtime(py))
         ));
         let homes = molt_frame_homes_attached_body(py, 0);
@@ -940,8 +950,7 @@ fn compiled_code_borrows_only_homes_the_frame_has() {
         frame_stack_pop(py);
         // A frame without homes (a module body) lends none.
         inc_ref_bits(py, code);
-        frame_stack_push_owned(py, code, 0, 0, 0);
-        assert!(frame_stack_enter_homes(py, FramePlan::default()));
+        assert!(frame_stack_enter(py, code, 0, 0, 0, FramePlan::default()));
         assert_eq!(molt_frame_homes_attached_body(py, 1), 0);
         dec_ref_bits(py, take_pending(py));
         frame_stack_pop(py);
