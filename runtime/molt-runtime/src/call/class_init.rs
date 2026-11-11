@@ -671,8 +671,7 @@ pub(crate) unsafe fn construct_regular_class(
 pub(crate) fn raise_not_callable(_py: &PyToken<'_>, obj: MoltObject) -> u64 {
     let trace_not_callable = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_NOT_CALLABLE);
     if trace_not_callable {
-        if let Some(frame) =
-            crate::state::tls::FRAME_STACK.with(|stack| stack.borrow().last().copied())
+        if let Some(frame) = crate::builtins::frames::frame_stack_top_entry()
             && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
         {
             let (name_bits, file_bits) =

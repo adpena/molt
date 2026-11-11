@@ -55,7 +55,7 @@ fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings
         assert!(!exception_pending(py));
         assert_eq!(frame_stack_active_builtins_bits(), original);
         assert_eq!(frame_stack_active_globals_bits(), globals);
-        let entry = FRAME_STACK.with(|stack| *stack.borrow().last().unwrap());
+        let entry = crate::builtins::frames::frame_stack_top_entry().unwrap();
         assert!(!entry.bindings.has_python_bindings());
         assert_eq!(entry.bindings.payload_bits, 0);
         // A reflected elided mapping must refuse the observation, rather than
@@ -328,7 +328,9 @@ fn module_entry_cannot_publish_an_unset_builtins_sentinel() {
         assert!(obj_from_bits(molt_frame_locals_set_attached_body(py, namespace)).is_none());
         assert!(crate::exception_pending(py));
         assert_eq!(
-            FRAME_STACK.with(|stack| stack.borrow().last().unwrap().locals_bits),
+            crate::builtins::frames::frame_stack_top_entry()
+                .unwrap()
+                .locals_bits,
             0
         );
         assert_eq!(
@@ -553,7 +555,7 @@ extern "C" fn namespace_probe(__context: u64) -> u64 {
         let py = __py;
         crate::molt_trace_enter_slot_attached_body(py, 0);
         assert_eq!(
-            FRAME_STACK.with(|stack| stack.borrow().len()),
+            crate::builtins::frames::records::depth(),
             1,
             "dispatch must not create a frame"
         );
@@ -608,7 +610,7 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
         let direct = namespace_probe(py.attached_context());
         assert_eq!(direct, lexical);
         dec_ref_bits(py, direct);
-        assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
+        assert!((crate::builtins::frames::records::depth() == 0));
         for bits in [callable, code, lexical, rebound] {
             dec_ref_bits(py, bits);
         }
@@ -947,7 +949,9 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
         assert!(obj_from_bits(entry_result).is_none());
         dec_ref_bits(py, entry_result);
         assert_eq!(
-            FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
+            crate::builtins::frames::frame_stack_top_entry()
+                .unwrap()
+                .code_bits,
             original
         );
         crate::molt_trace_exit_attached_body(py);
@@ -1073,13 +1077,15 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
                 assert!(!crate::exception_pending(py));
                 assert_eq!(refs(code), baseline + 1);
                 assert_eq!(
-                    FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
+                    crate::builtins::frames::frame_stack_top_entry()
+                        .unwrap()
+                        .code_bits,
                     code
                 );
                 dec_ref_bits(py, crate::molt_trace_exit_attached_body(py));
                 drop(invocation);
                 assert_eq!(refs(code), baseline);
-                assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
+                assert!((crate::builtins::frames::records::depth() == 0));
             }
         }
         dec_ref_bits(py, MoltObject::from_ptr(function).bits());
@@ -1102,7 +1108,9 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
         crate::molt_exception_clear_attached_body(py);
         assert!(obj_from_bits(crate::molt_trace_enter_slot_attached_body(py, 0)).is_none());
         assert_eq!(
-            FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
+            crate::builtins::frames::frame_stack_top_entry()
+                .unwrap()
+                .code_bits,
             code
         );
         crate::molt_trace_exit_attached_body(py);
@@ -1110,7 +1118,7 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
         assert!(crate::exception_pending(py));
         crate::molt_trace_exit_attached_body(py);
         crate::molt_exception_clear_attached_body(py);
-        assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
+        assert!((crate::builtins::frames::records::depth() == 0));
         for bits in [code, globals] {
             dec_ref_bits(py, bits);
         }

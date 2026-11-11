@@ -179,6 +179,10 @@ pub const THREAD_RECORD_PENDING_INVOCATION_OFFSET: i32 = 8;
 /// entry; async poll sites load the word atomically, never the pointer afresh.
 pub const THREAD_RECORD_PENDING_WORK_PTR_OFFSET: i32 = 16;
 pub const THREAD_RECORD_PENDING_WORK_WORD_BYTES: u32 = 4;
+/// u64: address of the executing Python frame's record, or zero. The chain
+/// it heads is the runtime's one frame authority
+/// (molt-runtime builtins/frames/records.rs).
+pub const THREAD_RECORD_FRAME_TOP_OFFSET: i32 = 24;
 
 /// A compiled function object's entry custody, passed to `molt_func_new` and
 /// `molt_func_new_closure`: the entry adopts every Python argument. Zero: it

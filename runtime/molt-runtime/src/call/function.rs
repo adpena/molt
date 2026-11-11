@@ -3706,7 +3706,7 @@ mod tests {
             let mut state = state.borrow_mut();
             state.calls += 1;
             state.recursion_depth = crate::state::recursion::current_thread_recursion_depth();
-            state.frame_depth = crate::FRAME_STACK.with(|stack| stack.borrow().len());
+            state.frame_depth = crate::builtins::frames::records::depth();
             state.execution_context =
                 crate::concurrency::execution::current_thread_has_c_extension_execution_context();
             state.positional = count as usize;
@@ -3798,10 +3798,7 @@ mod tests {
             crate::state::recursion::current_thread_recursion_depth(),
             recursion
         );
-        assert_eq!(
-            crate::FRAME_STACK.with(|stack| stack.borrow().len()),
-            frames
-        );
+        assert_eq!(crate::builtins::frames::records::depth(), frames);
     }
 
     unsafe fn cext_bound_call(py: &crate::PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
@@ -3866,7 +3863,7 @@ mod tests {
             assert!(!view.is_null());
             let baseline = ref_count(value);
             let recursion = crate::state::recursion::current_thread_recursion_depth();
-            let frames = crate::FRAME_STACK.with(|stack| stack.borrow().len());
+            let frames = crate::builtins::frames::records::depth();
             assert!(current_thread_has_c_extension_execution_context());
             let execution_before =
                 (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)();
@@ -4023,7 +4020,7 @@ mod tests {
             assert!(!view.is_null());
             let baseline = ref_count(value);
             let recursion = crate::state::recursion::current_thread_recursion_depth();
-            let frames = crate::FRAME_STACK.with(|stack| stack.borrow().len());
+            let frames = crate::builtins::frames::records::depth();
             assert!(current_thread_has_c_extension_execution_context());
             let execution_before =
                 (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)();

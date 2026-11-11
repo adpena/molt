@@ -818,18 +818,16 @@ pub(crate) extern "C" fn builtin_iter_slot(__context: u64, iter_bits: u64) -> u6
 fn iter_impl(py: &PyToken<'_>, iter_bits: u64, builtin_only: bool) -> u64 {
     crate::with_attached_entry_nopanic!(py, _py, {
         if trace_iter_arg_enabled() {
-            let (frame_name, frame_line) = crate::state::tls::FRAME_STACK.with(|stack| {
-                let stack = stack.borrow();
-                if let Some(frame) = stack.last()
-                    && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
-                {
+            let (frame_name, frame_line) = match crate::builtins::frames::frame_stack_top_entry() {
+                Some(frame) if maybe_ptr_from_bits(frame.code_bits).is_some() => {
+                    let code_ptr = maybe_ptr_from_bits(frame.code_bits).unwrap();
                     let name_bits = unsafe { code_name_bits(code_ptr) };
                     let name = string_obj_to_owned(obj_from_bits(name_bits))
                         .unwrap_or_else(|| "<code>".to_string());
-                    return (name, frame.source_line());
+                    (name, frame.source_line())
                 }
-                ("<no-frame>".to_string(), -1)
-            });
+                _ => ("<no-frame>".to_string(), -1),
+            };
             eprintln!(
                 "[molt iter arg] frame={} line={} type={} bits=0x{:x}",
                 frame_name,
