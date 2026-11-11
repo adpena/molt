@@ -471,6 +471,7 @@ mod tests {
         assert_eq!(
             plan.manifest_intrinsic_names,
             molt_tir::passes::compute_app_callable_manifest(&ir.functions, &symbols)
+                .runtime_callables
         );
         assert!(
             plan.reachable_imports()
