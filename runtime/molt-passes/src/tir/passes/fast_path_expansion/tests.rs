@@ -763,7 +763,7 @@ fn counted_loop_with_boxed_accumulator() -> (TirFunction, ValueId, ValueId) {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let mut int = |func: &mut TirFunction| {
+    let int = |func: &mut TirFunction| {
         let value = func.fresh_value();
         func.value_types.insert(value, TirType::I64);
         value
