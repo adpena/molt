@@ -12,6 +12,7 @@ use crate::tir::function::TirFunction;
 
 use super::DebugLog;
 
+#[derive(Clone)]
 pub(super) struct LoopInfo {
     pub(super) header: BlockId,
     pub(super) blocks: HashSet<BlockId>,

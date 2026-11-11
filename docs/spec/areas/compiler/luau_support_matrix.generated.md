@@ -10,11 +10,11 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 
 ## Summary
 
-- `compile-error`: `84`
+- `compile-error`: `85`
 - `implemented-exact`: `192`
 - `implemented-target-limited`: `19`
 - `not-admitted`: `237`
-- `total`: `532`
+- `total`: `533`
 
 ## Matrix
 
@@ -37,6 +37,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `ascii_from_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `async_for_end` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `async_for_start` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `async_work_pending` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `async_work_poll` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `asyncgen_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `band` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |

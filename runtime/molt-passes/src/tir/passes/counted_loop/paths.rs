@@ -140,7 +140,12 @@ pub(crate) fn loop_guard_path(
     }
 }
 
-/// Ordered straight-line body, including its latch but excluding the header.
+/// Ordered body, including its latch but excluding the header. The path is
+/// straight-line except for conditional exits: a `CondBranch` with exactly one
+/// target in the loop (`if x: break`, a pending-work test) leaves the loop on
+/// one side and continues the path on the other. An exit only shortens the
+/// run, so the recurrence of the normal path still bounds every value. A
+/// branch with both targets in the loop is a second route and is refused.
 pub(super) fn loop_body_path(
     func: &TirFunction,
     header: BlockId,
@@ -157,6 +162,20 @@ pub(super) fn loop_body_path(
         path.push(current);
         match &func.blocks.get(&current)?.terminator {
             Terminator::Branch { target, .. } => current = *target,
+            Terminator::CondBranch {
+                then_block,
+                else_block,
+                ..
+            } if body.contains(then_block) != body.contains(else_block)
+                && *then_block != header
+                && *else_block != header =>
+            {
+                current = if body.contains(then_block) {
+                    *then_block
+                } else {
+                    *else_block
+                };
+            }
             Terminator::CondBranch { .. }
             | Terminator::Switch { .. }
             | Terminator::StateDispatch { .. }

@@ -92,6 +92,24 @@ pub(in crate::native_backend::function_compiler) fn emit_frame_location_store(
     );
 }
 
+/// Read the thread's pending-work word and test it: true when work waits for
+/// a poll.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn emit_async_work_pending(
+    builder: &mut FunctionBuilder<'_>,
+    work_ptr_slot: cranelift_codegen::ir::StackSlot,
+) -> Value {
+    let ptr = builder
+        .ins()
+        .stack_load(types::I64, types::I64, work_ptr_slot, 0);
+    // Cranelift's atomic_load is SC (its only atomic-load ordering). A normal
+    // load is unsound here: GVN/LICM may reuse it across an external request.
+    let word = builder
+        .ins()
+        .atomic_load(types::I32, MemFlagsData::trusted(), ptr);
+    builder.ins().icmp_imm_s(IntCC::NotEqual, word, 0)
+}
+
 /// Service async work only when its runtime word is set. The fast result is
 /// still an exception observation: poll placement marks existing checks after
 /// raising operations; it does not make their exception predicate redundant.
@@ -105,15 +123,7 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     fast_observer: Option<FuncRef>,
     cold_location: Option<(cranelift_codegen::ir::StackSlot, i64)>,
 ) -> Value {
-    let ptr = builder
-        .ins()
-        .stack_load(types::I64, types::I64, work_ptr_slot, 0);
-    // Cranelift's atomic_load is SC (its only atomic-load ordering). A normal
-    // load is unsound here: GVN/LICM may reuse it across an external request.
-    let word = builder
-        .ins()
-        .atomic_load(types::I32, MemFlagsData::trusted(), ptr);
-    let pending = builder.ins().icmp_imm_s(IntCC::NotEqual, word, 0);
+    let pending = emit_async_work_pending(builder, work_ptr_slot);
     let cold = builder.create_block();
     builder.set_cold_block(cold);
     let fast = builder.create_block();

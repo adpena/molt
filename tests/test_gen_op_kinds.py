@@ -823,6 +823,10 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "BuildTuple",
         "CheckException",
         "ExceptionPending",
+        # Reads the thread's pending-work word; writes nothing.
+        "AsyncWorkPending",
+        # Stores a location id in the frame record, not in a heap object.
+        "FrameSetLocation",
         "FunctionDefaultsVersion",
         "StackAlloc",
     }
@@ -1461,6 +1465,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
             "CheckedMul": ["i64", "bool"],
             "IterNextUnboxed": ["operand", "bool"],
             "ExceptionPending": ["bool"],
+            "AsyncWorkPending": ["bool"],
             "IsPending": ["bool"],
             # CPython's method-load pair: the callable and self-or-null.
             "LoadMethod": ["dynbox", "dynbox"],
@@ -3021,6 +3026,7 @@ def test_local_only_operand_authority_is_generated_and_fail_closed() -> None:
         "Free",
         "CheckException",
         "ExceptionPending",
+        "AsyncWorkPending",
         "TryStart",
         "TryEnd",
         "StateBlockStart",
@@ -3465,7 +3471,7 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
     assert data["module_slot_access_roles"] == [
         {"opcode": "ModuleGetAttr", "role": "keyed_attr"},
         {"opcode": "ModuleSetAttr", "role": "keyed_attr"},
-        {"opcode": "ModuleGetGlobal", "role": "wildcard_module_dict"},
+        {"opcode": "ModuleGetGlobal", "role": "keyed_attr"},
         {"opcode": "ModuleDelGlobal", "role": "wildcard_module_dict"},
         {"opcode": "ModuleDelGlobalIfPresent", "role": "wildcard_module_dict"},
     ]
@@ -3497,8 +3503,9 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
     )[0]
     assert "OpCode::ModuleGetAttr => ModuleSlotAccessRole::KeyedAttr" in access_table
     assert "OpCode::ModuleSetAttr => ModuleSlotAccessRole::KeyedAttr" in access_table
+    assert "OpCode::ModuleGetGlobal => ModuleSlotAccessRole::KeyedAttr" in access_table
     assert (
-        "OpCode::ModuleGetGlobal => ModuleSlotAccessRole::WildcardModuleDict"
+        "OpCode::ModuleDelGlobal => ModuleSlotAccessRole::WildcardModuleDict"
         in access_table
     )
     assert "OpCode::ModuleCacheGet => ModuleSlotAccessRole::None" in access_table
@@ -4167,6 +4174,8 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
         "Sub",
         "TypeGuard",
         "UnboxVal",
+        "AsyncWorkPending",
+        "FrameSetLocation",
     }
     expected_typed_slot_load = {"LoadAttr"}
     expected_typed_slot_store = {"StoreAttr"}

@@ -196,6 +196,7 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::ExceptionNew
         | OpKind::ExceptionNewFromClass
         | OpKind::ExceptionPending
+        | OpKind::AsyncWorkPending
         | OpKind::ExceptionRegionDropsInserted
         | OpKind::ExceptionSetLast
         | OpKind::ExceptionStackExit

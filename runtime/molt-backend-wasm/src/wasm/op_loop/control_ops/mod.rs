@@ -70,6 +70,7 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::AsciiFromObj
         | molt_ir::OpKind::AsyncForEnd
         | molt_ir::OpKind::AsyncForStart
+        | molt_ir::OpKind::AsyncWorkPending
         | molt_ir::OpKind::AsyncWorkPoll
         | molt_ir::OpKind::AsyncgenNew
         | molt_ir::OpKind::Band

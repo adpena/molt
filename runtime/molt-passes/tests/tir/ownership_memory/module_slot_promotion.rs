@@ -114,6 +114,9 @@ fn module_loop_func() -> TirFunction {
     let (ci2, ci2v) = const_str(&mut f, "i");
     let mut check = op(OpCode::CheckException, vec![], vec![]);
     check.attrs.insert("value".into(), AttrValue::Int(7));
+    // Lifted checks name their edge kind; promotion deletes the name constants
+    // in front of this one, which were its only untyped source.
+    check.set_exception_edge_kind(molt_passes::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
     f.blocks.insert(
         body,
         TirBlock {
@@ -491,12 +494,7 @@ fn unrelated_raw_allocation_after_module_seeds_keeps_them_available() {
 
 #[test]
 fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
-    for boundary in [
-        "object_new_bound",
-        "alloc_class",
-        "guarded_field_set",
-        "poll",
-    ] {
+    for boundary in ["object_new_bound", "alloc_class", "guarded_field_set"] {
         let mut f = typed_field_initialization_loop();
         let class = crate::fixture_support::append_parameter(&mut f, TirType::DynBox);
         let body = f.blocks.get_mut(&BlockId(2)).unwrap();
@@ -518,12 +516,6 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
                     AttrValue::Str("class:m:Owner".into()),
                 );
             }
-            "poll" => {
-                let mut poll = op(OpCode::CheckException, vec![], vec![]);
-                poll.attrs.insert("value".into(), AttrValue::Int(7));
-                assert!(poll.mark_async_work_poll());
-                body.ops.insert(3, poll);
-            }
             _ => unreachable!(),
         }
         molt_passes::tir::verify::verify_function(&f).expect("valid callback-control fixture");
@@ -540,4 +532,213 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
         assert_eq!(stats.slots_promoted, 0);
         assert_eq!(format!("{:?}", module.functions[0]), before);
     }
+}
+
+/// The bench_sum loop with the back-edge poll the pipeline places: the body's
+/// last op services signal handlers and pending calls.
+fn polled_module_loop_func() -> TirFunction {
+    let mut f = module_loop_func();
+    let mut poll = op(OpCode::CheckException, vec![], vec![]);
+    poll.attrs.insert("value".into(), AttrValue::Int(7));
+    assert!(poll.mark_async_work_poll());
+    f.blocks.get_mut(&BlockId(2)).unwrap().ops.push(poll);
+    molt_passes::tir::verify::verify_function(&f).expect("valid polled loop fixture");
+    f
+}
+
+fn module_ops(block: &TirBlock) -> Vec<&TirOp> {
+    block
+        .ops
+        .iter()
+        .filter(|o| matches!(o.opcode, OpCode::ModuleGetAttr | OpCode::ModuleSetAttr))
+        .collect()
+}
+
+/// A poll may run a handler that reads or writes any slot. The loop is split:
+/// the promoted loop tests for pending work and leaves, with its slots
+/// stored, for an unpromoted copy that polls.
+#[test]
+fn a_loop_poll_versions_the_loop_and_promotes_the_copy_without_polls() {
+    let (header, body) = (BlockId(1), BlockId(2));
+    let mut module = TirModule {
+        name: "m".into(),
+        functions: vec![polled_module_loop_func()],
+    };
+    let (stats, changed) = run_module_slot_promotion(&mut module);
+    assert_eq!(changed, vec!["chunk".to_string()]);
+    assert_eq!(stats.slots_promoted, 3);
+    let f = &module.functions[0];
+    molt_passes::tir::verify::verify_function(f)
+        .unwrap_or_else(|e| panic!("versioned fn invalid: {e:?}"));
+
+    // The promoted loop: registers only, no poll, one pending-work test.
+    assert_eq!(count_module_ops_in(f, &[header, body]), 0);
+    assert!(
+        [header, body]
+            .iter()
+            .flat_map(|b| &f.blocks[b].ops)
+            .all(|o| !o.is_async_work_poll())
+    );
+    let fast_body = &f.blocks[&body];
+    let adds: Vec<ValueId> = fast_body
+        .ops
+        .iter()
+        .filter(|o| o.opcode == OpCode::Add)
+        .map(|o| o.results[0])
+        .collect();
+    let [sum, next_i] = adds[..] else {
+        panic!("the body keeps its two adds");
+    };
+    let pending = fast_body.ops.last().expect("the test ends the latch");
+    assert_eq!(pending.opcode, OpCode::AsyncWorkPending);
+    let Terminator::CondBranch {
+        cond,
+        then_block: stores,
+        then_args,
+        else_block: back,
+        else_args,
+    } = &fast_body.terminator
+    else {
+        panic!("the latch branches on pending work");
+    };
+    assert_eq!(pending.results, vec![*cond]);
+    assert!(then_args.is_empty() && else_args.is_empty());
+    // The back edge is unconditional and carries the three slots.
+    let back = &f.blocks[back];
+    assert!(back.ops.is_empty());
+    assert!(matches!(
+        &back.terminator,
+        Terminator::Branch { target, args } if *target == header && args.len() == 3
+    ));
+
+    // On pending work the dirty slots are stored with this iteration's
+    // values, then control enters the copy's header.
+    let stores = &f.blocks[stores];
+    let stored: Vec<ValueId> = module_ops(stores).iter().map(|o| o.operands[2]).collect();
+    assert_eq!(stored.len(), 2, "total and i are dirty; N is not");
+    assert!(stored.contains(&sum) && stored.contains(&next_i));
+    let Terminator::Branch {
+        target: slow_header,
+        ..
+    } = &stores.terminator
+    else {
+        panic!("the store-back block enters the copy");
+    };
+    assert_ne!(*slow_header, header);
+
+    // The copy is the loop as written: it reads every slot from the module,
+    // polls, and returns to its own header.
+    let slow_header_block = &f.blocks[slow_header];
+    assert_eq!(module_ops(slow_header_block).len(), 2, "i and N are read");
+    let Terminator::CondBranch {
+        then_block: slow_body,
+        ..
+    } = &slow_header_block.terminator
+    else {
+        panic!("the copy keeps the loop test");
+    };
+    let slow_body_block = &f.blocks[slow_body];
+    assert_eq!(module_ops(slow_body_block).len(), 3);
+    assert_eq!(
+        slow_body_block
+            .ops
+            .iter()
+            .filter(|o| o.is_async_work_poll())
+            .count(),
+        1
+    );
+    assert!(matches!(
+        &slow_body_block.terminator,
+        Terminator::Branch { target, .. } if target == slow_header
+    ));
+}
+
+#[test]
+fn a_polled_loop_whose_value_is_read_after_it_refuses_without_mutation() {
+    let exit = BlockId(3);
+    let escape = |mut f: TirFunction| {
+        let cond = f.blocks[&BlockId(1)].ops[4].results[0];
+        f.blocks.get_mut(&exit).unwrap().terminator = Terminator::Return { values: vec![cond] };
+        f
+    };
+    // Without a poll the same escape promotes: one loop needs no merge.
+    let mut plain = TirModule {
+        name: "m".into(),
+        functions: vec![escape(module_loop_func())],
+    };
+    assert_eq!(run_module_slot_promotion(&mut plain).1, vec!["chunk"]);
+
+    let f = escape(polled_module_loop_func());
+    let before = format!("{f:?}");
+    let mut module = TirModule {
+        name: "m".into(),
+        functions: vec![f],
+    };
+    let (stats, changed) = run_module_slot_promotion(&mut module);
+    assert!(changed.is_empty(), "two loop copies would need a merge");
+    assert_eq!(stats.slots_promoted, 0);
+    assert_eq!(format!("{:?}", module.functions[0]), before);
+}
+
+#[test]
+fn a_polled_loop_with_a_conditional_back_edge_refuses_without_mutation() {
+    let (header, body, exit) = (BlockId(1), BlockId(2), BlockId(3));
+    let mut f = polled_module_loop_func();
+    let cond = f.blocks[&header].ops[4].results[0];
+    f.blocks.get_mut(&body).unwrap().terminator = Terminator::CondBranch {
+        cond,
+        then_block: header,
+        then_args: vec![],
+        else_block: exit,
+        else_args: vec![],
+    };
+    let before = format!("{f:?}");
+    let mut module = TirModule {
+        name: "m".into(),
+        functions: vec![f],
+    };
+    let (stats, changed) = run_module_slot_promotion(&mut module);
+    assert!(changed.is_empty());
+    assert_eq!(stats.slots_promoted, 0);
+    assert_eq!(format!("{:?}", module.functions[0]), before);
+}
+
+/// GVN shares the name constant of an in-loop access with the access after the
+/// loop (`while i < N: ...` then `print(i)`). The constant moves above the
+/// loop, so both copies and the exit read one definition.
+#[test]
+fn a_name_constant_read_after_a_polled_loop_is_hoisted_not_refused() {
+    let (header, exit) = (BlockId(1), BlockId(3));
+    let mut f = polled_module_loop_func();
+    let shared_name = f.blocks[&header].ops[0].results[0];
+    assert_eq!(f.blocks[&header].ops[0].opcode, OpCode::ConstStr);
+    {
+        // The exit reads `i` through the header's name constant.
+        let exit_block = f.blocks.get_mut(&exit).unwrap();
+        exit_block.ops.remove(0);
+        exit_block.ops[0].operands[1] = shared_name;
+    }
+    molt_passes::tir::verify::verify_function(&f).expect("valid shared-name fixture");
+    let mut module = TirModule {
+        name: "m".into(),
+        functions: vec![f],
+    };
+    let (stats, changed) = run_module_slot_promotion(&mut module);
+    assert_eq!(changed, vec!["chunk".to_string()]);
+    assert_eq!(stats.slots_promoted, 3);
+    let f = &module.functions[0];
+    molt_passes::tir::verify::verify_function(f)
+        .unwrap_or_else(|e| panic!("versioned fn invalid: {e:?}"));
+    let defined_in = |bid: BlockId| {
+        f.blocks[&bid]
+            .ops
+            .iter()
+            .any(|o| o.results.contains(&shared_name))
+    };
+    assert!(
+        defined_in(f.entry_block),
+        "the name is built above the loop"
+    );
+    assert!(!defined_in(header));
+    assert_eq!(count_module_ops_in(f, &[header, BlockId(2)]), 0);
 }

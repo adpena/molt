@@ -128,6 +128,9 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
             }
             has_side_exits = true;
         }
+        // A conditional exit in the body leaves before the trip count is run.
+        has_side_exits |=
+            body_path.contains(&bid) && matches!(&block.terminator, Terminator::CondBranch { .. });
     }
 
     let const_map = build_const_int_map(func);

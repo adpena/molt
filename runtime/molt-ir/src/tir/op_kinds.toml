@@ -419,7 +419,7 @@ simpleir_exception_semantics_kinds = [
     "exception_new_builtin_empty", "exception_new_builtin_one",
     "exception_match_builtin", "exception_class",
     "exceptiongroup_match", "exceptiongroup_combine",
-    "exception_pending",
+    "exception_pending", "async_work_pending",
 ]
 simpleir_deterministic_lifetime_semantics_kinds = [
     "inc_ref", "dec_ref", "borrow", "release",
@@ -1180,6 +1180,7 @@ opcode_has_local_only_operands_opcodes = [
     "DecRef",
     "DelBoundary",
     "DeleteVar",
+    "AsyncWorkPending",
     "ExceptionPending",
     "Free",
     "FunctionDefaultsVersion",
@@ -1366,7 +1367,7 @@ module_concurrency_marker_source_roles = [
 module_slot_access_roles = [
     { opcode = "ModuleGetAttr", role = "keyed_attr" },
     { opcode = "ModuleSetAttr", role = "keyed_attr" },
-    { opcode = "ModuleGetGlobal", role = "wildcard_module_dict" },
+    { opcode = "ModuleGetGlobal", role = "keyed_attr" },
     { opcode = "ModuleDelGlobal", role = "wildcard_module_dict" },
     { opcode = "ModuleDelGlobalIfPresent", role = "wildcard_module_dict" },
 ]
@@ -1797,6 +1798,7 @@ repr_projectable_bool_result_rules = [
     { opcode = "Not", rule = "always" },
     { opcode = "Bool", rule = "always" },
     { opcode = "ExceptionPending", rule = "always" },
+    { opcode = "AsyncWorkPending", rule = "always" },
     { opcode = "CheckedAdd", rule = "result1" },
     { opcode = "CheckedMul", rule = "result1" },
     { opcode = "IterNextUnboxed", rule = "result1" },
@@ -1842,6 +1844,9 @@ exception_region_nesting_roles = [
     { opcode = "TryEnd", role = "exit" },
 ]
 
+# FrameSetLocation stores a location id in the frame record. No TIR load reads
+# that word (frame introspection reaches it through an opaque runtime call), so
+# the store touches no region a pass tracks; it stays pinned by its side effect.
 alias_memory_inert_opcodes = [
     "ModuleSlot",
     "Add",
@@ -1865,8 +1870,10 @@ alias_memory_inert_opcodes = [
     "ConstStr",
     "Div",
     "Eq",
+    "AsyncWorkPending",
     "ExceptionPending",
     "FloorDiv",
+    "FrameSetLocation",
     "FunctionDefaultsVersion",
     "Ge",
     "Gt",
@@ -2954,6 +2961,7 @@ operand_arity = 0
 may_throw = false
 side_effecting = true
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "zero"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -4059,6 +4067,26 @@ result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
+# Reads the thread's pending-work word: true when a signal handler, a pending
+# call or a scheduler request waits for the next poll. It runs no work and
+# cannot raise. Another thread or a signal sets the word at any time, so the
+# read is pinned at its program point like `ExceptionPending`. Module-slot
+# promotion tests it once per iteration of a promoted loop and leaves for the
+# unpromoted loop, which polls, when it is set.
+[[opcode]]
+name = "AsyncWorkPending"
+may_call_python = false
+operand_arity = 0
+operand_independent_result_types = ["bool"]
+frontend_intrinsic_scalar_arity = 0
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
 # Reads a function object's `__defaults__`/`__kwdefaults__` mutation version
 # stamp (a mutable runtime slot). Like `ExceptionPending`, the value can change
 # between loop iterations (a `func.__defaults__ = ...` reassignment, even one
@@ -4860,6 +4888,11 @@ mapper_opcode = "CheckException"
 canonical = "exception_pending"
 aliases = []
 mapper_opcode = "ExceptionPending"
+
+[[kind]]
+canonical = "async_work_pending"
+aliases = []
+mapper_opcode = "AsyncWorkPending"
 
 [[kind]]
 canonical = "function_defaults_version"

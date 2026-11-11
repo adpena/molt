@@ -51,6 +51,8 @@ pub enum OpKind {
     AsyncForEnd,
     #[serde(rename = "async_for_start")]
     AsyncForStart,
+    #[serde(rename = "async_work_pending")]
+    AsyncWorkPending,
     #[serde(rename = "async_work_poll")]
     AsyncWorkPoll,
     #[serde(rename = "asyncgen_new")]
@@ -1102,6 +1104,7 @@ impl OpKind {
         Self::AsciiFromObj,
         Self::AsyncForEnd,
         Self::AsyncForStart,
+        Self::AsyncWorkPending,
         Self::AsyncWorkPoll,
         Self::AsyncgenNew,
         Self::Band,
@@ -1638,6 +1641,7 @@ impl OpKind {
             Self::AsciiFromObj => "ascii_from_obj",
             Self::AsyncForEnd => "async_for_end",
             Self::AsyncForStart => "async_for_start",
+            Self::AsyncWorkPending => "async_work_pending",
             Self::AsyncWorkPoll => "async_work_poll",
             Self::AsyncgenNew => "asyncgen_new",
             Self::Band => "band",
@@ -2185,6 +2189,7 @@ impl std::str::FromStr for OpKind {
             "ascii_from_obj" => Ok(Self::AsciiFromObj),
             "async_for_end" => Ok(Self::AsyncForEnd),
             "async_for_start" => Ok(Self::AsyncForStart),
+            "async_work_pending" => Ok(Self::AsyncWorkPending),
             "async_work_poll" => Ok(Self::AsyncWorkPoll),
             "asyncgen_new" => Ok(Self::AsyncgenNew),
             "band" => Ok(Self::Band),
@@ -2743,6 +2748,7 @@ pub const fn simpleir_backend_private_owner(kind: OpKind) -> Option<&'static str
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -3311,6 +3317,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -3947,6 +3954,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -4488,6 +4496,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -5029,6 +5038,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -5569,6 +5579,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -6110,6 +6121,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -6651,6 +6663,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -7192,6 +7205,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -7733,6 +7747,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -8273,6 +8288,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -8812,6 +8828,7 @@ impl OpKind {
             | OpKind::Anext
             | OpKind::Any
             | OpKind::AsciiFromObj
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -9355,6 +9372,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -9896,6 +9914,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -10437,6 +10456,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -10976,6 +10996,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -11516,6 +11537,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -12056,6 +12078,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -12596,6 +12619,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -13137,6 +13161,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -13678,6 +13703,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -14218,6 +14244,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -14758,6 +14785,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -15303,6 +15331,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -15849,6 +15878,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -16388,6 +16418,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -16933,6 +16964,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -17479,6 +17511,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -18016,6 +18049,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -18554,6 +18588,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -19273,6 +19308,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -19853,6 +19889,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::BindingAlias
@@ -20994,20 +21031,8 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::ReprFromObj
         | OpKind::Str
         | OpKind::StrFromObj => Some(SimpleIrRuntimeRequirements(512)),
-        OpKind::AsyncWorkPoll => Some(SimpleIrRuntimeRequirements(32772)),
-        OpKind::Borrow
-        | OpKind::DecRef
-        | OpKind::DelBoundary
-        | OpKind::DeleteVar
-        | OpKind::Free
-        | OpKind::IncRef
-        | OpKind::Release => Some(SimpleIrRuntimeRequirements(8)),
-        OpKind::BuildTuple | OpKind::TupleNew => Some(SimpleIrRuntimeRequirements(2)),
-        OpKind::CallargsExpandKwstar
-        | OpKind::CallargsPushKw
-        | OpKind::CallargsPushMethodReceiver => Some(SimpleIrRuntimeRequirements(576)),
-        OpKind::CallargsExpandStar => Some(SimpleIrRuntimeRequirements(608)),
-        OpKind::CheckException
+        OpKind::AsyncWorkPending
+        | OpKind::CheckException
         | OpKind::ExceptEnd
         | OpKind::ExceptStart
         | OpKind::ExceptionActive
@@ -21041,6 +21066,19 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Reraise
         | OpKind::TryEnd
         | OpKind::TryStart => Some(SimpleIrRuntimeRequirements(4)),
+        OpKind::AsyncWorkPoll => Some(SimpleIrRuntimeRequirements(32772)),
+        OpKind::Borrow
+        | OpKind::DecRef
+        | OpKind::DelBoundary
+        | OpKind::DeleteVar
+        | OpKind::Free
+        | OpKind::IncRef
+        | OpKind::Release => Some(SimpleIrRuntimeRequirements(8)),
+        OpKind::BuildTuple | OpKind::TupleNew => Some(SimpleIrRuntimeRequirements(2)),
+        OpKind::CallargsExpandKwstar
+        | OpKind::CallargsPushKw
+        | OpKind::CallargsPushMethodReceiver => Some(SimpleIrRuntimeRequirements(576)),
+        OpKind::CallargsExpandStar => Some(SimpleIrRuntimeRequirements(608)),
         OpKind::CmpEq
         | OpKind::CmpGe
         | OpKind::CmpGt
@@ -21200,6 +21238,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -21745,6 +21784,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -22289,6 +22329,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -22829,6 +22870,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -23385,6 +23427,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -24288,6 +24331,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::Alloc => Some(OpCode::Alloc),
         OpKind::AllocTask => Some(OpCode::AllocTask),
         OpKind::And => Some(OpCode::And),
+        OpKind::AsyncWorkPending => Some(OpCode::AsyncWorkPending),
         OpKind::AsyncWorkPoll | OpKind::CheckException => Some(OpCode::CheckException),
         OpKind::BinopFloorDiv | OpKind::FloorDiv | OpKind::Floordiv => Some(OpCode::FloorDiv),
         OpKind::BitAnd => Some(OpCode::BitAnd),
@@ -24530,6 +24574,7 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::Raise => Some(OpKind::Raise),
         OpCode::CheckException => Some(OpKind::CheckException),
         OpCode::ExceptionPending => Some(OpKind::ExceptionPending),
+        OpCode::AsyncWorkPending => Some(OpKind::AsyncWorkPending),
         OpCode::FunctionDefaultsVersion => Some(OpKind::FunctionDefaultsVersion),
         OpCode::TryStart => Some(OpKind::TryStart),
         OpCode::TryEnd => Some(OpKind::TryEnd),
@@ -24663,6 +24708,7 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -24718,6 +24764,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -25253,6 +25300,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::Any
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::Band
         | OpKind::BindingAlias
@@ -25795,6 +25843,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -26333,6 +26382,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -26871,6 +26921,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -27408,6 +27459,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -27947,6 +27999,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -28485,6 +28538,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -29023,6 +29077,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -29637,6 +29692,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::Raise,
     OpCode::CheckException,
     OpCode::ExceptionPending,
+    OpCode::AsyncWorkPending,
     OpCode::FunctionDefaultsVersion,
     OpCode::TryStart,
     OpCode::TryEnd,
@@ -29769,6 +29825,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -29901,6 +29958,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => true,
+        OpCode::AsyncWorkPending => true,
         OpCode::FunctionDefaultsVersion => true,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -30033,6 +30091,7 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -30113,7 +30172,7 @@ pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {
 #[inline]
 pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
     let mut effects = match opcode {
-        OpCode::FrameSetLocation => OPCODE_EFFECTS_IMPURE,
+        OpCode::FrameSetLocation => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::Add => OPCODE_EFFECTS_IMPURE,
         OpCode::Sub => OPCODE_EFFECTS_IMPURE,
         OpCode::Mul => OPCODE_EFFECTS_IMPURE,
@@ -30206,6 +30265,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::Raise => OPCODE_EFFECTS_IMPURE,
         OpCode::CheckException => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::ExceptionPending => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::AsyncWorkPending => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::FunctionDefaultsVersion => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::TryStart => OPCODE_EFFECTS_IMPURE,
         OpCode::TryEnd => OPCODE_EFFECTS_IMPURE,
@@ -30265,6 +30325,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -30803,6 +30864,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -31341,6 +31403,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -31878,6 +31941,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -32417,6 +32481,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -32957,6 +33022,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -33496,6 +33562,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -34036,6 +34103,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -34576,6 +34644,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -35116,6 +35185,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -35656,6 +35726,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -36274,6 +36345,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -36408,6 +36480,7 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::Raise => Some(0),
         OpCode::CheckException => None,
         OpCode::ExceptionPending => Some(1),
+        OpCode::AsyncWorkPending => Some(1),
         OpCode::FunctionDefaultsVersion => Some(1),
         OpCode::TryStart => Some(0),
         OpCode::TryEnd => Some(0),
@@ -36652,6 +36725,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -36784,6 +36858,7 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::Raise => FuzzTirAttrPayloadRule::None,
         OpCode::CheckException => FuzzTirAttrPayloadRule::None,
         OpCode::ExceptionPending => FuzzTirAttrPayloadRule::None,
+        OpCode::AsyncWorkPending => FuzzTirAttrPayloadRule::None,
         OpCode::FunctionDefaultsVersion => FuzzTirAttrPayloadRule::None,
         OpCode::TryStart => FuzzTirAttrPayloadRule::None,
         OpCode::TryEnd => FuzzTirAttrPayloadRule::None,
@@ -36923,6 +36998,7 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -37269,6 +37345,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => count == 0,
+        OpCode::AsyncWorkPending => count == 0,
         OpCode::FunctionDefaultsVersion => true,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -37470,6 +37547,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::Raise => &[],
         OpCode::CheckException => &[],
         OpCode::ExceptionPending => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::AsyncWorkPending => &[Some(OperandIndependentResultType::Bool)],
         OpCode::FunctionDefaultsVersion => &[],
         OpCode::TryStart => &[],
         OpCode::TryEnd => &[],
@@ -37626,6 +37704,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::Raise => TypeRefineAttrResultTypeRule::None,
         OpCode::CheckException => TypeRefineAttrResultTypeRule::None,
         OpCode::ExceptionPending => TypeRefineAttrResultTypeRule::None,
+        OpCode::AsyncWorkPending => TypeRefineAttrResultTypeRule::None,
         OpCode::FunctionDefaultsVersion => TypeRefineAttrResultTypeRule::None,
         OpCode::TryStart => TypeRefineAttrResultTypeRule::None,
         OpCode::TryEnd => TypeRefineAttrResultTypeRule::None,
@@ -37783,6 +37862,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::Raise => TypeRefineOperandTypeRule::None,
         OpCode::CheckException => TypeRefineOperandTypeRule::None,
         OpCode::ExceptionPending => TypeRefineOperandTypeRule::None,
+        OpCode::AsyncWorkPending => TypeRefineOperandTypeRule::None,
         OpCode::FunctionDefaultsVersion => TypeRefineOperandTypeRule::None,
         OpCode::TryStart => TypeRefineOperandTypeRule::None,
         OpCode::TryEnd => TypeRefineOperandTypeRule::None,
@@ -37928,6 +38008,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::Raise => SccpConstantSeedRule::None,
         OpCode::CheckException => SccpConstantSeedRule::None,
         OpCode::ExceptionPending => SccpConstantSeedRule::None,
+        OpCode::AsyncWorkPending => SccpConstantSeedRule::None,
         OpCode::FunctionDefaultsVersion => SccpConstantSeedRule::None,
         OpCode::TryStart => SccpConstantSeedRule::None,
         OpCode::TryEnd => SccpConstantSeedRule::None,
@@ -38087,6 +38168,7 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::Raise => SccpConstantEvalRule::None,
         OpCode::CheckException => SccpConstantEvalRule::None,
         OpCode::ExceptionPending => SccpConstantEvalRule::None,
+        OpCode::AsyncWorkPending => SccpConstantEvalRule::None,
         OpCode::FunctionDefaultsVersion => SccpConstantEvalRule::None,
         OpCode::TryStart => SccpConstantEvalRule::None,
         OpCode::TryEnd => SccpConstantEvalRule::None,
@@ -38220,6 +38302,7 @@ pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -38373,6 +38456,7 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::Raise => ValueRangeTransferRule::None,
         OpCode::CheckException => ValueRangeTransferRule::None,
         OpCode::ExceptionPending => ValueRangeTransferRule::None,
+        OpCode::AsyncWorkPending => ValueRangeTransferRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeTransferRule::None,
         OpCode::TryStart => ValueRangeTransferRule::None,
         OpCode::TryEnd => ValueRangeTransferRule::None,
@@ -38514,6 +38598,7 @@ pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansio
         OpCode::Raise => FastPathExpansionRule::None,
         OpCode::CheckException => FastPathExpansionRule::None,
         OpCode::ExceptionPending => FastPathExpansionRule::None,
+        OpCode::AsyncWorkPending => FastPathExpansionRule::None,
         OpCode::FunctionDefaultsVersion => FastPathExpansionRule::None,
         OpCode::TryStart => FastPathExpansionRule::None,
         OpCode::TryEnd => FastPathExpansionRule::None,
@@ -38662,6 +38747,7 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::Raise => ValueRangeConstFoldRule::None,
         OpCode::CheckException => ValueRangeConstFoldRule::None,
         OpCode::ExceptionPending => ValueRangeConstFoldRule::None,
+        OpCode::AsyncWorkPending => ValueRangeConstFoldRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeConstFoldRule::None,
         OpCode::TryStart => ValueRangeConstFoldRule::None,
         OpCode::TryEnd => ValueRangeConstFoldRule::None,
@@ -38804,6 +38890,7 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::Raise => ValueRangeCondNarrowRule::None,
         OpCode::CheckException => ValueRangeCondNarrowRule::None,
         OpCode::ExceptionPending => ValueRangeCondNarrowRule::None,
+        OpCode::AsyncWorkPending => ValueRangeCondNarrowRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeCondNarrowRule::None,
         OpCode::TryStart => ValueRangeCondNarrowRule::None,
         OpCode::TryEnd => ValueRangeCondNarrowRule::None,
@@ -38950,6 +39037,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::Raise => ValueRangeContainerLengthRule::None,
         OpCode::CheckException => ValueRangeContainerLengthRule::None,
         OpCode::ExceptionPending => ValueRangeContainerLengthRule::None,
+        OpCode::AsyncWorkPending => ValueRangeContainerLengthRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeContainerLengthRule::None,
         OpCode::TryStart => ValueRangeContainerLengthRule::None,
         OpCode::TryEnd => ValueRangeContainerLengthRule::None,
@@ -39093,6 +39181,7 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::Raise => RangeDevirtRole::None,
         OpCode::CheckException => RangeDevirtRole::None,
         OpCode::ExceptionPending => RangeDevirtRole::None,
+        OpCode::AsyncWorkPending => RangeDevirtRole::None,
         OpCode::FunctionDefaultsVersion => RangeDevirtRole::None,
         OpCode::TryStart => RangeDevirtRole::None,
         OpCode::TryEnd => RangeDevirtRole::None,
@@ -39632,6 +39721,11 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
+        OpCode::AsyncWorkPending => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
         OpCode::FunctionDefaultsVersion => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
@@ -39900,6 +39994,7 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::Raise => LirVerifyRule::None,
         OpCode::CheckException => LirVerifyRule::None,
         OpCode::ExceptionPending => LirVerifyRule::None,
+        OpCode::AsyncWorkPending => LirVerifyRule::None,
         OpCode::FunctionDefaultsVersion => LirVerifyRule::None,
         OpCode::TryStart => LirVerifyRule::None,
         OpCode::TryEnd => LirVerifyRule::None,
@@ -40046,6 +40141,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::Raise => ReprRawI64FullDeoptSeedRule::None,
         OpCode::CheckException => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ExceptionPending => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::AsyncWorkPending => ReprRawI64FullDeoptSeedRule::None,
         OpCode::FunctionDefaultsVersion => ReprRawI64FullDeoptSeedRule::None,
         OpCode::TryStart => ReprRawI64FullDeoptSeedRule::None,
         OpCode::TryEnd => ReprRawI64FullDeoptSeedRule::None,
@@ -40195,6 +40291,7 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::Raise => ReprProjectableBoolResultRule::None,
         OpCode::CheckException => ReprProjectableBoolResultRule::None,
         OpCode::ExceptionPending => ReprProjectableBoolResultRule::Always,
+        OpCode::AsyncWorkPending => ReprProjectableBoolResultRule::Always,
         OpCode::FunctionDefaultsVersion => ReprProjectableBoolResultRule::None,
         OpCode::TryStart => ReprProjectableBoolResultRule::None,
         OpCode::TryEnd => ReprProjectableBoolResultRule::None,
@@ -40342,6 +40439,7 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::Raise => ReprProjectableFloatResultRule::None,
         OpCode::CheckException => ReprProjectableFloatResultRule::None,
         OpCode::ExceptionPending => ReprProjectableFloatResultRule::None,
+        OpCode::AsyncWorkPending => ReprProjectableFloatResultRule::None,
         OpCode::FunctionDefaultsVersion => ReprProjectableFloatResultRule::None,
         OpCode::TryStart => ReprProjectableFloatResultRule::None,
         OpCode::TryEnd => ReprProjectableFloatResultRule::None,
@@ -40512,6 +40610,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::Raise => CountedLoopComparisonRole::None,
         OpCode::CheckException => CountedLoopComparisonRole::None,
         OpCode::ExceptionPending => CountedLoopComparisonRole::None,
+        OpCode::AsyncWorkPending => CountedLoopComparisonRole::None,
         OpCode::FunctionDefaultsVersion => CountedLoopComparisonRole::None,
         OpCode::TryStart => CountedLoopComparisonRole::None,
         OpCode::TryEnd => CountedLoopComparisonRole::None,
@@ -40644,6 +40743,7 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -40796,6 +40896,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::Raise => GvnNumberingRole::Never,
         OpCode::CheckException => GvnNumberingRole::Never,
         OpCode::ExceptionPending => GvnNumberingRole::Never,
+        OpCode::AsyncWorkPending => GvnNumberingRole::Never,
         OpCode::FunctionDefaultsVersion => GvnNumberingRole::Never,
         OpCode::TryStart => GvnNumberingRole::Never,
         OpCode::TryEnd => GvnNumberingRole::Never,
@@ -40961,6 +41062,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -41116,6 +41218,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41250,6 +41353,7 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => true,
+        OpCode::AsyncWorkPending => true,
         OpCode::FunctionDefaultsVersion => true,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -41382,6 +41486,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => false,
@@ -41515,6 +41620,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41648,6 +41754,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41781,6 +41888,7 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41948,6 +42056,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::Raise => RefcountBalanceRole::NotRefcountBalance,
         OpCode::CheckException => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ExceptionPending => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::AsyncWorkPending => RefcountBalanceRole::NotRefcountBalance,
         OpCode::FunctionDefaultsVersion => RefcountBalanceRole::NotRefcountBalance,
         OpCode::TryStart => RefcountBalanceRole::NotRefcountBalance,
         OpCode::TryEnd => RefcountBalanceRole::NotRefcountBalance,
@@ -42082,6 +42191,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -42215,6 +42325,7 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -42370,6 +42481,7 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::Raise => GeneratorFusionPollRole::Neutral,
         OpCode::CheckException => GeneratorFusionPollRole::Neutral,
         OpCode::ExceptionPending => GeneratorFusionPollRole::Neutral,
+        OpCode::AsyncWorkPending => GeneratorFusionPollRole::Neutral,
         OpCode::FunctionDefaultsVersion => GeneratorFusionPollRole::Neutral,
         OpCode::TryStart => GeneratorFusionPollRole::Neutral,
         OpCode::TryEnd => GeneratorFusionPollRole::Neutral,
@@ -42513,6 +42625,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::Raise => GeneratorFusionIterUseRole::None,
         OpCode::CheckException => GeneratorFusionIterUseRole::None,
         OpCode::ExceptionPending => GeneratorFusionIterUseRole::None,
+        OpCode::AsyncWorkPending => GeneratorFusionIterUseRole::None,
         OpCode::FunctionDefaultsVersion => GeneratorFusionIterUseRole::None,
         OpCode::TryStart => GeneratorFusionIterUseRole::None,
         OpCode::TryEnd => GeneratorFusionIterUseRole::None,
@@ -42648,6 +42761,7 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -42781,6 +42895,7 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -42948,6 +43063,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::Raise => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::CheckException => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ExceptionPending => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::AsyncWorkPending => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::FunctionDefaultsVersion => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::TryStart => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::TryEnd => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -43097,6 +43213,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::Raise => ModuleSlotAccessRole::None,
         OpCode::CheckException => ModuleSlotAccessRole::None,
         OpCode::ExceptionPending => ModuleSlotAccessRole::None,
+        OpCode::AsyncWorkPending => ModuleSlotAccessRole::None,
         OpCode::FunctionDefaultsVersion => ModuleSlotAccessRole::None,
         OpCode::TryStart => ModuleSlotAccessRole::None,
         OpCode::TryEnd => ModuleSlotAccessRole::None,
@@ -43118,7 +43235,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::ModuleCacheDel => ModuleSlotAccessRole::None,
         OpCode::ModuleGetAttr => ModuleSlotAccessRole::KeyedAttr,
         OpCode::ModuleImportFrom => ModuleSlotAccessRole::None,
-        OpCode::ModuleGetGlobal => ModuleSlotAccessRole::WildcardModuleDict,
+        OpCode::ModuleGetGlobal => ModuleSlotAccessRole::KeyedAttr,
         OpCode::ModuleGetName => ModuleSlotAccessRole::None,
         OpCode::ModuleSetAttr => ModuleSlotAccessRole::KeyedAttr,
         OpCode::ModuleDelGlobal => ModuleSlotAccessRole::WildcardModuleDict,
@@ -43240,6 +43357,7 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::Raise => BoxedAllocationLayoutRule::None,
         OpCode::CheckException => BoxedAllocationLayoutRule::None,
         OpCode::ExceptionPending => BoxedAllocationLayoutRule::None,
+        OpCode::AsyncWorkPending => BoxedAllocationLayoutRule::None,
         OpCode::FunctionDefaultsVersion => BoxedAllocationLayoutRule::None,
         OpCode::TryStart => BoxedAllocationLayoutRule::None,
         OpCode::TryEnd => BoxedAllocationLayoutRule::None,
@@ -43385,6 +43503,7 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::Raise => TirVerifyAttrRule::None,
         OpCode::CheckException => TirVerifyAttrRule::None,
         OpCode::ExceptionPending => TirVerifyAttrRule::None,
+        OpCode::AsyncWorkPending => TirVerifyAttrRule::None,
         OpCode::FunctionDefaultsVersion => TirVerifyAttrRule::None,
         OpCode::TryStart => TirVerifyAttrRule::None,
         OpCode::TryEnd => TirVerifyAttrRule::None,
@@ -43530,6 +43649,7 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::Raise => StrengthReductionRule::None,
         OpCode::CheckException => StrengthReductionRule::None,
         OpCode::ExceptionPending => StrengthReductionRule::None,
+        OpCode::AsyncWorkPending => StrengthReductionRule::None,
         OpCode::FunctionDefaultsVersion => StrengthReductionRule::None,
         OpCode::TryStart => StrengthReductionRule::None,
         OpCode::TryEnd => StrengthReductionRule::None,
@@ -43674,6 +43794,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::Raise => ScevExprRule::None,
         OpCode::CheckException => ScevExprRule::None,
         OpCode::ExceptionPending => ScevExprRule::None,
+        OpCode::AsyncWorkPending => ScevExprRule::None,
         OpCode::FunctionDefaultsVersion => ScevExprRule::None,
         OpCode::TryStart => ScevExprRule::None,
         OpCode::TryEnd => ScevExprRule::None,
@@ -43810,6 +43931,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -43945,6 +44067,7 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -44081,6 +44204,7 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -44215,6 +44339,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -44348,6 +44473,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -44481,6 +44607,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -44616,6 +44743,7 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -44749,6 +44877,7 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -44884,6 +45013,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -45017,6 +45147,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -45150,6 +45281,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -45283,6 +45415,7 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => false,
@@ -45423,6 +45556,7 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::Raise => ExceptionRegionNestingRole::None,
         OpCode::CheckException => ExceptionRegionNestingRole::None,
         OpCode::ExceptionPending => ExceptionRegionNestingRole::None,
+        OpCode::AsyncWorkPending => ExceptionRegionNestingRole::None,
         OpCode::FunctionDefaultsVersion => ExceptionRegionNestingRole::None,
         OpCode::TryStart => ExceptionRegionNestingRole::Enter,
         OpCode::TryEnd => ExceptionRegionNestingRole::Exit,
@@ -45563,6 +45697,7 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::Raise => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::CheckException => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ExceptionPending => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::AsyncWorkPending => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::FunctionDefaultsVersion => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::TryStart => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::TryEnd => AliasTransparentAliasRole::NotTransparentAlias,
@@ -45615,7 +45750,7 @@ pub enum AliasMemoryRegionClass {
 #[inline]
 pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClass {
     match opcode {
-        OpCode::FrameSetLocation => AliasMemoryRegionClass::GenericHeap,
+        OpCode::FrameSetLocation => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Add => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Sub => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Mul => AliasMemoryRegionClass::ScalarRegister,
@@ -45708,6 +45843,7 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::Raise => AliasMemoryRegionClass::GenericHeap,
         OpCode::CheckException => AliasMemoryRegionClass::ScalarRegister,
         OpCode::ExceptionPending => AliasMemoryRegionClass::ScalarRegister,
+        OpCode::AsyncWorkPending => AliasMemoryRegionClass::ScalarRegister,
         OpCode::FunctionDefaultsVersion => AliasMemoryRegionClass::ScalarRegister,
         OpCode::TryStart => AliasMemoryRegionClass::GenericHeap,
         OpCode::TryEnd => AliasMemoryRegionClass::GenericHeap,
@@ -45852,6 +45988,7 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::Raise => AliasSlotObservation::DirectObserver,
         OpCode::CheckException => AliasSlotObservation::NeverObserver,
         OpCode::ExceptionPending => AliasSlotObservation::ConservativeObserver,
+        OpCode::AsyncWorkPending => AliasSlotObservation::ConservativeObserver,
         OpCode::FunctionDefaultsVersion => AliasSlotObservation::ConservativeObserver,
         OpCode::TryStart => AliasSlotObservation::ConservativeObserver,
         OpCode::TryEnd => AliasSlotObservation::ConservativeObserver,
@@ -46072,6 +46209,7 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
             exception_event: true,
             ..PASS_DELTA_OPCODE_FACTS_NONE
         },
+        OpCode::AsyncWorkPending => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::FunctionDefaultsVersion => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::TryStart => PassDeltaOpcodeFacts {
             exception_event: true,
@@ -46233,6 +46371,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -46392,6 +46531,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -46524,6 +46664,7 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -46948,6 +47089,7 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::Raise => &[],
         OpCode::CheckException => &[],
         OpCode::ExceptionPending => &[],
+        OpCode::AsyncWorkPending => &[],
         OpCode::FunctionDefaultsVersion => &[],
         OpCode::TryStart => &[],
         OpCode::TryEnd => &[],
@@ -47174,6 +47316,7 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::Raise => OperandOwnership::Borrowed,
         OpCode::CheckException => OperandOwnership::Borrowed,
         OpCode::ExceptionPending => OperandOwnership::Borrowed,
+        OpCode::AsyncWorkPending => OperandOwnership::Borrowed,
         OpCode::FunctionDefaultsVersion => OperandOwnership::Borrowed,
         OpCode::TryStart => OperandOwnership::Borrowed,
         OpCode::TryEnd => OperandOwnership::Borrowed,
@@ -47246,6 +47389,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -47781,6 +47925,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -48319,6 +48464,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -48857,6 +49003,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -49475,6 +49622,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -49541,6 +49689,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -50080,6 +50229,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -50621,6 +50771,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -51250,6 +51401,7 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::Raise => ResultValidity::AlwaysValid,
         OpCode::CheckException => ResultValidity::AlwaysValid,
         OpCode::ExceptionPending => ResultValidity::AlwaysValid,
+        OpCode::AsyncWorkPending => ResultValidity::AlwaysValid,
         OpCode::FunctionDefaultsVersion => ResultValidity::AlwaysValid,
         OpCode::TryStart => ResultValidity::AlwaysValid,
         OpCode::TryEnd => ResultValidity::AlwaysValid,
@@ -51407,6 +51559,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::Raise => ExplicitReleaseOperands::None,
         OpCode::CheckException => ExplicitReleaseOperands::None,
         OpCode::ExceptionPending => ExplicitReleaseOperands::None,
+        OpCode::AsyncWorkPending => ExplicitReleaseOperands::None,
         OpCode::FunctionDefaultsVersion => ExplicitReleaseOperands::None,
         OpCode::TryStart => ExplicitReleaseOperands::None,
         OpCode::TryEnd => ExplicitReleaseOperands::None,

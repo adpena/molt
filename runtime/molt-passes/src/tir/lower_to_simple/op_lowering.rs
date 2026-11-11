@@ -626,6 +626,15 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::new(molt_ir::OpKind::ExceptionPending)
         }),
+        OpCode::AsyncWorkPending => Some(OpIR {
+            // Tests the thread's pending-work word. No operands; the result
+            // is the condition of a promoted loop's exit to its unpromoted
+            // copy.
+            kind: molt_ir::OpKind::AsyncWorkPending,
+            args: None,
+            out: out_var,
+            ..OpIR::new(molt_ir::OpKind::AsyncWorkPending)
+        }),
         OpCode::FunctionDefaultsVersion => Some(OpIR {
             // Reads a function object's `__defaults__`/`__kwdefaults__`
             // mutation version stamp as an inline int.  One operand (the

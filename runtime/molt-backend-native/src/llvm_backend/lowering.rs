@@ -586,13 +586,14 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
         .unwrap_or_else(|err| panic!("{err}"))
 }
 
-/// Whether any operation of `func` polls for async work. Such a function
-/// materializes the thread record once, in its entry block.
+/// Whether any operation of `func` reads the pending-work word (a poll or an
+/// `AsyncWorkPending` test). Such a function materializes the thread record
+/// once, in its entry block.
 #[cfg(feature = "llvm")]
 fn function_polls_async_work(func: &TirFunction) -> bool {
     func.blocks
         .values()
-        .any(|block| block.ops.iter().any(TirOp::is_async_work_poll))
+        .any(|block| block.ops.iter().any(TirOp::reads_pending_work_word))
 }
 
 /// Like [`try_lower_tir_to_llvm`] but accepts optional PGO branch weights.

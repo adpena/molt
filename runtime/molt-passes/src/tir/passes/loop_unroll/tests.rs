@@ -1680,3 +1680,65 @@ fn unroll_rewires_unreachable_header_predecessor_without_losing_its_metadata() {
     assert!(args.is_empty());
     crate::tir::verify::verify_function(&func).expect("rewired retirement must verify");
 }
+
+#[test]
+fn does_not_unroll_a_body_with_a_conditional_exit() {
+    // for i in range(0, 4, 1): body_op(i); if flag: break
+    let TestLoop {
+        mut func,
+        header,
+        body,
+        exit,
+        ..
+    } = build_test_loop(0, 4, 1, 1);
+    let flag = func.fresh_value();
+    func.value_types.insert(flag, TirType::Bool);
+    let mut constant = TirOp {
+        origin: None,
+        runtime: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstBool,
+        operands: vec![],
+        results: vec![flag],
+        attrs: AttrDict::new(),
+        source_span: None,
+    };
+    constant
+        .attrs
+        .insert("value".into(), AttrValue::Bool(false));
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .push(constant);
+    let latch = func.fresh_block();
+    let back = std::mem::replace(
+        &mut func.blocks.get_mut(&body).unwrap().terminator,
+        Terminator::CondBranch {
+            cond: flag,
+            then_block: exit,
+            then_args: vec![],
+            else_block: latch,
+            else_args: vec![],
+        },
+    );
+    func.blocks.insert(
+        latch,
+        TirBlock {
+            id: latch,
+            args: vec![],
+            ops: vec![],
+            terminator: back,
+        },
+    );
+    let recognized = counted_loop::recognize_counted_loop(&func, header)
+        .expect("a conditional exit keeps the loop counted");
+    assert!(recognized.has_side_exits);
+    assert_eq!(recognized.trip_count, 4);
+    assert_eq!(recognized.body_path, vec![body, latch]);
+
+    let before = format!("{func:?}");
+    let stats = run(&mut func, &TargetInfo::native_release_fast());
+    assert_eq!(stats.total_changes(), 0, "the unroller refuses the loop");
+    assert_eq!(format!("{func:?}"), before);
+}

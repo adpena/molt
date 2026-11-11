@@ -46,6 +46,44 @@ fn is_call_return_poll(op: &TirOp) -> bool {
             ))
 }
 
+/// A back edge taken only while no asynchronous work is pending needs no poll
+/// of its own. Module-slot promotion builds this shape: the promoted loop
+/// tests the pending-work word at its latch and, on work, leaves for the
+/// unpromoted copy of the loop, whose own back edge polls. A poll in the
+/// promoted loop would run handlers while module slots sit in registers.
+///
+/// The test either ends the latch itself or ends the one predecessor of an
+/// empty latch (the shape promotion emits, so that the back edge stays
+/// unconditional for the loop recognizers).
+fn back_edge_tests_pending_work(
+    func: &TirFunction,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    latch: &crate::tir::blocks::TirBlock,
+    header: BlockId,
+    body: &std::collections::HashSet<BlockId>,
+) -> bool {
+    let tests = |block: &crate::tir::blocks::TirBlock, continues_to: BlockId| {
+        matches!(
+            &block.terminator,
+            Terminator::CondBranch { cond, then_block, else_block, .. }
+                if *else_block == continues_to
+                    && !body.contains(then_block)
+                    && block.ops.iter().any(|op| {
+                        op.opcode == OpCode::AsyncWorkPending
+                            && op.results.first() == Some(cond)
+                    })
+        )
+    };
+    if tests(latch, header) {
+        return true;
+    }
+    latch.ops.is_empty()
+        && matches!(
+            predecessors.get(&latch.id).map(Vec::as_slice),
+            Some([only]) if func.blocks.get(only).is_some_and(|block| tests(block, latch.id))
+        )
+}
+
 fn mark_poll(op: &mut TirOp) -> bool {
     op.mark_async_work_poll()
 }
@@ -215,7 +253,9 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
             block
                 .terminator
                 .for_each_edge(|target, _| reaches_header |= target == header);
-            if reaches_header {
+            if reaches_header
+                && !back_edge_tests_pending_work(func, &predecessors, block, header, body)
+            {
                 latches.insert((block_id, header));
             }
         }
@@ -1715,6 +1755,87 @@ mod tests {
             Some(74)
         );
         assert!(func.blocks[&latch].ops.last().unwrap().is_async_work_poll());
+    }
+
+    /// Module-slot promotion's loop: the latch tests the pending-work word and
+    /// leaves, on work, for a loop that polls. A poll here would run handlers
+    /// while module slots sit in registers.
+    #[test]
+    fn a_back_edge_that_tests_pending_work_gets_no_poll() {
+        for empty_back_block in [false, true] {
+            let mut func = TirFunction::new(
+                "pending_tested".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let header = func.entry_block;
+            let latch = func.fresh_block();
+            let leave = func.fresh_block();
+            add_handler(&mut func, 75, vec![]);
+            func.loop_roles.insert(header, LoopRole::LoopHeader);
+            func.blocks.get_mut(&header).unwrap().ops = vec![check(75)];
+            func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
+                target: latch,
+                args: vec![],
+            };
+            let pending = func.fresh_value();
+            func.value_types.insert(pending, TirType::Bool);
+            let mut test = op(OpCode::AsyncWorkPending);
+            test.results = vec![pending];
+            let continue_to = if empty_back_block {
+                let back = func.fresh_block();
+                func.blocks.insert(
+                    back,
+                    TirBlock {
+                        id: back,
+                        args: vec![],
+                        ops: vec![],
+                        terminator: Terminator::Branch {
+                            target: header,
+                            args: vec![],
+                        },
+                    },
+                );
+                back
+            } else {
+                header
+            };
+            func.blocks.insert(
+                latch,
+                TirBlock {
+                    id: latch,
+                    args: vec![],
+                    ops: vec![check(75), test],
+                    terminator: Terminator::CondBranch {
+                        cond: pending,
+                        then_block: leave,
+                        then_args: vec![],
+                        else_block: continue_to,
+                        else_args: vec![],
+                    },
+                },
+            );
+            func.blocks.insert(
+                leave,
+                TirBlock {
+                    id: leave,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let mut am = AnalysisManager::new();
+            assert!(placement_plan(&func, &mut am).latch_sites.is_empty());
+            run(&mut func, &mut am);
+            assert!(
+                func.blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .all(|op| !op.is_async_work_poll()),
+                "empty_back_block={empty_back_block}"
+            );
+        }
     }
 
     #[test]
