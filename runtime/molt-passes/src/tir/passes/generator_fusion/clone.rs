@@ -26,6 +26,7 @@ pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
     a.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -38,6 +39,7 @@ pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
 pub(super) fn const_none_op(result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -342,6 +344,7 @@ pub(super) fn clone_and_rewrite_poll(
                         owners.record_held(value);
                         new_ops.push(TirOp {
                             origin: None,
+                            runtime: None,
                             dialect: op.dialect,
                             opcode: OpCode::Copy,
                             operands: vec![remap(op.operands[1], &value_map)],
@@ -356,6 +359,7 @@ pub(super) fn clone_and_rewrite_poll(
                     if let Some(&def) = plan.reads.get(&op.results[0]) {
                         let load = TirOp {
                             origin: None,
+                            runtime: None,
                             dialect: op.dialect,
                             opcode: op.opcode,
                             operands: Vec::new(),
@@ -402,6 +406,7 @@ pub(super) fn clone_and_rewrite_poll(
             };
             new_ops.push(TirOp {
                 origin: op.origin,
+                runtime: None,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands,

@@ -222,6 +222,28 @@ pub struct SimpleIrLoweringFeatures {
     /// frame-location placement pass may delete publications no reader sees
     /// (call_anatomy.md, "Location publication cost").
     pub cold_origin_frame_location: bool,
+    /// Whether the late lowering stage of TIR expands fast paths for this
+    /// target's backend (HF-821).
+    pub final_lowering: FinalLowering,
+}
+
+/// Whether a target's backend consumes final TIR, so the late lowering stage
+/// of TIR expands value-level fast paths for it once, or still writes them in
+/// its own lanes. Each backend moves to `FinalTir` in the change that deletes
+/// its lanes; the enum is deleted when the last one moves (HF-821).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalLowering {
+    BackendLanes,
+    FinalTir,
+}
+
+impl FinalLowering {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BackendLanes => "backend_lanes",
+            Self::FinalTir => "final_tir",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,16 +336,24 @@ impl TargetInfo {
             TargetKind::NativeCranelift => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: true,
                 cold_origin_frame_location: true,
+                final_lowering: FinalLowering::BackendLanes,
             },
-            TargetKind::Wasm | TargetKind::Llvm => SimpleIrLoweringFeatures {
+            TargetKind::Wasm => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: true,
+                final_lowering: FinalLowering::BackendLanes,
+            },
+            TargetKind::Llvm => SimpleIrLoweringFeatures {
+                non_escaping_tuple_scalarization: false,
+                cold_origin_frame_location: true,
+                final_lowering: FinalLowering::FinalTir,
             },
             // Luau publishes line and columns with each location and has no
             // code table to recover them; the Rust target captures no Origin.
             TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: false,
+                final_lowering: FinalLowering::BackendLanes,
             },
         }
     }

@@ -51,9 +51,12 @@ fn next_stream_rdr_handle() -> i64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Register a custom error handler. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_register_error(name_bits: u64, handler_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_register_error_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    handler_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
             let tn = type_name(_py, name_obj);
@@ -77,9 +80,11 @@ pub extern "C" fn molt_codecs_register_error(name_bits: u64, handler_bits: u64) 
 }
 
 /// Lookup an error handler by name. Raises LookupError if unknown.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_lookup_error(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_lookup_error_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
             let tn = type_name(_py, name_obj);
@@ -163,7 +168,14 @@ mod error_handler_tests {
         });
     }
 
-    extern "C" fn test_error_handler(_error_bits: u64) -> i64 {
+    extern "C" fn test_error_handler(__context: u64, _error_bits: u64) -> i64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits() as i64
     }
 
@@ -182,14 +194,14 @@ mod error_handler_tests {
             let baseline =
                 unsafe { (*crate::header_from_obj_ptr(handler_ptr)).ref_count_snapshot() };
             assert_eq!(
-                molt_codecs_register_error(name_bits, handler_bits),
+                molt_codecs_register_error_attached_body(_py, name_bits, handler_bits),
                 MoltObject::none().bits()
             );
             assert_eq!(
                 unsafe { (*crate::header_from_obj_ptr(handler_ptr)).ref_count_snapshot() },
                 baseline + 1
             );
-            let looked_up = molt_codecs_lookup_error(name_bits);
+            let looked_up = molt_codecs_lookup_error_attached_body(_py, name_bits);
             assert_eq!(looked_up, handler_bits);
             assert_eq!(
                 unsafe { (*crate::header_from_obj_ptr(handler_ptr)).ref_count_snapshot() },
@@ -211,7 +223,7 @@ mod error_handler_tests {
                     crate::with_gil_entry_nopanic!(_py, {
                         let name_ptr = alloc_string(_py, b"molt-test-runtime-wide-handler");
                         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                        let looked_up = molt_codecs_lookup_error(name_bits);
+                        let looked_up = molt_codecs_lookup_error_attached_body(_py, name_bits);
                         assert_eq!(looked_up, handler_bits);
                         dec_ref_bits(_py, looked_up);
                         dec_ref_bits(_py, name_bits);
@@ -270,9 +282,12 @@ fn inc_enc_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 }
 
 /// Create a new IncrementalEncoder. Returns integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_encoder_new(encoding_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_incremental_encoder_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    encoding_bits: u64,
+    errors_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(encoding) = string_obj_to_owned(obj_from_bits(encoding_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "encoding must be str");
         };
@@ -301,13 +316,13 @@ pub extern "C" fn molt_codecs_incremental_encoder_new(encoding_bits: u64, errors
 
 /// Encode `input_bits` (str) and return bytes.  When `final_bits` is truthy,
 /// flush any pending state.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_encoder_encode(
+pub(crate) fn molt_codecs_incremental_encoder_encode_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     input_bits: u64,
     final_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = inc_enc_id_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -353,9 +368,11 @@ pub extern "C" fn molt_codecs_incremental_encoder_encode(
 }
 
 /// Reset incremental encoder state. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_encoder_reset(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_incremental_encoder_reset_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = inc_enc_id_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -369,9 +386,11 @@ pub extern "C" fn molt_codecs_incremental_encoder_reset(handle_bits: u64) -> u64
 }
 
 /// Drop incremental encoder handle. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_encoder_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_incremental_encoder_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = inc_enc_id_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -408,9 +427,12 @@ fn inc_dec_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 }
 
 /// Create a new IncrementalDecoder. Returns integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_decoder_new(encoding_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_incremental_decoder_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    encoding_bits: u64,
+    errors_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(encoding) = string_obj_to_owned(obj_from_bits(encoding_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "encoding must be str");
         };
@@ -448,13 +470,13 @@ pub extern "C" fn molt_codecs_incremental_decoder_new(encoding_bits: u64, errors
 
 /// Decode `input_bits` (bytes) and return str.  Buffers incomplete byte
 /// sequences when `final_bits` is falsy.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_decoder_decode(
+pub(crate) fn molt_codecs_incremental_decoder_decode_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     input_bits: u64,
     final_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = inc_dec_id_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -555,9 +577,11 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
 }
 
 /// Reset incremental decoder buffer. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_decoder_reset(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_incremental_decoder_reset_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = inc_dec_id_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -571,9 +595,11 @@ pub extern "C" fn molt_codecs_incremental_decoder_reset(handle_bits: u64) -> u64
 }
 
 /// Drop incremental decoder handle. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_incremental_decoder_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_incremental_decoder_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = inc_dec_id_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -618,13 +644,13 @@ fn stream_rdr_id(_py: &PyToken<'_>, bits: u64) -> Option<i64> {
 
 /// Create a StreamReader wrapping `stream_bits` (a file-like object handle).
 /// Returns integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_stream_reader_new(
+pub(crate) fn molt_codecs_stream_reader_new_attached_body(
+    _py: &crate::PyToken<'_>,
     stream_bits: u64,
     encoding_bits: u64,
     errors_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(encoding) = string_obj_to_owned(obj_from_bits(encoding_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "encoding must be str");
         };
@@ -653,9 +679,12 @@ pub extern "C" fn molt_codecs_stream_reader_new(
 /// This intrinsic reads raw bytes from the stream object, decodes them, and
 /// returns the resulting string.  `size_bits` is a character count hint; the
 /// intrinsic reads bytes at a ~4x character ratio to handle multi-byte encodings.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_stream_reader_read_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    size_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = stream_rdr_id(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -685,7 +714,7 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
             MoltObject::from_int(size * 4).bits()
         };
 
-        let raw_bits = crate::molt_file_read(stream_bits, byte_count);
+        let raw_bits = crate::molt_file_read_attached_body(_py, stream_bits, byte_count);
         let raw_obj = obj_from_bits(raw_bits);
         if raw_obj.is_none() {
             // EOF or error propagated via exception; return empty string.
@@ -743,9 +772,11 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
 }
 
 /// Read one line from the stream. Returns str.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_stream_reader_readline_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = stream_rdr_id(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -765,7 +796,11 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
         }
 
         // Call the underlying readline.
-        let raw_bits = crate::molt_file_readline(stream_bits, MoltObject::from_int(-1).bits());
+        let raw_bits = crate::molt_file_readline_attached_body(
+            _py,
+            stream_bits,
+            MoltObject::from_int(-1).bits(),
+        );
         let raw_obj = obj_from_bits(raw_bits);
         if raw_obj.is_none() {
             if !exception_pending(_py) {
@@ -807,9 +842,11 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
 }
 
 /// Drop stream reader handle. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_stream_reader_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_stream_reader_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = stream_rdr_id(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -823,9 +860,8 @@ pub extern "C" fn molt_codecs_stream_reader_drop(handle_bits: u64) -> u64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Return b'\xef\xbb\xbf' (UTF-8 BOM).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_bom_utf8() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_bom_utf8_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xEF, 0xBB, 0xBF]);
         if ptr.is_null() {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -835,9 +871,8 @@ pub extern "C" fn molt_codecs_bom_utf8() -> u64 {
 }
 
 /// Return b'\xff\xfe' (UTF-16-LE BOM).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_bom_utf16_le() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_bom_utf16_le_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xFF, 0xFE]);
         if ptr.is_null() {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -847,9 +882,8 @@ pub extern "C" fn molt_codecs_bom_utf16_le() -> u64 {
 }
 
 /// Return b'\xfe\xff' (UTF-16-BE BOM).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_bom_utf16_be() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_bom_utf16_be_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xFE, 0xFF]);
         if ptr.is_null() {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -859,9 +893,8 @@ pub extern "C" fn molt_codecs_bom_utf16_be() -> u64 {
 }
 
 /// Return b'\xff\xfe\x00\x00' (UTF-32-LE BOM).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_bom_utf32_le() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_bom_utf32_le_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xFF, 0xFE, 0x00, 0x00]);
         if ptr.is_null() {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -871,9 +904,8 @@ pub extern "C" fn molt_codecs_bom_utf32_le() -> u64 {
 }
 
 /// Return b'\x00\x00\xfe\xff' (UTF-32-BE BOM).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_bom_utf32_be() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_bom_utf32_be_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0x00, 0x00, 0xFE, 0xFF]);
         if ptr.is_null() {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -889,9 +921,11 @@ pub extern "C" fn molt_codecs_bom_utf32_be() -> u64 {
 /// Build an encoding map from a decoding table string.
 /// Maps each character in the decoding table to its index (skipping U+FFFE).
 /// Returns a dict (int ordinal → int index).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_charmap_build(table_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_charmap_build_attached_body(
+    _py: &crate::PyToken<'_>,
+    table_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let table_obj = obj_from_bits(table_bits);
         let Some(table) = string_obj_to_owned(table_obj) else {
             return raise_exception::<_>(
@@ -986,13 +1020,13 @@ fn charmap_decode_undefined(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_charmap_decode(
+pub(crate) fn molt_codecs_charmap_decode_attached_body(
+    _py: &crate::PyToken<'_>,
     input_bits: u64,
     errors_bits: u64,
     mapping_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let input_obj = obj_from_bits(input_bits);
         if input_obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "input must be bytes");
@@ -1276,13 +1310,13 @@ fn charmap_encode_undefined(_py: &PyToken<'_>, input_bits: u64, pos: usize) -> u
     .raise(_py, input_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_charmap_encode(
+pub(crate) fn molt_codecs_charmap_encode_attached_body(
+    _py: &crate::PyToken<'_>,
     input_bits: u64,
     errors_bits: u64,
     mapping_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let input_obj = obj_from_bits(input_bits);
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
@@ -1398,9 +1432,11 @@ pub extern "C" fn molt_codecs_charmap_encode(
 
 /// Build an identity dict mapping each integer in `range_bits` to itself.
 /// Returns a dict.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_make_identity_dict(range_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_make_identity_dict_attached_body(
+    _py: &crate::PyToken<'_>,
+    range_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let range_obj = obj_from_bits(range_bits);
         let Some(items) = crate::decode_value_list(_py, range_obj) else {
             if exception_pending(_py) {
@@ -1432,9 +1468,11 @@ pub extern "C" fn molt_codecs_make_identity_dict(range_bits: u64) -> u64 {
 
 /// Normalize an encoding name to its canonical form.
 /// Raises LookupError for unknown encodings.  Returns str.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codecs_normalize_encoding(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_codecs_normalize_encoding_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
             let tn = type_name(_py, name_obj);
@@ -1472,11 +1510,19 @@ mod identity_snapshot_tests {
         }
     }
 
-    extern "C" fn identity_key_hash(object: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(_py, {
+    extern "C" fn identity_key_hash(__context: u64, object: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let _py = __py;
             HASH_CALLS.fetch_add(1, Ordering::SeqCst);
             if object == FIRST.load(Ordering::SeqCst) {
-                crate::molt_list_clear(SOURCE.load(Ordering::SeqCst));
+                crate::molt_list_clear_attached_body(_py, SOURCE.load(Ordering::SeqCst));
                 assert_eq!(
                     owners(LATER.load(Ordering::SeqCst)),
                     2,
@@ -1486,7 +1532,7 @@ mod identity_snapshot_tests {
             } else {
                 MoltObject::from_int(23).bits()
             }
-        })
+        }
     }
 
     #[test]
@@ -1494,8 +1540,8 @@ mod identity_snapshot_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let name = dynamic_attr_name_bits(py, b"IdentitySnapshotKey").unwrap();
-            let class = crate::molt_class_new(name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let class = crate::molt_class_new_attached_body(py, name);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             let hash_name = dynamic_attr_name_bits(py, b"__hash__").unwrap();
             let hash = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
@@ -1503,7 +1549,7 @@ mod identity_snapshot_tests {
                 1,
             ))
             .bits();
-            crate::molt_set_attr_name(class, hash_name, hash);
+            crate::molt_set_attr_name_attached_body(py, class, hash_name, hash);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             unsafe {
                 crate::object::class_finish_definition(py, class_ptr).unwrap();
@@ -1515,7 +1561,7 @@ mod identity_snapshot_tests {
             FIRST.store(first, Ordering::SeqCst);
             LATER.store(later, Ordering::SeqCst);
             HASH_CALLS.store(0, Ordering::SeqCst);
-            let result = molt_codecs_make_identity_dict(source);
+            let result = molt_codecs_make_identity_dict_attached_body(py, source);
             assert!(!exception_pending(py));
             assert_eq!(HASH_CALLS.load(Ordering::SeqCst), 2);
             assert_eq!(
@@ -1538,3 +1584,5 @@ mod identity_snapshot_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/codecs_ext.rs");

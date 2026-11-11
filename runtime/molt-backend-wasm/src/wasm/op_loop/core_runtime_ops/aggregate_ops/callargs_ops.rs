@@ -1,8 +1,9 @@
 use super::super::super::result_sink::store_runtime_result;
 use super::AggregateRuntimeContext;
 use crate::OpIR;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 pub(super) fn emit_callargs_op(
     func: &mut Function,

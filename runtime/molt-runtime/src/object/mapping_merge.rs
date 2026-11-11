@@ -67,7 +67,7 @@ pub(crate) fn output_as_list(
     }
     let first = OwnedIterator::new(py, output);
     if first.is_none() {
-        let exception = molt_exception_last_pending();
+        let exception = molt_exception_last_pending_attached_body(py);
         if crate::builtins::exceptions::exception_matches_kind(
             py,
             exception,
@@ -191,7 +191,7 @@ pub(crate) unsafe fn apply(
         let method = match method {
             Ok(method) => method,
             Err(()) => {
-                let error = molt_exception_last_pending();
+                let error = molt_exception_last_pending_attached_body(py);
                 let missing = crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -228,7 +228,7 @@ pub(crate) unsafe fn apply(
                 dec_ref_bits(py, key);
                 return MergeOutcome::Error;
             }
-            let value = molt_getitem_method(source, key);
+            let value = molt_getitem_method_attached_body(py, source, key);
             let ok = !exception_pending(py) && insert(key, value, None);
             dec_ref_bits(py, key);
             dec_ref_bits(py, value);
@@ -400,7 +400,7 @@ mod tests {
                 );
                 assert!(!keyword_available(_py, dict, one, None));
                 assert!(exception_pending(_py));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(_py);
                 dec_ref_bits(_py, MoltObject::from_ptr(dict).bits());
             }
         });
@@ -428,7 +428,7 @@ mod tests {
                         .collect::<Vec<_>>(),
                     &[key, first]
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(_py);
                 dec_ref_bits(_py, MoltObject::from_ptr(source).bits());
                 dec_ref_bits(_py, MoltObject::from_ptr(target).bits());
             }

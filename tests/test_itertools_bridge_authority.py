@@ -21,9 +21,12 @@ def test_itertools_class_construction_has_one_runtime_authority() -> None:
     ending = rust_delimiter_end(direct, opening)
     assert ending is not None
     direct_class = direct[opening:ending]
-    ffi_class = ffi.split('pub extern "C" fn molt_itertools_alloc_class(', maxsplit=1)[
-        1
-    ].split("#[unsafe(no_mangle)]", maxsplit=1)[0]
+    opening = ffi.index(
+        "{", ffi.index("pub(crate) fn molt_itertools_alloc_class_attached_body(")
+    )
+    ending = rust_delimiter_end(ffi, opening)
+    assert ending is not None
+    ffi_class = ffi[opening:ending]
 
     assert canonical.count("pub(crate) fn alloc_itertools_class(") == 1
     assert "class_set_instance_shape_id(class_ptr, shape)" in canonical_class

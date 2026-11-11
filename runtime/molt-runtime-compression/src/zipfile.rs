@@ -47,7 +47,9 @@ unsafe extern "C" fn zip_runtime_state_init() -> *mut u8 {
     Box::into_raw(Box::new(ZipRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn zip_runtime_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn zip_runtime_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
@@ -67,6 +69,7 @@ unsafe extern "C" fn zip_runtime_state_drop(ptr: *mut u8) {
 
 fn zip_state(_py: &PyToken) -> &'static ZipRuntimeState {
     let ptr = runtime_state_get_or_init(
+        _py,
         b"molt-runtime-compression/zipfile/v1",
         zip_runtime_state_init,
         zip_runtime_state_clear,
@@ -84,12 +87,16 @@ fn next_zip_id(_py: &PyToken) -> i64 {
 }
 
 // ── open(path, mode) -> handle ──────────────────────────────────────────
-pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(path) = string_obj_to_owned(obj_from_bits(path_bits)) else {
+pub fn molt_zipfile_open_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(path) = string_obj_to_owned(_py, obj_from_bits(path_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "path must be a string");
         };
-        let Some(mode) = string_obj_to_owned(obj_from_bits(mode_bits)) else {
+        let Some(mode) = string_obj_to_owned(_py, obj_from_bits(mode_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "mode must be a string");
         };
 
@@ -128,9 +135,9 @@ pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
 }
 
 // ── close(handle) -> None ───────────────────────────────────────────────
-pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+pub fn molt_zipfile_close_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(id) = to_i64(_py, obj_from_bits(handle_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
         let state = zip_state(_py).archives.lock().unwrap().remove(&id);
@@ -169,29 +176,30 @@ pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
 }
 
 // ── writestr(handle, name, data, compress_type) -> None ─────────────────
-pub extern "C" fn molt_zipfile_writestr(
+pub fn molt_zipfile_writestr_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     name_bits: u64,
     data_bits: u64,
     method_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(id) = to_i64(_py, obj_from_bits(handle_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+        let Some(name) = string_obj_to_owned(_py, obj_from_bits(name_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "name must be a string");
         };
-        let method = to_i64(obj_from_bits(method_bits)).unwrap_or(0) as u16;
+        let method = to_i64(_py, obj_from_bits(method_bits)).unwrap_or(0) as u16;
 
         // Get data as bytes
         let data_obj = obj_from_bits(data_bits);
-        let data: Vec<u8> = if let Some(s) = string_obj_to_owned(data_obj) {
+        let data: Vec<u8> = if let Some(s) = string_obj_to_owned(_py, data_obj) {
             s.into_bytes()
         } else if let Some(ptr) = data_obj.as_ptr() {
-            if unsafe { object_type_id(ptr) } == TYPE_ID_BYTES {
-                let len = unsafe { bytes_len(ptr) };
-                let raw = unsafe { bytes_data(ptr) };
+            if unsafe { object_type_id(_py, ptr) } == TYPE_ID_BYTES {
+                let len = unsafe { bytes_len(_py, ptr) };
+                let raw = unsafe { bytes_data(_py, ptr) };
                 unsafe { std::slice::from_raw_parts(raw, len) }.to_vec()
             } else {
                 return raise_exception(_py, BuiltinExc::TypeError, "data must be bytes or str");
@@ -215,9 +223,12 @@ pub extern "C" fn molt_zipfile_writestr(
 }
 
 // ── namelist(handle) -> list[str] ───────────────────────────────────────
-pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+pub fn molt_zipfile_namelist_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(id) = to_i64(_py, obj_from_bits(handle_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
 
@@ -272,12 +283,16 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
 }
 
 // ── read(handle, name) -> bytes ─────────────────────────────────────────
-pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
+pub fn molt_zipfile_read_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(id) = to_i64(_py, obj_from_bits(handle_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+        let Some(name) = string_obj_to_owned(_py, obj_from_bits(name_bits)) else {
             return raise_exception(_py, BuiltinExc::TypeError, "name must be a string");
         };
 
@@ -329,3 +344,5 @@ pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
         }
     })
 }
+
+include!("attached_exports_generated/zipfile.rs");

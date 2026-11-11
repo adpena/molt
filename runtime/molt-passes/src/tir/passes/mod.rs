@@ -19,6 +19,7 @@ pub mod effects;
 pub mod escape_analysis;
 mod exception_observation;
 pub mod fast_math;
+pub mod fast_path_expansion;
 pub mod frame_location_placement;
 pub mod generator_fusion;
 pub mod gvn;

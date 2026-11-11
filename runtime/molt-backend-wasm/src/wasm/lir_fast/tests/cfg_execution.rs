@@ -23,6 +23,7 @@ fn op(opcode: OpCode, args: &[u32], result: LirValue) -> LirOp {
     LirOp {
         tir_op: TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: args.iter().copied().map(ValueId).collect(),
@@ -302,12 +303,12 @@ const hooks = {
   inc_ref_obj() {}, dec_ref_obj() {}, exception_pending() { return 0n; },
 };
 const functions = Object.fromEntries(Object.entries(files).map(([name, path]) => [
-  name, new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path)), {molt_runtime: hooks}).exports.run
+  name, new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path)), attachedImports({molt_runtime: hooks})).exports.run
 ]));
 function check(name, args, result, visits) {
   console.error('cfg-case: ' + name + ' args=' + args.map(String).join(','));
   events = []; stopAt = 0;
-  assert.equal(functions[name](...args), result, name);
+  assert.equal(functions[name](executionContext, ...args), result, name);
   assert.deepEqual(events, visits, name);
 }
 check('entry_rotation', [1, 11n, 22n, 33n], 11n, [0, 0, 1]);
@@ -326,7 +327,7 @@ check('nested_exits', [1, 1, 2n, 11n, 22n], 22n, [0, 1, 2, 2, 3, 5]);
 check('inner_to_outer', [1, 1, 11n, 22n], 11n, [0, 1, 2, 1, 2, 3, 2, 3, 4]);
 console.error('cfg-case: bounded single-block self-loop');
 events = []; stopAt = 3;
-assert.throws(() => functions.single_self(), error => error === sentinel);
+assert.throws(() => functions.single_self(executionContext), error => error === sentinel);
 assert.deepEqual(events, [0, 0, 0]);
 "#,
         &[config.as_path()],

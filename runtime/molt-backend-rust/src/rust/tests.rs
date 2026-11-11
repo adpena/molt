@@ -428,17 +428,25 @@ fn compile_checked_rejects_python_class_frame_intrinsics() {
         "molt_frame_class_locals_set",
         "molt_class_frame_set_location",
     ] {
+        let call = OpIR {
+            s_value: Some(symbol.into()),
+            ..OpIR::new(molt_ir::OpKind::CallInternal)
+        };
+        // The generated runtime authority classifies the intrinsic as frame
+        // introspection, which the Rust target lacks; admission reports the
+        // first unmet requirement, so the check names the fact, not a message.
+        let frame =
+            molt_ir::tir::op_kinds_generated::SimpleIrRuntimeRequirements::FRAME_INTROSPECTION;
+        assert!(
+            call.runtime_requirements()
+                .is_some_and(|requirements| requirements.contains(frame)),
+            "{symbol} needs Python-visible frame authority"
+        );
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 name: "molt_main".into(),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
-                ops: vec![
-                    OpIR {
-                        s_value: Some(symbol.into()),
-                        ..OpIR::new(molt_ir::OpKind::CallInternal)
-                    },
-                    OpIR::new(molt_ir::OpKind::RetVoid),
-                ],
+                ops: vec![call, OpIR::new(molt_ir::OpKind::RetVoid)],
                 ..FunctionIR::default()
             }],
             profile: None,
@@ -447,7 +455,7 @@ fn compile_checked_rejects_python_class_frame_intrinsics() {
             .compile_checked(&ir)
             .expect_err("class reflection requires Python-visible frame authority");
         assert!(
-            error.contains("exact Python-visible frame objects"),
+            error.contains("rejected before source generation"),
             "{symbol}: {error}"
         );
     }
@@ -2394,8 +2402,8 @@ fn generated_runtime_call_agreement_preserves_rust_target_refusals() {
             call.realization(TargetKind::Rust),
             RuntimeCallRealization::Unsupported
         );
-        let abi = call.function().boxed_abi();
-        let args = (0..abi.arity)
+        let abi = call.boxed_abi();
+        let args = (0..abi.arity())
             .map(|i| format!("arg{i}"))
             .collect::<Vec<_>>();
         let ir = SimpleIR {

@@ -868,7 +868,11 @@ def _batch_response_completed_process(
     )
 
 
+# molt.disk_capacity refuses a build the host cannot hold; the program is not
+# at fault (classified infrastructure_error below).
+HOST_CAPACITY_REJECTED = "host_capacity_rejected"
 _BUILD_FAILURE_SIGNATURES: tuple[tuple[str, str], ...] = (
+    ("capacity admission rejected", HOST_CAPACITY_REJECTED),
     ("native runtime staticlib build failed", "native_runtime_staticlib_build_failed"),
     ("backend daemon returned empty response", "backend_daemon_empty_response"),
     (
@@ -1018,7 +1022,9 @@ def _classified_molt_failure(
         # effective guard return code resembles a signal or output happens to
         # contain a build/runtime signature.
         signal_payload = None
-    if infrastructure_failure is not None:
+    if infrastructure_failure is not None or (
+        phase == "build" and detail == HOST_CAPACITY_REJECTED
+    ):
         status = "infrastructure_error"
     elif violation is not None:
         status = "rss_limit_exceeded"

@@ -336,6 +336,19 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // boxing may allocate even when the result binding is discarded.
         OpCode::BoxVal => Some(unary_op(molt_ir::OpKind::Box, op, out_var)),
         OpCode::UnboxVal => Some(unary_op(molt_ir::OpKind::Unbox, op, out_var)),
+        // The final lowering stage runs only for targets whose backend consumes
+        // final TIR (FinalLowering::FinalTir), so its ops never reach SimpleIR.
+        OpCode::IsInlineInt
+        | OpCode::UnboxInlineInt
+        | OpCode::IsBoolWord
+        | OpCode::UnboxBoolWord
+        | OpCode::BoxInlineInt
+        | OpCode::CodeIs
+        | OpCode::DirectCall
+        | OpCode::CallRuntime => unreachable!(
+            "{:?} is a final-TIR op; a SimpleIR target never runs the late lowering stage",
+            op.opcode
+        ),
         OpCode::TypeGuard => {
             if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
                 Some(OpIR {

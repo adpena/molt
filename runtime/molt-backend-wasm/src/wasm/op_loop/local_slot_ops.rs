@@ -1,9 +1,9 @@
 use super::super::WasmFrameLocals;
 use super::result_sink::store_borrowed_value;
 use crate::OpIR;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use molt_tir::tir::simple_def_use::{simple_ir_binding, visit_simple_ir_reads};
-use wasm_encoder::Function;
 use wasm_encoder::Instruction;
 
 pub(super) fn emit_local_slot_op(

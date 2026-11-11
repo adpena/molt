@@ -2,13 +2,13 @@ use super::super::module_abi::WasmCallableCallSiteAbi;
 use super::super::module_abi::WasmNativeCallableImports;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::function_frame::WasmFunctionFrame;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_table::WasmTableRelocations;
 use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashSet};
-use wasm_encoder::Function;
 
 mod code_metadata;
 pub(in crate::wasm::op_loop) mod custody;

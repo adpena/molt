@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_b353df98e047c49b_gil_v8")]
+#[unsafe(export_name = "molt_generated_object_abi_5a9b7d4f57f52f50_gil_v10")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,7 +34,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_b353df98e047c49b_free_threaded_v8")]
+#[unsafe(export_name = "molt_generated_object_abi_5a9b7d4f57f52f50_free_threaded_v10")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // Read-only semantic identity. Callable construction uses fn_addr! below to
@@ -145,7 +145,7 @@ mod ipaddress_bridge;
 #[cfg(feature = "stdlib_itertools")]
 mod itertools_bridge;
 mod itertools_class;
-pub use itertools_class::{molt_itertools_reduce, molt_itertools_setstate};
+pub use {itertools_class::molt_itertools_reduce, itertools_class::molt_itertools_setstate};
 #[cfg(feature = "stdlib_logging_ext")]
 mod logging_bridge;
 #[cfg(feature = "stdlib_math")]
@@ -207,11 +207,13 @@ mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
 pub use molt_runtime_tk;
 pub mod cpython_abi_hooks;
-pub use cpython_abi_hooks::{
-    molt_cpython_abi_cext_call_trampoline, molt_cpython_abi_run_static_extension_init,
-};
 pub use molt_runtime_audit as audit;
 pub(crate) use molt_runtime_constants::*;
+pub use {
+    cpython_abi_hooks::molt_cpython_abi_cext_call_trampoline,
+    cpython_abi_hooks::molt_cpython_abi_cext_call_trampoline_admitted,
+    cpython_abi_hooks::molt_cpython_abi_run_static_extension_init,
+};
 pub(crate) const INLINE_INT_MIN_I128: i128 = molt_codegen_abi::INT_MIN_INLINE as i128;
 pub(crate) const INLINE_INT_MAX_I128: i128 = molt_codegen_abi::INT_MAX_INLINE as i128;
 pub(crate) const GEN_CONTROL_SIZE: usize = molt_codegen_abi::GENERATOR_CONTROL_BYTES as usize;
@@ -404,19 +406,21 @@ pub mod lifecycle {
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
 pub use crate::builtins::compatibility_error::molt_compatibility_error;
-pub use crate::builtins::strings::{molt_bytes_from_bytes, molt_string_from_bytes};
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
     molt_barrier_abort, molt_barrier_broken, molt_barrier_drop, molt_barrier_n_waiting,
     molt_barrier_new, molt_barrier_parties, molt_barrier_reset, molt_barrier_wait,
     molt_condition_drop, molt_condition_new, molt_condition_notify, molt_condition_wait,
-    molt_event_clear, molt_event_drop, molt_event_is_set, molt_event_new, molt_event_set,
-    molt_event_wait, molt_local_drop, molt_local_get_dict, molt_local_new, molt_lock_acquire,
-    molt_lock_drop, molt_lock_locked, molt_lock_new, molt_lock_release, molt_queue_drop,
-    molt_queue_empty, molt_queue_full, molt_queue_get, molt_queue_is_shutdown, molt_queue_join,
-    molt_queue_lifo_new, molt_queue_new, molt_queue_priority_new, molt_queue_put, molt_queue_qsize,
-    molt_queue_shutdown, molt_queue_task_done, molt_rlock_acquire, molt_rlock_acquire_restore,
-    molt_rlock_drop, molt_rlock_is_owned, molt_rlock_locked, molt_rlock_new, molt_rlock_release,
+    molt_event_clear, molt_event_drop, molt_event_is_set, molt_event_is_set_attached_body,
+    molt_event_new, molt_event_new_attached_body, molt_event_set, molt_event_set_attached_body,
+    molt_event_wait, molt_event_wait_attached_body, molt_local_drop, molt_local_get_dict,
+    molt_local_new, molt_lock_acquire, molt_lock_acquire_attached_body, molt_lock_drop,
+    molt_lock_locked, molt_lock_new, molt_lock_new_attached_body, molt_lock_release,
+    molt_lock_release_attached_body, molt_queue_drop, molt_queue_empty, molt_queue_full,
+    molt_queue_get, molt_queue_is_shutdown, molt_queue_join, molt_queue_lifo_new, molt_queue_new,
+    molt_queue_priority_new, molt_queue_put, molt_queue_qsize, molt_queue_shutdown,
+    molt_queue_task_done, molt_rlock_acquire, molt_rlock_acquire_restore, molt_rlock_drop,
+    molt_rlock_is_owned, molt_rlock_locked, molt_rlock_new, molt_rlock_release,
     molt_rlock_release_save, molt_semaphore_acquire, molt_semaphore_drop, molt_semaphore_new,
     molt_semaphore_release,
 };
@@ -424,21 +428,8 @@ pub(crate) use crate::concurrency::locks::{
 pub(crate) use crate::concurrency::{
     GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, with_gil,
 };
-#[cfg(feature = "molt_gpu_primitives")]
-pub use crate::gpu_bridge::{molt_gpu_kernel_descriptor_set, molt_gpu_kernel_launch_python};
 #[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
-pub use crate::wasm_abi_exports::{
-    molt_dict_getitem, molt_dict_setitem, molt_fast_dict_get, molt_fast_list_append,
-    molt_fast_str_join, molt_fast_str_lower, molt_fast_str_startswith, molt_fast_str_strip,
-    molt_fast_str_upper, molt_resource_on_allocate, molt_resource_on_free, molt_scratch_alloc,
-    molt_scratch_free, molt_tuple_getitem, molt_type_tag_of_bits,
-};
-#[cfg(feature = "molt_gpu_primitives")]
-pub use crate::wasm_abi_exports::{
-    molt_gpu_prim_contiguous, molt_gpu_prim_dtype, molt_gpu_prim_free, molt_gpu_prim_nbytes,
-    molt_gpu_prim_numel, molt_gpu_prim_realize,
-};
 #[cfg(feature = "molt_gpu_primitives")]
 pub use molt_gpu::primitives_ffi::{
     molt_gpu_prim_binary, molt_gpu_prim_cast, molt_gpu_prim_create_tensor,
@@ -450,27 +441,78 @@ pub use molt_gpu::primitives_ffi::{
 };
 #[cfg(feature = "molt_gpu_primitives")]
 pub use molt_gpu_runtime::{
-    molt_gpu_barrier, molt_gpu_block_dim, molt_gpu_block_id, molt_gpu_broadcast_binary_contiguous,
-    molt_gpu_buffer_to_list, molt_gpu_grid_dim, molt_gpu_interop__load_safetensors,
-    molt_gpu_interop_decode_bf16_bytes_to_f32, molt_gpu_interop_decode_f16_bytes_to_f32,
-    molt_gpu_linear_contiguous, molt_gpu_linear_split_last_dim_contiguous,
-    molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
-    molt_gpu_permute_contiguous, molt_gpu_repeat_axis_contiguous,
-    molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rope_apply_contiguous,
-    molt_gpu_softmax_last_axis_contiguous, molt_gpu_squared_relu_gate_interleaved_contiguous,
-    molt_gpu_tensor__tensor_concat_first_dim, molt_gpu_tensor__tensor_data_list,
-    molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_linear_split_last_dim,
+    molt_gpu_barrier, molt_gpu_barrier_attached_body, molt_gpu_block_dim,
+    molt_gpu_block_dim_attached_body, molt_gpu_block_id, molt_gpu_block_id_attached_body,
+    molt_gpu_broadcast_binary_contiguous, molt_gpu_broadcast_binary_contiguous_attached_body,
+    molt_gpu_buffer_to_list, molt_gpu_buffer_to_list_attached_body, molt_gpu_grid_dim,
+    molt_gpu_grid_dim_attached_body, molt_gpu_interop__load_safetensors,
+    molt_gpu_interop__load_safetensors_attached_body, molt_gpu_interop_decode_bf16_bytes_to_f32,
+    molt_gpu_interop_decode_bf16_bytes_to_f32_attached_body,
+    molt_gpu_interop_decode_f16_bytes_to_f32,
+    molt_gpu_interop_decode_f16_bytes_to_f32_attached_body, molt_gpu_linear_contiguous,
+    molt_gpu_linear_contiguous_attached_body, molt_gpu_linear_split_last_dim_contiguous,
+    molt_gpu_linear_split_last_dim_contiguous_attached_body,
+    molt_gpu_linear_squared_relu_gate_interleaved_contiguous,
+    molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body,
+    molt_gpu_matmul_contiguous, molt_gpu_matmul_contiguous_attached_body,
+    molt_gpu_permute_contiguous, molt_gpu_permute_contiguous_attached_body,
+    molt_gpu_repeat_axis_contiguous, molt_gpu_repeat_axis_contiguous_attached_body,
+    molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rms_norm_last_axis_contiguous_attached_body,
+    molt_gpu_rope_apply_contiguous, molt_gpu_rope_apply_contiguous_attached_body,
+    molt_gpu_softmax_last_axis_contiguous, molt_gpu_softmax_last_axis_contiguous_attached_body,
+    molt_gpu_squared_relu_gate_interleaved_contiguous,
+    molt_gpu_squared_relu_gate_interleaved_contiguous_attached_body,
+    molt_gpu_tensor__tensor_concat_first_dim,
+    molt_gpu_tensor__tensor_concat_first_dim_attached_body, molt_gpu_tensor__tensor_data_list,
+    molt_gpu_tensor__tensor_data_list_attached_body, molt_gpu_tensor__tensor_linear,
+    molt_gpu_tensor__tensor_linear_attached_body, molt_gpu_tensor__tensor_linear_split_last_dim,
+    molt_gpu_tensor__tensor_linear_split_last_dim_attached_body,
     molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved,
-    molt_gpu_tensor__tensor_permute_dims, molt_gpu_tensor__tensor_reshape_view,
-    molt_gpu_tensor__tensor_scaled_dot_product_attention, molt_gpu_tensor__tensor_scatter_rows,
-    molt_gpu_tensor__tensor_softmax_last_axis, molt_gpu_tensor__tensor_take_rows,
-    molt_gpu_tensor__zeros, molt_gpu_tensor_from_buffer, molt_gpu_tensor_from_parts,
-    molt_gpu_thread_id, molt_gpu_turboquant_attention_packed,
+    molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved_attached_body,
+    molt_gpu_tensor__tensor_permute_dims, molt_gpu_tensor__tensor_permute_dims_attached_body,
+    molt_gpu_tensor__tensor_reshape_view, molt_gpu_tensor__tensor_reshape_view_attached_body,
+    molt_gpu_tensor__tensor_scaled_dot_product_attention,
+    molt_gpu_tensor__tensor_scaled_dot_product_attention_attached_body,
+    molt_gpu_tensor__tensor_scatter_rows, molt_gpu_tensor__tensor_scatter_rows_attached_body,
+    molt_gpu_tensor__tensor_softmax_last_axis,
+    molt_gpu_tensor__tensor_softmax_last_axis_attached_body, molt_gpu_tensor__tensor_take_rows,
+    molt_gpu_tensor__tensor_take_rows_attached_body, molt_gpu_tensor__zeros,
+    molt_gpu_tensor__zeros_attached_body, molt_gpu_tensor_from_buffer,
+    molt_gpu_tensor_from_buffer_attached_body, molt_gpu_tensor_from_parts,
+    molt_gpu_tensor_from_parts_attached_body, molt_gpu_thread_id, molt_gpu_thread_id_attached_body,
+    molt_gpu_turboquant_attention_packed, molt_gpu_turboquant_attention_packed_attached_body,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
 /// The typed exception identity; runtime raises name a kind, never a spelling.
 pub(crate) use molt_obj_model::{BuiltinExc, ExcKind, ModuleExc};
+pub use {
+    crate::builtins::strings::molt_bytes_from_bytes,
+    crate::builtins::strings::molt_string_from_bytes,
+};
+#[cfg(feature = "molt_gpu_primitives")]
+pub use {
+    crate::gpu_bridge::molt_gpu_kernel_descriptor_set,
+    crate::gpu_bridge::molt_gpu_kernel_launch_python,
+};
+pub use {
+    crate::wasm_abi_exports::molt_dict_getitem, crate::wasm_abi_exports::molt_dict_setitem,
+    crate::wasm_abi_exports::molt_fast_dict_get, crate::wasm_abi_exports::molt_fast_list_append,
+    crate::wasm_abi_exports::molt_fast_str_join, crate::wasm_abi_exports::molt_fast_str_lower,
+    crate::wasm_abi_exports::molt_fast_str_startswith,
+    crate::wasm_abi_exports::molt_fast_str_strip, crate::wasm_abi_exports::molt_fast_str_upper,
+    crate::wasm_abi_exports::molt_resource_on_allocate,
+    crate::wasm_abi_exports::molt_resource_on_free, crate::wasm_abi_exports::molt_scratch_alloc,
+    crate::wasm_abi_exports::molt_scratch_free, crate::wasm_abi_exports::molt_tuple_getitem,
+    crate::wasm_abi_exports::molt_type_tag_of_bits,
+};
+#[cfg(feature = "molt_gpu_primitives")]
+pub use {
+    crate::wasm_abi_exports::molt_gpu_prim_contiguous,
+    crate::wasm_abi_exports::molt_gpu_prim_dtype, crate::wasm_abi_exports::molt_gpu_prim_free,
+    crate::wasm_abi_exports::molt_gpu_prim_nbytes, crate::wasm_abi_exports::molt_gpu_prim_numel,
+    crate::wasm_abi_exports::molt_gpu_prim_realize,
+};
 
 pub use crate::async_rt::cancellation::*;
 pub use crate::async_rt::channels::*;
@@ -487,20 +529,30 @@ pub(crate) use crate::async_rt::io_poller::IoPoller;
 pub use crate::async_rt::io_poller::*;
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
-pub use crate::async_rt::socket_pure::{
-    molt_socket_cmsg_len, molt_socket_cmsg_space, molt_socket_htonl, molt_socket_htons,
-    molt_socket_inet_ntop, molt_socket_inet_pton, molt_socket_ntohl, molt_socket_ntohs,
-};
 #[cfg(molt_net)]
 pub use crate::async_rt::sockets::*;
 #[cfg(molt_net)]
 pub(crate) use crate::async_rt::sockets::{
     io_wait_detach_resource, io_wait_release_detached_resource,
 };
+pub use {
+    crate::async_rt::socket_pure::molt_socket_cmsg_len,
+    crate::async_rt::socket_pure::molt_socket_cmsg_space,
+    crate::async_rt::socket_pure::molt_socket_htonl,
+    crate::async_rt::socket_pure::molt_socket_htons,
+    crate::async_rt::socket_pure::molt_socket_inet_ntop,
+    crate::async_rt::socket_pure::molt_socket_inet_pton,
+    crate::async_rt::socket_pure::molt_socket_ntohl,
+    crate::async_rt::socket_pure::molt_socket_ntohs,
+};
 #[cfg(molt_has_net_io)]
-pub use crate::async_rt::sockets::{
-    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
-    molt_socket_recv_fds, molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
+pub use {
+    crate::async_rt::sockets::molt_socket_if_indextoname,
+    crate::async_rt::sockets::molt_socket_if_nameindex,
+    crate::async_rt::sockets::molt_socket_if_nametoindex,
+    crate::async_rt::sockets::molt_socket_recv_fds, crate::async_rt::sockets::molt_socket_send_fds,
+    crate::async_rt::sockets::molt_socket_sendmsg_afalg,
+    crate::async_rt::sockets::molt_socket_sethostname,
 };
 
 #[cfg(all(not(target_arch = "wasm32"), molt_has_net_io))]
@@ -565,9 +617,6 @@ pub(crate) use crate::builtins::containers::{
     set_len, set_method_bits, set_next_entry, set_storage, set_table, set_table_ptr, tuple_len,
 };
 pub(crate) use crate::builtins::containers_alloc::{DictSeqError, dict_pair_from_item};
-pub use crate::builtins::containers_alloc::{
-    molt_dict_from_obj, molt_dict_new, molt_frozenset_new, molt_set_new,
-};
 pub(crate) use crate::builtins::context::context_stack_unwind;
 pub use crate::builtins::context::*;
 pub use crate::builtins::contextlib::*;
@@ -588,9 +637,12 @@ pub(crate) use crate::builtins::exceptions::{
     exception_suppress_bits, exception_trace_bits, exceptions_clear_runtime_state,
     format_exception_message, format_exception_with_traceback, generator_raise_active,
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
-    molt_exception_active, molt_exception_clear, molt_exception_frame_origin, molt_exception_kind,
-    molt_exception_last, molt_exception_last_pending, molt_exception_match_handler,
-    molt_exception_pending, molt_exception_set_last, molt_exception_trace_prepend, molt_raise,
+    molt_exception_active, molt_exception_clear, molt_exception_clear_attached_body,
+    molt_exception_frame_origin, molt_exception_kind_attached_body, molt_exception_last,
+    molt_exception_last_attached_body, molt_exception_last_pending,
+    molt_exception_last_pending_attached_body, molt_exception_match_handler,
+    molt_exception_pending, molt_exception_set_last_attached_body,
+    molt_exception_trace_prepend_attached_body, molt_raise_attached_body,
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error, record_exception,
     record_memory_error_without_allocation, set_generator_raise, set_task_raise_active,
@@ -599,17 +651,15 @@ pub(crate) use crate::builtins::exceptions::{
 };
 #[cfg(test)]
 pub(crate) use crate::builtins::exceptions::{exception_args_bits, exception_args_payload_bits};
-pub use crate::builtins::exceptions::{
-    molt_exception_member_delete, molt_exception_member_get, molt_exception_member_set,
-};
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_globals_bits, frame_stack_pop,
     frame_stack_push_owned, molt_class_body_builtins, molt_class_frame_set_location,
     molt_code_set_class_body, molt_frame_class_locals_set, molt_getframe, molt_globals_builtin,
-    molt_locals_builtin, traceback_payload_code_bits, traceback_payload_col,
-    traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
+    molt_locals_builtin, molt_locals_builtin_attached_body, traceback_payload_code_bits,
+    traceback_payload_col, traceback_payload_end_col, traceback_payload_line,
+    traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_fnmatch::*;
@@ -665,7 +715,6 @@ pub(crate) use crate::builtins::strings::{
     split_bytes_whitespace_to_list_maxsplit, split_string_bytes_to_list_maxsplit,
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
-pub use crate::builtins::structseq::{molt_structseq_new, molt_structseq_type};
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 #[cfg(feature = "stdlib_fs_extra")]
@@ -677,16 +726,12 @@ pub(crate) use crate::builtins::type_ops::{
 };
 pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
-pub use crate::builtins::weakref_type::{
-    molt_weakref_call, molt_weakref_callback_get, molt_weakref_eq, molt_weakref_hash,
-    molt_weakref_init, molt_weakref_ne, molt_weakref_new, molt_weakref_reference_type,
-    molt_weakref_repr,
-};
-#[allow(unused_imports)]
-pub(crate) use crate::call::bind::molt_callargs_push_kw;
+#[cfg(test)]
+pub(crate) use crate::call::bind::molt_callargs_push_kw_attached_body;
 pub(crate) use crate::call::bind::{
-    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_callargs_push_pos,
+    molt_call_bind_attached_body, molt_callargs_expand_kwstar_attached_body,
+    molt_callargs_expand_star_attached_body, molt_callargs_new_attached_body,
+    molt_callargs_push_pos_attached_body,
 };
 pub(crate) use crate::call::class_init::{
     alloc_instance_for_class, alloc_instance_for_default_object_new, call_builtin_type_if_needed,
@@ -697,16 +742,12 @@ pub(crate) use crate::call::dispatch::{
 };
 pub(crate) use crate::call::function::{call_function_obj_bound_vec, call_function_obj_vec};
 pub use crate::intrinsics::capabilities::*;
-pub use crate::intrinsics::registry::{
-    molt_load_intrinsic_runtime, molt_require_intrinsic_runtime, molt_runtime_active_runtime,
-};
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,
 };
 pub use crate::object::buffer2d::*;
 pub use crate::object::builders::*;
 pub(crate) use crate::object::builders::{PtrDropGuard, alloc_dict_with_pairs};
-pub use crate::object::cells::{molt_cell_get, molt_cell_new, molt_cell_set};
 #[allow(unused_imports)]
 pub(crate) use crate::object::layout::{
     CALL_ITER_PAYLOAD_SIZE, ENUMERATE_PAYLOAD_SIZE, FunctionCallAbi, MAP_PAYLOAD_SIZE,
@@ -748,6 +789,7 @@ pub(crate) use crate::object::memoryview::{
     memoryview_is_c_contiguous_view, memoryview_linear_offset, memoryview_nbytes,
     memoryview_strided_offset, raise_released_memoryview,
 };
+pub(crate) use crate::object::molt_dec_ref_attached_body;
 pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
 #[allow(unused_imports)]
@@ -780,17 +822,7 @@ pub use crate::object::ops_string::*;
 pub(crate) use crate::object::ops_string::{utf8_cache_remove, utf8_codepoint_count_cached};
 pub use crate::object::ops_vec::*;
 pub(crate) use crate::object::type_ids::*;
-pub use crate::object::weak_container::{
-    molt_weakcontainer_clear, molt_weakcontainer_contains, molt_weakcontainer_dead,
-    molt_weakcontainer_get, molt_weakcontainer_iter, molt_weakcontainer_len,
-    molt_weakcontainer_new, molt_weakcontainer_pop, molt_weakcontainer_refs,
-    molt_weakcontainer_store_commit, molt_weakcontainer_store_probe, molt_weakcontainer_take,
-};
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
-pub use crate::object::weakref::{
-    molt_weakref_callback, molt_weakref_count, molt_weakref_find_nocallback, molt_weakref_get,
-    molt_weakref_peek, molt_weakref_refs, molt_weakref_register,
-};
 pub(crate) use crate::object::{
     Buffer2D, ClassEdgeOwnership, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
     HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_FUNC_REQUIRES_BINDER,
@@ -807,11 +839,6 @@ pub(crate) use crate::object::{
     object_mark_has_ptrs, object_payload_size, object_type_id, pending_bits_i64, ptr_from_bits,
     string_bytes, string_len,
 };
-pub use crate::object::{
-    MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
-};
-#[cfg(feature = "stdlib_regex")]
-pub use crate::regex_bridge::{molt_re_subject_snapshot, molt_re_subject_view};
 pub(crate) use crate::state::cache::MethodCache;
 pub(crate) use crate::state::names::{NameId, RuntimeNames};
 pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
@@ -897,36 +924,119 @@ pub use molt_stdlib_graphlib::graphlib::*;
 pub use molt_stdlib_text::html::*;
 #[cfg(feature = "stdlib_text")]
 pub use molt_stdlib_text::unicodedata_mod::*;
+pub use {
+    crate::builtins::containers_alloc::molt_dict_from_obj,
+    crate::builtins::containers_alloc::molt_dict_new,
+    crate::builtins::containers_alloc::molt_frozenset_new,
+    crate::builtins::containers_alloc::molt_set_new,
+};
+pub(crate) use {
+    crate::builtins::containers_alloc::molt_dict_from_obj_attached_body,
+    crate::builtins::containers_alloc::molt_dict_new_attached_body,
+    crate::builtins::containers_alloc::molt_frozenset_new_attached_body,
+    crate::builtins::containers_alloc::molt_set_new_attached_body,
+};
+pub use {
+    crate::builtins::exceptions::molt_exception_member_delete,
+    crate::builtins::exceptions::molt_exception_member_get,
+    crate::builtins::exceptions::molt_exception_member_set,
+};
+pub use {
+    crate::builtins::structseq::molt_structseq_new, crate::builtins::structseq::molt_structseq_type,
+};
+pub use {
+    crate::builtins::weakref_type::molt_weakref_call,
+    crate::builtins::weakref_type::molt_weakref_callback_get,
+    crate::builtins::weakref_type::molt_weakref_eq,
+    crate::builtins::weakref_type::molt_weakref_hash,
+    crate::builtins::weakref_type::molt_weakref_init,
+    crate::builtins::weakref_type::molt_weakref_ne,
+    crate::builtins::weakref_type::molt_weakref_new,
+    crate::builtins::weakref_type::molt_weakref_reference_type,
+    crate::builtins::weakref_type::molt_weakref_repr,
+};
+pub use {
+    crate::intrinsics::registry::molt_load_intrinsic_runtime,
+    crate::intrinsics::registry::molt_require_intrinsic_runtime,
+    crate::intrinsics::registry::molt_runtime_active_runtime,
+};
+pub use {
+    crate::object::MoltHeader, crate::object::bump_type_version,
+    crate::object::global_type_version, crate::object::molt_dec_ref, crate::object::molt_inc_ref,
+};
+pub use {
+    crate::object::cells::molt_cell_get, crate::object::cells::molt_cell_new,
+    crate::object::cells::molt_cell_set,
+};
+pub use {
+    crate::object::weak_container::molt_weakcontainer_clear,
+    crate::object::weak_container::molt_weakcontainer_contains,
+    crate::object::weak_container::molt_weakcontainer_dead,
+    crate::object::weak_container::molt_weakcontainer_get,
+    crate::object::weak_container::molt_weakcontainer_iter,
+    crate::object::weak_container::molt_weakcontainer_len,
+    crate::object::weak_container::molt_weakcontainer_new,
+    crate::object::weak_container::molt_weakcontainer_pop,
+    crate::object::weak_container::molt_weakcontainer_refs,
+    crate::object::weak_container::molt_weakcontainer_store_commit,
+    crate::object::weak_container::molt_weakcontainer_store_probe,
+    crate::object::weak_container::molt_weakcontainer_take,
+};
+pub use {
+    crate::object::weakref::molt_weakref_callback, crate::object::weakref::molt_weakref_count,
+    crate::object::weakref::molt_weakref_find_nocallback, crate::object::weakref::molt_weakref_get,
+    crate::object::weakref::molt_weakref_peek, crate::object::weakref::molt_weakref_refs,
+    crate::object::weakref::molt_weakref_register,
+};
+pub(crate) use {
+    crate::object::weakref::molt_weakref_find_nocallback_attached_body,
+    crate::object::weakref::molt_weakref_register_attached_body,
+};
+#[cfg(feature = "stdlib_regex")]
+pub use {
+    crate::regex_bridge::molt_re_subject_snapshot, crate::regex_bridge::molt_re_subject_view,
+};
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
-    molt_profile_enabled, molt_profile_handle_resolve, molt_profile_snapshot,
-    molt_profile_struct_field_store,
+    molt_profile_enabled, molt_profile_enabled_attached_body, molt_profile_handle_resolve,
+    molt_profile_handle_resolve_attached_body, molt_profile_snapshot,
+    molt_profile_snapshot_attached_body, molt_profile_struct_field_store,
+    molt_profile_struct_field_store_attached_body,
 };
 pub(crate) use crate::utils::usize_from_bits;
 
+// These are resolved by the application at static link time. An explicit
+// wasm_import_module makes rustc retain an opaque Rust linker name instead.
 #[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    #[link_name = "molt_call_indirect0"]
-    pub(crate) fn molt_call_indirect0(func_idx: u64) -> i64;
-    #[link_name = "molt_call_indirect1"]
-    pub(crate) fn molt_call_indirect1(func_idx: u64, arg0: u64) -> i64;
-    #[link_name = "molt_call_indirect2"]
-    pub(crate) fn molt_call_indirect2(func_idx: u64, arg0: u64, arg1: u64) -> i64;
-    #[link_name = "molt_call_indirect3"]
-    pub(crate) fn molt_call_indirect3(func_idx: u64, arg0: u64, arg1: u64, arg2: u64) -> i64;
-    #[link_name = "molt_call_indirect4"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect0")]
+    pub(crate) fn molt_call_indirect0(__context: u64, func_idx: u64) -> i64;
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect1")]
+    pub(crate) fn molt_call_indirect1(__context: u64, func_idx: u64, arg0: u64) -> i64;
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect2")]
+    pub(crate) fn molt_call_indirect2(__context: u64, func_idx: u64, arg0: u64, arg1: u64) -> i64;
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect3")]
+    pub(crate) fn molt_call_indirect3(
+        __context: u64,
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+    ) -> i64;
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect4")]
     pub(crate) fn molt_call_indirect4(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
         arg2: u64,
         arg3: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect5"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect5")]
     pub(crate) fn molt_call_indirect5(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -934,8 +1044,9 @@ unsafe extern "C" {
         arg3: u64,
         arg4: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect6"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect6")]
     pub(crate) fn molt_call_indirect6(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -944,8 +1055,9 @@ unsafe extern "C" {
         arg4: u64,
         arg5: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect7"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect7")]
     pub(crate) fn molt_call_indirect7(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -955,8 +1067,9 @@ unsafe extern "C" {
         arg5: u64,
         arg6: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect8"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect8")]
     pub(crate) fn molt_call_indirect8(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -967,8 +1080,9 @@ unsafe extern "C" {
         arg6: u64,
         arg7: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect9"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect9")]
     pub(crate) fn molt_call_indirect9(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -980,8 +1094,9 @@ unsafe extern "C" {
         arg7: u64,
         arg8: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect10"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect10")]
     pub(crate) fn molt_call_indirect10(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -994,8 +1109,9 @@ unsafe extern "C" {
         arg8: u64,
         arg9: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect11"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect11")]
     pub(crate) fn molt_call_indirect11(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -1009,8 +1125,9 @@ unsafe extern "C" {
         arg9: u64,
         arg10: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect12"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect12")]
     pub(crate) fn molt_call_indirect12(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -1025,8 +1142,9 @@ unsafe extern "C" {
         arg10: u64,
         arg11: u64,
     ) -> i64;
-    #[link_name = "molt_call_indirect13"]
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect13")]
     pub(crate) fn molt_call_indirect13(
+        __context: u64,
         func_idx: u64,
         arg0: u64,
         arg1: u64,
@@ -1042,6 +1160,11 @@ unsafe extern "C" {
         arg11: u64,
         arg12: u64,
     ) -> i64;
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
+unsafe extern "C" {
     #[link_name = "molt_db_query_host"]
     fn molt_db_query_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
     #[link_name = "molt_db_exec_host"]
@@ -1331,3 +1454,8 @@ unsafe extern "C" {
 // Attribute accessors moved to builtins/attributes.rs.
 
 mod arena;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_attached_context_abi_fingerprint() -> u64 {
+    molt_codegen_abi::ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT
+}

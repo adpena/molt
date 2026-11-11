@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 from molt.compilation_target import admit_target
 
 from tests.cli.native_link_test_support import transport_codegen_binding
@@ -506,8 +508,8 @@ def test_archive_internal_references_resolve_against_included_members(monkeypatc
         native_symbol_inspection,
         "_native_object_global_symbol_sets",
         lambda path, *, target_triple=None: (
-            definitions,
-            {"molt_sys_helper", "molt_runtime_external"},
+            {compiled_execution_symbol(name) for name in definitions},
+            {compiled_execution_symbol("molt_sys_helper"), "molt_runtime_external"},
         ),
     )
     monkeypatch.setattr(
@@ -527,7 +529,10 @@ def test_missing_archive_member_definition_remains_a_closure_error(monkeypatch):
     monkeypatch.setattr(
         native_symbol_inspection,
         "_native_object_global_symbol_sets",
-        lambda path, *, target_triple=None: ({"molt_init_sys"}, {"molt_sys_helper"}),
+        lambda path, *, target_triple=None: (
+            {compiled_execution_symbol("molt_init_sys")},
+            {compiled_execution_symbol("molt_sys_helper")},
+        ),
     )
     monkeypatch.setattr(
         backend_cache,

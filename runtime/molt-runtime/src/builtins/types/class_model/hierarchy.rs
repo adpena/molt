@@ -116,9 +116,12 @@ pub(crate) fn prepare_class_base_layout(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_set_base(class: u64, bases: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_class_set_base_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    bases: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = class_set_base(py, class, bases);
         MoltObject::none().bits()
     })
@@ -141,14 +144,14 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
         }
     }
     inc_ref_bits(_py, class_bits);
-    let _class_owner = crate::PtrDropGuard::new(class_ptr);
+    let _class_owner = crate::PtrDropGuard::new(_py, class_ptr);
     let original_bases = unsafe { class_bases_bits(class_ptr) };
     if original_bases != 0 {
         inc_ref_bits(_py, original_bases);
     }
     let _original_bases_owner = obj_from_bits(original_bases)
         .as_ptr()
-        .map(crate::PtrDropGuard::new);
+        .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
     let mut bases_vec = Vec::new();
     let bases_bits = if obj_from_bits(base_bits).is_none() || base_bits == 0 {
         let tuple_ptr = alloc_tuple(_py, &[]);
@@ -201,6 +204,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
     };
 
     let mut bases_owner = crate::PtrDropGuard::new(
+        _py,
         obj_from_bits(bases_bits)
             .as_ptr()
             .expect("owned base tuple"),
@@ -292,39 +296,24 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
     unsafe {
         use crate::object::class_storage::ClassReferenceSlot;
         let bases_name = crate::NameId::DunderBases.bits(_py);
-        let mro_name = crate::NameId::DunderMro.bits(_py);
         let Some(mut publication) =
             crate::builtins::attributes::TypeMutation::prepare(_py, class_ptr, bases_name)
         else {
             dec_ref_bits(_py, mro_bits);
             return Err(());
         };
-        let mut retired = Vec::with_capacity(2);
-        let mut updated = true;
-        // Adopt both new edges before releasing either old one. Keep the
-        // displaced owners through namespace and layout publication too:
-        // replacing the dictionary projections may otherwise trigger a
-        // finalizer observing a half-published hierarchy.
+        // The typed slots are the only home of `__bases__` and `__mro__`;
+        // `type`'s data descriptors serve them, as CPython's type getsets do,
+        // so the class namespace never mirrors them. Adopt both new edges
+        // before releasing either old one, and keep the displaced owners
+        // through layout publication: an earlier release could run a
+        // finalizer that observes a half-published hierarchy.
         let old_bases = ClassReferenceSlot::Bases.exchange_owned(class_ptr, bases_bits);
         crate::object::class_subclasses::rebase(class_ptr, old_bases, bases_bits);
         bases_owner.release();
         let old_mro = ClassReferenceSlot::Mro.exchange_owned(class_ptr, mro_bits);
         let bases_updated = old_bases != bases_bits;
         let mro_updated = old_mro != mro_bits;
-        let dict_bits = class_dict_bits(class_ptr);
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && object_type_id(dict_ptr) == TYPE_ID_DICT
-        {
-            for (name, value) in [(bases_name, bases_bits), (mro_name, mro_bits)] {
-                match crate::object::ops::dict_set_deferred(_py, dict_ptr, name, value) {
-                    Ok(previous) => retired.push(previous),
-                    Err(()) => {
-                        updated = false;
-                        break;
-                    }
-                }
-            }
-        }
         if bases_updated || mro_updated {
             let published = crate::object::class_inherit_instance_type_id(
                 class_ptr,
@@ -349,22 +338,23 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
                 "validated exception-layout publication must succeed"
             );
         }
-        // Even a failed later projection write must invalidate a committed
-        // hierarchy before the first displaced owner can reenter Python.
+        // Invalidate the committed hierarchy before the first displaced owner
+        // can reenter Python.
         let published = publication.publish();
-        drop(retired);
         dec_ref_bits(_py, old_bases);
         dec_ref_bits(_py, old_mro);
-        if !updated || !published {
+        if !published {
             return Err(());
         }
     }
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_class_apply_set_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    class_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -458,8 +448,8 @@ unsafe fn class_set_name_error_note(
         return;
     };
     inc_ref_bits(_py, original);
-    crate::molt_exception_clear();
-    let name_repr_bits = crate::molt_repr_builtin(name_bits);
+    crate::molt_exception_clear_attached_body(_py);
+    let name_repr_bits = crate::molt_repr_builtin_attached_body(_py, name_bits);
     if !exception_pending(_py) {
         let name_repr = string_obj_to_owned(obj_from_bits(name_repr_bits));
         if let Some(name_repr) = name_repr {
@@ -475,8 +465,9 @@ unsafe fn class_set_name_error_note(
             let note_ptr = alloc_string(_py, note.as_bytes());
             if !note_ptr.is_null() {
                 let note_bits = MoltObject::from_ptr(note_ptr).bits();
-                let result =
-                    crate::builtins::exceptions::molt_exception_add_note(original, note_bits);
+                let result = crate::builtins::exceptions::molt_exception_add_note_attached_body(
+                    _py, original, note_bits,
+                );
                 crate::call::discard_owned_call_result(_py, result);
                 dec_ref_bits(_py, note_bits);
             }
@@ -490,14 +481,16 @@ unsafe fn class_set_name_error_note(
             let _ = raise_exception::<u64>(_py, BuiltinExc::RuntimeError, message);
         }
     } else {
-        crate::molt_exception_set_last(original);
+        crate::molt_exception_set_last_attached_body(_py, original);
     }
     dec_ref_bits(_py, original);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_class_layout_version_attached_body(
+    _py: &crate::PyToken<'_>,
+    class_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -516,9 +509,12 @@ pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
 /// program bound to the statement's definition symbol. Layout guards compare
 /// this identity, never a class binding, so rebinding a name cannot redirect
 /// them. A class takes one identity, from the statement that created it.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_set_definition(class_bits: u64, definition_slot: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_class_set_definition_attached_body(
+    _py: &crate::PyToken<'_>,
+    class_bits: u64,
+    definition_slot: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -554,3 +550,5 @@ pub extern "C" fn molt_class_set_definition(class_bits: u64, definition_slot: u6
         MoltObject::none().bits()
     })
 }
+
+include!("../../../attached_exports_generated/builtins/types/class_model/hierarchy.rs");

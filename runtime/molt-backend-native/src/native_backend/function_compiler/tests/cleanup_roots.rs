@@ -92,6 +92,7 @@ fn cleanup_tokens_release_sibling_paths_without_cross_branch_dedup() {
             builder.seal_block(merge);
             roots.release_all(&mut builder, release_site);
             builder.ins().return_(&[]);
+            complete_unit_fixture_abi(&backend.module, builder.func);
             builder.finalize(crate::test_support::host_frontend_config());
         }
         let cfg = cranelift_codegen::flowgraph::ControlFlowGraph::with_function(&function);
@@ -166,6 +167,7 @@ fn cleanup_tokens_rearm_and_transfer_on_the_executing_path() {
         roots.acquire(&mut builder, release_site, "owner", values[0]);
         roots.release_all(&mut builder, release_site); // reacquired: one release
         builder.ins().return_(&[]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
     let calls = function.layout.blocks().flat_map(|block| function.layout.block_insts(block))
@@ -258,6 +260,7 @@ fn cleanup_of_proven_boxed_immediates_emits_no_reference_transitions() {
         roots.retain_explicit(&mut builder, "owner");
         roots.release_all(&mut builder, site);
         builder.ins().return_(&[]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
     let calls = function
@@ -318,6 +321,7 @@ fn cleanup_token_reassignment_is_carried_over_a_real_backedge() {
         builder.seal_block(exit);
         roots.release_all(&mut builder, release_site);
         builder.ins().return_(&[]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))

@@ -131,12 +131,14 @@ pub(super) fn handle_image_command(py: &PyToken, handle: i64, args: &[u64]) -> R
             app.last_error = None;
             match subcommand.as_str() {
                 "width" => Ok(MoltObject::from_int(widget_option_i64_default(
+                    py,
                     &image.options,
                     "-width",
                     0,
                 ))
                 .bits()),
                 "height" => Ok(MoltObject::from_int(widget_option_i64_default(
+                    py,
                     &image.options,
                     "-height",
                     0,
@@ -218,12 +220,15 @@ pub(super) fn handle_image_instance_command(
         }
         "width" => {
             app.last_error = None;
-            Ok(MoltObject::from_int(widget_option_i64_default(&image.options, "-width", 0)).bits())
+            Ok(
+                MoltObject::from_int(widget_option_i64_default(py, &image.options, "-width", 0))
+                    .bits(),
+            )
         }
         "height" => {
             app.last_error = None;
             Ok(
-                MoltObject::from_int(widget_option_i64_default(&image.options, "-height", 0))
+                MoltObject::from_int(widget_option_i64_default(py, &image.options, "-height", 0))
                     .bits(),
             )
         }

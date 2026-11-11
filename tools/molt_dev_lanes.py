@@ -854,22 +854,10 @@ def cmd_lane_dispatch(args: argparse.Namespace) -> int:
             )
         except dag_dispatch.DispatchRefused as exc:
             raise DriverError(str(exc)) from exc
-        ratchet_path = repo / "bench/primitive_ratchet.json"
-        ratchet = (
-            dag_dispatch.parse_ratchet(ratchet_path.read_text(encoding="utf-8"))
-            if ratchet_path.exists()
-            else None
-        )
-        star = dag_dispatch.north_star(ratchet)
         if args.json:
-            print(
-                json.dumps(
-                    {"north_star": star, "rows": [asdict(row) for row in plan]},
-                    indent=2,
-                )
-            )
+            print(json.dumps({"rows": [asdict(row) for row in plan]}, indent=2))
         else:
-            print(dag_dispatch.render_plan(plan, ratchet))
+            print(dag_dispatch.render_plan(plan))
         return EXIT_OK
     if args.slug is None:
         raise DriverError("lane dispatch needs a slug or --plan")
@@ -1528,8 +1516,7 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
     print(f"work order at {upstream}:")
     print(
         dag_dispatch.render_plan(
-            tuple(dag_dispatch.PlannedRow(**row) for row in order["rows"]),
-            order["primitive_ratchet"],
+            tuple(dag_dispatch.PlannedRow(**row) for row in order["rows"])
         )
     )
     for task, dispatch in sorted(order["lanes"].items()):
@@ -1562,13 +1549,6 @@ def _work_order(git: Any, main: Path, upstream: str) -> dict[str, Any]:
         rows = dag_dispatch.row_plan(status, records)
     except dag_dispatch.DispatchRefused as exc:
         raise DriverError(f"work order at {upstream}: {exc}") from exc
-    ratchet_ref = f"{upstream}:bench/primitive_ratchet.json"
-    present = git._run(["cat-file", "-e", ratchet_ref], check=False)
-    ratchet = (
-        dag_dispatch.parse_ratchet(git._run(["show", ratchet_ref]).stdout)
-        if present.returncode == 0
-        else None
-    )
 
     def dispatch_facts(record: Any) -> dict[str, Any] | None:
         payload = record.payload.get(dag_dispatch.RECORD_KEY)
@@ -1585,8 +1565,6 @@ def _work_order(git: Any, main: Path, upstream: str) -> dict[str, Any]:
         return facts
 
     return {
-        "primitive_ratchet": ratchet,
-        "north_star": dag_dispatch.north_star(ratchet),
         "rows": [asdict(row) for row in rows],
         "lanes": {
             record.task: dispatch_facts(record)

@@ -37,6 +37,7 @@ fn discarded_representation_bindings_share_tir_and_lir_shape_admission() {
         let block = function.blocks.get_mut(&function.entry_block).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0)],
@@ -65,6 +66,7 @@ fn semantic_unbox_preserves_the_shared_boxed_carrier_plan() {
     let block = function.blocks.get_mut(&function.entry_block).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnboxVal,
         operands: vec![ValueId(0)],
@@ -109,6 +111,7 @@ fn ref64_result_requires_supported_allocation_provenance() {
             ops: vec![LirOp {
                 tir_op: TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -223,6 +226,7 @@ fn truthiness_marker_requires_the_real_bool_operation() {
             ops: vec![LirOp {
                 tir_op: TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![ValueId(0)],
@@ -520,6 +524,7 @@ fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
     entry.ops = vec![
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -529,6 +534,7 @@ fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
         },
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -540,6 +546,7 @@ fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
     entry.terminator = Terminator::Return { values: vec![] };
     tir.blocks.get_mut(&handler).unwrap().ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![result, result],

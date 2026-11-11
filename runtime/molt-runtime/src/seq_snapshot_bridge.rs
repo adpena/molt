@@ -8,7 +8,6 @@ use crate::*;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_seq_read_len(ptr: *mut u8) -> usize {
-    crate::gil_assert();
     unsafe { crate::object::seq_access::len(ptr) }
 }
 
@@ -25,22 +24,29 @@ pub extern "C" fn molt_seq_read_item_gil_borrowed(
 
 /// Return one owned handle. A successful result must be released with
 /// `molt_dec_ref_obj` by the caller.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_seq_read_item_owned(ptr: *mut u8, index: usize, out: *mut u64) -> i32 {
-    crate::object::seq_access::read_item_owned(ptr, index, out)
+pub(crate) fn molt_seq_read_item_owned_attached_body(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    index: usize,
+    out: *mut u64,
+) -> i32 {
+    crate::object::seq_access::read_item_owned(_py, ptr, index, out)
 }
 
 /// Export the canonical pinned sequence snapshot for every satellite runtime
 /// crate. This symbol is intentionally feature-independent: Tk, itertools,
 /// and future consumers must not acquire link custody from one another's
 /// optional feature bridge.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_seq_snapshot(
+pub(crate) fn molt_seq_snapshot_attached_body(
+    _py: &PyToken<'_>,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(py, { unsafe { export(py, ptr, out_ptr, out_len) } })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        unsafe { export(py, ptr, out_ptr, out_len) }
+    }
 }
 
 /// Export a stable, resource-accounted snapshot. The caller owns one reference
@@ -64,13 +70,16 @@ pub(crate) unsafe fn export(
 
 /// Export pinned dictionary key/value pairs in insertion order. An empty
 /// dictionary succeeds; allocation failure leaves a pending exception.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_snapshot(
+pub(crate) fn molt_dict_snapshot_attached_body(
+    _py: &PyToken<'_>,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(py, { unsafe { export_dict(py, ptr, out_ptr, out_len) } })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        unsafe { export_dict(py, ptr, out_ptr, out_len) }
+    }
 }
 
 pub(crate) unsafe fn export_dict(
@@ -119,6 +128,11 @@ unsafe fn export_handles(
     exported
 }
 
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/seq_snapshot_bridge.rs"
+));
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,7 +174,7 @@ mod tests {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()
                 })));
-                let result = molt_seq_snapshot(empty, &mut ptr, &mut len);
+                let result = molt_seq_snapshot_attached_body(py, empty, &mut ptr, &mut len);
                 drop(reset);
                 assert_eq!(result, 1, "empty export does not allocate");
                 assert!(ptr.is_null());
@@ -183,7 +197,7 @@ mod tests {
                 })));
                 ptr = std::ptr::dangling();
                 len = 99;
-                let result = molt_seq_snapshot(sequence, &mut ptr, &mut len);
+                let result = molt_seq_snapshot_attached_body(py, sequence, &mut ptr, &mut len);
                 assert_eq!(result, 0);
                 assert!(ptr.is_null());
                 assert_eq!(len, 0);
@@ -193,35 +207,55 @@ mod tests {
                 {
                     // The satellite must preserve failure as a distinct value,
                     // never reinterpret it as an empty sequence or guard miss.
-                    assert!(unsafe { molt_runtime_math::bridge::seq_snapshot(sequence) }.is_none());
+                    assert!(
+                        unsafe {
+                            molt_runtime_math::bridge::seq_snapshot(py.core_token(), sequence)
+                        }
+                        .is_none()
+                    );
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
-                    type Reduction = fn(u64) -> u64;
+                    type Reduction = fn(&molt_runtime_core::PyToken, u64) -> u64;
                     let reductions: [(&str, Reduction); 8] = [
-                        ("mean", |data| crate::molt_statistics_mean(data)),
-                        ("variance", |data| {
-                            crate::molt_statistics_variance(data, MoltObject::none().bits())
+                        ("mean", |py, data| {
+                            crate::molt_statistics_mean_attached_body(py, data)
                         }),
-                        ("stdev", |data| {
-                            crate::molt_statistics_stdev(data, MoltObject::none().bits())
+                        ("variance", |py, data| {
+                            crate::molt_statistics_variance_attached_body(
+                                py,
+                                data,
+                                MoltObject::none().bits(),
+                            )
                         }),
-                        ("quantiles", |data| {
-                            crate::molt_statistics_quantiles(
+                        ("stdev", |py, data| {
+                            crate::molt_statistics_stdev_attached_body(
+                                py,
+                                data,
+                                MoltObject::none().bits(),
+                            )
+                        }),
+                        ("quantiles", |py, data| {
+                            crate::molt_statistics_quantiles_attached_body(
+                                py,
                                 data,
                                 MoltObject::from_int(4).bits(),
                                 MoltObject::from_bool(false).bits(),
                             )
                         }),
-                        ("harmonic_mean", |data| {
-                            crate::molt_statistics_harmonic_mean(data)
+                        ("harmonic_mean", |py, data| {
+                            crate::molt_statistics_harmonic_mean_attached_body(py, data)
                         }),
-                        ("median", |data| crate::molt_statistics_median(data)),
-                        ("median_low", |data| crate::molt_statistics_median_low(data)),
-                        ("median_high", |data| {
-                            crate::molt_statistics_median_high(data)
+                        ("median", |py, data| {
+                            crate::molt_statistics_median_attached_body(py, data)
+                        }),
+                        ("median_low", |py, data| {
+                            crate::molt_statistics_median_low_attached_body(py, data)
+                        }),
+                        ("median_high", |py, data| {
+                            crate::molt_statistics_median_high_attached_body(py, data)
                         }),
                     ];
                     for (name, reduce) in reductions {
-                        let result = reduce(MoltObject::from_ptr(sequence).bits());
+                        let result = reduce(py.core_token(), MoltObject::from_ptr(sequence).bits());
                         assert_eq!(
                             result,
                             MoltObject::none().bits(),
@@ -233,8 +267,13 @@ mod tests {
                 }
                 drop(reset);
 
-                assert_eq!(molt_seq_snapshot(sequence, &mut ptr, &mut len), 1);
-                let snapshot = unsafe { molt_runtime_core::bridge_owned_handle_snapshot(ptr, len) };
+                assert_eq!(
+                    molt_seq_snapshot_attached_body(py, sequence, &mut ptr, &mut len),
+                    1
+                );
+                let snapshot = unsafe {
+                    molt_runtime_core::bridge_owned_handle_snapshot(py.core_token(), ptr, len)
+                };
                 assert_eq!(&*snapshot, &expected);
                 assert_eq!(owners(value), 5);
                 dec_ref_bits(py, MoltObject::from_ptr(sequence).bits());
@@ -265,11 +304,16 @@ mod tests {
 
             let mut ptr = std::ptr::null();
             let mut len = 0;
-            assert_eq!(molt_seq_snapshot(list_ptr, &mut ptr, &mut len), 1);
-            let snapshot = unsafe { molt_runtime_core::bridge_owned_handle_snapshot(ptr, len) };
+            assert_eq!(
+                molt_seq_snapshot_attached_body(py, list_ptr, &mut ptr, &mut len),
+                1
+            );
+            let snapshot = unsafe {
+                molt_runtime_core::bridge_owned_handle_snapshot(py.core_token(), ptr, len)
+            };
             assert_eq!(&*snapshot, &[value]);
             assert_eq!(owners(value), 2, "snapshot must retain before any callback");
-            crate::molt_list_clear(list);
+            crate::molt_list_clear_attached_body(py, list);
             assert!(!exception_pending(py));
             assert_eq!(
                 owners(value),
@@ -279,7 +323,7 @@ mod tests {
             // SAFETY: the existing snapshot is the sole live string owner and
             // this immediate read remains under current-thread runtime custody.
             assert_eq!(
-                unsafe { molt_runtime_core::rt_string_as_bytes(snapshot[0]) },
+                unsafe { molt_runtime_core::rt_string_as_bytes(py.core_token(), snapshot[0]) },
                 Some(payload.as_slice())
             );
 
@@ -316,8 +360,13 @@ mod tests {
             assert_eq!(owners(value), 4);
             let mut ptr = std::ptr::null();
             let mut len = 0;
-            assert_eq!(molt_dict_snapshot(dict, &mut ptr, &mut len), 1);
-            let snapshot = unsafe { molt_runtime_core::bridge_owned_handle_snapshot(ptr, len) };
+            assert_eq!(
+                molt_dict_snapshot_attached_body(py, dict, &mut ptr, &mut len),
+                1
+            );
+            let snapshot = unsafe {
+                molt_runtime_core::bridge_owned_handle_snapshot(py.core_token(), ptr, len)
+            };
             // This literal order distinguishes occupied rows from dense indexing
             // or table-bucket order. The same owner used by satellites releases it.
             assert_eq!(
@@ -344,7 +393,10 @@ mod tests {
             assert!(!dict.is_null());
             let mut ptr = std::ptr::dangling();
             let mut len = 99;
-            assert_eq!(molt_dict_snapshot(dict, &mut ptr, &mut len), 1);
+            assert_eq!(
+                molt_dict_snapshot_attached_body(py, dict, &mut ptr, &mut len),
+                1
+            );
             assert!(ptr.is_null());
             assert_eq!(len, 0);
             assert!(!exception_pending(py));
@@ -370,7 +422,7 @@ mod tests {
                 })));
                 ptr = std::ptr::dangling();
                 len = 99;
-                let result = molt_dict_snapshot(dict, &mut ptr, &mut len);
+                let result = molt_dict_snapshot_attached_body(py, dict, &mut ptr, &mut len);
                 assert_eq!(result, 0);
                 assert!(ptr.is_null());
                 assert_eq!(len, 0);

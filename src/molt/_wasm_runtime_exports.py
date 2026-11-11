@@ -22,9 +22,13 @@ from molt._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
     WASM_IMPORT_RUNTIME_FEATURES,
     WASM_POLL_TABLE_IMPORTS,
+    WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
+    compiled_execution_symbol,
     WASM_RUNTIME_HOST_EXPORTS,
+    WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
     wasm_import_signature,
     wasm_runtime_export_name,
+    runtime_execution_abi,
 )
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
@@ -60,30 +64,74 @@ def _is_cpython_abi_link_import(name: str) -> bool:
     )
 
 
+def _logical_runtime_export_name_or_fail(name: str) -> str:
+    logical = wasm_runtime_export_name(name)
+    if logical is None:
+        raise ValueError(f"unknown logical WASM runtime export: {name}")
+    execution = runtime_execution_abi(logical)
+    if execution is None:
+        raise ValueError(f"missing runtime execution ABI for {logical}")
+    return execution.physical_symbol
+
+
+def wasm_runtime_is_attached_physical_export(name: str) -> bool:
+    logical = wasm_runtime_export_name(name)
+    execution = runtime_execution_abi(logical) if logical is not None else None
+    return (
+        execution is not None
+        and execution.context == "Attached"
+        and execution.physical_symbol == name
+    )
+
+
 def _runtime_export_name_or_fail(name: str) -> str:
+    # Full public C fields are real admission entries. Semantic compiler ids
+    # and current suffixed fields select the separate attached protocol.
+    if name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES:
+        return name
     name = wasm_split_runtime_canonical_import_name(name)
-    # Relocatable runtime artifacts expose CPython ABI link imports under
-    # their canonical C names.  The generated runtime export map also records
-    # the public ``molt_`` names used by the split shared artifact, so this
-    # distinction must be resolved before consulting that map.
     if _is_cpython_abi_link_import(name):
         return name
-    export_name = wasm_runtime_export_name(name)
-    if export_name is not None:
-        return export_name
-    raise ValueError(f"unknown WASM runtime import/export name: {name}")
+    return _logical_runtime_export_name_or_fail(name)
 
 
 def _split_runtime_export_name_or_fail(name: str) -> str:
+    if name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES:
+        return name
     name = wasm_split_runtime_canonical_import_name(name)
-    export_name = wasm_runtime_export_name(name)
-    if export_name is not None:
-        return export_name
+    if wasm_runtime_export_name(name) is not None:
+        return _logical_runtime_export_name_or_fail(name)
     if _is_cpython_abi_link_import(name):
         export_name = WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES.get(name)
         if export_name is not None:
             return export_name
     raise ValueError(f"unknown WASM runtime import/export name: {name}")
+
+
+def wasm_output_runtime_export_names() -> tuple[str, ...]:
+    """Project generated compiled-entry preservation roles to wire identities."""
+    return tuple(
+        compiled_execution_symbol(name) for name in WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
+    )
+
+
+def wasm_runtime_lifetime_export_names() -> dict[str, str]:
+    """Project actual host logical entries into the lifetime protocol's roles."""
+    roles = {
+        "runtime_execution_enter": "molt_runtime_execution_enter",
+        "runtime_execution_leave": "molt_runtime_execution_leave",
+        "runtime_shutdown": "molt_runtime_shutdown",
+        "attached_context": "molt_attached_context",
+        "compiled_execution_enter": "molt_compiled_execution_enter",
+        "compiled_execution_leave": "molt_compiled_execution_leave",
+    }
+    exports: dict[str, str] = {}
+    for role, logical in roles.items():
+        execution = runtime_execution_abi(logical)
+        if execution is None or execution.context != "Boundary":
+            raise ValueError(f"missing canonical lifetime boundary {logical}")
+        exports[role] = execution.physical_symbol
+    return exports
 
 
 def wasm_runtime_export_name_for_import(name: str) -> str | None:
@@ -101,6 +149,8 @@ def wasm_split_runtime_export_name_for_import(name: str) -> str | None:
 
 
 def wasm_split_runtime_import_name_for_export(name: str) -> str | None:
+    if name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES:
+        return name
     import_name = WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME.get(name)
     if import_name is not None:
         return import_name
@@ -114,10 +164,17 @@ def wasm_split_runtime_import_signature(
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
     """Return the generated canonical function type for one split ABI edge."""
 
+    if name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES:
+        return WASM_PUBLIC_C_API_FUNCTION_SIGNATURES[name]
     canonical_name = wasm_split_runtime_canonical_import_name(name)
     signature = wasm_import_signature(canonical_name)
     if signature is not None:
-        return signature
+        logical = wasm_runtime_export_name(canonical_name)
+        abi = runtime_execution_abi(logical) if logical is not None else None
+        if abi is None:
+            raise ValueError(f"missing runtime execution ABI for {canonical_name}")
+        params, results = signature
+        return (("i64", *params) if abi.context == "Attached" else params), results
     # Split exports project the canonical env ABI. Preserve its module-qualified
     # identity: an identically named WASI import can have a different signature.
     raw_signature = WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES.get(
@@ -137,7 +194,14 @@ def wasm_split_runtime_import_signature(
             f"invalid generated split-runtime signature for {canonical_name}"
         )
     results = () if raw_result == "nil" else tuple(raw_result.split(", "))
-    return tuple(raw_params), results
+    logical = wasm_runtime_export_name(canonical_name)
+    abi = runtime_execution_abi(logical) if logical is not None else None
+    if logical is not None and abi is None and logical.startswith("molt_"):
+        raise ValueError(f"missing runtime execution ABI for {logical}")
+    params = tuple(raw_params)
+    return (
+        ("i64", *params) if abi is not None and abi.context == "Attached" else params
+    ), results
 
 
 def wasm_split_runtime_export_rename_map(
@@ -256,7 +320,7 @@ def wasm_runtime_import_feature(name: str) -> str | None:
     canonical = wasm_split_runtime_canonical_import_name(name)
     if canonical in _wasm_import_registry():
         return WASM_IMPORT_RUNTIME_FEATURES.get(canonical)
-    symbol = wasm_runtime_export_name_for_import(canonical)
+    symbol = wasm_runtime_export_name(canonical)
     return None if symbol is None else feature_for_symbol(symbol)
 
 
@@ -273,7 +337,9 @@ def wasm_runtime_import_names_for_features(
     enabled = frozenset(enabled_features)
     selected: list[str] = []
     for name in wasm_runtime_import_names():
-        symbol = _runtime_export_name_or_fail(name)
+        symbol = wasm_runtime_export_name(name)
+        if symbol is None:
+            raise ValueError(f"unknown WASM runtime import/export name: {name}")
         if not runtime_symbol_available_on_target(symbol, target=target):
             continue
         feature = WASM_IMPORT_RUNTIME_FEATURES.get(name)
@@ -400,7 +466,9 @@ def wasm_runtime_dynamic_export_names(
     return tuple(
         sorted(
             {
-                canonical_intrinsic_runtime_name(name)
+                _logical_runtime_export_name_or_fail(
+                    canonical_intrinsic_runtime_name(name)
+                )
                 for name in _resolved_dynamic_runtime_owned_intrinsic_exports(
                     resolved_modules
                 )
@@ -423,7 +491,9 @@ def wasm_runtime_required_export_names(
                 for name in wasm_runtime_import_names()
             )
         )
-    export_names = set(WASM_RUNTIME_HOST_EXPORTS)
+    export_names = {
+        _logical_runtime_export_name_or_fail(name) for name in WASM_RUNTIME_HOST_EXPORTS
+    }
     for raw_name in required_runtime_imports:
         name = _runtime_export_name_or_fail(raw_name)
         export_names.add(name)
@@ -538,11 +608,14 @@ def wasm_runtime_shared_export_link_args(
     export_names = {
         _runtime_export_name_or_fail(name) for name in wasm_runtime_import_names()
     }
-    export_names.update(WASM_RUNTIME_HOST_EXPORTS)
     export_names.update(
-        canonical_intrinsic_runtime_name(name)
+        _logical_runtime_export_name_or_fail(name) for name in WASM_RUNTIME_HOST_EXPORTS
+    )
+    export_names.update(
+        _logical_runtime_export_name_or_fail(canonical_intrinsic_runtime_name(name))
         for name in _all_dynamic_runtime_owned_intrinsic_exports()
     )
+    export_names.update(WASM_PUBLIC_C_API_FUNCTION_SIGNATURES)
     # Always publish the canonical CPython-ABI data symbols as address-bearing
     # globals. wasm-ld exports a defined data symbol as an immutable i32 global
     # whose init value is the symbol's linear-memory address; the split-runtime

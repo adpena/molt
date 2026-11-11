@@ -8,6 +8,7 @@ use crate::tir::values::{TirValue, ValueId};
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -22,6 +23,7 @@ fn make_type_guard(operand: ValueId, result: ValueId, ty: &str) -> TirOp {
     attrs.insert("ty".to_string(), AttrValue::Str(ty.to_string()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],
@@ -36,6 +38,7 @@ fn make_const_int(result: ValueId, value: i64) -> TirOp {
     attrs.insert("value".to_string(), AttrValue::Int(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],

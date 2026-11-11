@@ -753,7 +753,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let make_task = || {
-                let bits = crate::molt_task_new(0, 0, crate::TASK_KIND_FUTURE);
+                let bits = crate::molt_task_new_attached_body(py, 0, 0, crate::TASK_KIND_FUTURE);
                 let owner = ExceptionValue::adopt(py, bits);
                 assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
                 owner

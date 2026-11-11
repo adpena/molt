@@ -6,6 +6,7 @@ fn allocation(opcode: OpCode, payload: i64) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(payload));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(0)],
@@ -122,6 +123,7 @@ use crate::tir::types::TirType;
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

@@ -158,7 +158,7 @@ pub(super) fn ctypes_coerce_float(
     value_bits: u64,
     width: i64,
 ) -> Result<u64, u64> {
-    let Some(value) = float_from_object_value(value_bits) else {
+    let Some(value) = float_from_object_value(_py, value_bits) else {
         return Err(MoltObject::none().bits());
     };
     let out = if width == 32 {
@@ -242,9 +242,8 @@ pub(super) fn urllib_attr_truthy(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_ctypes_require_ffi_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
@@ -256,9 +255,12 @@ pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_ctypes_coerce_value_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctype_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
@@ -279,9 +281,11 @@ pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_ctypes_default_value_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctype_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
@@ -334,9 +338,11 @@ pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ctypes_sizeof(obj_or_type_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_ctypes_sizeof_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    obj_or_type_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
@@ -350,3 +356,5 @@ pub extern "C" fn molt_ctypes_sizeof(obj_or_type_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../attached_exports_generated/functions_http/ctypes.rs");

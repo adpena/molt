@@ -918,9 +918,8 @@ pub(crate) fn identity_hash(bits: u64) -> i64 {
     hash_pointer(obj_from_bits(bits).as_ptr().map_or(bits, |ptr| ptr as u64))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_method_hash(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_method_hash_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = crate::builtins::types::method_ptr_from_bits(py, bits) else {
             return hash_descriptor_type_error(py, bits, "method");
         };
@@ -1100,9 +1099,8 @@ fn hash_descriptor_type_error(_py: &PyToken<'_>, self_bits: u64, expected: &str)
     raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_int_hash_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_int_hash_method_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(self_bits);
         let value_bits =
             if obj.is_int() || obj.is_bool() || bigint_ptr_from_bits(self_bits).is_some() {
@@ -1122,9 +1120,11 @@ pub extern "C" fn molt_int_hash_method(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_float_hash_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_float_hash_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = crate::object::ops::as_float_extended(obj_from_bits(self_bits)) else {
             return hash_descriptor_type_error(_py, self_bits, "float");
         };
@@ -1133,9 +1133,8 @@ pub extern "C" fn molt_float_hash_method(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_str_hash_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_str_hash_method_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(self_bits);
         let Some(ptr) = obj.as_ptr() else {
             return hash_descriptor_type_error(_py, self_bits, "str");
@@ -1219,6 +1218,8 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
     }
     true
 }
+
+include!("../attached_exports_generated/object/ops_hash.rs");
 
 #[cfg(test)]
 mod numeric_hash_tests {

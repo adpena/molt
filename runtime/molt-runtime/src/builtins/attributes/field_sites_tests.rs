@@ -25,7 +25,7 @@ fn field_class(py: &PyToken<'_>, class_name: &[u8]) -> u64 {
         &[field, MoltObject::from_int(0).bits()],
     ))
     .bits();
-    let namespace = crate::molt_dict_new(2);
+    let namespace = crate::molt_dict_new_attached_body(py, 2);
     for (key, value) in [
         (&b"__molt_field_offsets__"[..], offsets),
         (
@@ -34,10 +34,14 @@ fn field_class(py: &PyToken<'_>, class_name: &[u8]) -> u64 {
         ),
     ] {
         let key = name(py, key);
-        assert_eq!(crate::c_api::molt_mapping_setitem(namespace, key, value), 0);
+        assert_eq!(
+            crate::c_api::molt_mapping_setitem_attached_body(py, namespace, key, value),
+            0
+        );
         dec_ref_bits(py, key);
     }
-    let class = crate::builtins::types::molt_type_new(
+    let class = crate::builtins::types::molt_type_new_attached_body(
+        py,
         builtins.type_obj,
         class_name,
         MoltObject::none().bits(),
@@ -63,15 +67,22 @@ fn site(id: i64) -> u64 {
     MoltObject::from_int(id).bits()
 }
 
-fn read(object: u64, site_id: i64) -> u64 {
+fn read(py: &PyToken<'_>, object: u64, site_id: i64) -> u64 {
     unsafe {
-        crate::molt_get_attr_object_ic(object, FIELD.as_ptr(), FIELD.len() as u64, site(site_id))
+        crate::molt_get_attr_object_ic_attached_body(
+            py,
+            object,
+            FIELD.as_ptr(),
+            FIELD.len() as u64,
+            site(site_id),
+        )
     }
 }
 
-fn write(object: u64, value: u64, site_id: i64) {
+fn write(py: &PyToken<'_>, object: u64, value: u64, site_id: i64) {
     let out = unsafe {
-        molt_set_attr_object_ic(
+        crate::builtins::attributes::molt_set_attr_object_ic_attached_body(
+            py,
             object,
             FIELD.as_ptr(),
             FIELD.len() as u64,
@@ -87,7 +98,7 @@ fn refcount(bits: u64) -> u32 {
 }
 
 fn take_attribute_error(py: &PyToken<'_>) {
-    let exception = crate::builtins::exceptions::molt_exception_last_pending();
+    let exception = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         py,
         exception,
@@ -108,8 +119,9 @@ fn dictionary_write_sites_use_live_storage_and_observe_descriptor_publication() 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let class_name = name(py, b"DictionaryWriteOwner");
-        let namespace = crate::molt_dict_new(0);
-        let class = crate::builtins::types::molt_type_new(
+        let namespace = crate::molt_dict_new_attached_body(py, 0);
+        let class = crate::builtins::types::molt_type_new_attached_body(
+            py,
             crate::builtin_classes(py).type_obj,
             class_name,
             MoltObject::none().bits(),
@@ -121,13 +133,13 @@ fn dictionary_write_sites_use_live_storage_and_observe_descriptor_publication() 
         let value = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
         let before = refcount(value);
         for target in [object, other, object] {
-            write(target, value, 0x5601);
-            let got = read(target, 0x5602);
+            write(py, target, value, 0x5601);
+            let got = read(py, target, 0x5602);
             assert_eq!(got, value);
             dec_ref_bits(py, got);
         }
         assert_eq!(refcount(value), before + 2);
-        let replacement = crate::molt_dict_new(0);
+        let replacement = crate::molt_dict_new_attached_body(py, 0);
         unsafe {
             crate::object::field_storage::replace_dictionary(
                 py,
@@ -137,7 +149,7 @@ fn dictionary_write_sites_use_live_storage_and_observe_descriptor_publication() 
             .unwrap();
         }
         assert_eq!(refcount(value), before + 1);
-        write(object, value, 0x5601);
+        write(py, object, value, 0x5601);
         assert_eq!(refcount(value), before + 2);
 
         let get = function(
@@ -152,16 +164,17 @@ fn dictionary_write_sites_use_live_storage_and_observe_descriptor_publication() 
             descriptor_set as *const (),
             2,
         );
-        let property = crate::molt_property_new(get, set, MoltObject::none().bits());
+        let property =
+            crate::molt_property_new_attached_body(py, get, set, MoltObject::none().bits());
         let field = name(py, FIELD);
-        crate::molt_set_attr_name(class, field, property);
+        crate::molt_set_attr_name_attached_body(py, class, field, property);
         SETTER_VALUE.store(0, Ordering::SeqCst);
-        write(object, MoltObject::from_int(17).bits(), 0x5601);
+        write(py, object, MoltObject::from_int(17).bits(), 0x5601);
         assert_eq!(
             SETTER_VALUE.load(Ordering::SeqCst),
             MoltObject::from_int(17).bits()
         );
-        assert_eq!(read(object, 0x5602), MoltObject::from_int(99).bits());
+        assert_eq!(read(py, object, 0x5602), MoltObject::from_int(99).bits());
         assert!(!exception_pending(py));
         for bits in [
             field,
@@ -190,10 +203,10 @@ fn warm_sites_read_and_write_inferred_fields_with_generic_ownership() {
         let value = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
         let before = refcount(value);
 
-        write(object, value, 0x5101);
+        write(py, object, value, 0x5101);
         assert!(cached_offset_for_test(FieldAccess::Write, 0x5101, object).is_some());
         assert_eq!(refcount(value), before + 1, "the field owns its value");
-        write(object, value, 0x5101);
+        write(py, object, value, 0x5101);
         assert_eq!(
             refcount(value),
             before + 1,
@@ -201,7 +214,7 @@ fn warm_sites_read_and_write_inferred_fields_with_generic_ownership() {
         );
 
         for _ in 0..2 {
-            let got = read(object, 0x5102);
+            let got = read(py, object, 0x5102);
             assert_eq!(got, value);
             assert_eq!(
                 refcount(value),
@@ -214,7 +227,7 @@ fn warm_sites_read_and_write_inferred_fields_with_generic_ownership() {
         // Reads and writes never share an entry, even under one site id.
         assert!(cached_offset_for_test(FieldAccess::Write, 0x5102, object).is_none());
 
-        write(object, MoltObject::none().bits(), 0x5101);
+        write(py, object, MoltObject::none().bits(), 0x5101);
         assert_eq!(
             refcount(value),
             before,
@@ -229,11 +242,25 @@ fn warm_sites_read_and_write_inferred_fields_with_generic_ownership() {
 
 static SETTER_VALUE: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn descriptor_get(_receiver: u64) -> u64 {
+extern "C" fn descriptor_get(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(99).bits()
 }
 
-extern "C" fn descriptor_set(_receiver: u64, value: u64) -> u64 {
+extern "C" fn descriptor_set(__context: u64, _receiver: u64, value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     SETTER_VALUE.store(value, Ordering::SeqCst);
     MoltObject::none().bits()
 }
@@ -244,8 +271,8 @@ fn a_data_descriptor_published_after_warmup_takes_priority() {
     crate::with_gil_entry_nopanic!(py, {
         let class = field_class(py, b"DescriptorOwner");
         let object = instance(py, class);
-        write(object, MoltObject::from_int(1).bits(), 0x5201);
-        assert_eq!(read(object, 0x5202), MoltObject::from_int(1).bits());
+        write(py, object, MoltObject::from_int(1).bits(), 0x5201);
+        assert_eq!(read(py, object, 0x5202), MoltObject::from_int(1).bits());
         assert!(cached_offset_for_test(FieldAccess::Read, 0x5202, object).is_some());
         assert!(cached_offset_for_test(FieldAccess::Write, 0x5201, object).is_some());
 
@@ -261,17 +288,18 @@ fn a_data_descriptor_published_after_warmup_takes_priority() {
             descriptor_set as *const (),
             2,
         );
-        let property = crate::molt_property_new(get, set, MoltObject::none().bits());
+        let property =
+            crate::molt_property_new_attached_body(py, get, set, MoltObject::none().bits());
         let field = name(py, FIELD);
-        crate::molt_set_attr_name(class, field, property);
+        crate::molt_set_attr_name_attached_body(py, class, field, property);
         assert!(!exception_pending(py));
 
         // The class mutation retires both entries, and a name the MRO
         // defines is never recorded again.
         for _ in 0..2 {
-            assert_eq!(read(object, 0x5202), MoltObject::from_int(99).bits());
+            assert_eq!(read(py, object, 0x5202), MoltObject::from_int(99).bits());
             SETTER_VALUE.store(0, Ordering::SeqCst);
-            write(object, MoltObject::from_int(5).bits(), 0x5201);
+            write(py, object, MoltObject::from_int(5).bits(), 0x5201);
             assert_eq!(
                 SETTER_VALUE.load(Ordering::SeqCst),
                 MoltObject::from_int(5).bits()
@@ -293,21 +321,21 @@ fn instance_dictionaries_and_unset_fields_defer_to_the_generic_lookup() {
         let class = field_class(py, b"DeferringOwner");
         let unset = instance(py, class);
         let object = instance(py, class);
-        write(object, MoltObject::from_int(3).bits(), 0x5301);
-        assert_eq!(read(object, 0x5302), MoltObject::from_int(3).bits());
+        write(py, object, MoltObject::from_int(3).bits(), 0x5301);
+        assert_eq!(read(py, object, 0x5302), MoltObject::from_int(3).bits());
 
         // A warm site reaches an object of the same class whose field is unset.
         assert!(cached_offset_for_test(FieldAccess::Read, 0x5302, unset).is_some());
-        assert_eq!(read(unset, 0x5302), MoltObject::none().bits());
+        assert_eq!(read(py, unset, 0x5302), MoltObject::none().bits());
         take_attribute_error(py);
 
         // A materialized dictionary owns the fields; the site defers to it.
         let dict_name = name(py, b"__dict__");
-        let dict = crate::molt_get_attr_name(object, dict_name);
+        let dict = crate::molt_get_attr_name_attached_body(py, object, dict_name);
         assert!(obj_from_bits(dict).as_ptr().is_some());
         assert!(cached_offset_for_test(FieldAccess::Read, 0x5302, object).is_none());
-        assert_eq!(read(object, 0x5302), MoltObject::from_int(3).bits());
-        write(object, MoltObject::from_int(4).bits(), 0x5301);
+        assert_eq!(read(py, object, 0x5302), MoltObject::from_int(3).bits());
+        write(py, object, MoltObject::from_int(4).bits(), 0x5301);
         let field = name(py, FIELD);
         let stored = unsafe { dict_get_in_place(py, obj_from_bits(dict).as_ptr().unwrap(), field) };
         assert_eq!(stored, Ok(Some(MoltObject::from_int(4).bits())));
@@ -320,7 +348,14 @@ fn instance_dictionaries_and_unset_fields_defer_to_the_generic_lookup() {
 
 static SETATTR_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn counting_setattr(_receiver: u64, _name: u64, _value: u64) -> u64 {
+extern "C" fn counting_setattr(__context: u64, _receiver: u64, _name: u64, _value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     SETATTR_CALLS.fetch_add(1, Ordering::SeqCst);
     MoltObject::none().bits()
 }
@@ -338,17 +373,17 @@ fn a_custom_setattr_sees_every_write_from_a_warm_read_site() {
             3,
         );
         let hook_name = name(py, b"__setattr__");
-        crate::molt_set_attr_name(class, hook_name, hook);
+        crate::molt_set_attr_name_attached_body(py, class, hook_name, hook);
         assert!(!exception_pending(py));
 
         // The read protocol stays plain, so the read site may record.
-        assert_eq!(read(object, 0x5401), MoltObject::none().bits());
+        assert_eq!(read(py, object, 0x5401), MoltObject::none().bits());
         take_attribute_error(py);
         assert!(cached_offset_for_test(FieldAccess::Read, 0x5401, object).is_some());
 
         SETATTR_CALLS.store(0, Ordering::SeqCst);
         for _ in 0..3 {
-            write(object, MoltObject::from_int(8).bits(), 0x5401);
+            write(py, object, MoltObject::from_int(8).bits(), 0x5401);
         }
         assert_eq!(SETATTR_CALLS.load(Ordering::SeqCst), 3);
         assert!(cached_offset_for_test(FieldAccess::Write, 0x5401, object).is_none());

@@ -1,6 +1,8 @@
 use super::*;
-use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 // Handler-owned routing slice. `code_new` and the CallArgs push/expand
 // steps are exact `molt_<kind>` boxed-ABI calls and take the shared admitted
@@ -98,7 +100,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let homes = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 lend,
                 &[i64_ty.const_int(slots, false).into()],
                 "frame_homes",
@@ -210,7 +212,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> inkwell::values::IntValue<'ctx> {
         let context = self.backend.context;
         let i64_ty = context.i64_type();
-        let fits = inline_int_fits_with_builder(&self.backend.builder, context, raw);
+        let fits = nanbox::boxed_word::generate_inline_int_fits(&mut self.words(), raw);
         let inline_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_inline");
         let slow_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_slow");
         let done_bb = context.append_basic_block(self.llvm_fn, "frame_home_boxed");
@@ -224,7 +226,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_llvm_edge(origin, slow_bb);
 
         self.backend.builder.position_at_end(inline_bb);
-        let inline = inline_int_box_with_builder(&self.backend.builder, context, raw);
+        let inline = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw);
         self.backend.builder.build_store(bits_ptr, inline).unwrap();
         self.backend
             .builder
@@ -249,7 +251,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let slow = self
             .backend
             .builder
-            .build_call(load_fn, &[home.into()], "frame_home_load")
+            .build_execution_call(load_fn, &[home.into()], "frame_home_load")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -413,7 +415,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 // Dedicated task-wrapper ABI; a machine i64 declaration does
                 // not authorize generic boxed-call admission for this symbol.
-                let wrap = self.ensure_runtime_import(MOLT_ASYNCGEN_NEW);
+                let wrap = self.ensure_runtime_import(RuntimeFn::AsyncgenNew);
                 self.emit_borrowed_runtime_call(
                     op,
                     wrap,
@@ -527,7 +529,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         new_fn,
                         &[
                             fn_ptr.into(),
@@ -632,7 +634,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let _ = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         init_fn,
                         &[i64_ty.const_int(count as u64, true).into()],
                         "code_slots_init",
@@ -649,7 +651,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let _ = self
                     .backend
                     .builder
-                    .build_call(enter_fn, &[code_id.into()], "trace_enter_slot")
+                    .build_execution_call(enter_fn, &[code_id.into()], "trace_enter_slot")
                     .unwrap();
                 // Even a failed entry attempt records a runtime credit that
                 // must be balanced; this is not proof that a frame was pushed.
@@ -818,7 +820,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let slow_bits = self
                     .backend
                     .builder
-                    .build_call(load_fn, &[home.into()], "frame_home_load")
+                    .build_execution_call(load_fn, &[home.into()], "frame_home_load")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -920,7 +922,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         new_fn,
                         &[i64_ty.const_zero().into(), i64_ty.const_zero().into()],
                         "callargs_new",

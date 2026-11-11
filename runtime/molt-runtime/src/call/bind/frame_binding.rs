@@ -200,7 +200,7 @@ unsafe fn function_kwdefault_owned(
             ));
         };
         inc_ref_bits(py, defaults_bits);
-        let _owner = PtrDropGuard::new(defaults_ptr);
+        let _owner = PtrDropGuard::new(py, defaults_ptr);
         let backing_bits = crate::object::ops::dict_backing_bits(py, defaults_bits)
             .map_err(|()| MoltObject::none().bits())?
             .ok_or_else(|| {
@@ -214,7 +214,7 @@ unsafe fn function_kwdefault_owned(
         // backing dictionary through the callback as well.
         let _backing_owner = if backing_ptr != defaults_ptr {
             inc_ref_bits(py, backing_bits);
-            Some(PtrDropGuard::new(backing_ptr))
+            Some(PtrDropGuard::new(py, backing_ptr))
         } else {
             None
         };

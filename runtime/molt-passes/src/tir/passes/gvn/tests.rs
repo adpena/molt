@@ -8,6 +8,7 @@ use crate::tir::values::{TirValue, ValueId};
 fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -24,6 +25,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
 fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -36,6 +38,7 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
 fn make_const_bool(value: bool, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -52,6 +55,7 @@ fn make_const_bool(value: bool, result: ValueId) -> TirOp {
 fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBytes,
         operands: vec![],
@@ -68,6 +72,7 @@ fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
 fn make_type_guard(operand: ValueId, expected_type: &str, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],
@@ -235,6 +240,7 @@ fn side_effecting_ops_preserved() {
     // Two identical Call ops — both must be preserved (side effects).
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![p0],
@@ -244,6 +250,7 @@ fn side_effecting_ops_preserved() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![p0],
@@ -275,6 +282,7 @@ fn zero_result_unpack_remains_ordering_visible() {
     for _ in 0..2 {
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnpackSequence,
             operands: vec![ValueId(0)],

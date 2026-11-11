@@ -7,6 +7,8 @@ ladder; those tests fabricate its output, without invoking a compiler or nm.
 
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 import hashlib
 import json
 import os
@@ -271,7 +273,7 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
     from molt.cli import runtime_callable_symbols
 
     artifact = tmp_path / "runtime.a"
-    artifact.write_bytes(_archive("molt_fixture"))
+    artifact.write_bytes(_archive(compiled_execution_symbol("molt_len")))
     identity = native_symbol_inspection._native_symbol_artifact_identity(artifact)
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
@@ -300,8 +302,47 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
         )
         assert failure is None and projection is not None
         assert captured == [artifact]
-        assert projection.identity.path.read_bytes() == b"molt_fixture\n"
+        assert projection.identity.path.read_bytes() == b"molt_len\n"
     assert len(inspected) == 1
+
+
+def test_callable_projection_rejects_legacy_attached_runtime_export(
+    tmp_path: Path,
+) -> None:
+    from molt.cli import runtime_callable_symbols
+
+    artifact = tmp_path / "runtime.a"
+    artifact.write_bytes(_archive("molt_len", compiled_execution_symbol("molt_len")))
+    projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        artifact,
+        identity=native_symbol_inspection._native_symbol_artifact_identity(artifact),
+    )
+    assert projection is None
+    assert (
+        failure is not None
+        and "legacy runtime callable definitions: molt_len" in failure
+    )
+
+
+@pytest.mark.parametrize("attached", [False, True])
+def test_public_c_boundary_does_not_substitute_for_attached_callable(
+    tmp_path: Path, attached: bool
+) -> None:
+    from molt.cli import runtime_callable_symbols
+
+    name = "molt_builtin_class_lookup"
+    artifact = tmp_path / "runtime.a"
+    symbols = [name] + ([compiled_execution_symbol(name)] if attached else [])
+    artifact.write_bytes(_archive(*symbols))
+    projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        artifact,
+        identity=native_symbol_inspection._native_symbol_artifact_identity(artifact),
+    )
+    if attached:
+        assert failure is None and projection is not None
+        assert projection.identity.path.read_bytes() == b"molt_builtin_class_lookup\n"
+    else:
+        assert projection is None and failure is not None
 
 
 @pytest.fixture(autouse=True)
@@ -324,6 +365,36 @@ _BITCODE = LLVM_BITCODE_STAND_IN
 def _archive(*functions: str, **kwargs) -> bytes:
     """One real relocatable object with these functions, framed as an archive."""
     return static_archive_bytes(native_relocatable_object(symbols=functions, **kwargs))
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("physical", [False, True])
+def test_partition_admission_projects_logical_functions_to_physical_abi(
+    tmp_path: Path, legacy: bool, physical: bool
+) -> None:
+    logical = "molt_init_sys"
+    symbols = ([logical] if legacy else []) + (
+        [compiled_execution_symbol(logical)] if physical else []
+    )
+    artifact = tmp_path / "stdlib.a"
+    artifact.write_bytes(_archive(*symbols, target_triple="x86_64-unknown-linux-gnu"))
+    issue = cache._shared_stdlib_native_symbol_closure_issue(
+        artifact,
+        target_triple="x86_64-unknown-linux-gnu",
+        stdlib_module_symbols={"sys"},
+        partition_functions=frozenset({logical}),
+    )
+    if physical and not legacy:
+        assert issue is None
+    else:
+        assert issue is not None
+        if legacy:
+            assert "legacy partition definitions: molt_init_sys" in issue
+        if not physical:
+            assert (
+                "missing partition definitions: " + compiled_execution_symbol(logical)
+                in issue
+            )
 
 
 def _bitcode_tool(monkeypatch, *, code=0, stdout="", stderr=""):
@@ -836,7 +907,8 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
     if payload is None:
         payload = static_archive_bytes(
             native_relocatable_object(
-                target_triple=target_triple, symbols=("molt_init_sys",)
+                target_triple=target_triple,
+                symbols=(compiled_execution_symbol("molt_init_sys"),),
             )
         )
     path.write_bytes(payload)
@@ -910,7 +982,7 @@ def test_shared_stdlib_shape_cannot_be_authorized_by_symbol_or_generation_receip
             if malformed == "wrong-target-archive"
             else target
         ),
-        symbols=("molt_init_sys",),
+        symbols=(compiled_execution_symbol("molt_init_sys"),),
     )
     if malformed == "wrong-target-archive":
         payload = static_archive_bytes(payload)

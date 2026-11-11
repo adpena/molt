@@ -15,6 +15,7 @@ fn recursive_not_inlined() {
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -49,6 +50,7 @@ fn too_large_not_inlined() {
         attrs.insert("value".into(), AttrValue::Int(1));
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -80,6 +82,7 @@ fn generator_not_inlined() {
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Yield,
         operands: vec![],
@@ -149,6 +152,7 @@ fn handler_bearing_callee_not_inlined() {
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -158,6 +162,7 @@ fn handler_bearing_callee_not_inlined() {
         });
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryEnd,
             operands: vec![],
@@ -270,6 +275,7 @@ fn run_inliner_refuses_closure_call_site() {
     let block = g.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -279,6 +285,7 @@ fn run_inliner_refuses_closure_call_site() {
     });
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -288,6 +295,7 @@ fn run_inliner_refuses_closure_call_site() {
     });
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![func_val, ten],
@@ -416,6 +424,7 @@ fn inline_classification_preserves_custody_and_callback_precedence() {
             let entry = callee.entry_block;
             callee.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,

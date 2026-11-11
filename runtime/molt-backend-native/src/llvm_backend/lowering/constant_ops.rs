@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::literal_payload::required_tir_literal_bytes;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -90,14 +92,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             "molt_bigint_from_bytes",
         )
         .unwrap_or_else(|| panic!("molt_bigint_from_bytes must be a fixed LLVM runtime import"));
-        let bfs_fn =
-            require_llvm_function_type("molt_bigint_from_bytes", bfs_fn, bigint_from_bytes_ty);
+        let bfs_fn = require_llvm_function_type(
+            "molt_bigint_from_bytes",
+            bfs_fn,
+            runtime_execution_type("molt_bigint_from_bytes", bigint_from_bytes_ty),
+        );
 
         let len_val = i64_ty.const_int(digits.len() as u64, false);
         let call = self
             .backend
             .builder
-            .build_call(bfs_fn, &[ptr_val.into(), len_val.into()], "bigint_bits")
+            .build_execution_call(bfs_fn, &[ptr_val.into(), len_val.into()], "bigint_bits")
             .unwrap();
         let result = call
             .try_as_basic_value()
@@ -159,14 +164,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .context
             .i32_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
-        let materializer = require_llvm_function_type(runtime_name, materializer, expected_abi);
+        let materializer = require_llvm_function_type(
+            runtime_name,
+            materializer,
+            runtime_execution_type(runtime_name, expected_abi),
+        );
         let out_alloca = self.build_entry_i64_alloca(out_name);
 
         let len_val = i64_ty.const_int(bytes.len() as u64, false);
         let status = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 materializer,
                 &[ptr_val.into(), len_val.into(), out_alloca.into()],
                 call_name,

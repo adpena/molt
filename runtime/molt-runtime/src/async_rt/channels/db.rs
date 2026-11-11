@@ -20,45 +20,43 @@ static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
 static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_db_set_query_hook_attached_body(_py: &crate::PyToken<'_>, ptr: usize) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         DB_QUERY_HOOK.store(ptr, AtomicOrdering::Release);
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_set_exec_hook(ptr: usize) {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_db_set_exec_hook_attached_body(_py: &crate::PyToken<'_>, ptr: usize) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         DB_EXEC_HOOK.store(ptr, AtomicOrdering::Release);
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `req_ptr` is valid for `len_bits` bytes and `out` is writable.
-pub unsafe extern "C" fn molt_db_query(
+pub(crate) unsafe fn molt_db_query_attached_body(
+    _py: &crate::PyToken<'_>,
     req_ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
     token_bits: u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         db_query_impl(_py, req_ptr, len_bits, out, token_bits)
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `req_ptr` is valid for `len_bits` bytes and `out` is writable.
-pub unsafe extern "C" fn molt_db_exec(
+pub(crate) unsafe fn molt_db_exec_attached_body(
+    _py: &crate::PyToken<'_>,
     req_ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
     token_bits: u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         db_exec_impl(_py, req_ptr, len_bits, out, token_bits)
     })
 }
@@ -179,9 +177,12 @@ fn db_error(_py: &PyToken<'_>, op: &str, code: i32, cap: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_query_obj(req_bits: u64, token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_db_query_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    req_bits: u64,
+    token_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let send_data = match send_data_from_bits(req_bits) {
             Ok(data) => data,
             Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
@@ -204,9 +205,12 @@ pub extern "C" fn molt_db_query_obj(req_bits: u64, token_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_exec_obj(req_bits: u64, token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_db_exec_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    req_bits: u64,
+    token_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let send_data = match send_data_from_bits(req_bits) {
             Ok(data) => data,
             Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
@@ -228,3 +232,5 @@ pub extern "C" fn molt_db_exec_obj(req_bits: u64, token_bits: u64) -> u64 {
         out
     })
 }
+
+include!("../../attached_exports_generated/async_rt/channels/db.rs");

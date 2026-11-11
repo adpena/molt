@@ -246,6 +246,40 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     ),
                 ));
             }
+            match (op.opcode, op.runtime) {
+                (OpCode::CallRuntime, None) => errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    "CallRuntime requires its typed runtime entry",
+                )),
+                (OpCode::CallRuntime, Some(runtime)) => {
+                    let results = usize::from(runtime.returns_word());
+                    if op.operands.len() != runtime.params() || op.results.len() != results {
+                        errors.push(VerifyError::op(
+                            *bid,
+                            op_idx,
+                            format!(
+                                "CallRuntime of {} takes {} operands and makes {} results, not {} and {}",
+                                runtime.symbol(),
+                                runtime.params(),
+                                results,
+                                op.operands.len(),
+                                op.results.len()
+                            ),
+                        ));
+                    }
+                }
+                (_, Some(runtime)) => errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    format!(
+                        "{:?} carries runtime entry {}; only CallRuntime may",
+                        op.opcode,
+                        runtime.symbol()
+                    ),
+                )),
+                (_, None) => {}
+            }
             if op.opcode == OpCode::CheckException && op.exception_edge_kind().is_none() {
                 errors.push(VerifyError::op(
                     *bid,
@@ -1146,6 +1180,7 @@ mod tests {
             }
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -1442,6 +1477,7 @@ mod tests {
             let block = func.blocks.get_mut(&func.entry_block).unwrap();
             block.ops.push(TirOp {
                 origin: original,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: if operands { vec![ValueId(0)] } else { vec![] },
@@ -1557,6 +1593,7 @@ mod tests {
             let block = func.blocks.get_mut(&func.entry_block).unwrap();
             block.ops.push(TirOp {
                 origin,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CallBuiltin,
                 operands: (0..operands).map(|index| ValueId(index as u32)).collect(),
@@ -1705,6 +1742,7 @@ mod tests {
                 .ops
                 .push(TirOp {
                     origin,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: if shape.kind == crate::OpKind::ModuleSlot {
                         OpCode::ModuleSlot
@@ -1787,6 +1825,7 @@ mod tests {
                     .ops
                     .push(TirOp {
                         origin,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: (0..operands).map(ValueId).collect(),
@@ -1828,6 +1867,7 @@ mod tests {
                 .ops
                 .push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Scf,
                     opcode,
                     operands: vec![],
@@ -1892,6 +1932,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -1964,6 +2005,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0)],
@@ -2009,6 +2051,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0), ValueId(1)],
@@ -2054,6 +2097,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0), ValueId(1)],
@@ -2099,6 +2143,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -2133,6 +2178,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnpackSequence,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
@@ -2226,6 +2272,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2283,6 +2330,7 @@ mod tests {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -2326,6 +2374,7 @@ mod tests {
                     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
                     entry.ops.push(TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: vec![],
@@ -2395,6 +2444,7 @@ mod tests {
                 .ops
                 .push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -2435,6 +2485,7 @@ mod tests {
         // Define v0 twice.
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2444,6 +2495,7 @@ mod tests {
         });
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2496,6 +2548,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Neg,
             operands: vec![undefined], // never defined
@@ -2559,6 +2612,7 @@ mod tests {
                 args: vec![],
                 ops: vec![TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -2580,6 +2634,7 @@ mod tests {
                 args: vec![],
                 ops: vec![TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -2601,6 +2656,7 @@ mod tests {
     fn capture_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

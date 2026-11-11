@@ -151,11 +151,25 @@ mod tests {
     use crate::builtins::methods::{object_method_bits, type_method_bits};
     use crate::{MoltObject, dec_ref_bits, obj_from_bits};
 
-    extern "C" fn custom_new_policy_probe(_cls_bits: u64) -> i64 {
+    extern "C" fn custom_new_policy_probe(__context: u64, _cls_bits: u64) -> i64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         0
     }
 
-    extern "C" fn custom_init_policy_probe(_self_bits: u64) -> i64 {
+    extern "C" fn custom_init_policy_probe(__context: u64, _self_bits: u64) -> i64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         0
     }
 
@@ -165,7 +179,8 @@ mod tests {
             let namespace_ptr = crate::alloc_dict_with_pairs(_py, &[]);
             let bases_ptr = crate::alloc_tuple(_py, &[]);
             assert!(!name_ptr.is_null() && !namespace_ptr.is_null() && !bases_ptr.is_null());
-            let class_bits = crate::molt_type_new(
+            let class_bits = crate::molt_type_new_attached_body(
+                _py,
                 crate::builtin_classes(_py).type_obj,
                 MoltObject::from_ptr(name_ptr).bits(),
                 MoltObject::from_ptr(bases_ptr).bits(),

@@ -4,14 +4,18 @@ use crate::{
     bytes_data, bytes_len, dec_ref_bits, dynamic_attr_name_bits, obj_from_bits, to_f64,
 };
 use molt_gpu_runtime::{
-    molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list, molt_gpu_linear_contiguous,
-    molt_gpu_linear_split_last_dim_contiguous,
-    molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
-    molt_gpu_repeat_axis_contiguous, molt_gpu_rms_norm_last_axis_contiguous,
-    molt_gpu_rope_apply_contiguous, molt_gpu_softmax_last_axis_contiguous,
-    molt_gpu_squared_relu_gate_interleaved_contiguous, molt_gpu_tensor__tensor_data_list,
-    molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_reshape_view, molt_gpu_tensor__zeros,
-    molt_gpu_tensor_from_parts,
+    molt_gpu_broadcast_binary_contiguous_attached_body, molt_gpu_buffer_to_list_attached_body,
+    molt_gpu_linear_contiguous_attached_body,
+    molt_gpu_linear_split_last_dim_contiguous_attached_body,
+    molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body,
+    molt_gpu_matmul_contiguous_attached_body, molt_gpu_repeat_axis_contiguous_attached_body,
+    molt_gpu_rms_norm_last_axis_contiguous_attached_body,
+    molt_gpu_rope_apply_contiguous_attached_body,
+    molt_gpu_softmax_last_axis_contiguous_attached_body,
+    molt_gpu_squared_relu_gate_interleaved_contiguous_attached_body,
+    molt_gpu_tensor__tensor_data_list_attached_body, molt_gpu_tensor__tensor_linear_attached_body,
+    molt_gpu_tensor__tensor_reshape_view_attached_body, molt_gpu_tensor__zeros_attached_body,
+    molt_gpu_tensor_from_parts_attached_body,
 };
 
 fn f32_bytes(values: &[f32]) -> Vec<u8> {
@@ -50,7 +54,8 @@ fn make_tensor_from_f32(
         .map(|dim| MoltObject::from_int(dim).bits())
         .collect();
     let shape_ptr = alloc_tuple(_py, shape_bits.as_slice());
-    molt_gpu_tensor_from_parts(
+    molt_gpu_tensor_from_parts_attached_body(
+        _py.core_token(),
         tensor_cls_bits,
         buffer_cls_bits,
         MoltObject::from_ptr(data_ptr).bits(),
@@ -64,7 +69,7 @@ fn make_tensor_from_f32(
 
 fn attr_bits(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> u64 {
     let name_bits = dynamic_attr_name_bits(_py, name).expect("attr name");
-    let value_bits = crate::molt_get_attr_name(obj_bits, name_bits);
+    let value_bits = crate::molt_get_attr_name_attached_body(_py, obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
     value_bits
 }
@@ -76,40 +81,57 @@ fn install_gpu_tensor_module(_py: &crate::PyToken<'_>, tensor_cls_bits: u64, buf
     let root_name_bits = MoltObject::from_ptr(root_name_ptr).bits();
     let gpu_name_bits = MoltObject::from_ptr(gpu_name_ptr).bits();
     let tensor_name_bits_full = MoltObject::from_ptr(tensor_name_ptr).bits();
-    let root_module_bits = crate::builtins::modules::molt_module_new(root_name_bits);
-    let gpu_module_bits = crate::builtins::modules::molt_module_new(gpu_name_bits);
-    let tensor_module_bits = crate::builtins::modules::molt_module_new(tensor_name_bits_full);
+    let root_module_bits =
+        crate::builtins::modules::molt_module_new_attached_body(_py, root_name_bits);
+    let gpu_module_bits =
+        crate::builtins::modules::molt_module_new_attached_body(_py, gpu_name_bits);
+    let tensor_module_bits =
+        crate::builtins::modules::molt_module_new_attached_body(_py, tensor_name_bits_full);
     assert!(!crate::exception_pending(_py));
 
-    let gpu_attr_bits = crate::NameId::Gpu.owned_bits(_py).expect("gpu attr");
-    let tensor_attr_bits = crate::NameId::Tensor.owned_bits(_py).expect("tensor attr");
-    let tensor_name_bits = crate::NameId::LowerTensor
-        .owned_bits(_py)
-        .expect("Tensor attr");
-    let buffer_name_bits = crate::NameId::Buffer.owned_bits(_py).expect("Buffer attr");
-    crate::builtins::modules::molt_module_set_attr(
+    let gpu_attr_bits = dynamic_attr_name_bits(_py, b"gpu").expect("gpu attr");
+    let tensor_attr_bits = dynamic_attr_name_bits(_py, b"tensor").expect("tensor attr");
+    let tensor_name_bits = dynamic_attr_name_bits(_py, b"Tensor").expect("Tensor attr");
+    let buffer_name_bits = dynamic_attr_name_bits(_py, b"Buffer").expect("Buffer attr");
+    crate::builtins::modules::molt_module_set_attr_attached_body(
+        _py,
         root_module_bits,
         gpu_attr_bits,
         gpu_module_bits,
     );
-    crate::builtins::modules::molt_module_set_attr(
+    crate::builtins::modules::molt_module_set_attr_attached_body(
+        _py,
         gpu_module_bits,
         tensor_attr_bits,
         tensor_module_bits,
     );
-    crate::builtins::modules::molt_module_set_attr(
+    crate::builtins::modules::molt_module_set_attr_attached_body(
+        _py,
         tensor_module_bits,
         tensor_name_bits,
         tensor_cls_bits,
     );
-    crate::builtins::modules::molt_module_set_attr(
+    crate::builtins::modules::molt_module_set_attr_attached_body(
+        _py,
         tensor_module_bits,
         buffer_name_bits,
         buffer_cls_bits,
     );
-    crate::builtins::modules::molt_module_cache_set(root_name_bits, root_module_bits);
-    crate::builtins::modules::molt_module_cache_set(gpu_name_bits, gpu_module_bits);
-    crate::builtins::modules::molt_module_cache_set(tensor_name_bits_full, tensor_module_bits);
+    crate::builtins::modules::molt_module_cache_set_attached_body(
+        _py,
+        root_name_bits,
+        root_module_bits,
+    );
+    crate::builtins::modules::molt_module_cache_set_attached_body(
+        _py,
+        gpu_name_bits,
+        gpu_module_bits,
+    );
+    crate::builtins::modules::molt_module_cache_set_attached_body(
+        _py,
+        tensor_name_bits_full,
+        tensor_module_bits,
+    );
     for bits in [
         gpu_attr_bits,
         tensor_attr_bits,
@@ -145,7 +167,8 @@ fn gpu_tensor_from_parts_wraps_tensor_and_buffer_objects() {
             ],
         );
 
-        let out_bits = molt_gpu_tensor_from_parts(
+        let out_bits = molt_gpu_tensor_from_parts_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(tensor_cls_ptr).bits(),
             MoltObject::from_ptr(buffer_cls_ptr).bits(),
             MoltObject::from_ptr(data_ptr).bits(),
@@ -160,23 +183,18 @@ fn gpu_tensor_from_parts_wraps_tensor_and_buffer_objects() {
             .as_ptr()
             .expect("tensor_from_parts should return a tensor object");
 
-        let buf_name_bits = crate::NameId::PrivateBuf
-            .owned_bits(_py)
-            .expect("_buf attr");
-        let shape_name_bits = crate::NameId::PrivateShape
-            .owned_bits(_py)
-            .expect("_shape attr");
-        let format_name_bits = crate::NameId::PrivateFormatChar
-            .owned_bits(_py)
-            .expect("_format_char attr");
-        let itemsize_name_bits = crate::NameId::PrivateItemsize
-            .owned_bits(_py)
-            .expect("_itemsize attr");
+        let buf_name_bits = dynamic_attr_name_bits(_py, b"_buf").expect("_buf attr");
+        let shape_name_bits = dynamic_attr_name_bits(_py, b"_shape").expect("_shape attr");
+        let format_name_bits =
+            dynamic_attr_name_bits(_py, b"_format_char").expect("_format_char attr");
+        let itemsize_name_bits = dynamic_attr_name_bits(_py, b"_itemsize").expect("_itemsize attr");
 
-        let buffer_bits = crate::molt_get_attr_name(out_bits, buf_name_bits);
-        let shape_bits = crate::molt_get_attr_name(out_bits, shape_name_bits);
-        let format_bits = crate::molt_get_attr_name(buffer_bits, format_name_bits);
-        let itemsize_bits = crate::molt_get_attr_name(buffer_bits, itemsize_name_bits);
+        let buffer_bits = crate::molt_get_attr_name_attached_body(_py, out_bits, buf_name_bits);
+        let shape_bits = crate::molt_get_attr_name_attached_body(_py, out_bits, shape_name_bits);
+        let format_bits =
+            crate::molt_get_attr_name_attached_body(_py, buffer_bits, format_name_bits);
+        let itemsize_bits =
+            crate::molt_get_attr_name_attached_body(_py, buffer_bits, itemsize_name_bits);
 
         dec_ref_bits(_py, buf_name_bits);
         dec_ref_bits(_py, shape_name_bits);
@@ -222,7 +240,8 @@ fn gpu_repeat_axis_contiguous_f32_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_repeat_axis_contiguous(
+        let out_bits = molt_gpu_repeat_axis_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(data_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(shape_ptr).bits(),
@@ -254,7 +273,8 @@ fn gpu_buffer_to_list_f32_roundtrip() {
         let fmt_ptr = alloc_string(_py, b"f");
         let shape_ptr = alloc_tuple(_py, &[MoltObject::from_int(4).bits()]);
 
-        let tensor_bits = molt_gpu_tensor_from_parts(
+        let tensor_bits = molt_gpu_tensor_from_parts_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(tensor_cls_ptr).bits(),
             MoltObject::from_ptr(buffer_cls_ptr).bits(),
             MoltObject::from_ptr(data_ptr).bits(),
@@ -266,13 +286,15 @@ fn gpu_buffer_to_list_f32_roundtrip() {
         );
         assert!(!crate::exception_pending(_py));
 
-        let buf_name_bits = crate::NameId::PrivateBuf
-            .owned_bits(_py)
-            .expect("_buf attr");
-        let buffer_bits = crate::molt_get_attr_name(tensor_bits, buf_name_bits);
+        let buf_name_bits = dynamic_attr_name_bits(_py, b"_buf").expect("_buf attr");
+        let buffer_bits = crate::molt_get_attr_name_attached_body(_py, tensor_bits, buf_name_bits);
         dec_ref_bits(_py, buf_name_bits);
 
-        let list_bits = molt_gpu_buffer_to_list(buffer_bits, MoltObject::from_int(4).bits());
+        let list_bits = molt_gpu_buffer_to_list_attached_body(
+            _py.core_token(),
+            buffer_bits,
+            MoltObject::from_int(4).bits(),
+        );
         assert!(!crate::exception_pending(_py));
         let list_ptr = obj_from_bits(list_bits)
             .as_ptr()
@@ -316,7 +338,8 @@ fn gpu_module_tensor_linear_wrapper_roundtrip() {
             &[3, 2],
         );
 
-        let out_bits = molt_gpu_tensor__tensor_linear(x_bits, weight_bits);
+        let out_bits =
+            molt_gpu_tensor__tensor_linear_attached_body(_py.core_token(), x_bits, weight_bits);
         assert!(!crate::exception_pending(_py));
 
         let out_shape_bits = attr_bits(_py, out_bits, b"_shape");
@@ -331,7 +354,11 @@ fn gpu_module_tensor_linear_wrapper_roundtrip() {
         assert_eq!(crate::to_i64(obj_from_bits(out_dims[1])), Some(3));
 
         let out_buf_bits = attr_bits(_py, out_bits, b"_buf");
-        let list_bits = molt_gpu_buffer_to_list(out_buf_bits, MoltObject::from_int(6).bits());
+        let list_bits = molt_gpu_buffer_to_list_attached_body(
+            _py.core_token(),
+            out_buf_bits,
+            MoltObject::from_int(6).bits(),
+        );
         let list_ptr = obj_from_bits(list_bits).as_ptr().expect("list");
         let values: Vec<f64> = unsafe {
             crate::object::seq_access::with_borrowed(list_ptr, |elems| {
@@ -373,7 +400,8 @@ fn gpu_module_tensor_reshape_view_wrapper_reuses_buffer() {
             ],
         );
 
-        let reshaped_bits = molt_gpu_tensor__tensor_reshape_view(
+        let reshaped_bits = molt_gpu_tensor__tensor_reshape_view_attached_body(
+            _py.core_token(),
             tensor_bits,
             MoltObject::from_ptr(shape_ptr).bits(),
         );
@@ -417,7 +445,8 @@ fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
             &[1.0, 2.0, 3.0, 4.0],
             &[2, 2],
         );
-        let list_bits = molt_gpu_tensor__tensor_data_list(tensor_bits);
+        let list_bits =
+            molt_gpu_tensor__tensor_data_list_attached_body(_py.core_token(), tensor_bits);
         assert!(!crate::exception_pending(_py));
         let list_ptr = obj_from_bits(list_bits).as_ptr().expect("list");
         let values: Vec<f64> = unsafe {
@@ -438,7 +467,8 @@ fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
                 MoltObject::from_int(3).bits(),
             ],
         );
-        let zeros_bits = molt_gpu_tensor__zeros(
+        let zeros_bits = molt_gpu_tensor__zeros_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(zero_shape_ptr).bits(),
             builtin_classes(_py).float,
         );
@@ -457,7 +487,11 @@ fn gpu_module_tensor_data_list_and_zeros_wrappers_roundtrip() {
         assert_eq!(crate::to_i64(obj_from_bits(zero_dims[1])), Some(3));
 
         let zero_buf_bits = attr_bits(_py, zeros_bits, b"_buf");
-        let zero_list_bits = molt_gpu_buffer_to_list(zero_buf_bits, MoltObject::from_int(6).bits());
+        let zero_list_bits = molt_gpu_buffer_to_list_attached_body(
+            _py.core_token(),
+            zero_buf_bits,
+            MoltObject::from_int(6).bits(),
+        );
         let zero_list_ptr = obj_from_bits(zero_list_bits).as_ptr().expect("zero list");
         let zero_values: Vec<f64> = unsafe {
             crate::object::seq_access::with_borrowed(zero_list_ptr, |elems| {
@@ -483,7 +517,8 @@ fn gpu_linear_contiguous_f32_roundtrip() {
         assert!(!w_ptr.is_null());
         assert!(!fmt_ptr.is_null());
 
-        let out_bits = molt_gpu_linear_contiguous(
+        let out_bits = molt_gpu_linear_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(w_ptr).bits(),
@@ -520,7 +555,8 @@ fn gpu_linear_split_last_dim_contiguous_f32_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_linear_split_last_dim_contiguous(
+        let out_bits = molt_gpu_linear_split_last_dim_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(w_ptr).bits(),
@@ -577,7 +613,8 @@ fn gpu_linear_split_last_dim_contiguous_f32_three_way_wider_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_linear_split_last_dim_contiguous(
+        let out_bits = molt_gpu_linear_split_last_dim_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(w_ptr).bits(),
@@ -618,7 +655,8 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
         let w_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0]));
         let fmt_ptr = alloc_string(_py, b"f");
 
-        let out_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
+        let out_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(w_ptr).bits(),
@@ -650,7 +688,8 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wide_roundtrip() {
         );
         let fmt_ptr = alloc_string(_py, b"f");
 
-        let out_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
+        let out_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(w_ptr).bits(),
@@ -683,7 +722,8 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wider_roundtrip() {
         );
         let fmt_ptr = alloc_string(_py, b"f");
 
-        let out_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
+        let out_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(w_ptr).bits(),
@@ -726,7 +766,8 @@ fn gpu_broadcast_binary_contiguous_f32_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_broadcast_binary_contiguous(
+        let out_bits = molt_gpu_broadcast_binary_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(a_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(a_shape_ptr).bits(),
@@ -767,7 +808,8 @@ fn gpu_matmul_contiguous_f32_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_matmul_contiguous(
+        let out_bits = molt_gpu_matmul_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(a_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(a_shape_ptr).bits(),
@@ -794,7 +836,8 @@ fn gpu_rope_apply_contiguous_f32_roundtrip() {
         let sin_ptr = alloc_bytes(_py, &f32_bytes(&[1.0, 0.0]));
         let fmt_ptr = alloc_string(_py, b"f");
 
-        let out_bits = molt_gpu_rope_apply_contiguous(
+        let out_bits = molt_gpu_rope_apply_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(cos_ptr).bits(),
@@ -825,7 +868,8 @@ fn gpu_rope_apply_contiguous_rejects_odd_dim() {
         let sin_ptr = alloc_bytes(_py, &f32_bytes(&[0.0]));
         let fmt_ptr = alloc_string(_py, b"f");
 
-        let out_bits = molt_gpu_rope_apply_contiguous(
+        let out_bits = molt_gpu_rope_apply_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(cos_ptr).bits(),
@@ -841,7 +885,7 @@ fn gpu_rope_apply_contiguous_rejects_odd_dim() {
 
         assert!(crate::exception_pending(_py));
         let _ = out_bits;
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -859,7 +903,8 @@ fn gpu_softmax_last_axis_contiguous_f32_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_softmax_last_axis_contiguous(
+        let out_bits = molt_gpu_softmax_last_axis_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(shape_ptr).bits(),
@@ -889,7 +934,8 @@ fn gpu_rms_norm_last_axis_contiguous_f32_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_rms_norm_last_axis_contiguous(
+        let out_bits = molt_gpu_rms_norm_last_axis_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(shape_ptr).bits(),
@@ -925,7 +971,8 @@ fn gpu_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
             ],
         );
 
-        let out_bits = molt_gpu_squared_relu_gate_interleaved_contiguous(
+        let out_bits = molt_gpu_squared_relu_gate_interleaved_contiguous_attached_body(
+            _py.core_token(),
             MoltObject::from_ptr(x_ptr).bits(),
             MoltObject::from_ptr(fmt_ptr).bits(),
             MoltObject::from_ptr(shape_ptr).bits(),
@@ -947,7 +994,7 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
         unsafe {
             let function = crate::alloc_function_obj(py, 0xF00D, 0);
             assert!(!function.is_null());
-            let _function_owner = crate::PtrDropGuard::preserving(function);
+            let _function_owner = crate::PtrDropGuard::preserving(py, function);
             let callable = MoltObject::from_ptr(function).bits();
             let code = obj_from_bits(crate::ensure_function_code_bits(py, function))
                 .as_ptr()
@@ -955,43 +1002,60 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             let descriptor = alloc_string(py, b"compiler-owned descriptor");
             let replacement = alloc_string(py, b"forged mutable descriptor");
             assert!(!descriptor.is_null() && !replacement.is_null());
-            let _descriptor_owner = crate::PtrDropGuard::preserving(descriptor);
-            let _replacement_owner = crate::PtrDropGuard::preserving(replacement);
+            let _descriptor_owner = crate::PtrDropGuard::preserving(py, descriptor);
+            let _replacement_owner = crate::PtrDropGuard::preserving(py, replacement);
             let descriptor_bits = MoltObject::from_ptr(descriptor).bits();
             let replacement_bits = MoltObject::from_ptr(replacement).bits();
             assert_eq!(crate::object::layout::code_gpu_descriptor_bits(code), 0);
             let setter_name = alloc_string(py, b"molt_gpu_kernel_descriptor_set");
             assert!(!setter_name.is_null());
-            let _setter_name_owner = crate::PtrDropGuard::preserving(setter_name);
-            let exposed = crate::intrinsics::registry::molt_load_intrinsic_runtime(
+            let _setter_name_owner = crate::PtrDropGuard::preserving(py, setter_name);
+            let exposed = crate::intrinsics::registry::molt_load_intrinsic_runtime_attached_body(
+                py,
                 MoltObject::from_ptr(setter_name).bits(),
                 MoltObject::none().bits(),
             );
             assert!(obj_from_bits(exposed).is_none());
             assert!(!crate::exception_pending(py));
             assert_eq!(crate::object::layout::code_gpu_descriptor_bits(code), 0);
-            crate::gpu_bridge::molt_gpu_kernel_descriptor_set(callable, descriptor_bits);
+            crate::gpu_bridge::molt_gpu_kernel_descriptor_set_attached_body(
+                py,
+                callable,
+                descriptor_bits,
+            );
             assert!(!crate::exception_pending(py));
             // A published descriptor alone does not admit unregistered code.
             assert_eq!(
-                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits),
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(
+                    py.attached_context(),
+                    callable,
+                    descriptor_bits
+                ),
                 0
             );
             crate::object::layout::code_set_frame_slot_id(code, 7);
             assert_eq!(
-                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits),
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(
+                    py.attached_context(),
+                    callable,
+                    descriptor_bits
+                ),
                 1
             );
             assert_eq!(
-                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, replacement_bits),
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(
+                    py.attached_context(),
+                    callable,
+                    replacement_bits
+                ),
                 0
             );
 
-            let name = crate::NameId::DunderMoltGpuDescriptor
-                .owned_bits(py)
-                .expect("name");
-            let _name_owner =
-                crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("name object"));
+            let name = dynamic_attr_name_bits(py, b"__molt_gpu_descriptor__").expect("name");
+            let _name_owner = crate::PtrDropGuard::preserving(
+                py,
+                obj_from_bits(name).as_ptr().expect("name object"),
+            );
             crate::builtins::attributes::object_setattr_raw(
                 py,
                 function,
@@ -1018,6 +1082,7 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             assert!(!prior_view.is_null());
             crate::record_exception(py, prior_ptr);
             let transport_status = crate::gpu_bridge::__molt_gpu_object_setattr_raw(
+                py.attached_context(),
                 function,
                 name,
                 b"__molt_gpu_descriptor__".as_ptr(),
@@ -1029,12 +1094,18 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             );
             assert_eq!(transport_status, 0);
             assert_eq!(observed.as_ptr(), prior_view);
-            let selected = crate::gpu_bridge::__molt_gpu_kernel_descriptor(callable);
+            let selected =
+                crate::gpu_bridge::__molt_gpu_kernel_descriptor(py.attached_context(), callable);
             let _selected_owner = crate::PtrDropGuard::preserving(
+                py,
                 obj_from_bits(selected).as_ptr().expect("descriptor"),
             );
             assert_eq!(selected, descriptor_bits);
-            crate::gpu_bridge::molt_gpu_kernel_descriptor_set(callable, replacement_bits);
+            crate::gpu_bridge::molt_gpu_kernel_descriptor_set_attached_body(
+                py,
+                callable,
+                replacement_bits,
+            );
             assert!(crate::exception_pending(py));
             crate::clear_exception(py);
             assert_eq!(
@@ -1043,7 +1114,11 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             );
             crate::bump_function_mutation_version(function);
             assert_eq!(
-                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits),
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(
+                    py.attached_context(),
+                    callable,
+                    descriptor_bits
+                ),
                 0
             );
         }
@@ -1060,7 +1135,7 @@ fn gpu_query_identity_reuses_exact_registry_materialization() {
             0,
         );
         let ptr = obj_from_bits(query).as_ptr().expect("query");
-        let _owner = crate::PtrDropGuard::preserving(ptr);
+        let _owner = crate::PtrDropGuard::preserving(py, ptr);
         assert!(
             crate::intrinsics::registry::is_named_runtime_materialization(
                 py,
@@ -1092,7 +1167,7 @@ fn gpu_builtin_identity_admits_positional_range_publication() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = MoltObject::from_ptr(alloc_string(py, b"gpu_builtin_fixture")).bits();
-            let module = crate::molt_module_new(name);
+            let module = crate::molt_module_new_attached_body(py, name);
             let publish = |public_name: &str| {
                 let spec = crate::builtins::functions::python_builtin_function_info(public_name)
                     .expect("generated builtin");

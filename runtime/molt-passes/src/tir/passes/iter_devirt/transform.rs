@@ -19,6 +19,7 @@ pub(super) fn apply_transform(
     func.value_types.insert(len_val, TirType::I64);
     let mut len_op = TirOp {
         origin: Some(molt_ir::OpKind::Len),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![c.list_val],
@@ -77,6 +78,7 @@ pub(super) fn apply_transform(
         func.value_types.insert(cond_val, TirType::Bool);
         let cmp_op = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Lt,
             operands: vec![idx_var, len_val],
@@ -109,6 +111,7 @@ pub(super) fn apply_transform(
     }
     let index_op = TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![c.list_val, idx_var],
@@ -164,6 +167,7 @@ pub(super) fn apply_transform(
             // hot-loop field promotion and BCE on devirtualized iterators.
             let add_op = TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![idx_var, one_val],
@@ -198,6 +202,7 @@ pub(super) fn apply_transform(
 pub(super) fn make_const_int(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],

@@ -11,7 +11,7 @@ use crate::BuiltinExc;
 /// Returns a new iterator handle (caller owns the reference) or NULL (0) on error.
 pub extern "C" fn PyObject_GetIter(obj: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_iter(obj);
+        let res = molt_iter_attached_body(_py, obj);
         if obj_from_bits(res).is_none() {
             if !exception_pending(_py) {
                 let _: u64 = raise_not_iterable(_py, obj);
@@ -27,7 +27,7 @@ pub extern "C" fn PyObject_GetIter(obj: u64) -> u64 {
 /// the iterator is exhausted (no exception set) or on error (exception set).
 pub extern "C" fn PyIter_Next(iter: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let pair_bits = molt_iter_next(iter);
+        let pair_bits = molt_iter_next_attached_body(_py, iter);
         if exception_pending(_py) {
             if !obj_from_bits(pair_bits).is_none() {
                 dec_ref_bits(_py, pair_bits);
@@ -504,9 +504,9 @@ pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
 pub extern "C" fn PyNumber_Power(a: u64, b: u64, mod_: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let res = if obj_from_bits(mod_).is_none() {
-            molt_pow(a, b)
+            molt_pow_attached_body(_py, a, b)
         } else {
-            molt_pow_mod(a, b, mod_)
+            molt_pow_mod_attached_body(_py, a, b, mod_)
         };
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
@@ -535,7 +535,7 @@ pub extern "C" fn PyNumber_Check(o: u64) -> i32 {
 /// `PyNumber_Long(o)` — return `int(o)`, or 0 on error.
 pub extern "C" fn PyNumber_Long(o: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_int_from_obj(o, none_bits(), 0);
+        let res = molt_int_from_obj_attached_body(_py, o, none_bits(), 0);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -549,7 +549,7 @@ pub extern "C" fn PyNumber_Long(o: u64) -> u64 {
 /// `PyNumber_Float(o)` — return `float(o)`, or 0 on error.
 pub extern "C" fn PyNumber_Float(o: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_float_from_obj(o);
+        let res = molt_float_from_obj_attached_body(_py, o);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -563,7 +563,7 @@ pub extern "C" fn PyNumber_Float(o: u64) -> u64 {
 /// `PyMapping_Length(o)` — return `len(o)` for dict-like objects, or -1 on error.
 pub extern "C" fn PyMapping_Length(o: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
-        let len_bits = molt_len(o);
+        let len_bits = molt_len_attached_body(_py, o);
         if exception_pending(_py) {
             if !obj_from_bits(len_bits).is_none() {
                 dec_ref_bits(_py, len_bits);
@@ -623,9 +623,9 @@ pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c
 /// Does not raise exceptions on failure (returns 0 instead).
 pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_contains(o, key);
+        let res = molt_contains_attached_body(_py, o, key);
         if exception_pending(_py) {
-            let _ = molt_exception_clear();
+            let _ = molt_exception_clear_attached_body(_py);
             return 0;
         }
         if is_truthy(_py, obj_from_bits(res)) {
@@ -653,7 +653,7 @@ pub extern "C" fn PySequence_GetItem(o: u64, i: isize) -> u64 {
 /// `PySequence_Length(o)` — return `len(o)`, or -1 on error.
 pub extern "C" fn PySequence_Length(o: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
-        let len_bits = molt_len(o);
+        let len_bits = molt_len_attached_body(_py, o);
         if exception_pending(_py) {
             if !obj_from_bits(len_bits).is_none() {
                 dec_ref_bits(_py, len_bits);
@@ -669,7 +669,7 @@ pub extern "C" fn PySequence_Length(o: u64) -> isize {
 /// `PySequence_Contains(o, value)` — return 1 if `value in o`, 0 if not, -1 on error.
 pub extern "C" fn PySequence_Contains(o: u64, value: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_contains(o, value);
+        let res = molt_contains_attached_body(_py, o, value);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -857,7 +857,7 @@ pub unsafe extern "C" fn PyObject_Free(ptr: *mut u8) {
 /// `PyObject_Repr(obj)` — return repr(obj), or 0 on error. Caller owns the reference.
 pub extern "C" fn PyObject_Repr(obj: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_repr_from_obj(obj);
+        let res = molt_repr_from_obj_attached_body(_py, obj);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -871,7 +871,7 @@ pub extern "C" fn PyObject_Repr(obj: u64) -> u64 {
 /// `PyObject_Str(obj)` — return str(obj), or 0 on error. Caller owns the reference.
 pub extern "C" fn PyObject_Str(obj: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_str_from_obj(obj);
+        let res = molt_str_from_obj_attached_body(_py, obj);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -885,7 +885,7 @@ pub extern "C" fn PyObject_Str(obj: u64) -> u64 {
 /// `PyObject_Hash(obj)` — return the hash of obj, or -1 on error.
 pub extern "C" fn PyObject_Hash(obj: u64) -> i64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_hash_builtin(obj);
+        let res = molt_hash_builtin_attached_body(_py, obj);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -906,7 +906,7 @@ pub extern "C" fn PyObject_Hash(obj: u64) -> i64 {
 
 /// `PyObject_IsTrue(obj)` — return 1 if obj is truthy, 0 if falsy, -1 on error.
 pub extern "C" fn PyObject_IsTrue(obj: u64) -> i32 {
-    molt_object_truthy(obj)
+    crate::with_gil_entry_nopanic!(py, { molt_object_truthy_attached_body(py, obj) })
 }
 
 /// `PyObject_Not(obj)` — return 0 if obj is truthy, 1 if falsy, -1 on error.
@@ -922,7 +922,7 @@ pub extern "C" fn PyObject_Not(obj: u64) -> i32 {
 /// `PyObject_Type(obj)` — return the type of obj. Caller owns the reference.
 pub extern "C" fn PyObject_Type(obj: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_type_of(obj);
+        let res = molt_type_of_attached_body(_py, obj);
         if exception_pending(_py) || obj_from_bits(res).is_none() {
             return 0;
         }
@@ -934,7 +934,7 @@ pub extern "C" fn PyObject_Type(obj: u64) -> u64 {
 /// `PyObject_Length(obj)` — return the length of obj, or -1 on error.
 pub extern "C" fn PyObject_Length(obj: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_len(obj);
+        let res = molt_len_attached_body(_py, obj);
         if exception_pending(_py) {
             return -1;
         }
@@ -986,12 +986,12 @@ pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
             return i32::from(op == 2);
         }
         let res = match op {
-            0 => molt_lt(a, b), // Py_LT
-            1 => molt_le(a, b), // Py_LE
-            2 => molt_eq(a, b), // Py_EQ
-            3 => molt_ne(a, b), // Py_NE
-            4 => molt_gt(a, b), // Py_GT
-            5 => molt_ge(a, b), // Py_GE
+            0 => molt_lt_attached_body(_py, a, b), // Py_LT
+            1 => molt_le_attached_body(_py, a, b), // Py_LE
+            2 => molt_eq_attached_body(_py, a, b), // Py_EQ
+            3 => molt_ne_attached_body(_py, a, b), // Py_NE
+            4 => molt_gt_attached_body(_py, a, b), // Py_GT
+            5 => molt_ge_attached_body(_py, a, b), // Py_GE
             _ => {
                 let _ = raise_exception::<u64>(
                     _py,
@@ -1021,12 +1021,12 @@ pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
 pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let res = match op {
-            0 => molt_lt(a, b),
-            1 => molt_le(a, b),
-            2 => molt_eq(a, b),
-            3 => molt_ne(a, b),
-            4 => molt_gt(a, b),
-            5 => molt_ge(a, b),
+            0 => molt_lt_attached_body(_py, a, b),
+            1 => molt_le_attached_body(_py, a, b),
+            2 => molt_eq_attached_body(_py, a, b),
+            3 => molt_ne_attached_body(_py, a, b),
+            4 => molt_gt_attached_body(_py, a, b),
+            5 => molt_ge_attached_body(_py, a, b),
             _ => {
                 let _ = raise_exception::<u64>(
                     _py,
@@ -1049,9 +1049,9 @@ pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
 /// `PyCallable_Check(obj)` — return 1 if obj is callable, 0 otherwise.
 pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_callable_builtin(obj);
+        let res = molt_callable_builtin_attached_body(_py, obj);
         if exception_pending(_py) {
-            let _ = molt_exception_clear();
+            let _ = molt_exception_clear_attached_body(_py);
             return 0;
         }
         if is_truthy(_py, obj_from_bits(res)) {
@@ -1065,7 +1065,7 @@ pub extern "C" fn PyCallable_Check(obj: u64) -> i32 {
 /// `PyObject_IsInstance(obj, cls)` — return 1 if isinstance(obj, cls), 0 if not, -1 on error.
 pub extern "C" fn PyObject_IsInstance(obj: u64, cls: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_isinstance(obj, cls);
+        let res = molt_isinstance_attached_body(_py, obj, cls);
         if exception_pending(_py) {
             return -1;
         }
@@ -1129,7 +1129,7 @@ pub extern "C" fn PyUnicode_GetLength(obj: u64) -> isize {
 /// `PyUnicode_Concat(left, right)` — return left + right as a new string, or 0 on error.
 pub extern "C" fn PyUnicode_Concat(left: u64, right: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_add(left, right);
+        let res = molt_add_attached_body(_py, left, right);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -1142,7 +1142,9 @@ pub extern "C" fn PyUnicode_Concat(left: u64, right: u64) -> u64 {
 
 /// `PyUnicode_Contains(container, element)` — return 1 if element in container, 0 if not, -1 on error.
 pub extern "C" fn PyUnicode_Contains(container: u64, element: u64) -> i32 {
-    molt_object_contains(container, element)
+    crate::with_gil_entry_nopanic!(py, {
+        molt_object_contains_attached_body(py, container, element)
+    })
 }
 
 /// `PyUnicode_CompareWithASCIIString(uni, string)` — compare with a C ASCII string.
@@ -1158,10 +1160,11 @@ pub extern "C" fn PyUnicode_CompareWithASCIIString(
         let cstr = unsafe { std::ffi::CStr::from_ptr(string) };
         let rhs_bytes = cstr.to_bytes();
         let mut out_len: u64 = 0;
-        let lhs_ptr = unsafe { molt_string_as_ptr(uni, &mut out_len as *mut u64) };
+        let lhs_ptr =
+            unsafe { molt_string_as_ptr_attached_body(_py, uni, &mut out_len as *mut u64) };
         if lhs_ptr.is_null() {
             if exception_pending(_py) {
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(_py);
             }
             return -1;
         }
@@ -1312,7 +1315,7 @@ pub extern "C" fn PyErr_Occurred() -> u64 {
 pub extern "C" fn PyErr_Clear() {
     crate::with_gil_entry_nopanic!(_py, {
         if exception_pending(_py) {
-            let _ = molt_exception_clear();
+            let _ = molt_exception_clear_attached_body(_py);
         }
     })
 }

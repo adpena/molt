@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -83,11 +87,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         )
                         .unwrap(),
                     _ => {
-                        let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
+                        let truthy_fn = self
+                            .backend
+                            .module
+                            .get_execution_function("molt_is_truthy")
+                            .unwrap();
                         let truthy = self
                             .backend
                             .builder
-                            .build_call(
+                            .build_execution_call(
                                 truthy_fn,
                                 &[self.ensure_i64(operand).into()],
                                 "truthy_bool",
@@ -109,6 +117,58 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 self.values.insert(result_id, bool_val.into());
                 self.value_types.insert(result_id, TirType::Bool);
+            }
+
+            // -- Late-TIR representation primitives and the cold runtime edge
+            // (HF-821): bit-level meaning from the shared word generators.
+            OpCode::IsInlineInt => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let is_int = nanbox::boxed_word::generate_has_tag(
+                    &mut self.words(),
+                    word,
+                    nanbox::boxed_word::BoxTag::Int,
+                );
+                self.values.insert(op.results[0], is_int.into());
+                self.value_types.insert(op.results[0], TirType::Bool);
+            }
+            OpCode::UnboxInlineInt => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let raw = nanbox::boxed_word::generate_unbox_inline_int(&mut self.words(), word);
+                self.values.insert(op.results[0], raw.into());
+                self.value_types.insert(op.results[0], TirType::I64);
+            }
+            OpCode::IsBoolWord => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let is_bool = nanbox::boxed_word::generate_has_tag(
+                    &mut self.words(),
+                    word,
+                    nanbox::boxed_word::BoxTag::Bool,
+                );
+                self.values.insert(op.results[0], is_bool.into());
+                self.value_types.insert(op.results[0], TirType::Bool);
+            }
+            OpCode::UnboxBoolWord => {
+                let word = self.ensure_i64(self.resolve(op.operands[0]));
+                let truth = nanbox::boxed_word::generate_unbox_bool(&mut self.words(), word);
+                self.values.insert(op.results[0], truth.into());
+                self.value_types.insert(op.results[0], TirType::Bool);
+            }
+            OpCode::CodeIs => self.emit_code_is(op),
+            OpCode::DirectCall => self.emit_guarded_direct_call(op),
+            OpCode::BoxInlineInt => {
+                let value = self.ensure_i64(self.resolve(op.operands[0]));
+                let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);
+                self.values.insert(op.results[0], word.into());
+                self.value_types.insert(op.results[0], TirType::DynBox);
+            }
+            OpCode::CallRuntime => {
+                let runtime = op
+                    .runtime
+                    .expect("verified: CallRuntime carries its runtime entry");
+                match runtime.boxed_abi() {
+                    Some(abi) => self.emit_boxed_runtime_call(op, abi),
+                    None => self.emit_raw_runtime_call(op, runtime),
+                }
             }
 
             // -- Box/Unbox --
@@ -319,23 +379,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result_id = op.results[0];
                 let size = self.resolve(op.operands[0]);
                 let size_i64 = self.ensure_i64(size);
-                let alloc_fn = self.backend.module.get_function("molt_alloc").unwrap();
+                let alloc_fn = self
+                    .backend
+                    .module
+                    .get_execution_function("molt_alloc")
+                    .unwrap();
                 let unpublished = self
                     .backend
                     .builder
-                    .build_call(alloc_fn, &[size_i64.into()], "alloc")
+                    .build_execution_call(alloc_fn, &[size_i64.into()], "alloc")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
                 let publish_fn = self
                     .backend
                     .module
-                    .get_function("molt_object_publish_initialized")
+                    .get_execution_function("molt_object_publish_initialized")
                     .unwrap();
                 let result = self
                     .backend
                     .builder
-                    .build_call(publish_fn, &[unpublished.into()], "publish_initialized")
+                    .build_execution_call(publish_fn, &[unpublished.into()], "publish_initialized")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -594,7 +658,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         let service = self.ensure_runtime_i64_fn("molt_exception_frame_origin", 1);
                         self.backend
                             .builder
-                            .build_call(service, &[homes.into()], "origin_capture")
+                            .build_execution_call(service, &[homes.into()], "origin_capture")
                             .unwrap();
                         self.record_branch_args(
                             source_block,
@@ -659,7 +723,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.with_owned_name(module_name, |this, name_i64| {
                         this.backend
                             .builder
-                            .build_call(import_fn, &[name_i64.into()], "import")
+                            .build_execution_call(import_fn, &[name_i64.into()], "import")
                             .unwrap()
                             .try_as_basic_value()
                             .unwrap_basic()

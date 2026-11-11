@@ -1,6 +1,6 @@
 use super::common::{
-    binary_operands, emit_guarded_int_binary_result_or_boxed, emit_inline_int_result,
-    emit_inline_int_result_or_boxed, emit_plain_f64_arithmetic_result,
+    binary_operands, emit_guarded_int_binary_result_or_boxed, emit_inline_int_product_or_boxed,
+    emit_inline_int_result, emit_inline_int_result_or_boxed, emit_plain_f64_arithmetic_result,
     emit_plain_f64_binary_result, emit_plain_f64_binary_result_or_boxed,
     emit_trusted_int_binary_operand_tees, int_binary_temps, store_runtime_result,
 };
@@ -8,6 +8,7 @@ use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::{WasmFrameLocals, WasmNumericLaneStats};
 use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::{
     WasmScalarDirectNumericLane, wasm_scalar_direct_numeric_lane_for_op,
@@ -15,7 +16,7 @@ use crate::wasm_plan::{
 };
 use crate::wasm_values::{ConstantCache, IntFastLane};
 use std::collections::BTreeMap;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 fn emit_i64_additive(func: &mut Function, op_loop_kind: WasmNumericOpLoopKind) {
     match op_loop_kind {
@@ -86,16 +87,31 @@ pub(super) fn emit_additive_numeric_op(
                 );
                 emit_i64_additive(func, selection.op_loop_kind);
                 func.instruction(&Instruction::LocalSet(temps.result));
-                emit_inline_int_result_or_boxed(
-                    func,
-                    temps.result,
-                    operands,
-                    import_ids,
-                    import_name,
-                    const_cache,
-                    reloc_enabled,
-                    known_raw_ints,
-                );
+                // A sum or difference of inline integers cannot leave i64, so
+                // the range test alone decides; a product can wrap into range.
+                if matches!(selection.op_loop_kind, WasmNumericOpLoopKind::Mul) {
+                    emit_inline_int_product_or_boxed(
+                        func,
+                        temps,
+                        operands,
+                        import_ids,
+                        import_name,
+                        const_cache,
+                        reloc_enabled,
+                        known_raw_ints,
+                    );
+                } else {
+                    emit_inline_int_result_or_boxed(
+                        func,
+                        temps.result,
+                        operands,
+                        import_ids,
+                        import_name,
+                        const_cache,
+                        reloc_enabled,
+                        known_raw_ints,
+                    );
+                }
             },
         );
     } else {

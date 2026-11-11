@@ -24,6 +24,7 @@ fn lower_without_source_index(kind: molt_ir::OpKind) {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: Some(kind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0)],

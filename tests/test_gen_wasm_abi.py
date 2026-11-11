@@ -15,9 +15,9 @@ from tools.generator_io import generated_file_matches, stale_outputs
 from tools.wasm_abi_gen import manifest
 from tools.wasm_abi_gen.paths import (
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
-    OUT_RUNTIME_BOXED_ABI_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
+    OUT_RUNTIME_FN_RS,
 )
 from tests.process_guard_common import run_guarded_test_process
 from tools.public_objects import public_object_id
@@ -29,6 +29,16 @@ _RENDERED_RS_MODULES_CACHE: dict[str, str] | None = None
 _RENDERED_RUNTIME_CALLABLES_CACHE: str | None = None
 _RENDERED_PY_CACHE: str | None = None
 _RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
+
+
+def _physical_runtime_symbol(data: dict, logical: str) -> str:
+    from tools.wasm_abi_gen.execution_context import runtime_execution_specs
+
+    return next(
+        row["physical_symbol"]
+        for row in runtime_execution_specs(data)
+        if row["symbol"] == logical
+    )
 
 
 def test_runtime_name_registry_changes_invalidate_callable_render_cache(
@@ -146,7 +156,7 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     assert (ROOT / "tools/intrinsic_manifest.py").resolve() in input_files
     assert (ROOT / "src/molt/_host_capabilities_generated.py").resolve() in input_files
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
-    assert OUT_RUNTIME_BOXED_ABI_RS.resolve() not in input_files
+    assert OUT_RUNTIME_FN_RS.resolve() not in input_files
     assert OUT_RUNTIME_CALLABLE_ABI_RS.resolve() not in input_files
     assert (ROOT / "src/molt/builtin_callables.py").resolve() in input_files
     assert (ROOT / "src/molt/frontend/_types.py").resolve() not in input_files
@@ -228,7 +238,7 @@ def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> N
     for symbol, arity, trampoline in (
         ("molt_abs_builtin", 1, "unpack_args"),
         ("molt_importlib_import_transaction", 5, "unpack_args"),
-        ("molt_cpython_abi_cext_call_trampoline", 3, "call_frame"),
+        ("molt_cpython_abi_cext_call_trampoline_admitted", 3, "call_frame"),
         ("molt_sqlite3_connect", 1, "unpack_args"),
         ("molt_locale_getdefaultlocale", 0, "unpack_args"),
     ):
@@ -291,9 +301,16 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
     boxed = {spec["runtime_name"] for spec in manifest.runtime_boxed_call_specs(data)}
     callable_rows = {spec["runtime_name"] for spec in data["runtime_callable_abi"]}
     assert not (symbols.keys() & boxed) and not (symbols.keys() & callable_rows)
-    rendered = gen.render_runtime_raw_abi_rs(data)
-    assert "pub fn runtime_raw_abi(symbol: &str, arity: usize)" in rendered
-    assert 'RuntimeRawAbi { symbol: "molt_runtime_init", arity: 0 }' in rendered
+    rendered = gen.render_runtime_fn_rs(data)
+    assert (
+        "pub fn runtime_raw_abi(symbol: &str, arity: usize) -> Option<RuntimeFn>"
+        in rendered
+    )
+    assert (
+        'RuntimeFnAbi { symbol: "molt_runtime_init", params: 0, '
+        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::RawCall, "
+        "effects: RuntimeEffects::Impure }"
+    ) in rendered
     # The opt-in is checked, not trusted: a boxed-object row cannot claim it.
     drifted = copy.deepcopy(data)
     next(row for row in drifted["import"] if row["name"] == "cell_new")["raw_call"] = (
@@ -301,6 +318,65 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
     )
     with pytest.raises(manifest.WasmAbiManifestError, match="raw_call requires"):
         manifest.runtime_raw_abi_specs(drifted)
+
+
+def test_runtime_fn_names_every_all_word_runtime_entry_once() -> None:
+    """Backends name runtime entries by RuntimeFn (HF-384, HF-485).
+
+    The oracle is the manifest itself: an import whose wasm32 signature is all
+    i64 words with at most one i64 result has the same machine signature on
+    native targets, so it gets exactly one identity; a pointer or length word
+    proves no native signature, so such an import gets none.
+    """
+    data = gen_wasm_abi.load_manifest()
+    rows = {row["runtime_name"]: row for row in manifest.runtime_fn_specs(data)}
+    assert list(rows) == sorted(rows)
+    contracts = manifest.runtime_import_return_specs(data)
+    static_types = data["static_type"]
+    for entry in data["import"]:
+        symbol = manifest.runtime_export_name(entry)
+        signature = static_types[entry["type"]]
+        all_words = all(p == "i64" for p in signature["params"]) and signature[
+            "results"
+        ] in ([], ["i64"])
+        boxed_elsewhere = rows.get(symbol, {}).get("form") == "boxed"
+        if not all_words:
+            assert symbol not in rows or boxed_elsewhere, symbol
+            continue
+        row = rows[symbol]
+        assert row["params"] == len(signature["params"]), symbol
+        assert row["result"] == contracts[entry["name"]], symbol
+    # The fast-path helpers the shared lowering needs are typed helpers.
+    for symbol, params, result in (
+        ("molt_is_truthy", 1, "raw_bits"),
+        ("molt_exception_pending", 0, "raw_bits"),
+        ("molt_recursion_enter_fast", 0, "raw_bits"),
+        ("molt_dec_ref_obj", 1, "void"),
+        ("molt_frame_home_load", 1, "borrowed_object"),
+    ):
+        assert rows[symbol] == {
+            "runtime_name": symbol,
+            "params": params,
+            "result": result,
+            "form": "helper",
+            # The recursion charge writes thread state and cannot raise; an
+            # entry without the manifest's `effects` key keeps the impure floor.
+            "effects": "nothrow_write"
+            if symbol == "molt_recursion_enter_fast"
+            else None,
+        }
+    # A wasm32 pointer result proves no native signature.
+    assert "molt_handle_resolve" not in rows
+    rendered = gen_wasm_abi.render_runtime_fn_rs(data)
+    assert (
+        'RuntimeFnAbi { symbol: "molt_is_truthy", params: 1, '
+        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::Helper, effects: RuntimeEffects::Impure }"
+    ) in rendered
+    # Two forms cannot claim one symbol.
+    drifted = copy.deepcopy(data)
+    next(row for row in drifted["import"] if row["name"] == "add")["raw_call"] = True
+    with pytest.raises(manifest.WasmAbiManifestError):
+        manifest.runtime_fn_specs(drifted)
 
 
 def test_errno_protocols_are_separate_and_preserve_alias_order() -> None:
@@ -418,9 +494,7 @@ def test_target_neutral_declarations_own_native_and_wasm_abi_views() -> None:
         "arity": 1,
         "result": "i64",
     }
-    assert "molt_locale_getdefaultlocale" in gen_wasm_abi.render_runtime_boxed_abi_rs(
-        data
-    )
+    assert "molt_locale_getdefaultlocale" in gen_wasm_abi.render_runtime_fn_rs(data)
 
 
 @pytest.mark.parametrize("projection", ["callable", "boxed"])
@@ -486,17 +560,14 @@ def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
         }
         & symbols.keys()
     )
-    rendered = gen.render_runtime_boxed_abi_rs(data)
+    rendered = gen.render_runtime_fn_rs(data)
     assert "pub enum RuntimeBoxedReturn" in rendered
     assert "RuntimeBoxedReturn::OwnedValue" in rendered
     assert "RuntimeBoxedReturn::Void" in rendered
     assert "binary_search_by_key" in rendered
-    assert "(abi.arity == arity).then_some(abi)" in rendered
-    assert OUT_RUNTIME_BOXED_ABI_RS in gen.OUTPUT_PATHS
-    assert (
-        OUT_RUNTIME_BOXED_ABI_RS
-        == ROOT / "runtime/molt-ir/src/runtime_boxed_abi_generated.rs"
-    )
+    assert "(abi.arity() == arity).then_some(abi)" in rendered
+    assert OUT_RUNTIME_FN_RS in gen.OUTPUT_PATHS
+    assert OUT_RUNTIME_FN_RS == ROOT / "runtime/molt-ir/src/runtime_fn_generated.rs"
 
 
 def _contextvars_provider_arities() -> dict[str, int]:
@@ -978,7 +1049,7 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     for name in (
         "exception_pending",
         "async_work_poll_and_exception_pending",
-        "thread_record",
+        "attached_context",
         "recursion_enter_fast",
     ):
         assert contracts[name] == "raw_bits"
@@ -1020,13 +1091,13 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     modules = gen.render_rs_modules(data)
     variants = gen._runtime_import_variants(data)
     return_body = modules["import_metadata.rs"].split(
-        "pub(crate) const fn return_contract(self) -> WasmRuntimeReturn {", 1
+        "pub(crate) const fn return_contract(self) -> RuntimeReturnContract {", 1
     )[1]
     # rustfmt may turn a long expression arm into a braced block. Parse both
     # shapes, then require exactly one matching return fact for every import.
     arms = re.findall(
-        r"Self::(\w+)\s*=>\s*(?:WasmRuntimeReturn::(\w+)\s*,"
-        r"|\{\s*WasmRuntimeReturn::(\w+)\s*\}\s*,?)",
+        r"Self::(\w+)\s*=>\s*(?:RuntimeReturnContract::(\w+)\s*,"
+        r"|\{\s*RuntimeReturnContract::(\w+)\s*\}\s*,?)",
         return_body,
     )
     expected = {
@@ -1036,7 +1107,7 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     assert len(arms) == len(expected)
     assert {variant: inline or block for variant, inline, block in arms} == expected
     assert "OpLoopRuntimeSinkSpec" not in modules["lir_runtime_calls.rs"]
-    shared = gen.render_runtime_boxed_abi_rs(data)
+    shared = gen.render_runtime_fn_rs(data)
     assert "RuntimeBoxedReturn::BorrowedValue" in shared
     assert "RuntimeBoxedReturn::PollValue" in shared
 
@@ -1523,8 +1594,10 @@ def test_external_native_function_signature_authority_is_complete() -> None:
         "result": "i32",
     }
     assert wasm_import_signature("path_readlink") == (("i64",), ("i64",))
-    assert signatures[("env", "molt_call_indirect3")] == {
-        "params": ["i64", "i64", "i64", "i64"],
+    assert signatures[
+        ("env", _physical_runtime_symbol(data, "molt_call_indirect3"))
+    ] == {
+        "params": ["i64", "i64", "i64", "i64", "i64"],
         "result": "i64",
     }
     assert wasm_import_signature("molt_cbor_parse_scalar_obj") is not None
@@ -1728,6 +1801,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         "params": ["i64"],
         "results": ["i32"],
     }
+    assert host_export_signatures["molt_compiled_execution_enter"]["params"] == ["i64"]
+    assert host_export_signatures["molt_compiled_execution_leave"]["params"] == [
+        "i64",
+        "i64",
+    ]
     assert {"molt_gpu_matmul_contiguous", "molt_gpu_tensor__zeros"} <= host_exports
     assert "gpu_intrinsic_manifest_name" not in data
 
@@ -1765,9 +1843,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '"Py_GenericAliasType": "data"' in rendered_py
     assert '"Py_OptimizeFlag": "data"' in rendered_py
     assert '"PyType_Ready": "function"' in rendered_py
-    assert rendered_js_abi["runtime_export_by_import"]["socket_drop"] == (
-        "molt_socket_drop"
-    )
+    assert rendered_js_abi["runtime_export_by_import"][
+        "socket_drop"
+    ] == _physical_runtime_symbol(data, "molt_socket_drop")
     assert rendered_js_abi["runtime_export_by_import"]["runtime_execution_enter"] == (
         "molt_runtime_execution_enter"
     )
@@ -1817,7 +1895,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
             ("i64",) * arity,
             ("i64",),
         )
-        assert rendered_js_abi["runtime_export_by_import"][name] == export_name
+        assert rendered_js_abi["runtime_export_by_import"][
+            name
+        ] == _physical_runtime_symbol(data, export_name)
     assert rendered_namespace["wasm_runtime_import_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_runtime_export_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_import_signature"]("molt_none") == (
@@ -2753,6 +2833,33 @@ def test_reserved_python_callable_rejects_native_only_void(
         manifest.validate_loaded_manifest(_raw_manifest())
 
 
+@pytest.mark.parametrize(
+    "parameter", ["__context", "__molt_context", "context", "context_bits"]
+)
+def test_only_typed_attached_bodies_remove_the_context_parameter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parameter: str
+) -> None:
+    provider = tmp_path / "boundary.rs"
+    provider.write_text(
+        "#[unsafe(no_mangle)]\n"
+        f'pub extern "C" fn molt_boundary_probe({parameter}: u64, value: u64) -> u64 {{ value }}\n'
+        "pub(crate) fn molt_attached_probe_attached_body(\n"
+        "    _py: &crate::PyToken<'_>, context: u64\n"
+        ") -> u64 { context }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(manifest, "_runtime_rust_files", lambda: [provider])
+    monkeypatch.setattr(manifest, "_rust_type_aliases", lambda: {})
+    manifest._rust_export_signatures.cache_clear()
+    try:
+        assert manifest._rust_export_signatures() == {
+            "molt_boundary_probe": {(("i64", "i64"), "i64")},
+            "molt_attached_probe": {(("i64",), "i64")},
+        }
+    finally:
+        manifest._rust_export_signatures.cache_clear()
+
+
 def test_python_callable_abi_and_cache_include_native_only_providers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3344,8 +3451,8 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     }
     assert reserved[22] == {
         "index": 22,
-        "runtime_name": "molt_cpython_abi_cext_call_trampoline",
-        "import_name": "cpython_abi_cext_call_trampoline",
+        "runtime_name": "molt_cpython_abi_cext_call_trampoline_admitted",
+        "import_name": "cpython_abi_cext_call_trampoline_admitted",
         "callable_arity": 3,
         "trampoline_abi": "call_frame",
     }
@@ -3574,12 +3681,29 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
 
     link_format = (ROOT / "tools/wasm_link_format.py").read_text(encoding="utf-8")
     assert "_WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in link_format
-    assert "_WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in link_format
     assert "_WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in link_format
-    assert "_WASM_ABI.WASM_ESSENTIAL_EXPORTS" in link_format
-    assert "_WASM_ABI.wasm_runtime_export_name" in link_format
+    # The final-link consumer must retain physical exports, including attached
+    # compiled entries, while storage exports keep their raw wire identity.
+    # Derive this expectation from the manifest rather than a source spelling.
+    from tools import wasm_link_format
+
+    assert set(wasm_link_format._OUTPUT_RUNTIME_EXPORT_ALIASES) == {
+        _physical_runtime_symbol(data, name)
+        for name in policy["runtime_export_aliases"]
+    }
+    storage_exports = {
+        "memory",
+        "molt_memory",
+        "molt_table",
+        "__indirect_function_table",
+    }
+    assert wasm_link_format._ESSENTIAL_EXPORTS == {
+        name if name in storage_exports else _physical_runtime_symbol(data, name)
+        for name in policy["essential_exports"]
+    }
+    assert "_runtime_exports.wasm_split_runtime_import_signature" in link_format
     assert '"molt_alloc"' not in link_format
-    assert '"molt_isolate_import"' not in link_format
+    assert "_WASM_ABI.compiled_execution_symbol(logical)" in link_format
 
 
 def test_runtime_execution_token_exports_are_wasm_only() -> None:
@@ -3683,9 +3807,10 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
     thread_imports = {
         name for name in import_by_runtime_name.values() if name.startswith("thread_")
     }
-    assert "thread_record" in thread_imports
+    assert "attached_context" in import_by_runtime_name.values()
+    assert not pure_profile_skips_import("attached_context")
     for name in thread_imports:
-        assert pure_profile_skips_import(name) == (name != "thread_record"), name
+        assert pure_profile_skips_import(name), name
 
 
 def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
@@ -3797,13 +3922,11 @@ def test_shared_boxed_op_mapping_uses_explicit_symbol_not_kind_spelling() -> Non
     assert rows[0]["kind"] == "len"
     assert rows[0]["runtime_name"] == "molt_different_export"
     gen = gen_wasm_abi
-    source = gen.render_runtime_boxed_abi_rs(data)
+    source = gen.render_runtime_fn_rs(data)
     # The op names its runtime function, never a table position, so adding an
     # intrinsic cannot renumber this mapping.
-    assert (
-        "crate::OpKind::Len => Some(RuntimeFn::DifferentExport.boxed_abi())" in source
-    )
-    assert "RUNTIME_BOXED_ABIS[0]" not in source
+    assert "crate::OpKind::Len => RuntimeFn::DifferentExport.boxed_abi()" in source
+    assert "RUNTIME_FN_ABIS[0]" not in source
     assert "DifferentExport = " not in source
     assert 'symbol: "molt_different_export"' in source
     assert "molt_len" not in source
@@ -4043,3 +4166,17 @@ def test_host_test_deny_launch_is_projected_from_the_python_authority():
             f"{json.dumps(name)}: {json.dumps(value)},"
             in (outputs[gen_wasm_host_test_launch.OUTPUT])
         )
+
+
+def test_manifest_registers_every_runtime_abi_projection() -> None:
+    import tomllib
+
+    manifest = tomllib.loads(
+        (ROOT / "tools/generator_manifest.toml").read_text(encoding="utf-8")
+    )
+    producer = next(
+        row for row in manifest["generator"] if row["tool"] == "tools/gen_wasm_abi.py"
+    )
+    assert set(producer["outputs"]) == {
+        path.relative_to(ROOT).as_posix() for path in gen_wasm_abi.OUTPUT_PATHS
+    }

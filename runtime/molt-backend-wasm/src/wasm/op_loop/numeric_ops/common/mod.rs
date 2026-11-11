@@ -13,7 +13,7 @@ pub(super) use float_fast::{
     emit_plain_f64_binary_result_or_boxed,
 };
 pub(super) use int_fast::{
-    emit_guarded_int_binary_result_or_boxed, emit_inline_int_result,
-    emit_inline_int_result_or_boxed, emit_trusted_int_binary_operand_tees,
+    emit_guarded_int_binary_result_or_boxed, emit_inline_int_product_or_boxed,
+    emit_inline_int_result, emit_inline_int_result_or_boxed, emit_trusted_int_binary_operand_tees,
 };
 pub(super) use operands::{BinaryOperands, IntBinaryTemps, binary_operands, int_binary_temps};

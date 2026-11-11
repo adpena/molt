@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use wasm_encoder::{ExportKind, Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::{ExportKind, Instruction};
 
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::CALL_INDIRECT_IMPORTS;
@@ -23,7 +24,7 @@ impl WasmModuleTypeLayout {
             } else {
                 (func_ir.params.len(), true)
             };
-            let type_idx = backend.types.boxed(arity, returns_value);
+            let type_idx = backend.types.boxed(arity + 1, returns_value);
             if function_type_map
                 .insert(func_ir.name.clone(), type_idx)
                 .is_some()
@@ -51,18 +52,23 @@ impl WasmModuleTypeLayout {
     ) -> u32 {
         for spec in CALL_INDIRECT_IMPORTS {
             let arity = spec.arity;
-            let sig_idx = backend.types.boxed(arity + 1, true);
-            let callee_idx = backend.types.boxed(arity, true);
+            let sig_idx = backend.types.boxed(arity + 2, true);
+            let callee_idx = backend.types.boxed(arity + 1, true);
             backend.funcs.function(sig_idx);
-            backend
-                .exports
-                .export(spec.import_name, ExportKind::Func, backend.func_count);
+            backend.exports.export(
+                &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                    spec.import_name,
+                ),
+                ExportKind::Func,
+                backend.func_count,
+            );
             let mut call_indirect = Function::new_with_locals_types(Vec::new());
             emit_reject_non_table_index(&mut call_indirect);
-            for idx in 0..arity {
-                call_indirect.instruction(&Instruction::LocalGet((idx + 1) as u32));
-            }
             call_indirect.instruction(&Instruction::LocalGet(0));
+            for idx in 0..arity {
+                call_indirect.instruction(&Instruction::LocalGet((idx + 2) as u32));
+            }
+            call_indirect.instruction(&Instruction::LocalGet(1));
             call_indirect.instruction(&Instruction::I32WrapI64);
             emit_call_indirect(&mut call_indirect, reloc_enabled, callee_idx, 0);
             call_indirect.instruction(&Instruction::End);
@@ -71,7 +77,7 @@ impl WasmModuleTypeLayout {
         }
 
         let sentinel_func_idx = backend.func_count;
-        let sentinel_type = backend.types.boxed(1, true);
+        let sentinel_type = backend.types.boxed(2, true);
         backend.funcs.function(sentinel_type);
         let mut sentinel = Function::new_with_locals_types(Vec::new());
         sentinel.instruction(&Instruction::Unreachable);
@@ -88,7 +94,7 @@ impl WasmModuleTypeLayout {
 /// in a `molt_call_indirectN` body, so the trapping frame names the cause.
 /// It costs one compare and one predicted branch per call.
 fn emit_reject_non_table_index(func: &mut Function) {
-    func.instruction(&Instruction::LocalGet(0));
+    func.instruction(&Instruction::LocalGet(1));
     func.instruction(&Instruction::I64Const(i64::from(u32::MAX)));
     func.instruction(&Instruction::I64GtU);
     func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
@@ -132,11 +138,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(arities, [0, 512]);
+        assert_eq!(arities, [1, 513]);
         for function in &ir.functions {
             assert_eq!(
                 arities[layout.type_idx_for_function(function) as usize],
-                function.params.len()
+                function.params.len() + 1
             );
         }
     }

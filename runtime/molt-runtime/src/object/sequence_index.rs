@@ -45,7 +45,9 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         return MoltObject::none().bits();
     }
     inc_ref_bits(py, receiver);
-    let _receiver_owner = obj_from_bits(receiver).as_ptr().map(PtrDropGuard::new);
+    let _receiver_owner = obj_from_bits(receiver)
+        .as_ptr()
+        .map(|__ptr| PtrDropGuard::new(py, __ptr));
     if let Some(ptr) = obj_from_bits(receiver).as_ptr()
         && unsafe { object_type_id(ptr) } == TYPE_ID_FOREIGN
     {
@@ -100,8 +102,10 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
                 Err(()) => return MoltObject::none().bits(),
             };
         if has_length {
-            let length_bits = molt_len(receiver);
-            let _length_owner = obj_from_bits(length_bits).as_ptr().map(PtrDropGuard::new);
+            let length_bits = molt_len_attached_body(py, receiver);
+            let _length_owner = obj_from_bits(length_bits)
+                .as_ptr()
+                .map(|__ptr| PtrDropGuard::new(py, __ptr));
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
@@ -123,7 +127,9 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         }
     }
     let index_bits = int_bits_from_i64(py, index);
-    let _index_owner = obj_from_bits(index_bits).as_ptr().map(PtrDropGuard::new);
+    let _index_owner = obj_from_bits(index_bits)
+        .as_ptr()
+        .map(|__ptr| PtrDropGuard::new(py, __ptr));
     if exception_pending(py) {
         return MoltObject::none().bits();
     }

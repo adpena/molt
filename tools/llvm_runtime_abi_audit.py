@@ -34,13 +34,9 @@ bind_repository_imports(__file__)
 ROOT = Path(__file__).resolve().parents[1]
 
 
-RUNTIME_IMPORT_ABI_FACTS_RS = (
-    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
-)
 RUNTIME_IMPORT_FIXED_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/fixed.rs"
 )
-RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
 
 ABI_I64_RETURNS = {"u64", "i64"}
 ABI_I32_RETURNS = {"u32", "i32"}
@@ -169,32 +165,6 @@ def boxed_runtime_export_issues() -> tuple[ClassifiedFactIssue, ...]:
     return tuple(sorted(issues))
 
 
-def _split_top_level_commas(params: str) -> list[str]:
-    parts: list[str] = []
-    start = 0
-    angle = paren = bracket = 0
-    for idx, ch in enumerate(params):
-        if ch == "<":
-            angle += 1
-        elif ch == ">" and angle:
-            angle -= 1
-        elif ch == "(":
-            paren += 1
-        elif ch == ")" and paren:
-            paren -= 1
-        elif ch == "[":
-            bracket += 1
-        elif ch == "]" and bracket:
-            bracket -= 1
-        elif ch == "," and angle == paren == bracket == 0:
-            parts.append(params[start:idx].strip())
-            start = idx + 1
-    tail = params[start:].strip()
-    if tail:
-        parts.append(tail)
-    return [part for part in parts if part]
-
-
 def _rust_param_type(param: str) -> str:
     if ":" not in param:
         return param.strip()
@@ -228,37 +198,68 @@ def normalize_rust_type(rust_type: str, aliases: dict[str, str]) -> str:
 def runtime_exports(
     roots: Path | Iterable[Path] = RUNTIME_SRC_ROOTS,
 ) -> dict[str, RuntimeSignature]:
-    pattern = re.compile(
-        r"pub\s+(?:unsafe\s+)?extern\s+\"C\"\s+fn\s+"
-        r"(?P<name>molt_[A-Za-z0-9_]+)\s*"
-        r"\((?P<params>.*?)\)\s*"
-        r"(?:->\s*(?P<ret>[^{\n]+))?\s*\{",
-        re.DOTALL,
+    from molt.rust_source_scan import mask_rust_test_items, rust_test_only_source_files
+    from tools.check_runtime_symbol_owners import (
+        _c_link_identity,
+        _without_macro_templates,
     )
+    from tools.wasm_abi_gen.attached_entries import functions, split_params
+
+    paths = sorted(
+        path
+        for root in _iter_src_roots(roots)
+        if root.exists()
+        for path in root.rglob("*.rs")
+    )
+    test_only = rust_test_only_source_files(paths)
     exports: dict[str, RuntimeSignature] = {}
-    for root in _iter_src_roots(roots):
-        if not root.exists():
+    for path in paths:
+        if path.resolve() in test_only:
             continue
-        for path in sorted(root.rglob("*.rs")):
-            rel = _display_path(path)
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            for match in pattern.finditer(text):
-                symbol = match.group("name")
-                params = match.group("params").strip()
-                rust_params = (
-                    tuple(
-                        _rust_param_type(param)
-                        for param in _split_top_level_commas(params)
-                    )
-                    if params
-                    else ()
-                )
-                arity = len(rust_params)
-                rust_return = (match.group("ret") or "").strip()
-                exports[symbol] = RuntimeSignature(
-                    symbol, arity, rust_return, rel, "", rust_params
-                )
+        text, _ = _without_macro_templates(
+            mask_rust_test_items(path.read_text(encoding="utf-8"))
+        )
+        for function in functions(text, include_private=True):
+            if not function.external:
+                continue
+            symbol = _c_link_identity(function.attrs, function.name)
+            if symbol is None:
+                continue
+            rust_params = tuple(
+                _rust_param_type(param) for param in split_params(function.params)
+            )
+            exports[symbol] = RuntimeSignature(
+                symbol,
+                len(rust_params),
+                function.result,
+                _display_path(path),
+                "",
+                rust_params,
+            )
     return exports
+
+
+def physical_runtime_import_facts(
+    facts: dict[tuple[str, int], AbiFact],
+) -> dict[tuple[str, int], AbiFact]:
+    """Project declarations to the generated link identity and machine signature.
+
+    Keep export observations physical: dropping an observed first argument
+    would hide a stale symbol or a context with the wrong machine carrier.
+    """
+    from molt._wasm_abi_generated import runtime_execution_abi
+
+    physical = {}
+    for fact in facts.values():
+        execution = runtime_execution_abi(fact.symbol)
+        if execution is None:
+            raise ValueError(f"unclassified runtime execution ABI: {fact.symbol}")
+        params = (("I64",) if execution.context == "Attached" else ()) + fact.param_abis
+        projected = AbiFact(
+            execution.physical_symbol, len(params), fact.return_abi, params
+        )
+        physical[(projected.symbol, projected.arity)] = projected
+    return physical
 
 
 def _insert_abi_fact(
@@ -277,20 +278,25 @@ def _insert_abi_fact(
         facts[key] = fact
 
 
-def runtime_import_signature_constants(
-    path: Path = RUNTIME_IMPORT_ABI_RS,
-) -> dict[str, AbiFact]:
-    text = path.read_text(encoding="utf-8")
-    out: dict[str, AbiFact] = {}
-    for const, symbol, arity, return_abi in re.findall(
-        r"pub\(crate\)\s+const\s+([A-Z][A-Z0-9_]*)\s*:\s*"
-        r"RuntimeImportSignature\s*=\s*runtime_sig\(\s*"
-        r'"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)\s*;',
-        text,
-        re.DOTALL,
-    ):
-        out[const] = AbiFact(symbol, int(arity), return_abi, ("I64",) * int(arity))
-    return out
+def _insert_fixed_abi_fact(
+    facts: dict[tuple[str, int], AbiFact],
+    duplicates: list[DuplicateAbiFact],
+    generated: set[tuple[str, int]],
+    fact: AbiFact,
+) -> None:
+    """A fixed declaration may restate one generated entry with stronger LLVM
+    attributes; it must agree with it. Any other repeat is a duplicate."""
+    key = (fact.symbol, fact.arity)
+    if key in generated:
+        generated.discard(key)
+        if facts[key] != fact:
+            duplicates.append(
+                DuplicateAbiFact(
+                    fact.symbol, fact.arity, facts[key].return_abi, fact.return_abi
+                )
+            )
+        return
+    _insert_abi_fact(facts, duplicates, fact)
 
 
 def fixed_runtime_param_abi_constants(fixed_text: str) -> dict[str, tuple[str, ...]]:
@@ -307,41 +313,34 @@ def fixed_runtime_param_abi_constants(fixed_text: str) -> dict[str, tuple[str, .
 
 
 def runtime_import_abi_facts(
-    conservative_path: Path = RUNTIME_IMPORT_ABI_FACTS_RS,
     fixed_path: Path = RUNTIME_IMPORT_FIXED_RS,
-    constants_path: Path = RUNTIME_IMPORT_ABI_RS,
     *,
     include_fixed: bool = True,
 ) -> tuple[dict[tuple[str, int], AbiFact], tuple[DuplicateAbiFact, ...]]:
-    conservative_text = conservative_path.read_text(encoding="utf-8")
-    fixed_text = fixed_path.read_text(encoding="utf-8") if include_fixed else ""
-    constants = runtime_import_signature_constants(constants_path)
-    fixed_param_constants = fixed_runtime_param_abi_constants(fixed_text)
+    """Machine facts of native runtime imports.
+
+    Every runtime entry the boxed projection does not own (helpers and raw
+    calls) comes from the generated RuntimeFn table, the one identity
+    authority; the hand-written fixed declarations add pointer and narrow
+    shapes. A fixed declaration of a generated entry must agree with it.
+    """
+    from tools.wasm_abi_gen.manifest import load_manifest, runtime_fn_specs
+
     facts: dict[tuple[str, int], AbiFact] = {}
     duplicates: list[DuplicateAbiFact] = []
-    for match in re.finditer(
-        r"runtime_sig\(\s*"
-        r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
-        r"(?P<arity>\d+)\s*,\s*"
-        r"RuntimeReturnAbi::(?P<abi>I64|Void)\s*,?\s*\)",
-        conservative_text,
-        re.DOTALL,
-    ):
-        fact = AbiFact(
-            match.group("name"),
-            int(match.group("arity")),
-            match.group("abi"),
-            ("I64",) * int(match.group("arity")),
-        )
-        _insert_abi_fact(facts, duplicates, fact)
-    for line in conservative_text.splitlines():
-        stripped = line.split("//", maxsplit=1)[0].strip()
-        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)\s*,", stripped)
-        if match is None:
+    for spec in runtime_fn_specs(load_manifest()):
+        if spec["form"] == "boxed":
             continue
-        const = match.group(1)
-        if const in constants:
-            _insert_abi_fact(facts, duplicates, constants[const])
+        arity = spec["params"]
+        return_abi = "Void" if spec["result"] == "void" else "I64"
+        _insert_abi_fact(
+            facts,
+            duplicates,
+            AbiFact(spec["runtime_name"], arity, return_abi, ("I64",) * arity),
+        )
+    generated = set(facts)
+    fixed_text = fixed_path.read_text(encoding="utf-8") if include_fixed else ""
+    fixed_param_constants = fixed_runtime_param_abi_constants(fixed_text)
     for match in re.finditer(
         r"\b(?P<ctor>i64_ret|void_ret)\(\s*"
         r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
@@ -356,24 +355,7 @@ def runtime_import_abi_facts(
             return_abi,
             ("I64",) * int(match.group("arity")),
         )
-        _insert_abi_fact(facts, duplicates, fact)
-    for match in re.finditer(
-        r"\b(?P<ctor>i64_ret|void_ret)\(\s*"
-        r"(?P<const>[A-Z][A-Z0-9_]*)\.name\s*,\s*"
-        r"(?P<arity>\d+)\s*,",
-        fixed_text,
-        re.DOTALL,
-    ):
-        const = match.group("const")
-        if const not in constants:
-            continue
-        fact = constants[const]
-        expected_return = "I64" if match.group("ctor") == "i64_ret" else "Void"
-        if (
-            fact.arity == int(match.group("arity"))
-            and fact.return_abi == expected_return
-        ):
-            _insert_abi_fact(facts, duplicates, fact)
+        _insert_fixed_abi_fact(facts, duplicates, generated, fact)
     for match in re.finditer(
         r"\bcustom\(\s*"
         r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
@@ -391,7 +373,7 @@ def runtime_import_abi_facts(
             match.group("abi"),
             param_abis,
         )
-        _insert_abi_fact(facts, duplicates, fact)
+        _insert_fixed_abi_fact(facts, duplicates, generated, fact)
     return facts, tuple(sorted(duplicates))
 
 
@@ -507,31 +489,19 @@ def validate_classified_facts(
 
 
 def run_audit(root: Path = ROOT) -> AuditResult:
-    conservative_imports = root / RUNTIME_IMPORT_ABI_FACTS_RS.relative_to(ROOT)
     fixed_imports = root / RUNTIME_IMPORT_FIXED_RS.relative_to(ROOT)
-    runtime_import_abi = root / RUNTIME_IMPORT_ABI_RS.relative_to(ROOT)
     runtime_roots = runtime_src_roots(root)
     exports = runtime_exports(runtime_roots)
     aliases = runtime_type_aliases(runtime_roots)
-    facts, duplicates = runtime_import_abi_facts(
-        conservative_imports, fixed_imports, runtime_import_abi
-    )
+    facts, duplicates = runtime_import_abi_facts(fixed_imports)
     boxed = runtime_boxed_abi_facts()
-    classified_fact_issues = list(validate_classified_facts(exports, facts, aliases))
-
-    # Fixed declarations retain stronger attributes; matching generated/fixed
-    # facts are therefore legitimate. Conservative mirrors must be deleted.
-    conservative, _ = runtime_import_abi_facts(
-        conservative_imports, fixed_imports, runtime_import_abi, include_fixed=False
+    classified_fact_issues = list(
+        validate_classified_facts(
+            exports, physical_runtime_import_facts(facts), aliases
+        )
     )
+
     duplicates = list(duplicates)
-    for key, fact in conservative.items():
-        if key in boxed:
-            duplicates.append(
-                DuplicateAbiFact(
-                    fact.symbol, fact.arity, "conservative", "generated-boxed"
-                )
-            )
     for key in facts.keys() & boxed.keys():
         if facts[key] != boxed[key]:
             fact = facts[key]

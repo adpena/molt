@@ -480,36 +480,54 @@ fn vec_reduction_chunk(
 }
 
 /// One chunk of `for x in it: acc = acc + x` (or `x + acc`).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_sum(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_vec_sum_attached_body(
+    _py: &crate::PyToken<'_>,
+    iter_bits: u64,
+    acc_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         vec_reduction_chunk(_py, Reduction::Sum, iter_bits, acc_bits, target_bits)
     })
 }
 
 /// One chunk of `for x in it: acc = acc * x` (or `x * acc`).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_prod(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_vec_prod_attached_body(
+    _py: &crate::PyToken<'_>,
+    iter_bits: u64,
+    acc_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         vec_reduction_chunk(_py, Reduction::Prod, iter_bits, acc_bits, target_bits)
     })
 }
 
 /// One chunk of `for x in it: if x < acc: acc = x`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_min(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_vec_min_attached_body(
+    _py: &crate::PyToken<'_>,
+    iter_bits: u64,
+    acc_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         vec_reduction_chunk(_py, Reduction::Min, iter_bits, acc_bits, target_bits)
     })
 }
 
 /// One chunk of `for x in it: if acc < x: acc = x`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_vec_max(iter_bits: u64, acc_bits: u64, target_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_vec_max_attached_body(
+    _py: &crate::PyToken<'_>,
+    iter_bits: u64,
+    acc_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         vec_reduction_chunk(_py, Reduction::Max, iter_bits, acc_bits, target_bits)
     })
 }
+
+include!("../attached_exports_generated/object/ops_vec.rs");
 
 #[cfg(test)]
 mod tests {
@@ -679,7 +697,7 @@ mod tests {
                         dec_ref_bits(_py, stop);
                         MoltObject::from_ptr(range).bits()
                     };
-                    let iter = molt_iter(sequence);
+                    let iter = molt_iter_attached_body(_py, sequence);
                     let mut acc = int_bits_from_i64(_py, first - step);
                     let mut target = MoltObject::none().bits();
                     for count in [VEC_CHUNK, 1] {
@@ -700,7 +718,8 @@ mod tests {
                             } else {
                                 VEC_CHUNK
                             };
-                            let read = molt_index(
+                            let read = molt_index_attached_body(
+                                _py,
                                 sequence,
                                 MoltObject::from_int(last_index as i64).bits(),
                             );
@@ -759,7 +778,7 @@ mod tests {
                         wide - 1
                     };
                     let acc = int_bits_from_i64(_py, seed);
-                    let iter = molt_iter(sequence);
+                    let iter = molt_iter_attached_body(_py, sequence);
                     let item_refs = heap_refs(item);
                     let tuple =
                         vec_reduction_chunk(_py, reduction, iter, acc, MoltObject::none().bits());
@@ -777,11 +796,13 @@ mod tests {
                         );
                         assert_eq!(fields[0] == acc, source == "prior");
                         assert_eq!(heap_refs(fields[0]), 2);
-                        let first = molt_index(sequence, MoltObject::from_int(0).bits());
+                        let first =
+                            molt_index_attached_body(_py, sequence, MoltObject::from_int(0).bits());
                         assert_eq!(fields[0] == first, source == "first");
                         dec_ref_bits(_py, first);
                         assert_eq!(heap_refs(fields[1]), 2);
-                        let last = molt_index(sequence, MoltObject::from_int(1).bits());
+                        let last =
+                            molt_index_attached_body(_py, sequence, MoltObject::from_int(1).bits());
                         assert_eq!(fields[1], last);
                         dec_ref_bits(_py, last);
                     }
@@ -812,8 +833,8 @@ mod tests {
                 .unwrap();
                 let sequence = MoltObject::from_ptr(ptr).bits();
                 assert_eq!(unsafe { object_type_id(ptr) }, TYPE_ID_LIST);
-                let first = molt_index(sequence, MoltObject::from_int(0).bits());
-                let iter = molt_iter(sequence);
+                let first = molt_index_attached_body(py, sequence, MoltObject::from_int(0).bits());
+                let iter = molt_iter_attached_body(py, sequence);
                 let seed = int_bits_from_i64(
                     py,
                     if reduction == Reduction::Min {

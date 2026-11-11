@@ -4,6 +4,11 @@
 // DO NOT EDIT BY HAND.
 
 pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
+    "molt_attached_context",
+    "molt_compiled_execution_enter",
+    "molt_compiled_execution_leave",
+    "molt_attached_context_abi_fingerprint",
+    "molt_exception_pending_detached",
     "molt_alloc",
     "molt_bool_from_i32",
     "molt_buffer_acquire",

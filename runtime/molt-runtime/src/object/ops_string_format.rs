@@ -327,10 +327,10 @@ fn resolve_format_field(
         if key_ptr.is_null() {
             return None;
         }
-        let _key_owner = PtrDropGuard::new(key_ptr);
+        let _key_owner = PtrDropGuard::new(py, key_ptr);
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
         if state.mapping_mode {
-            let bits = molt_index(kwargs_bits, key_bits);
+            let bits = molt_index_attached_body(py, kwargs_bits, key_bits);
             if exception_pending(py) {
                 dec_ref_bits(py, bits);
                 return None;
@@ -355,6 +355,7 @@ fn resolve_format_field(
         }
     };
     let mut current_owner = PtrDropGuard::new(
+        py,
         obj_from_bits(current_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -375,6 +376,7 @@ fn resolve_format_field(
             MoltObject::from_ptr(key_ptr).bits()
         };
         let _key_owner = PtrDropGuard::new(
+            py,
             obj_from_bits(key_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -383,11 +385,12 @@ fn resolve_format_field(
             return None;
         }
         current_bits = if lookup.is_attribute {
-            molt_get_attr_name(current_bits, key_bits)
+            molt_get_attr_name_attached_body(py, current_bits, key_bits)
         } else {
-            molt_index(current_bits, key_bits)
+            molt_index_attached_body(py, current_bits, key_bits)
         };
         current_owner = PtrDropGuard::new(
+            py,
             obj_from_bits(current_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -420,6 +423,7 @@ fn format_field(
     } = arguments;
     let mut value_bits = resolve_format_field(py, field.field_name, args, kwargs_bits, state)?;
     let mut value_owner = PtrDropGuard::new(
+        py,
         obj_from_bits(value_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -428,9 +432,9 @@ fn format_field(
     // the native parser's absent-conversion sentinel, including an explicit !\0.
     if field.conversion != 0 {
         value_bits = match field.conversion {
-            114 => molt_repr_from_obj(value_bits),
-            115 => molt_str_from_obj(value_bits),
-            97 => molt_ascii_from_obj(value_bits),
+            114 => molt_repr_from_obj_attached_body(py, value_bits),
+            115 => molt_str_from_obj_attached_body(py, value_bits),
+            97 => molt_ascii_from_obj_attached_body(py, value_bits),
             code => {
                 let message = if (33..127).contains(&code) {
                     format!("Unknown conversion specifier {}", code as u8 as char)
@@ -441,6 +445,7 @@ fn format_field(
             }
         };
         value_owner = PtrDropGuard::new(
+            py,
             obj_from_bits(value_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -462,6 +467,7 @@ fn format_field(
         )?
         .into_bits(py);
         expanded_owner = Some(PtrDropGuard::new(
+            py,
             obj_from_bits(expanded_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -473,7 +479,7 @@ fn format_field(
         }
         // __format__ receives an exact str projection, even when the nested
         // writer retained a subclass. Never redispatch its __str__ override.
-        crate::object::ops_format::string_str_slot(expanded_bits)
+        crate::object::ops_format::string_str_slot(py.attached_context(), expanded_bits)
     } else {
         let spec_ptr = alloc_string(py, field.format_spec);
         if spec_ptr.is_null() {
@@ -482,6 +488,7 @@ fn format_field(
         MoltObject::from_ptr(spec_ptr).bits()
     };
     let spec_owner = PtrDropGuard::new(
+        py,
         obj_from_bits(spec_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -492,7 +499,7 @@ fn format_field(
         drop(expanded_owner);
         return None;
     }
-    let formatted_bits = molt_format_builtin(value_bits, spec_bits);
+    let formatted_bits = molt_format_builtin_attached_body(py, value_bits, spec_bits);
     drop(spec_owner);
     let result = if exception_pending(py) {
         dec_ref_bits(py, formatted_bits);
@@ -510,13 +517,13 @@ fn format_field(
     result
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_format_method(
+pub(crate) fn molt_string_format_method_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(self_ptr) = obj_from_bits(self_bits)
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
@@ -536,11 +543,12 @@ pub extern "C" fn molt_string_format_method(
         // Immutable receiver and tuple storage remain pinned across every
         // lookup/conversion/format callback; no infallible snapshot copies.
         inc_ref_bits(py, self_bits);
-        let _self_owner = PtrDropGuard::new(self_ptr);
+        let _self_owner = PtrDropGuard::new(py, self_ptr);
         inc_ref_bits(py, args_bits);
-        let _args_owner = PtrDropGuard::new(args_ptr);
+        let _args_owner = PtrDropGuard::new(py, args_ptr);
         inc_ref_bits(py, kwargs_bits);
         let _kwargs_owner = PtrDropGuard::new(
+            py,
             obj_from_bits(kwargs_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -566,9 +574,12 @@ pub extern "C" fn molt_string_format_method(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_format_map(self_bits: u64, mapping_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_string_format_map_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    mapping_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(self_ptr) = obj_from_bits(self_bits)
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
@@ -576,9 +587,10 @@ pub extern "C" fn molt_string_format_map(self_bits: u64, mapping_bits: u64) -> u
             return raise_exception(py, BuiltinExc::TypeError, "format_map requires a string");
         };
         inc_ref_bits(py, self_bits);
-        let _self_owner = PtrDropGuard::new(self_ptr);
+        let _self_owner = PtrDropGuard::new(py, self_ptr);
         inc_ref_bits(py, mapping_bits);
         let _mapping_owner = PtrDropGuard::new(
+            py,
             obj_from_bits(mapping_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -601,9 +613,12 @@ pub extern "C" fn molt_string_format_map(self_bits: u64, mapping_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_format(val_bits: u64, spec_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_format_attached_body(
+    _py: &crate::PyToken<'_>,
+    val_bits: u64,
+    spec_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let spec_obj = obj_from_bits(spec_bits);
         let Some(spec_ptr) = spec_obj
             .as_ptr()
@@ -623,7 +638,7 @@ pub extern "C" fn molt_string_format(val_bits: u64, spec_bits: u64) -> u64 {
             // integer floating presentations invoke __float__, while explicit
             // base calls never redispatch the receiver's __format__ override.
             if spec_bytes.is_empty() {
-                return molt_str_from_obj(val_bits);
+                return molt_str_from_obj_attached_body(_py, val_bits);
             }
             let spec = match parse_format_spec(
                 unicode_data(_py),
@@ -642,3 +657,5 @@ pub extern "C" fn molt_string_format(val_bits: u64, spec_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../attached_exports_generated/object/ops_string_format.rs");

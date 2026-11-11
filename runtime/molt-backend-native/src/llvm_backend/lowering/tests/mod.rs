@@ -11,6 +11,82 @@ use inkwell::context::Context;
 use inkwell::values::AnyValue;
 use molt_ir::OpKind;
 
+/// Expected IR spells logical names; project those expectations through the
+/// generated execution ABI. The emitted IR is inspected without rewriting it.
+/// Naming the hidden formal preserves LLVM's existing logical `%0` numbering.
+fn execution_ir_pattern(pattern: &str) -> String {
+    use molt_ir::runtime_callable_abi_generated::{RuntimeExecutionContext, runtime_execution_abi};
+    let mut result = String::with_capacity(pattern.len());
+    let bytes = pattern.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let start = cursor;
+        if bytes[cursor] == b'@' {
+            result.push('@');
+            cursor += 1;
+        }
+        let identifier = cursor;
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+        {
+            cursor += 1;
+        }
+        let name = &pattern[identifier..cursor];
+        let callable = cursor < bytes.len()
+            && bytes[cursor] == b'('
+            && (identifier != start || name.starts_with("molt_") || name.starts_with("__molt_"));
+        if callable {
+            let abi = runtime_execution_abi(name);
+            let attached = abi.is_none_or(|abi| abi.context == RuntimeExecutionContext::Attached);
+            result.push_str(&crate::llvm_backend::execution_abi::execution_symbol(name));
+            result.push('(');
+            cursor += 1;
+            if attached {
+                result.push_str("i64 %execution_context");
+                if cursor < bytes.len() && bytes[cursor] != b')' {
+                    result.push_str(", ");
+                }
+            }
+        } else {
+            result.push_str(name);
+        }
+        if (cursor == start || cursor == identifier) && cursor < bytes.len() {
+            let character = pattern[cursor..].chars().next().unwrap();
+            result.push(character);
+            cursor += character.len_utf8();
+        }
+    }
+    result
+}
+
+trait ExecutionIrAssertions {
+    fn contains_execution(&self, pattern: &str) -> bool;
+    fn matches_execution(&self, pattern: &str) -> std::vec::IntoIter<&str>;
+    fn find_execution(&self, pattern: &str) -> Option<usize>;
+    fn match_indices_execution(&self, pattern: &str) -> std::vec::IntoIter<(usize, &str)>;
+}
+
+impl ExecutionIrAssertions for str {
+    fn contains_execution(&self, pattern: &str) -> bool {
+        self.contains(&execution_ir_pattern(pattern))
+    }
+    fn matches_execution(&self, pattern: &str) -> std::vec::IntoIter<&str> {
+        self.matches(&execution_ir_pattern(pattern))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+    fn find_execution(&self, pattern: &str) -> Option<usize> {
+        self.find(&execution_ir_pattern(pattern))
+    }
+    fn match_indices_execution(&self, pattern: &str) -> std::vec::IntoIter<(usize, &str)> {
+        let expanded = execution_ir_pattern(pattern);
+        self.match_indices(&expanded)
+            .map(|(index, matched)| (index, &self[index..index + matched.len()]))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
 fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
     let backend = LlvmBackend::new(ctx, "test");
     declare_runtime_functions(ctx, &backend.module);
@@ -20,8 +96,8 @@ fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
 fn test_native_linkage_abi(
     param_types: Vec<TirType>,
     return_type: Option<TirType>,
-) -> crate::NativeFunctionLinkageAbi {
-    crate::NativeFunctionLinkageAbi {
+) -> molt_ir::linkage_abi::NativeFunctionLinkageAbi {
+    molt_ir::linkage_abi::NativeFunctionLinkageAbi {
         source_signature: crate::ir::ExternFunctionSignature {
             arity: param_types.len(),
             has_closure: false,
@@ -61,6 +137,7 @@ fn assert_lowering_error_contains(err: &LlvmLoweringError, needle: &str) {
 fn const_none_def(result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -93,6 +170,7 @@ fn lowering_error_for_single_op(
         }
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect,
             opcode,
             operands,
@@ -117,6 +195,7 @@ fn const_int_def(result: ValueId, value: i64) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -173,6 +252,7 @@ fn build_i64_add_func() -> (TirFunction, ValueId) {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -217,6 +297,7 @@ fn lower_preserved_kind_ir(
     }
     entry.ops.push(TirOp {
         origin,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,

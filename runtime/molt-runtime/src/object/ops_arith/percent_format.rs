@@ -34,12 +34,12 @@ fn percent_native_failed(py: &PyToken<'_>, operation: &str) -> bool {
 /// failures, then retire it before width padding. This is _PyUnicode_FormatLong's
 /// iobj lifetime, without projecting a
 /// managed operand into a process-static C view.
-enum PercentIntegerOwner {
+enum PercentIntegerOwner<'guard> {
     Native { value: *mut PyObject },
-    Managed { _value: PtrDropGuard },
+    Managed { _value: PtrDropGuard<'guard> },
 }
 
-impl Drop for PercentIntegerOwner {
+impl Drop for PercentIntegerOwner<'_> {
     fn drop(&mut self) {
         if let Self::Native { value } = self {
             crate::object::foreign::retire_native_reference(|| unsafe {
@@ -49,12 +49,12 @@ impl Drop for PercentIntegerOwner {
     }
 }
 
-struct PercentInteger {
+struct PercentInteger<'guard> {
     value: BigInt,
-    _owner: Option<PercentIntegerOwner>,
+    _owner: Option<PercentIntegerOwner<'guard>>,
 }
 
-impl PercentInteger {
+impl<'guard> PercentInteger<'guard> {
     fn value(value: BigInt) -> Self {
         Self {
             value,
@@ -62,11 +62,11 @@ impl PercentInteger {
         }
     }
 
-    fn managed(py: &PyToken<'_>, bits: u64) -> Option<Self> {
+    fn managed(py: &'guard PyToken<'guard>, bits: u64) -> Option<Self> {
         let owner = obj_from_bits(bits)
             .as_ptr()
             .map(|ptr| PercentIntegerOwner::Managed {
-                _value: PtrDropGuard::new(ptr),
+                _value: PtrDropGuard::new(py, ptr),
             });
         if exception_pending(py) {
             return None;
@@ -79,11 +79,11 @@ impl PercentInteger {
     }
 }
 
-fn percent_native_integer(
-    py: &PyToken<'_>,
+fn percent_native_integer<'guard>(
+    py: &'guard PyToken<'guard>,
     native: *mut PyObject,
     conv: u8,
-) -> Option<PercentInteger> {
+) -> Option<PercentInteger<'guard>> {
     let converted = unsafe {
         if numbers::PyLong_Check(native) != 0 {
             object::Py_NewRef(native)
@@ -120,7 +120,9 @@ fn percent_native_integer(
             return None;
         }
     };
-    let _payload = obj_from_bits(bits).as_ptr().map(PtrDropGuard::new);
+    let _payload = obj_from_bits(bits)
+        .as_ptr()
+        .map(|__ptr| PtrDropGuard::new(py, __ptr));
     let value = crate::builtins::numbers::index_bigint_integral_bits(bits)?;
     Some(PercentInteger {
         value,
@@ -407,7 +409,11 @@ fn percent_decimal_float(py: &PyToken<'_>, value: f64) -> Option<BigInt> {
     Some(bigint_from_f64_trunc(value))
 }
 
-fn percent_decimal_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<PercentInteger> {
+fn percent_decimal_from_obj<'guard>(
+    py: &'guard PyToken<'guard>,
+    bits: u64,
+    conv: u8,
+) -> Option<PercentInteger<'guard>> {
     if let Some(native) = percent_native(bits) {
         return percent_native_integer(py, native, conv);
     }
@@ -438,7 +444,8 @@ fn percent_decimal_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<Per
     }
     // Use the same full conversion as PyNumber_Long: an admitted numeric
     // string/bytes subtype may reach int's text parser after absent protocols.
-    let result = crate::molt_int_from_obj(
+    let result = crate::molt_int_from_obj_attached_body(
+        py,
         bits,
         MoltObject::none().bits(),
         MoltObject::from_bool(false).bits(),
@@ -446,7 +453,11 @@ fn percent_decimal_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<Per
     PercentInteger::managed(py, result)
 }
 
-fn percent_integer_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<PercentInteger> {
+fn percent_integer_from_obj<'guard>(
+    py: &'guard PyToken<'guard>,
+    bits: u64,
+    conv: u8,
+) -> Option<PercentInteger<'guard>> {
     if let Some(native) = percent_native(bits) {
         return percent_native_integer(py, native, conv);
     }
@@ -501,7 +512,9 @@ fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
         return percent_char_from_bigint(py, value).map(Into::into);
     }
     if let Some(result) = crate::builtins::numbers::index_from_number_protocol(py, bits) {
-        let owner = obj_from_bits(result).as_ptr().map(PtrDropGuard::new);
+        let owner = obj_from_bits(result)
+            .as_ptr()
+            .map(|__ptr| PtrDropGuard::new(py, __ptr));
         let value = crate::builtins::numbers::integer_storage_bigint(py, result)
             .ok()
             .flatten();
@@ -701,7 +714,7 @@ fn percent_format_ascii(
     precision: Option<usize>,
     flags: PercentFormatFlags,
 ) -> Option<FormatOutput> {
-    let rendered_bits = molt_ascii_from_obj(value_bits);
+    let rendered_bits = molt_ascii_from_obj_attached_body(_py, value_bits);
     percent_format_text(
         _py,
         FormatOutput::OwnedString(rendered_bits),
@@ -772,7 +785,7 @@ fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &[u8]) -> O
             dec_ref_bits(_py, key_bits);
             return None;
         }
-        let bits = molt_index(rhs_bits, key_bits);
+        let bits = molt_index_attached_body(_py, rhs_bits, key_bits);
         dec_ref_bits(_py, key_bits);
         if exception_pending(_py) {
             return None;
@@ -805,7 +818,7 @@ struct PercentArguments<'a, 'py> {
     index: usize,
     consumed: bool,
     mapping: bool,
-    mapped_owner: Option<PtrDropGuard>,
+    mapped_owner: Option<PtrDropGuard<'a>>,
 }
 
 impl<'a, 'py> PercentArguments<'a, 'py> {
@@ -833,7 +846,7 @@ impl<'a, 'py> PercentArguments<'a, 'py> {
         Some(PercentArgument::Value(self.current))
     }
 
-    fn mapped(&mut self, py: &PyToken<'_>, key: &[u8]) -> Option<()> {
+    fn mapped(&mut self, py: &'a PyToken<'py>, key: &[u8]) -> Option<()> {
         self.mapped_owner = None;
         self.current = self.source;
         let (bits, owned) = percent_lookup_mapping_arg(py, self.source, key)?;
@@ -841,7 +854,7 @@ impl<'a, 'py> PercentArguments<'a, 'py> {
             if !owned {
                 inc_ref_bits(py, bits);
             }
-            PtrDropGuard::new(ptr)
+            PtrDropGuard::new(py, ptr)
         });
         self.current = bits;
         self.tuple = None;

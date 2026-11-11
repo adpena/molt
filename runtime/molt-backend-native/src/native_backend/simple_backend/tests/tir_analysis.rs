@@ -73,7 +73,6 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
 /// closure/task defined only in this batch; replacing the local scan
 /// dropped it, so a `call_guarded` to that closure skipped env extraction and
 /// the callee received a garbage closure (`'object' is not subscriptable`).
-
 #[test]
 fn effective_metadata_unions_module_context_with_local_scan() {
     // A module context that knows ONLY a stdlib closure / task.
@@ -840,6 +839,7 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                     non_inlinable: &non_inlinable,
                     missing_tir_context: "native final cache test",
                     mode,
+                    linkage: None,
                 },
             );
             let finalized = NativeFinalFunctions::from_final_tir(

@@ -1,6 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending};
+use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending_attached_body};
 use crate::object::seq_access;
 use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
 use crate::test_support::RuntimeTestTransaction;
@@ -57,7 +57,8 @@ fn token_payload_objects_match_independent_cpython_minor_controls() {
             (14, 65, 66, 68, 69),
         ] {
             transaction.with_target_python_minor(py, minor, || {
-                let payload = ExceptionValue::adopt(py, crate::molt_token_payload());
+                let payload =
+                    ExceptionValue::adopt(py, crate::molt_token_payload_attached_body(py));
                 assert!(!exception_pending(py));
                 let payload = payload.bits();
                 for (name, expected) in [
@@ -165,7 +166,8 @@ fn scanner_object_ids_follow_selected_target_for_supported_simple_tokens() {
         let source = ExceptionValue::adopt(py, text(py, "x = 1\n# note\n"));
         for (minor, comment, nl) in [(12, 64, 65), (13, 62, 63), (14, 65, 66)] {
             transaction.with_target_python_minor(py, minor, || {
-                let result = ExceptionValue::adopt(py, molt_tokenize_scan(source.bits()));
+                let result =
+                    ExceptionValue::adopt(py, molt_tokenize_scan_attached_body(py, source.bits()));
                 assert!(!exception_pending(py));
                 let rows = unsafe {
                     seq_access::snapshot(
@@ -351,21 +353,21 @@ fn token_constructors_fail_atomically_and_preserve_the_original_pending_error() 
         }
 
         let source = ExceptionValue::adopt(py, text(py, "x = 1\n"));
-        let scan = || molt_tokenize_scan(source.bits());
-        let payload = || crate::molt_token_payload();
+        let scan = || molt_tokenize_scan_attached_body(py, source.bits());
+        let payload = || crate::molt_token_payload_attached_body(py);
         for constructor in [&token as &dyn Fn() -> u64, &encoding, &scan, &payload] {
             raise_exception::<u64>(
                 py,
                 BuiltinExc::ValueError,
                 "original token construction error",
             );
-            let original = ExceptionValue::adopt(py, molt_exception_last_pending());
+            let original = ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
             let result = constructor();
             assert!(
                 obj_from_bits(result).is_none(),
                 "pending error must stop publication"
             );
-            let observed = ExceptionValue::adopt(py, molt_exception_last_pending());
+            let observed = ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
             assert_eq!(
                 observed.bits(),
                 original.bits(),

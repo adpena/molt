@@ -23,6 +23,7 @@ from .schema import (
     _VALUE_RANGE_CONST_FOLD_RULES,
     _VALUE_RANGE_CONTAINER_LENGTH_RULES,
     _VALUE_RANGE_TRANSFER_RULES,
+    _FAST_PATH_EXPANSION_RULES,
     _VECTORIZE_BODY_ACTIONS,
     _VECTOR_REDUCTION_RULES,
 )
@@ -406,6 +407,46 @@ def _render_sccp_constant_eval_rule(opcodes: list[dict], data: dict) -> str:
         lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)
+
+
+def _render_opcode_rule_table(
+    opcodes: list[dict],
+    data: dict,
+    *,
+    key: str,
+    rules: dict[str, str],
+    enum: str,
+    function: str,
+    doc: str,
+) -> str:
+    """One closed rule enum and its exhaustive per-opcode table, from a
+    `[{ opcode, rule }]` row list. Opcodes without a row map to `None`."""
+    rule_by_opcode = {row["opcode"]: row["rule"] for row in data.get(key, [])}
+    lines = [f"/// {doc}\n", "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n"]
+    lines.append(f"pub enum {enum} {{\n    None,\n")
+    lines.extend(f"    {variant},\n" for variant in sorted(rules.values()))
+    lines.append("}\n\n#[inline]\n")
+    lines.append(
+        f"pub fn {function}(opcode: OpCode) -> {enum} {{\n    match opcode {{\n"
+    )
+    for row in opcodes:
+        rule = rule_by_opcode.get(row["name"])
+        variant = rules[rule] if rule is not None else "None"
+        lines.append(f"        OpCode::{row['name']} => {enum}::{variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_fast_path_expansion_rule(opcodes: list[dict], data: dict) -> str:
+    return _render_opcode_rule_table(
+        opcodes,
+        data,
+        key="fast_path_expansion_rules",
+        rules=_FAST_PATH_EXPANSION_RULES,
+        enum="FastPathExpansionRule",
+        function="opcode_fast_path_expansion_rule_table",
+        doc="The fast arm the late lowering stage of TIR expands an op into (HF-821).",
+    )
 
 
 def _render_value_range_transfer_rule(opcodes: list[dict], data: dict) -> str:

@@ -30,6 +30,7 @@ fn object_new_bound_stays_lir_fast_and_uses_class_owned_layout_size() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ObjectNewBound,
             operands: vec![ValueId(0)],

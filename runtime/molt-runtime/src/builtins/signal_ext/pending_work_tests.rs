@@ -34,7 +34,9 @@ fn route_publication_adopts_pending_calls_whose_notification_saw_no_runtime() {
                 word.load(Ordering::Relaxed) & PendingWorkKind::PendingCalls as u32,
                 0
             );
-            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending();
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(
+                py,
+            );
             assert_eq!(CALLED.load(Ordering::Relaxed), 1);
         });
     });

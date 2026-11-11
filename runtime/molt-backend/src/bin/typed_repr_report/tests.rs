@@ -29,6 +29,7 @@ fn counts_immortal_words_as_boxed_transport() {
                 ops: vec![LirOp {
                     tir_op: TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstNone,
                         operands: vec![],
@@ -81,6 +82,7 @@ fn counts_lir_scalar_representations() {
             ops: vec![LirOp {
                 tir_op: TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Add,
                     operands: vec![ValueId(0), ValueId(1)],
@@ -139,6 +141,7 @@ fn counts_ref64_as_reference_not_semantic_scalar() {
             ops: vec![LirOp {
                 tir_op: TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ObjectNewBound,
                     operands: vec![ValueId(0)],
@@ -199,6 +202,7 @@ fn separates_plain_copy_from_fallback_semantic_copy() {
                 LirOp {
                     tir_op: TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Copy,
                         operands: vec![ValueId(0)],
@@ -215,6 +219,7 @@ fn separates_plain_copy_from_fallback_semantic_copy() {
                 LirOp {
                     tir_op: TirOp {
                         origin: Some(molt_ir::OpKind::UnpackSequence),
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Copy,
                         operands: vec![ValueId(1)],

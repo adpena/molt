@@ -124,34 +124,39 @@ fn asyncio_event_loop_policy_set_impl(_py: &PyToken<'_>, policy_bits: u64) -> u6
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_running_loop_get() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_running_loop_get_impl(_py) })
+pub(crate) fn molt_asyncio_running_loop_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_running_loop_get_impl(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_running_loop_set(loop_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_running_loop_set_impl(_py, loop_bits) })
+pub(crate) fn molt_asyncio_running_loop_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_running_loop_set_impl(_py, loop_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_loop_get_current() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_get_current_impl(_py) })
+pub(crate) fn molt_asyncio_event_loop_get_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_event_loop_get_current_impl(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_loop_set(loop_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_set_impl(_py, loop_bits) })
+pub(crate) fn molt_asyncio_event_loop_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_event_loop_set_impl(_py, loop_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_loop_policy_get() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_policy_get_impl(_py) })
+pub(crate) fn molt_asyncio_event_loop_policy_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_event_loop_policy_get_impl(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_loop_policy_set(policy_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_event_loop_policy_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    policy_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_event_loop_policy_set_impl(_py, policy_bits)
     })
 }
+
+include!("../../../attached_exports_generated/async_rt/scheduler/asyncio_runtime/loops.rs");

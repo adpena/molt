@@ -39,7 +39,8 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
-    fn molt_exception_clear() -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_exception_clear") ]
+    fn molt_exception_clear(context: u64) -> u64;
 }
 
 #[derive(Clone, Copy)]
@@ -51,12 +52,17 @@ struct Sample {
     numeric_hook_calls_per_op: f64,
 }
 
-fn initialize_runtime() {
+fn initialize_runtime() -> molt_runtime_core::CoreGilGuard {
     unsafe {
         molt_runtime_init();
-        molt_exception_clear();
     }
     molt_runtime::cpython_abi_hooks::register_cpython_hooks();
+    let execution = molt_runtime_core::CoreGilGuard::new();
+    let py = unsafe { execution.__token_unchecked() };
+    unsafe {
+        molt_exception_clear(py.attached_context());
+    }
+    execution
 }
 
 fn assert_no_pending_exception() {
@@ -424,14 +430,19 @@ fn scalar_origin_preserved(kind: ScalarKind) -> bool {
 // is outside measure(); conversion/formatting, the literal witness and owned
 // result retirement are all included in each operation.
 unsafe extern "C" {
-    fn molt_number_long(value: u64) -> u64;
-    fn molt_number_float(value: u64) -> u64;
-    fn molt_int_as_i64(value: u64) -> i64;
-    fn molt_float_as_f64(value: u64) -> f64;
-    fn molt_mod(format: u64, args: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_number_long") ]
+    fn molt_number_long(context: u64, value: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_number_float") ]
+    fn molt_number_float(context: u64, value: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_int_as_i64") ]
+    fn molt_int_as_i64(context: u64, value: u64) -> i64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_float_as_f64") ]
+    fn molt_float_as_f64(context: u64, value: u64) -> f64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_mod") ]
+    fn molt_mod(context: u64, format: u64, args: u64) -> u64;
 }
 
-fn numeric_conversion_case(integer: bool) -> Value {
+fn numeric_conversion_case(py: &molt_runtime_core::PyToken, integer: bool) -> Value {
     let input = if integer {
         molt_obj_model::MoltObject::from_float(1.25).bits()
     } else {
@@ -461,26 +472,26 @@ fn numeric_conversion_case(integer: bool) -> Value {
         2048,
         || unsafe {
             let result = if integer {
-                molt_number_long(input)
+                molt_number_long(py.attached_context(), input)
             } else {
-                molt_number_float(input)
+                molt_number_float(py.attached_context(), input)
             };
             let valid = if PyErr_Occurred().is_null() {
                 if integer {
-                    molt_int_as_i64(result) == 1
+                    molt_int_as_i64(py.attached_context(), result) == 1
                 } else {
-                    molt_float_as_f64(result).to_bits() == 7.0f64.to_bits()
+                    molt_float_as_f64(py.attached_context(), result).to_bits() == 7.0f64.to_bits()
                 }
             } else {
                 false
             };
-            molt_dec_ref_obj(result);
+            molt_dec_ref_obj(py.attached_context(), result);
             u64::from(black_box(valid))
         },
     )
 }
 
-fn percent_case(c_entry: bool, integer: bool) -> Value {
+fn percent_case(py: &molt_runtime_core::PyToken, c_entry: bool, integer: bool) -> Value {
     let (template, expected, argument) = if integer {
         (c"%08d", b"00000007".as_slice(), 7.0)
     } else {
@@ -523,9 +534,9 @@ fn percent_case(c_entry: bool, integer: bool) -> Value {
                 let result = OwnedPyObject::from_owned(if c_entry {
                     PyUnicode_Format(format.as_ptr(), arg.as_ptr())
                 } else {
-                    let bits = molt_mod(format_bits, arg_bits);
+                    let bits = molt_mod(py.attached_context(), format_bits, arg_bits);
                     if !PyErr_Occurred().is_null() {
-                        molt_dec_ref_obj(bits);
+                        molt_dec_ref_obj(py.attached_context(), bits);
                         return 0;
                     }
                     molt_cpython_abi::bridge::molt_capi_result_to_pyobj(bits)
@@ -565,6 +576,8 @@ fn l7_numeric_runtime_performance_attestation() {
     // Execute the allocation/failure contract in this exact admitted image
     // before collecting costs; its preparation is outside every timed loop.
     integer_byte_encoder_runs_with_allocation_denied_after_preparation();
+    let fixture_execution = initialize_runtime();
+    let py = unsafe { fixture_execution.__token_unchecked() };
     let mut cases = Vec::new();
     for digits in [25, 37, 256, 4096, 4300] {
         cases.push(decimal_case(digits));
@@ -578,11 +591,11 @@ fn l7_numeric_runtime_performance_attestation() {
         }
     }
     for integer in [true, false] {
-        cases.push(numeric_conversion_case(integer));
+        cases.push(numeric_conversion_case(py, integer));
     }
     for c_entry in [false, true] {
         for integer in [true, false] {
-            cases.push(percent_case(c_entry, integer));
+            cases.push(percent_case(py, c_entry, integer));
         }
     }
     let integer_origin = scalar_origin_preserved(ScalarKind::Integer);
@@ -635,58 +648,87 @@ fn l7_numeric_runtime_performance_attestation() {
 // These exported operations are identical in the dense control and sparse
 // candidate; no representation inspection or instrumentation enters guest code.
 unsafe extern "C" {
-    fn molt_dict_new(capacity: u64) -> u64;
-    fn molt_dict_set(dict: u64, key: u64, value: u64) -> u64;
-    fn molt_dict_get(dict: u64, key: u64, default: u64) -> u64;
-    fn molt_dict_pop(dict: u64, key: u64, default: u64, has_default: u64) -> u64;
-    fn molt_dict_items(dict: u64) -> u64;
-    fn molt_bit_xor(left: u64, right: u64) -> u64;
-    fn molt_len(value: u64) -> u64;
-    fn molt_iter(value: u64) -> u64;
-    fn molt_iter_next_unboxed(iter: u64, value_out: u64) -> u64;
-    fn molt_set_new(capacity: u64) -> u64;
-    fn molt_set_add(set: u64, key: u64) -> u64;
-    fn molt_set_discard(set: u64, key: u64) -> u64;
-    fn molt_frozenset_new(capacity: u64) -> u64;
-    fn molt_frozenset_add(set: u64, key: u64) -> u64;
-    fn molt_hash_builtin(value: u64) -> u64;
-    fn molt_eq(left: u64, right: u64) -> u64;
-    fn molt_dict_popitem(dict: u64) -> u64;
-    fn molt_set_pop(set: u64) -> u64;
-    fn molt_frozenset_difference_multi(set: u64, others: u64) -> u64;
-    fn molt_frozenset_symmetric_difference(set: u64, other: u64) -> u64;
-    fn molt_list_from_values(address: u64, len: u64) -> u64;
-    fn molt_tuple_from_values(address: u64, len: u64) -> u64;
-    fn molt_list_extend(list: u64, source: u64) -> u64;
-    fn molt_dec_ref_obj(value: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("molt_dict_new") ]
+    fn molt_dict_new(context: u64, capacity: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_dict_set") ]
+    fn molt_dict_set(context: u64, dict: u64, key: u64, value: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_dict_get") ]
+    fn molt_dict_get(context: u64, dict: u64, key: u64, default: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_dict_pop") ]
+    fn molt_dict_pop(context: u64, dict: u64, key: u64, default: u64, has_default: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_dict_items") ]
+    fn molt_dict_items(context: u64, dict: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_bit_xor") ]
+    fn molt_bit_xor(context: u64, left: u64, right: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_len") ]
+    fn molt_len(context: u64, value: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_iter") ]
+    fn molt_iter(context: u64, value: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_iter_next_unboxed") ]
+    fn molt_iter_next_unboxed(context: u64, iter: u64, value_out: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_set_new") ]
+    fn molt_set_new(context: u64, capacity: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_set_add") ]
+    fn molt_set_add(context: u64, set: u64, key: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_set_discard") ]
+    fn molt_set_discard(context: u64, set: u64, key: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_frozenset_new") ]
+    fn molt_frozenset_new(context: u64, capacity: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_frozenset_add") ]
+    fn molt_frozenset_add(context: u64, set: u64, key: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_hash_builtin") ]
+    fn molt_hash_builtin(context: u64, value: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_eq") ]
+    fn molt_eq(context: u64, left: u64, right: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_dict_popitem") ]
+    fn molt_dict_popitem(context: u64, dict: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_set_pop") ]
+    fn molt_set_pop(context: u64, set: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_frozenset_difference_multi") ]
+    fn molt_frozenset_difference_multi(context: u64, set: u64, others: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_frozenset_symmetric_difference") ]
+    fn molt_frozenset_symmetric_difference(context: u64, set: u64, other: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_list_from_values") ]
+    fn molt_list_from_values(context: u64, address: u64, len: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_tuple_from_values") ]
+    fn molt_tuple_from_values(context: u64, address: u64, len: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_list_extend") ]
+    fn molt_list_extend(context: u64, list: u64, source: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_dec_ref_obj") ]
+    fn molt_dec_ref_obj(context: u64, value: u64);
 }
 
 fn storage_int(value: usize) -> u64 {
     molt_obj_model::MoltObject::from_int(value as i64).bits()
 }
 
-unsafe fn storage_dict(count: usize) -> u64 {
+unsafe fn storage_dict(py: &molt_runtime_core::PyToken, count: usize) -> u64 {
     unsafe {
-        let dict = molt_dict_new(count as u64);
+        let dict = molt_dict_new(py.attached_context(), count as u64);
         for key in 0..count {
-            molt_dict_set(dict, storage_int(key), storage_int(key + 1));
+            molt_dict_set(
+                py.attached_context(),
+                dict,
+                storage_int(key),
+                storage_int(key + 1),
+            );
         }
         dict
     }
 }
 
-unsafe fn storage_set(count: usize, frozen: bool) -> u64 {
+unsafe fn storage_set(py: &molt_runtime_core::PyToken, count: usize, frozen: bool) -> u64 {
     unsafe {
         let set = if frozen {
-            molt_frozenset_new(count as u64)
+            molt_frozenset_new(py.attached_context(), count as u64)
         } else {
-            molt_set_new(count as u64)
+            molt_set_new(py.attached_context(), count as u64)
         };
         for key in 0..count {
             if frozen {
-                molt_frozenset_add(set, storage_int(key));
+                molt_frozenset_add(py.attached_context(), set, storage_int(key));
             } else {
-                molt_set_add(set, storage_int(key));
+                molt_set_add(py.attached_context(), set, storage_int(key));
             }
         }
         set
@@ -697,14 +739,23 @@ fn storage_measure(name: &str, input: Value, operation: impl FnMut() -> u64) -> 
     measure(name, CaseFamily::SharedHashStorage, input, 4, operation)
 }
 
-unsafe fn storage_walk(value: u64, expected_count: usize, expected_sum: usize) -> u64 {
+unsafe fn storage_walk(
+    py: &molt_runtime_core::PyToken,
+    value: u64,
+    expected_count: usize,
+    expected_sum: usize,
+) -> u64 {
     unsafe {
-        let iter = molt_iter(value);
+        let iter = molt_iter(py.attached_context(), value);
         let mut item = 0;
         let mut count = 0;
         let mut sum = 0usize;
         loop {
-            let done = molt_iter_next_unboxed(iter, (&raw mut item) as usize as u64);
+            let done = molt_iter_next_unboxed(
+                py.attached_context(),
+                iter,
+                (&raw mut item) as usize as u64,
+            );
             if molt_obj_model::MoltObject::from_bits(done).as_bool() == Some(true) {
                 break;
             }
@@ -714,9 +765,9 @@ unsafe fn storage_walk(value: u64, expected_count: usize, expected_sum: usize) -
                     .expect("integer key") as usize,
             );
             count += 1;
-            molt_dec_ref_obj(item);
+            molt_dec_ref_obj(py.attached_context(), item);
         }
-        molt_dec_ref_obj(iter);
+        molt_dec_ref_obj(py.attached_context(), iter);
         u64::from(count == expected_count && sum == expected_sum)
     }
 }
@@ -729,15 +780,16 @@ fn shared_hash_storage_performance_attestation() {
         "storage attestation is release-only"
     );
     let affinity_mask = enforce_current_thread_affinity(&required_env("MOLT_L7_AFFINITY_MASK"));
-    initialize_runtime();
+    let fixture_execution = initialize_runtime();
+    let py = unsafe { fixture_execution.__token_unchecked() };
     let mut cases = Vec::new();
     unsafe {
         for n in [0usize, 1, 4, 8] {
             for set in [false, true] {
                 cases.push(storage_measure(if set { "small_set_construct_release" } else { "small_dict_construct_release" }, json!({"n": n, "scope": "construction and release, including backing descriptors and payload"}), || {
-                    let bits = if set { storage_set(n, false) } else { storage_dict(n) };
-                    let valid = molt_len(bits) == storage_int(n);
-                    molt_dec_ref_obj(bits);
+                    let bits = if set { storage_set(py, n, false) } else { storage_dict(py, n) };
+                    let valid = molt_len(py.attached_context(), bits) == storage_int(n);
+                    molt_dec_ref_obj(py.attached_context(), bits);
                     u64::from(valid)
                 }));
             }
@@ -747,14 +799,14 @@ fn shared_hash_storage_performance_attestation() {
                 "equal_items_cancellation",
                 json!({"n": n, "scope": "construct two dictionaries, views, xor, release"}),
                 || {
-                    let left = storage_dict(n);
-                    let right = storage_dict(n);
-                    let left_view = molt_dict_items(left);
-                    let right_view = molt_dict_items(right);
-                    let result = molt_bit_xor(left_view, right_view);
-                    let valid = molt_len(result) == storage_int(0);
+                    let left = storage_dict(py, n);
+                    let right = storage_dict(py, n);
+                    let left_view = molt_dict_items(py.attached_context(), left);
+                    let right_view = molt_dict_items(py.attached_context(), right);
+                    let result = molt_bit_xor(py.attached_context(), left_view, right_view);
+                    let valid = molt_len(py.attached_context(), result) == storage_int(0);
                     for bits in [result, left_view, right_view, left, right] {
-                        molt_dec_ref_obj(bits);
+                        molt_dec_ref_obj(py.attached_context(), bits);
                     }
                     u64::from(valid)
                 },
@@ -769,159 +821,179 @@ fn shared_hash_storage_performance_attestation() {
                     json!({"n": n, "scope": "construct, pop all members, release"}),
                     || {
                         let bits = if set {
-                            storage_set(n, false)
+                            storage_set(py, n, false)
                         } else {
-                            storage_dict(n)
+                            storage_dict(py, n)
                         };
                         for _ in 0..n {
                             let value = if set {
-                                molt_set_pop(bits)
+                                molt_set_pop(py.attached_context(), bits)
                             } else {
-                                molt_dict_popitem(bits)
+                                molt_dict_popitem(py.attached_context(), bits)
                             };
-                            molt_dec_ref_obj(value);
+                            molt_dec_ref_obj(py.attached_context(), value);
                         }
-                        let valid = molt_len(bits) == storage_int(0);
-                        molt_dec_ref_obj(bits);
+                        let valid = molt_len(py.attached_context(), bits) == storage_int(0);
+                        molt_dec_ref_obj(py.attached_context(), bits);
                         u64::from(valid)
                     },
                 ));
             }
-            let snapshot_dict = storage_dict(n);
+            let snapshot_dict = storage_dict(py, n);
             cases.push(storage_measure(
                 "dictionary_items_snapshot",
                 json!({"n": n, "scope": "new list from dict items; source construction excluded"}),
                 || {
-                    let view = molt_dict_items(snapshot_dict);
-                    let list = molt_list_from_values(0, 0);
-                    molt_list_extend(list, view);
-                    let valid = molt_len(list) == storage_int(n);
+                    let view = molt_dict_items(py.attached_context(), snapshot_dict);
+                    let list = molt_list_from_values(py.attached_context(), 0, 0);
+                    molt_list_extend(py.attached_context(), list, view);
+                    let valid = molt_len(py.attached_context(), list) == storage_int(n);
                     for bits in [list, view] {
-                        molt_dec_ref_obj(bits);
+                        molt_dec_ref_obj(py.attached_context(), bits);
                     }
                     u64::from(valid)
                 },
             ));
-            molt_dec_ref_obj(snapshot_dict);
-            let frozen_source = storage_set(n * 4, true);
+            molt_dec_ref_obj(py.attached_context(), snapshot_dict);
+            let frozen_source = storage_set(py, n * 4, true);
             let remove_keys: Vec<u64> = (1..n * 4).map(storage_int).collect();
             let remove_list = molt_list_from_values(
+                py.attached_context(),
                 remove_keys.as_ptr() as usize as u64,
                 remove_keys.len() as u64,
             );
             let arg = [remove_list];
-            let others = molt_tuple_from_values(arg.as_ptr() as usize as u64, 1);
+            let others =
+                molt_tuple_from_values(py.attached_context(), arg.as_ptr() as usize as u64, 1);
             for symmetric in [false, true] {
                 let construct = || {
                     if symmetric {
-                        molt_frozenset_symmetric_difference(frozen_source, remove_list)
+                        molt_frozenset_symmetric_difference(
+                            py.attached_context(),
+                            frozen_source,
+                            remove_list,
+                        )
                     } else {
-                        molt_frozenset_difference_multi(frozen_source, others)
+                        molt_frozenset_difference_multi(
+                            py.attached_context(),
+                            frozen_source,
+                            others,
+                        )
                     }
                 };
                 cases.push(storage_measure(if symmetric { "sparse_frozen_symdiff_first_hash" } else { "sparse_frozen_generic_difference_first_hash" }, json!({"n": n, "inserted_extent": n * 4, "live": 1, "scope": "result construction, first hash, release; source operands excluded"}), || {
                     let frozen = construct();
-                    let hash = molt_hash_builtin(frozen);
-                    let valid = molt_len(frozen) == storage_int(1);
-                    for bits in [hash, frozen] { molt_dec_ref_obj(bits); }
+                    let hash = molt_hash_builtin(py.attached_context(), frozen);
+                    let valid = molt_len(py.attached_context(), frozen) == storage_int(1);
+                    for bits in [hash, frozen] { molt_dec_ref_obj(py.attached_context(), bits); }
                     u64::from(valid)
                 }));
                 let frozen = construct();
-                let expected = molt_hash_builtin(frozen);
+                let expected = molt_hash_builtin(py.attached_context(), frozen);
                 cases.push(storage_measure(if symmetric { "sparse_frozen_symdiff_cached_hash" } else { "sparse_frozen_generic_difference_cached_hash" }, json!({"n": n, "inserted_extent": n * 4, "live": 1, "scope": "cached hash only; result construction and first hash excluded"}), || {
-                    let hash = molt_hash_builtin(frozen);
-                    let valid = molt_obj_model::MoltObject::from_bits(molt_eq(hash, expected)).as_bool() == Some(true);
-                    molt_dec_ref_obj(hash);
+                    let hash = molt_hash_builtin(py.attached_context(), frozen);
+                    let valid = molt_obj_model::MoltObject::from_bits(molt_eq(py.attached_context(), hash, expected)).as_bool() == Some(true);
+                    molt_dec_ref_obj(py.attached_context(), hash);
                     u64::from(valid)
                 }));
                 for bits in [expected, frozen] {
-                    molt_dec_ref_obj(bits);
+                    molt_dec_ref_obj(py.attached_context(), bits);
                 }
             }
             for bits in [others, remove_list, frozen_source] {
-                molt_dec_ref_obj(bits);
+                molt_dec_ref_obj(py.attached_context(), bits);
             }
             cases.push(storage_measure("dict_delete_reinsert_churn", json!({"n": n, "rounds": 4, "scope": "construct, four erase/reinsert rounds, release"}), || {
-            let dict = storage_dict(n);
+            let dict = storage_dict(py, n);
                 for round in 0..4 {
                     for key in 0..n {
-                        let old = molt_dict_pop(dict, storage_int(round * n + key), 0, storage_int(0));
-                        molt_dec_ref_obj(old);
-                        molt_dict_set(dict, storage_int((round + 1) * n + key), storage_int(key + 1));
+                        let old = molt_dict_pop(py.attached_context(), dict, storage_int(round * n + key), 0, storage_int(0));
+                        molt_dec_ref_obj(py.attached_context(), old);
+                        molt_dict_set(py.attached_context(), dict, storage_int((round + 1) * n + key), storage_int(key + 1));
                     }
                 }
-                let valid = molt_len(dict) == storage_int(n);
-                molt_dec_ref_obj(dict);
+                let valid = molt_len(py.attached_context(), dict) == storage_int(n);
+                molt_dec_ref_obj(py.attached_context(), dict);
                 u64::from(valid)
             }));
             cases.push(storage_measure("set_delete_reinsert_churn", json!({"n": n, "rounds": 4, "scope": "construct, four erase/reinsert rounds, release"}), || {
-                let set = storage_set(n, false);
+                let set = storage_set(py, n, false);
                 for round in 0..4 {
                     for key in 0..n {
-                        molt_set_discard(set, storage_int(round * n + key));
-                        molt_set_add(set, storage_int((round + 1) * n + key));
+                        molt_set_discard(py.attached_context(), set, storage_int(round * n + key));
+                        molt_set_add(py.attached_context(), set, storage_int((round + 1) * n + key));
                     }
                 }
-                let valid = molt_len(set) == storage_int(n);
-                molt_dec_ref_obj(set);
+                let valid = molt_len(py.attached_context(), set) == storage_int(n);
+                molt_dec_ref_obj(py.attached_context(), set);
                 u64::from(valid)
             }));
-            let dict = storage_dict(n);
+            let dict = storage_dict(py, n);
             cases.push(storage_measure("dense_dict_lookup", json!({"n": n, "lookups_per_op": n, "scope": "lookup batch; construction excluded"}), || {
                 let mut sum = 0usize;
                 for key in 0..n {
-                    let value = molt_dict_get(dict, storage_int(key), storage_int(0));
+                    let value = molt_dict_get(py.attached_context(), dict, storage_int(key), storage_int(0));
                     sum += molt_obj_model::MoltObject::from_bits(value).as_int().expect("lookup result") as usize;
-                    molt_dec_ref_obj(value);
+                    molt_dec_ref_obj(py.attached_context(), value);
                 }
                 u64::from(sum == n * (n + 1) / 2)
             }));
-            molt_dec_ref_obj(dict);
+            molt_dec_ref_obj(py.attached_context(), dict);
             for live in [1usize, n] {
-                let dict = storage_dict(n * 4);
-                let set = storage_set(n * 4, false);
+                let dict = storage_dict(py, n * 4);
+                let set = storage_set(py, n * 4, false);
                 for key in 0..(n * 4 - live) {
-                    let value = molt_dict_pop(dict, storage_int(key), 0, storage_int(0));
-                    molt_dec_ref_obj(value);
-                    molt_set_discard(set, storage_int(key));
+                    let value = molt_dict_pop(
+                        py.attached_context(),
+                        dict,
+                        storage_int(key),
+                        0,
+                        storage_int(0),
+                    );
+                    molt_dec_ref_obj(py.attached_context(), value);
+                    molt_set_discard(py.attached_context(), set, storage_int(key));
                 }
                 let sum = (n * 4 - live + n * 4 - 1) * live / 2;
                 for (kind, bits) in [
                     ("sparse_dict_full_walk", dict),
                     ("sparse_set_full_walk", set),
                 ] {
-                    cases.push(storage_measure(kind, json!({"n": n, "inserted_extent": n * 4, "live": live, "scope": "complete iterator walk; construction and deletion excluded"}), || storage_walk(bits, live, sum)));
-                    molt_dec_ref_obj(bits);
+                    cases.push(storage_measure(kind, json!({"n": n, "inserted_extent": n * 4, "live": live, "scope": "complete iterator walk; construction and deletion excluded"}), || storage_walk(py, bits, live, sum)));
+                    molt_dec_ref_obj(py.attached_context(), bits);
                 }
             }
             cases.push(storage_measure(
                 "frozenset_construct_first_hash",
                 json!({"n": n, "scope": "construct, first hash, release"}),
                 || {
-                    let frozen = storage_set(n, true);
-                    let hash = molt_hash_builtin(frozen);
-                    let valid = molt_len(frozen) == storage_int(n);
-                    molt_dec_ref_obj(hash);
-                    molt_dec_ref_obj(frozen);
+                    let frozen = storage_set(py, n, true);
+                    let hash = molt_hash_builtin(py.attached_context(), frozen);
+                    let valid = molt_len(py.attached_context(), frozen) == storage_int(n);
+                    molt_dec_ref_obj(py.attached_context(), hash);
+                    molt_dec_ref_obj(py.attached_context(), frozen);
                     u64::from(valid)
                 },
             ));
-            let frozen = storage_set(n, true);
-            let expected = molt_hash_builtin(frozen);
+            let frozen = storage_set(py, n, true);
+            let expected = molt_hash_builtin(py.attached_context(), frozen);
             cases.push(storage_measure(
                 "frozenset_cached_hash",
                 json!({"n": n, "scope": "cached hash only; construction and first hash excluded"}),
                 || {
-                    let hash = molt_hash_builtin(frozen);
-                    let valid = molt_obj_model::MoltObject::from_bits(molt_eq(hash, expected))
-                        .as_bool()
+                    let hash = molt_hash_builtin(py.attached_context(), frozen);
+                    let valid = molt_obj_model::MoltObject::from_bits(molt_eq(
+                        py.attached_context(),
+                        hash,
+                        expected,
+                    ))
+                    .as_bool()
                         == Some(true);
-                    molt_dec_ref_obj(hash);
+                    molt_dec_ref_obj(py.attached_context(), hash);
                     u64::from(valid)
                 },
             ));
-            molt_dec_ref_obj(expected);
-            molt_dec_ref_obj(frozen);
+            molt_dec_ref_obj(py.attached_context(), expected);
+            molt_dec_ref_obj(py.attached_context(), frozen);
         }
     }
     println!(
@@ -1002,7 +1074,8 @@ fn assert_global_allocator_sensitivity() {
 
 #[test]
 fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
-    initialize_runtime();
+    let fixture_execution = initialize_runtime();
+    let py = unsafe { fixture_execution.__token_unchecked() };
     let hooks = molt_cpython_abi::hooks::hooks().expect("real numeric hooks");
     let source = [0x35u8; 33];
     let bits = unsafe { (hooks.int_from_bytes)(source.as_ptr(), source.len(), 1, 0) };
@@ -1036,17 +1109,24 @@ fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
     assert_eq!(word, [255, 255, 255, 255, 255, 255, 255, 127]);
     // The Python method writes its single final bytes allocation directly.
     unsafe extern "C" {
-        fn molt_int_to_bytes(value: u64, length: u64, byteorder: u64, signed: u64) -> u64;
+        #[link_name = molt_runtime_core::attached_symbol!("molt_int_to_bytes") ]
+        fn molt_int_to_bytes(
+            context: u64,
+            value: u64,
+            length: u64,
+            byteorder: u64,
+            signed: u64,
+        ) -> u64;
     }
     let order = unsafe { hooks.alloc_str(b"little".as_ptr(), 6) };
     let length = molt_obj_model::MoltObject::from_int(33).bits();
     let signed = molt_obj_model::MoltObject::from_bool(false).bits();
-    let warm = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    let warm = unsafe { molt_int_to_bytes(py.attached_context(), bits, length, order, signed) };
     unsafe { (hooks.dec_ref)(warm) };
     assert_no_pending_exception();
     attestation_probe::reset();
     attestation_probe::set_tracking(true);
-    let result = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    let result = unsafe { molt_int_to_bytes(py.attached_context(), bits, length, order, signed) };
     attestation_probe::set_tracking(false);
     assert_eq!(
         attestation_probe::snapshot().allocations,
@@ -1059,7 +1139,8 @@ fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
     assert_eq!(unsafe { std::slice::from_raw_parts(data, size) }, source);
     unsafe { (hooks.dec_ref)(result) };
     let denial = attestation_probe::deny_allocations();
-    let refused_result = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    let refused_result =
+        unsafe { molt_int_to_bytes(py.attached_context(), bits, length, order, signed) };
     drop(denial);
     assert!(molt_obj_model::MoltObject::from_bits(refused_result).is_none());
     assert_eq!(
@@ -1074,8 +1155,9 @@ fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
         1,
         "refusing the final allocation must raise MemoryError"
     );
-    unsafe { molt_exception_clear() };
-    let recovered = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    unsafe { molt_exception_clear(py.attached_context()) };
+    let recovered =
+        unsafe { molt_int_to_bytes(py.attached_context(), bits, length, order, signed) };
     assert_no_pending_exception();
     let recovered_data = unsafe { (hooks.bytes_data)(recovered, &raw mut size) };
     assert_eq!(size, source.len());
@@ -1155,7 +1237,9 @@ fn prepared_memory_error_transport_and_reuse_attempt_no_rust_or_platform_c_alloc
         PyMem_RawCalloc, PyMem_RawFree, PyMem_RawMalloc, PyMem_RawRealloc,
     };
 
-    initialize_runtime();
+    let fixture_execution = initialize_runtime();
+
+    let py = unsafe { fixture_execution.__token_unchecked() };
     assert_no_pending_exception();
     assert_global_allocator_sensitivity();
 

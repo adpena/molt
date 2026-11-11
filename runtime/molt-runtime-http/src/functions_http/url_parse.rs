@@ -170,7 +170,7 @@ pub(super) fn urllib_urlencode_impl(
     doseq: bool,
     safe: &str,
 ) -> Result<String, u64> {
-    let iter_bits = molt_iter(query_bits);
+    let iter_bits = molt_iter(_py, query_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -203,7 +203,7 @@ pub(super) fn urllib_urlencode_impl(
                     "not a valid non-string sequence or mapping object",
                 ));
             }
-            let item_fields = unsafe { seq_snapshot(item_ptr) };
+            let item_fields = unsafe { seq_snapshot(_py, item_ptr) };
             if item_fields.len() != 2 {
                 if item_fields.len() < 2 {
                     return Err(raise_exception::<_>(
@@ -231,7 +231,7 @@ pub(super) fn urllib_urlencode_impl(
                 if value_type == crate::bridge::type_id_list()
                     || value_type == crate::bridge::type_id_tuple()
                 {
-                    let seq = unsafe { seq_snapshot(value_ptr) };
+                    let seq = unsafe { seq_snapshot(_py, value_ptr) };
                     for value_bits in seq.iter().copied() {
                         let value_text =
                             crate::bridge::format_obj_str(_py, obj_from_bits(value_bits))
@@ -264,7 +264,7 @@ pub(super) fn urllib_error_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
         return false;
     };
-    crate::bridge::molt_set_attr_name(self_bits, name_bits, value_bits);
+    crate::bridge::molt_set_attr_name(_py, self_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }
@@ -279,7 +279,7 @@ pub(super) fn urllib_error_init_args(
         return false;
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    let _ = crate::bridge::molt_exception_init(self_bits, args_bits);
+    let _ = crate::bridge::molt_exception_init(_py, self_bits, args_bits);
     !exception_pending(_py)
 }
 

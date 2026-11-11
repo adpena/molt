@@ -13,6 +13,7 @@ fn build_slice_stays_lir_fast_and_pads_missing_bounds_with_none() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildSlice,
         operands: vec![ValueId(0), ValueId(1)],
@@ -57,6 +58,7 @@ fn ord_at_stays_lir_fast_with_boxed_result_carrier() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::OrdAt,
         operands: vec![ValueId(0), ValueId(1)],

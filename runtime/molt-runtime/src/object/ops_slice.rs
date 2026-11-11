@@ -10,9 +10,13 @@ use num_traits::{Signed, Zero};
 #[path = "ops_slice_tests.rs"]
 mod tests;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_slice_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    start_bits: u64,
+    stop_bits: u64,
+    step_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_slice_obj(_py, start_bits, stop_bits, step_bits);
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -112,9 +116,12 @@ pub(super) unsafe fn slice_indices_bigint(
     Some((start, stop, step))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_slice_indices_attached_body(
+    _py: &crate::PyToken<'_>,
+    slice_bits: u64,
+    length_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -166,9 +173,8 @@ pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_slice_hash(slice_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_slice_hash_attached_body(_py: &crate::PyToken<'_>, slice_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -187,9 +193,12 @@ pub extern "C" fn molt_slice_hash(slice_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_slice_eq_attached_body(
+    _py: &crate::PyToken<'_>,
+    slice_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         crate::object::ops_compare::builtin_families::BuiltinComparison::Slice.invoke(
             py,
             slice_bits,
@@ -199,9 +208,8 @@ pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_slice_reduce(slice_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_slice_reduce_attached_body(_py: &crate::PyToken<'_>, slice_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -214,7 +222,14 @@ pub extern "C" fn molt_slice_reduce(slice_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_slice_reduce_ex(slice_bits: u64, _protocol_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { molt_slice_reduce(slice_bits) })
+pub(crate) fn molt_slice_reduce_ex_attached_body(
+    _py: &crate::PyToken<'_>,
+    slice_bits: u64,
+    _protocol_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        molt_slice_reduce_attached_body(_py, slice_bits)
+    })
 }
+
+include!("../attached_exports_generated/object/ops_slice.rs");

@@ -8,7 +8,9 @@
 use super::field_runtime::{DcValue, dc_attr, dc_result};
 use super::initializer_spec_generated::{INIT_SPEC_FIELDS, InitSpecField};
 use super::*;
-use crate::builtins::functions::{molt_func_new_closure, molt_function_init_metadata_packed};
+use crate::builtins::functions::{
+    molt_func_new_closure_attached_body, molt_function_init_metadata_packed_attached_body,
+};
 use crate::object::class_storage::ClassReferenceSlot;
 use crate::object::layout::code_names_bits;
 use crate::object::seq_access::with_immutable_tuple_slice;
@@ -179,9 +181,13 @@ fn same_schema(py: &PyToken<'_>, left: u64, right: u64) -> bool {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_set_init_template(class: u64, schema: u64, factory: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_dataclasses_set_init_template_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    schema: u64,
+    factory: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(class) = obj_from_bits(class)
             .as_ptr()
             .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
@@ -194,7 +200,7 @@ pub extern "C" fn molt_dataclasses_set_init_template(class: u64, schema: u64, fa
         if candidate.is_null() {
             return MoltObject::none().bits();
         }
-        let candidate = DcValue::owned(MoltObject::from_ptr(candidate).bits());
+        let candidate = DcValue::owned(py, MoltObject::from_ptr(candidate).bits());
         unsafe {
             ClassReferenceSlot::DataclassInitTemplate.replace_borrowed(py, class, candidate.bits);
         }
@@ -202,19 +208,21 @@ pub extern "C" fn molt_dataclasses_set_init_template(class: u64, schema: u64, fa
     })
 }
 
-fn owned_tuple(py: &PyToken<'_>, values: &[u64]) -> Result<DcValue, ()> {
+fn owned_tuple<'guard>(py: &'guard PyToken<'guard>, values: &[u64]) -> Result<DcValue<'guard>, ()> {
     dc_result(py, MoltObject::from_ptr(alloc_tuple(py, values)).bits())
 }
 
-fn text(py: &PyToken<'_>, bytes: &[u8]) -> Result<DcValue, ()> {
+fn text<'guard>(py: &'guard PyToken<'guard>, bytes: &[u8]) -> Result<DcValue<'guard>, ()> {
     dc_result(py, MoltObject::from_ptr(alloc_string(py, bytes)).bits())
 }
 
 /// Capture the function's actual environment before field/descriptor callbacks.
 /// This only reads __dict__; it grants no writer access to arbitrary names.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_init_globals(module: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_dataclasses_init_globals_attached_body(
+    _py: &crate::PyToken<'_>,
+    module: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         dc_attr(py, module, crate::NameId::DunderDict)
             .map(DcValue::into_bits)
             .unwrap_or_else(|()| MoltObject::none().bits())
@@ -224,7 +232,7 @@ pub extern "C" fn molt_dataclasses_init_globals(module: u64) -> u64 {
 fn prepare_globals(py: &PyToken<'_>, globals: u64, builtins: u64) -> Result<(), ()> {
     let ptr = crate::builtins::frames::globals_namespace_storage_ptr(py, globals)?
         .ok_or_else(|| invalid(py, "dataclass initializer globals must be a dictionary"))?;
-    let key = DcValue::owned(crate::NameId::DunderBuiltins.owned_bits(py).ok_or(())?);
+    let key = DcValue::owned(py, crate::NameId::DunderBuiltins.owned_bits(py).ok_or(())?);
     if unsafe { dict_get_in_place(py, ptr, key.bits) }?.is_none() {
         // CPython's generated-function exec inserts precisely this one key.
         // Keep that bounded effect at function construction, without exposing
@@ -237,7 +245,11 @@ fn prepare_globals(py: &PyToken<'_>, globals: u64, builtins: u64) -> Result<(), 
     Ok(())
 }
 
-fn add_name(py: &PyToken<'_>, names: &mut Vec<DcValue>, name: u64) -> Result<usize, ()> {
+fn add_name<'guard>(
+    py: &'guard PyToken<'guard>,
+    names: &mut Vec<DcValue<'guard>>,
+    name: u64,
+) -> Result<usize, ()> {
     let Some(bytes) = (unsafe { crate::object::ops::exact_string_bytes(py, name) }) else {
         invalid(
             py,
@@ -251,15 +263,15 @@ fn add_name(py: &PyToken<'_>, names: &mut Vec<DcValue>, name: u64) -> Result<usi
         return Ok(index);
     }
     inc_ref_bits(py, name);
-    names.push(DcValue::owned(name));
+    names.push(DcValue::owned(py, name));
     Ok(names.len() - 1)
 }
 
-fn prepare_plan(
-    py: &PyToken<'_>,
+fn prepare_plan<'guard>(
+    py: &'guard PyToken<'guard>,
     spec: &[u64],
     has_post_init: bool,
-) -> Result<(InitPlan, Vec<DcValue>), ()> {
+) -> Result<(InitPlan, Vec<DcValue<'guard>>), ()> {
     let parameters = tuple_items(py, spec[InitSpecField::Parameters as usize])?;
     let captures = tuple_items(py, spec[InitSpecField::Captures as usize])?;
     let mut names = Vec::new();
@@ -308,7 +320,7 @@ fn prepare_plan(
     }
     let post_rows = tuple_items(py, spec[InitSpecField::PostInitInputs as usize])?;
     let post_init = if has_post_init {
-        let post_name = DcValue::owned(crate::NameId::DunderPostInit.owned_bits(py).ok_or(())?);
+        let post_name = DcValue::owned(py, crate::NameId::DunderPostInit.owned_bits(py).ok_or(())?);
         let name = add_name(py, &mut names, post_name.bits)?;
         let mut inputs = Vec::new();
         for row in post_rows {
@@ -345,21 +357,21 @@ fn prepare_plan(
     ))
 }
 
-fn build_initializer(
-    py: &PyToken<'_>,
+fn build_initializer<'guard>(
+    py: &'guard PyToken<'guard>,
     class: u64,
     schema: u64,
     packed: u64,
-) -> Result<DcValue, ()> {
+) -> Result<DcValue<'guard>, ()> {
     let class_ptr = obj_from_bits(class)
         .as_ptr()
         .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
         .ok_or_else(|| invalid(py, "dataclass initializer requires a class"))?;
     if obj_from_bits(schema).is_none() && obj_from_bits(packed).is_none() {
-        let _candidate = DcValue::owned(unsafe {
+        let _candidate = DcValue::owned(py, unsafe {
             ClassReferenceSlot::DataclassInitTemplate.exchange_owned(class_ptr, 0)
         });
-        return Ok(DcValue::owned(MoltObject::none().bits()));
+        return Ok(DcValue::owned(py, MoltObject::none().bits()));
     }
     let spec = tuple_items(py, packed)?;
     if spec.len() != INIT_SPEC_FIELDS {
@@ -376,7 +388,7 @@ fn build_initializer(
         spec[InitSpecField::Globals as usize],
         spec[InitSpecField::Builtins as usize],
     )?;
-    let candidate_owner = DcValue::owned(unsafe {
+    let candidate_owner = DcValue::owned(py, unsafe {
         ClassReferenceSlot::DataclassInitTemplate.exchange_owned(class_ptr, 0)
     });
     let candidate = if candidate_owner.bits == 0 {
@@ -401,7 +413,7 @@ fn build_initializer(
             spec[InitSpecField::Positional as usize],
             parameters.len() + 1,
         )?;
-        let name = DcValue::owned(crate::NameId::DunderInit.owned_bits(py).ok_or(())?);
+        let name = DcValue::owned(py, crate::NameId::DunderInit.owned_bits(py).ok_or(())?);
         let filename = text(py, b"<string>")?;
         // The native body executes at LocationId 0. Publish its entry in the
         // code-owned table so frame observations and escaping Origin capture
@@ -425,18 +437,22 @@ fn build_initializer(
         if code.is_null() {
             return Err(());
         }
-        let code = DcValue::owned(MoltObject::from_ptr(code).bits());
+        let code = DcValue::owned(py, MoltObject::from_ptr(code).bits());
         let capture_values = tuple_items(py, spec[InitSpecField::Captures as usize])?;
         let mut cells = Vec::new();
         for value in capture_values {
-            cells.push(dc_result(py, crate::object::cells::molt_cell_new(value))?);
+            cells.push(dc_result(
+                py,
+                crate::object::cells::molt_cell_new_attached_body(py, value),
+            )?);
         }
         let cell_values: Vec<_> = cells.iter().map(|cell| cell.bits).collect();
         let closure = owned_tuple(py, &cell_values)?;
         let target = fn_addr!(molt_dataclasses_init_trampoline);
         let function = dc_result(
             py,
-            molt_func_new_closure(
+            molt_func_new_closure_attached_body(
+                py,
                 target,
                 target,
                 parameters.len() as u64,
@@ -470,7 +486,13 @@ fn build_initializer(
         )?;
         dc_result(
             py,
-            molt_function_init_metadata_packed(function.bits, metadata.bits, code.bits, none),
+            molt_function_init_metadata_packed_attached_body(
+                py,
+                function.bits,
+                metadata.bits,
+                code.bits,
+                none,
+            ),
         )?;
         plan.frame = crate::builtins::frames::FramePlan::for_code(py, code.bits)
             .map_err(|message| invalid(py, message))?;
@@ -521,17 +543,28 @@ fn build_initializer(
     Ok(function)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_init(class: u64, schema: u64, spec: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_dataclasses_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    schema: u64,
+    spec: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         build_initializer(py, class, schema, spec)
             .map(DcValue::into_bits)
             .unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
 
-fn cell_value(py: &PyToken<'_>, cells: &[u64], index: usize) -> Result<DcValue, ()> {
-    dc_result(py, crate::object::cells::molt_cell_get(cells[index]))
+fn cell_value<'guard>(
+    py: &'guard PyToken<'guard>,
+    cells: &[u64],
+    index: usize,
+) -> Result<DcValue<'guard>, ()> {
+    dc_result(
+        py,
+        crate::object::cells::molt_cell_get_attached_body(py, cells[index]),
+    )
 }
 
 unsafe fn execute_initializer(
@@ -550,7 +583,7 @@ unsafe fn execute_initializer(
     let target = fn_key!(molt_dataclasses_init_trampoline);
     let context = crate::builtins::frames::acquire_pending_invocation_context(py, target)
         .ok_or_else(|| invalid(py, "dataclass initializer has no function invocation"))?;
-    let [globals, builtins, code] = context.map(DcValue::owned);
+    let [globals, builtins, code] = context.map(|__ptr| DcValue::owned(py, __ptr));
     let code_ptr = obj_from_bits(code.bits).as_ptr().unwrap();
     let plan = unsafe { (*code_plan_word(code_ptr)).as_ref() }
         .ok_or_else(|| invalid(py, "dataclass initializer code has no body plan"))?;
@@ -577,7 +610,7 @@ unsafe fn execute_initializer(
     let frame =
         crate::builtins::frames::PythonFunctionFrame::adopt(py, context, plan.frame, args, cells)?;
     pending.into_entry();
-    let argument = |slot| frame.argument(slot).map(DcValue::owned);
+    let argument = |slot| frame.argument(slot).map(|__ptr| DcValue::owned(py, __ptr));
     let read = |source| match source {
         InitInput::Argument(slot) => argument(slot),
         InitInput::Capture(cell) => cell_value(py, cells, cell),
@@ -632,7 +665,7 @@ unsafe fn execute_initializer(
             let receiver = argument(0)?;
             dc_result(
                 py,
-                molt_set_attr_name(receiver.bits, names[store.name], value.bits),
+                molt_set_attr_name_attached_body(py, receiver.bits, names[store.name], value.bits),
             )?;
         }
     }
@@ -640,7 +673,11 @@ unsafe fn execute_initializer(
         let receiver = argument(0)?;
         let method = dc_result(
             py,
-            crate::builtins::attributes::molt_get_attr_name(receiver.bits, names[*method]),
+            crate::builtins::attributes::molt_get_attr_name_attached_body(
+                py,
+                receiver.bits,
+                names[*method],
+            ),
         )?;
         let mut values = Vec::new();
         for input in inputs {
@@ -669,32 +706,41 @@ unsafe fn execute_initializer(
                         );
                         return Err(());
                     };
-                    DcValue::owned(value)
+                    DcValue::owned(py, value)
                 }
             });
         }
-        let builder = crate::molt_callargs_new(values.len() as u64, 0);
+        let builder = crate::molt_callargs_new_attached_body(py, values.len() as u64, 0);
         if exception_pending(py) {
             return Err(());
         }
         for value in &values {
             unsafe {
-                crate::molt_callargs_push_pos(builder, value.bits);
+                crate::molt_callargs_push_pos_attached_body(py, builder, value.bits);
             }
             if exception_pending(py) {
                 dec_ref_bits(py, builder);
                 return Err(());
             }
         }
-        dc_result(py, crate::molt_call_bind(method.bits, builder))?;
+        dc_result(
+            py,
+            crate::molt_call_bind_attached_body(py, method.bits, builder),
+        )?;
     }
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_init_trampoline(closure: u64, argv: u64, argc: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_dataclasses_init_trampoline_attached_body(
+    _py: &crate::PyToken<'_>,
+    closure: u64,
+    argv: u64,
+    argc: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = unsafe { execute_initializer(py, closure, argv, argc) };
         MoltObject::none().bits()
     })
 }
+
+include!("../../../attached_exports_generated/builtins/types/dataclasses/initializer.rs");

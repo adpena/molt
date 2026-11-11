@@ -96,7 +96,7 @@ pub(crate) struct OwnedIterator<'a, 'py> {
 
 impl<'a, 'py> OwnedIterator<'a, 'py> {
     pub(crate) fn new(py: &'a PyToken<'py>, iterable: u64) -> Option<Self> {
-        let bits = molt_iter(iterable);
+        let bits = molt_iter_attached_body(py, iterable);
         if exception_pending(py) {
             dec_ref_bits(py, bits);
             return None;
@@ -127,7 +127,8 @@ impl<'a, 'py> OwnedIterator<'a, 'py> {
 
 /// Resolve the observable hint after __iter__, before the first __next__.
 pub(crate) fn length_hint(py: &PyToken<'_>, iterable: u64) -> Option<usize> {
-    let bits = crate::builtins::operator::molt_operator_length_hint(
+    let bits = crate::builtins::operator::molt_operator_length_hint_attached_body(
+        py,
         iterable,
         MoltObject::from_int(8).bits(),
     );
@@ -232,7 +233,7 @@ pub(crate) fn materialize_sequence<'a, 'py>(
         });
     }
     let Some(first) = OwnedIterator::new(py, iterable) else {
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(py);
         let type_error = crate::builtins::exceptions::exception_matches_kind(
             py,
             error,
@@ -276,7 +277,7 @@ pub(crate) fn finish_iteration_error(
     exhaustion: IterationExhaustion,
     frame: crate::builtins::exceptions::ExceptionStackScope<'_, '_>,
 ) -> Result<SpecialIterationStep, ()> {
-    let exception = molt_exception_last_pending();
+    let exception = molt_exception_last_pending_attached_body(py);
     let stop = crate::builtins::exceptions::exception_matches_kind(
         py,
         exception,
@@ -295,13 +296,13 @@ pub(crate) fn finish_iteration_error(
         } else {
             MoltObject::none().bits()
         };
-        molt_exception_clear();
+        molt_exception_clear_attached_body(py);
         drop(frame);
         dec_ref_bits(py, exception);
         return Ok(SpecialIterationStep::Exhausted(payload));
     }
     drop(frame);
-    let _ = molt_exception_set_last(exception);
+    let _ = molt_exception_set_last_attached_body(py, exception);
     dec_ref_bits(py, exception);
     Err(())
 }

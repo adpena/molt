@@ -5,6 +5,7 @@ from molt.compilation_target import admit_target
 from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
 
 from molt.native_target import resolve_native_target_spec
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 
 import json
 import os
@@ -360,7 +361,7 @@ def test_apple_ld_stage_publishes_under_the_binary_name(
     source = tmp_path / "main.c"
     source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     obj = tmp_path / "main.o"
-    cold_timeout = 60  # Cold image execution shares its compile/link budget.
+    cold_timeout = 60  # Installed compiler/linker work has its own bound.
     run_cli_test_process(
         [clang, "-arch", arch, "-c", str(source), "-o", str(obj)],
         env=environment,
@@ -437,7 +438,9 @@ def test_apple_ld_stage_publishes_under_the_binary_name(
             timeout=30,
         )
     if platform.machine() == arch:
-        run_cli_test_process([str(output)], check=True, timeout=cold_timeout)
+        run_cli_test_process(
+            [str(output)], check=True, timeout=FRESH_EXECUTABLE_TIMEOUT_S
+        )
 
 
 @pytest.mark.skipif(
@@ -574,7 +577,9 @@ def test_apple_ld_strips_at_link_and_publishes_a_valid_signature(
         ["codesign", "--verify", "--strict", str(output)], check=True, timeout=30
     )
     if platform.machine() == arch:
-        run_cli_test_process([str(output)], check=True, timeout=cold_timeout)
+        run_cli_test_process(
+            [str(output)], check=True, timeout=FRESH_EXECUTABLE_TIMEOUT_S
+        )
 
 
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
@@ -663,7 +668,7 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
     }
     # Clang's JoinedOrSeparate -isysroot grammar keeps '=' in the operand;
     # it is not an equals alias. Use actual header lookup as the oracle.
-    cold_timeout = 60  # Cold image execution shares its compile/link budget.
+    cold_timeout = 60  # Installed compiler/linker work has its own bound.
     rejected = run_cli_test_process(
         [
             command[0],
@@ -698,7 +703,7 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
         text=True,
         timeout=cold_timeout,
     )
-    run_cli_test_process([str(binary)], check=True, timeout=cold_timeout)
+    run_cli_test_process([str(binary)], check=True, timeout=FRESH_EXECUTABLE_TIMEOUT_S)
 
 
 @pytest.mark.parametrize("selector", ["argument", "cflags"])

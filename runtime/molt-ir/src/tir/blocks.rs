@@ -370,6 +370,7 @@ mod tests {
             ],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![ValueId(0), ValueId(1)],

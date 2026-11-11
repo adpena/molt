@@ -24,6 +24,7 @@ fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
                 origin: Some(kind),
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::LoadAttr,
                 operands: vec![ValueId(0)],
@@ -143,6 +144,7 @@ fn generic_literal_name_writes_carry_source_site_id() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::StoreAttr,
             operands: vec![ValueId(0), ValueId(1)],

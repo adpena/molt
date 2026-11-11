@@ -14,7 +14,8 @@ use molt_obj_model::{ExceptionTypedField, MoltObject};
 
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::exceptions::{
-    exception_matches_kind, exception_typed_fields_replace_internal, molt_exception_last_pending,
+    exception_matches_kind, exception_typed_fields_replace_internal,
+    molt_exception_last_pending_attached_body,
 };
 use crate::{
     ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
@@ -28,9 +29,10 @@ use crate::{
     class_mro_pinned, class_mro_view, class_name_bits, clear_exception, dec_ref_bits,
     dict_get_in_place, dict_set_in_place, exception_last_bits_noinc, exception_pending,
     inc_ref_bits, init_atomic_bits, is_builtin_class_bits, maybe_ptr_from_bits, module_dict_bits,
-    molt_awaitable_await, molt_bound_method_new, molt_function_get_code, molt_function_get_globals,
-    obj_from_bits, object_class_bits, object_type_id, profile_hit_unchecked, raise_exception,
-    runtime_state, string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
+    molt_awaitable_await, molt_bound_method_new_attached_body, molt_function_get_code,
+    molt_function_get_globals, obj_from_bits, object_class_bits, object_type_id,
+    profile_hit_unchecked, raise_exception, runtime_state, string_bytes, string_len,
+    string_obj_to_owned, type_name, type_of_bits,
 };
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
@@ -292,7 +294,7 @@ impl FieldOffsetIC {
 }
 
 thread_local! {
-    static ATTR_NAME_TLS: RefCell<AttrNameCache> = const { RefCell::new(AttrNameCache::new()) };
+    static ATTR_NAME_TLS: std::mem::ManuallyDrop<RefCell<AttrNameCache>> = const { std::mem::ManuallyDrop::new(RefCell::new(AttrNameCache::new())) };
     static FIELD_OFFSET_IC_TLS: RefCell<FieldOffsetIC> = const { RefCell::new(FieldOffsetIC::new()) };
 }
 
@@ -522,7 +524,7 @@ pub(crate) fn clear_attribute_error_if_pending(_py: &PyToken<'_>) -> bool {
     if !exception_pending(_py) {
         return false;
     }
-    let exc_bits = molt_exception_last_pending();
+    let exc_bits = molt_exception_last_pending_attached_body(_py);
     let is_attr = exception_is_attribute_error(_py, exc_bits);
     if is_attr {
         clear_exception(_py);
@@ -604,7 +606,7 @@ unsafe fn module_attr_lookup_impl(
                 MoltObject::from_ptr(ptr).bits()
             };
             let mut result_owner =
-                crate::PtrDropGuard::new(obj_from_bits(result).as_ptr().unwrap());
+                crate::PtrDropGuard::new(py, obj_from_bits(result).as_ptr().unwrap());
             let complete_name = crate::NameId::DunderMoltModuleComplete
                 .owned_bits(py)
                 .ok_or(())?;
@@ -1584,12 +1586,13 @@ pub(crate) fn lookup_attribute(py: &PyToken<'_>, object: u64, name: u64) -> Attr
 }
 
 /// Actual callable identity governs both materialized and immediate binding.
-unsafe fn function_descriptor_receiver(
-    py: &PyToken<'_>,
+unsafe fn function_descriptor_receiver<'guard>(
+    py: &'guard PyToken<'guard>,
     function_ptr: *mut u8,
     owner: Option<u64>,
     instance: Option<u64>,
-) -> Result<Option<crate::builtins::functions::native_callable::NativeDescriptorReceiver>, ()> {
+) -> Result<Option<crate::builtins::functions::native_callable::NativeDescriptorReceiver<'guard>>, ()>
+{
     unsafe {
         if let Some(kind) =
             crate::builtins::functions::native_callable::NativeCallableKind::from_class(
@@ -1727,7 +1730,7 @@ unsafe fn bind_descriptor(
         let result = (|| match object_type_id(pointer) {
             TYPE_ID_FUNCTION => match function_descriptor_receiver(py, pointer, owner, instance) {
                 Ok(Some(receiver)) => {
-                    let bound = molt_bound_method_new(value, receiver.bits());
+                    let bound = molt_bound_method_new_attached_body(py, value, receiver.bits());
                     if obj_from_bits(bound).is_none() {
                         Err(())
                     } else {
@@ -2207,28 +2210,6 @@ pub(crate) fn awaitable_await_func_bits(_py: &PyToken<'_>) -> u64 {
 
 pub(crate) type SlotsInfo = crate::object::class_storage::ClassSlotPolicy;
 
-/// Canonical admission policy for the two layout-owned instance attributes.
-/// This must run before MRO descriptor binding: builtin roots may publish
-/// class-level descriptors named `__dict__`/`__weakref__`, but those do not
-/// create storage on exact slots-only instances.
-pub(crate) unsafe fn class_instance_layout_attr_allowed(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    attr_bits: u64,
-) -> Option<bool> {
-    unsafe {
-        let dict_name_bits = crate::NameId::DunderDict.bits(_py);
-        if crate::object::ops_compare::string_storage_equal(attr_bits, dict_name_bits) {
-            return Some(class_slots_info(_py, class_ptr).is_some_and(|info| info.allows_dict));
-        }
-        let weakref_name_bits = crate::NameId::DunderWeakref.bits(_py);
-        if crate::object::ops_compare::string_storage_equal(attr_bits, weakref_name_bits) {
-            return Some(class_slots_info(_py, class_ptr).is_some_and(|info| info.allows_weakref));
-        }
-        None
-    }
-}
-
 /// Hot queries project the admission record directly. Only unpublished class
 /// construction can lack this record; mutable namespaces and MRO scans never
 /// reclassify a published class's dictionary or weakref capabilities.
@@ -2260,7 +2241,7 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
         let admission =
             crate::object::class_layout::prepare_slot_admission(py, bases, native).ok()?;
         inc_ref_bits(py, MoltObject::from_ptr(dict_ptr).bits());
-        let _namespace_owner = crate::PtrDropGuard::new(dict_ptr);
+        let _namespace_owner = crate::PtrDropGuard::new(py, dict_ptr);
         let class_name = string_obj_to_owned(obj_from_bits(class_name)).unwrap_or_default();
         let private_prefix = class_name.trim_start_matches('_').as_bytes();
         let name = crate::NameId::DunderSlots.bits(py);
@@ -2279,7 +2260,7 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
         }
         let _slots_owner = slots
             .and_then(|slots| obj_from_bits(slots).as_ptr())
-            .map(crate::PtrDropGuard::new);
+            .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         let names = if let Some(slots) = slots {
             let names = if obj_from_bits(slots)
                 .as_ptr()
@@ -2305,7 +2286,11 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
             .into_iter()
             .flatten()
             .copied()
-            .filter_map(|name| obj_from_bits(name).as_ptr().map(crate::PtrDropGuard::new))
+            .filter_map(|name| {
+                obj_from_bits(name)
+                    .as_ptr()
+                    .map(|__ptr| crate::PtrDropGuard::new(py, __ptr))
+            })
             .collect();
         let policy = admission.validate(py, names.as_deref()).ok()?;
         let mut exact_names = Vec::new();
@@ -2349,7 +2334,7 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
                 if exact.is_null() {
                     return None;
                 }
-                exact_owners.push(crate::PtrDropGuard::new(exact));
+                exact_owners.push(crate::PtrDropGuard::new(py, exact));
                 exact_names.push(MoltObject::from_ptr(exact).bits());
             }
         }
@@ -2358,7 +2343,7 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
             if tuple.is_null() {
                 return None;
             }
-            exact_owners.push(crate::PtrDropGuard::new(tuple));
+            exact_owners.push(crate::PtrDropGuard::new(py, tuple));
             MoltObject::from_ptr(tuple).bits()
         } else {
             MoltObject::none().bits()
@@ -2586,19 +2571,6 @@ unsafe fn object_attr_lookup_inner(
                     }
                 }
             }
-            let weakref_name_bits = crate::NameId::DunderWeakref.bits(_py);
-            if !obj_ptr.is_null()
-                && crate::object::ops_compare::string_storage_equal(attr_bits, weakref_name_bits)
-            {
-                if let Some(class_ptr) = class_ptr_opt
-                    && class_instance_layout_attr_allowed(_py, class_ptr, attr_bits) == Some(false)
-                {
-                    return Ok(None);
-                }
-                return Ok(Some(crate::object::weakref::weakref_head_for_target(
-                    _py, obj_bits,
-                )));
-            }
             let instance = if let Some(dictionary) = dictionary {
                 crate::object::accessors::attribute_dictionary_lookup(
                     _py, dictionary, attr_bits, suppress,
@@ -2643,7 +2615,7 @@ unsafe fn object_attr_lookup_inner(
                 if func_bits == 0 {
                     return Err(());
                 }
-                let bound = molt_bound_method_new(func_bits, obj_bits);
+                let bound = molt_bound_method_new_attached_body(_py, func_bits, obj_bits);
                 return if obj_from_bits(bound).is_none() {
                     Err(())
                 } else {

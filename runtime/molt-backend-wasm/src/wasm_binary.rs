@@ -1,5 +1,6 @@
 mod code_remap;
 mod emit;
+mod execution;
 mod import_strip;
 mod leb;
 mod reloc;
@@ -10,6 +11,7 @@ pub(crate) use emit::{
     const_expr_i32_const_padded, emit_call, emit_call_indirect, emit_i32_const, emit_return_call,
     encode_u32_leb128_padded,
 };
+pub(crate) use execution::{Function, WasmExecutionCallAbis};
 pub(crate) use import_strip::strip_unused_imports;
 pub(crate) use reloc::add_reloc_sections;
 pub(crate) use validation::validate_wasm_sections;

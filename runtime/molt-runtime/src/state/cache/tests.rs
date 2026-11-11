@@ -22,7 +22,7 @@ fn bridge_name_failure_is_distinct_from_an_unsupported_name() {
             assert_eq!(super::intern_bridge_protocol_name(py, key), Err(()));
         }
         assert_eq!(crate::exception_last_bits_noinc(py), original);
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(py);
     });
 }
 

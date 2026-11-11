@@ -44,6 +44,8 @@ def test_digest_points_at_the_authorities(tmp_path, monkeypatch, capsys):
     assert out.startswith("== molt session start ==\n")
     assert "AGENTS.md" in out and "tools/agent_coordination.py context" in out
     assert "docs/agent/V1_HANDOFF_FINDINGS.md" in out
+    # No anchor document here: the pointer still prints, without a summary.
+    assert f"PERF: read {sd.PERF_ANCHOR.as_posix()} (stage status)" in out
     assert "PROOF QUEUE: status undeterminable." in out
     assert (
         f"WORKTREES: {dh.MAX_LIVE_WORKTREES + 1} live "
@@ -55,6 +57,30 @@ def test_digest_points_at_the_authorities(tmp_path, monkeypatch, capsys):
     assert "GOAL" not in out and "witness" not in out and "CLAIMS" not in out
     # tmp_path is no Git checkout: the queue section degrades, the rest stands.
     assert "(landing queue unavailable: " in out
+
+
+def test_digest_reads_the_perf_anchor_summary_from_the_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    anchor = tmp_path / sd.PERF_ANCHOR
+    anchor.parent.mkdir(parents=True)
+    anchor.write_text(
+        "# Call anatomy\n\n## Stage status\n\nSummary: 0.26x CPython; stage 1 partial.\n",
+        encoding="utf-8",
+    )
+    out = io.StringIO()
+    sd._section_perf(out, tmp_path)
+    assert out.getvalue() == (
+        f"PERF: read {sd.PERF_ANCHOR.as_posix()} (stage status) before any "
+        "performance analysis, ordering or speed claim; "
+        "0.26x CPython; stage 1 partial.\n"
+    )
+
+
+def test_the_repository_perf_anchor_carries_a_summary_line() -> None:
+    # The digest projects this line; losing it silently drops the pointer's status.
+    text = (ROOT / sd.PERF_ANCHOR).read_text(encoding="utf-8")
+    assert any(line.startswith(sd.PERF_SUMMARY_PREFIX) for line in text.splitlines())
 
 
 def test_digest_reports_the_landing_queue(tmp_path, monkeypatch, capsys):

@@ -48,6 +48,7 @@ from .render_rust_analysis import (
     _render_value_range_const_fold_rule,
     _render_value_range_container_length_rule,
     _render_value_range_transfer_rule,
+    _render_fast_path_expansion_rule,
     _render_vectorize_opcode_facts,
 )
 from .render_rust_common import (
@@ -334,6 +335,8 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
     out.append(_render_value_range_transfer_rule(opcodes, data))
     out.append("\n")
+    out.append(_render_fast_path_expansion_rule(opcodes, data))
+    out.append("\n")
     out.append(_render_value_range_const_fold_rule(opcodes, data))
     out.append("\n")
     out.append(_render_value_range_cond_narrow_rule(opcodes, data))
@@ -611,23 +614,6 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, i64_checked_overflow_triples))
-    out.append("    }\n}\n\n")
-
-    boxed_runtime_inplace_dispatch = list(
-        data.get("boxed_runtime_inplace_dispatch_opcodes", [])
-    )
-    out.append(
-        "/// Whether a first-class opcode's boxed arithmetic runtime fallback must\n"
-        "/// dispatch through `molt_inplace_*`, trying `__i<op>__` before the binary\n"
-        "/// / reflected dunder chain. Preserved-Copy `inplace_*` spellings are\n"
-        "/// wire facts carried by typed `origin`; this table owns OpCode facts.\n"
-        "/// EXHAUSTIVE over OpCode so augmented-assignment dunder routing cannot\n"
-        "/// drift behind newly added first-class in-place opcodes.\n"
-        "#[inline]\n"
-        "pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, boxed_runtime_inplace_dispatch))
     out.append("    }\n}\n\n")
 
     i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))

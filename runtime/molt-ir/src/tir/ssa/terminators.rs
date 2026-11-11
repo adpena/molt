@@ -177,6 +177,7 @@ impl<'a> SsaContext<'a> {
                     let cond = self.fresh_value_typed();
                     block_ops.push(TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ExceptionPending,
                         operands: vec![],

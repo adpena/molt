@@ -1,7 +1,8 @@
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use molt_codegen_abi::{QNAN, QNAN_TAG_MASK_I64, TAG_BOOL, TAG_INT};
 use std::collections::BTreeMap;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 /// Which NaN-box tags an integer scalar fast path can correctly consume on its
 /// raw (unboxed) lane. This is dictated by what the fast body *does* with the

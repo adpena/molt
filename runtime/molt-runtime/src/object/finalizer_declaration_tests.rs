@@ -14,8 +14,16 @@ static MUTATING_FINALIZER_RAW: AtomicU64 = AtomicU64::new(0);
 static MUTATING_FINALIZER_REPLACEMENT: AtomicU64 = AtomicU64::new(0);
 static MUTATING_FINALIZER_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn inspect_namespace_commit(_weak: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn inspect_namespace_commit(__context: u64, _weak: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let instance = REENTRANT_INSTANCE.swap(0, Ordering::SeqCst);
         let ptr = obj_from_bits(instance).as_ptr().unwrap();
         REENTRANT_ELIGIBLE.store(
@@ -24,15 +32,29 @@ extern "C" fn inspect_namespace_commit(_weak: u64) -> u64 {
         );
         dec_ref_bits(py, instance);
         MoltObject::none().bits()
-    })
+    }
 }
 
-extern "C" fn record_base_finalizer(_self_bits: u64) -> u64 {
+extern "C" fn record_base_finalizer(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     BASE_FINALIZERS.fetch_add(1, Ordering::SeqCst);
     MoltObject::none().bits()
 }
 
-extern "C" fn record_own_finalizer(_self_bits: u64) -> u64 {
+extern "C" fn record_own_finalizer(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     OWN_FINALIZERS.fetch_add(1, Ordering::SeqCst);
     MoltObject::none().bits()
 }
@@ -69,8 +91,16 @@ fn panic_after_bound_ownership(
     panic!("injected finalizer panic after bound ownership");
 }
 
-extern "C" fn mutate_own_finalizer_and_raise(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn mutate_own_finalizer_and_raise(__context: u64, self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         MUTATING_FINALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
         let raw_bits = MUTATING_FINALIZER_RAW.load(Ordering::SeqCst);
         assert_ne!(raw_bits, 0);
@@ -86,20 +116,20 @@ extern "C" fn mutate_own_finalizer_and_raise(self_bits: u64) -> u64 {
         let del_bits = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let replacement = MUTATING_FINALIZER_REPLACEMENT.load(Ordering::SeqCst);
         if replacement == 0 {
-            crate::molt_del_attr_name(class_bits, del_bits);
+            crate::molt_del_attr_name_attached_body(py, class_bits, del_bits);
         } else {
-            crate::molt_set_attr_name(class_bits, del_bits, replacement);
+            crate::molt_set_attr_name_attached_body(py, class_bits, del_bits, replacement);
         }
         dec_ref_bits(py, del_bits);
         assert!(!crate::exception_pending(py));
         crate::raise_exception::<u64>(py, BuiltinExc::RuntimeError, "mutating finalizer failure")
-    })
+    }
 }
 
 fn child_class(py: &PyToken<'_>, name: &[u8], base: u64) -> u64 {
     let name_bits = crate::dynamic_attr_name_bits(py, name).unwrap();
-    let class = crate::molt_class_new(name_bits);
-    crate::molt_class_set_base(class, base);
+    let class = crate::molt_class_new_attached_body(py, name_bits);
+    crate::molt_class_set_base_attached_body(py, class, base);
     let ptr = obj_from_bits(class).as_ptr().unwrap();
     unsafe { class_finish_definition(py, ptr) }.expect("seal class");
     dec_ref_bits(py, name_bits);
@@ -120,12 +150,12 @@ fn finalizer(py: &PyToken<'_>, own: bool) -> u64 {
     let (name, target) = if own {
         (
             "own_declaration_finalizer",
-            record_own_finalizer as extern "C" fn(u64) -> u64,
+            record_own_finalizer as extern "C" fn(u64, u64) -> u64,
         )
     } else {
         (
             "base_declaration_finalizer",
-            record_base_finalizer as extern "C" fn(u64) -> u64,
+            record_base_finalizer as extern "C" fn(u64, u64) -> u64,
         )
     };
     let ptr = alloc_runtime_function_obj(py, runtime_fn_addr(name, target as *const ()), 1);
@@ -148,7 +178,7 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
         let preexisting = instance(py, leaf);
         assert!(!unsafe { object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap()) });
 
-        crate::molt_set_attr_name(base, del, base_del);
+        crate::molt_set_attr_name_attached_body(py, base, del, base_del);
         assert!(unsafe { class_header_declares_finalizer(obj_from_bits(base).as_ptr().unwrap()) });
         for descendant in [child, leaf] {
             assert!(!unsafe {
@@ -160,21 +190,21 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
 
         let removed = instance(py, leaf);
-        crate::molt_del_attr_name(base, del);
+        crate::molt_del_attr_name_attached_body(py, base, del);
         assert!(!unsafe { object_has_finalizer(py, obj_from_bits(removed).as_ptr().unwrap()) });
         dec_ref_bits(py, removed);
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
 
-        crate::molt_set_attr_name(base, del, base_del);
-        crate::molt_set_attr_name(child, del, own_del);
+        crate::molt_set_attr_name_attached_body(py, base, del, base_del);
+        crate::molt_set_attr_name_attached_body(py, child, del, own_del);
         let overridden = instance(py, leaf);
         dec_ref_bits(py, overridden);
         assert_eq!(OWN_FINALIZERS.load(Ordering::SeqCst), 1);
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
-        crate::molt_del_attr_name(child, del);
+        crate::molt_del_attr_name_attached_body(py, child, del);
         dec_ref_bits(py, instance(py, leaf));
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 2);
-        crate::molt_del_attr_name(base, del);
+        crate::molt_del_attr_name_attached_body(py, base, del);
 
         for bits in [leaf, child, base, del, base_del, own_del] {
             dec_ref_bits(py, bits);
@@ -192,15 +222,15 @@ fn cyclic_finalization_uses_late_inherited_declarations() {
         let child = child_class(py, b"CycleFinalizerChild", base);
         let value = instance(py, child);
         let peer = crate::dynamic_attr_name_bits(py, b"peer").unwrap();
-        crate::molt_set_attr_name(value, peer, value);
+        crate::molt_set_attr_name_attached_body(py, value, peer, value);
         let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
-        crate::molt_set_attr_name(base, del, callback);
+        crate::molt_set_attr_name_attached_body(py, base, del, callback);
         assert!(!crate::exception_pending(py));
         dec_ref_bits(py, value);
-        crate::molt_gc_collect(MoltObject::from_int(2).bits());
+        crate::object::ops_sys::molt_gc_collect_attached_body(py, MoltObject::from_int(2).bits());
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
-        crate::molt_del_attr_name(base, del);
+        crate::molt_del_attr_name_attached_body(py, base, del);
         for bits in [child, base, peer, del, callback] {
             dec_ref_bits(py, bits);
         }
@@ -223,7 +253,7 @@ fn displaced_namespace_values_release_after_finalizer_metadata_commit() {
             let child = child_class(py, b"ReentrantNamespaceChild", base);
             let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
             let old = finalizer(py, true);
-            crate::molt_set_attr_name(base, del, old);
+            crate::molt_set_attr_name_attached_body(py, base, del, old);
             let callback = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr(
@@ -233,17 +263,20 @@ fn displaced_namespace_values_release_after_finalizer_metadata_commit() {
                 1,
             ))
             .bits();
-            let weak_type = crate::molt_weakref_reference_type();
-            let weak = crate::molt_weakref_new(weak_type, old, callback);
+            let weak_type =
+                crate::builtins::weakref_type::molt_weakref_reference_type_attached_body(py);
+            let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                py, weak_type, old, callback,
+            );
             dec_ref_bits(py, weak_type);
             dec_ref_bits(py, old);
             REENTRANT_INSTANCE.store(instance(py, child), Ordering::SeqCst);
             REENTRANT_ELIGIBLE.store(2, Ordering::SeqCst);
             let replacement = finalizer(py, false);
             if remove {
-                crate::molt_del_attr_name(base, del);
+                crate::molt_del_attr_name_attached_body(py, base, del);
             } else {
-                crate::molt_set_attr_name(base, del, replacement);
+                crate::molt_set_attr_name_attached_body(py, base, del, replacement);
             }
             assert_eq!(REENTRANT_INSTANCE.load(Ordering::SeqCst), 0);
             assert_eq!(
@@ -262,7 +295,8 @@ fn displaced_namespace_values_release_after_finalizer_metadata_commit() {
 
 fn dynamic_class(py: &PyToken<'_>, name: &[u8], metaclass: u64, namespace: u64, bases: u64) -> u64 {
     let name_bits = crate::dynamic_attr_name_bits(py, name).unwrap();
-    let result = crate::molt_type_new(
+    let result = crate::molt_type_new_attached_body(
+        py,
         metaclass,
         name_bits,
         bases,
@@ -298,13 +332,13 @@ fn metaclass_finalizers_follow_late_mro_mutation_for_type_payloads() {
             TYPE_ID_TYPE
         );
         assert!(!unsafe { object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap()) });
-        crate::molt_set_attr_name(meta, del, base_del);
+        crate::molt_set_attr_name_attached_body(py, meta, del, base_del);
         assert!(unsafe { object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap()) });
         assert!(!unsafe {
             class_header_declares_finalizer(obj_from_bits(derived).as_ptr().unwrap())
         });
         dec_ref_bits(py, preexisting);
-        crate::molt_gc_collect(MoltObject::from_int(2).bits());
+        crate::object::ops_sys::molt_gc_collect_attached_body(py, MoltObject::from_int(2).bits());
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
 
         let removed = dynamic_class(
@@ -314,13 +348,13 @@ fn metaclass_finalizers_follow_late_mro_mutation_for_type_payloads() {
             namespace,
             MoltObject::none().bits(),
         );
-        crate::molt_del_attr_name(meta, del);
+        crate::molt_del_attr_name_attached_body(py, meta, del);
         dec_ref_bits(py, removed);
-        crate::molt_gc_collect(MoltObject::from_int(2).bits());
+        crate::object::ops_sys::molt_gc_collect_attached_body(py, MoltObject::from_int(2).bits());
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
 
-        crate::molt_set_attr_name(meta, del, base_del);
-        crate::molt_set_attr_name(derived, del, own_del);
+        crate::molt_set_attr_name_attached_body(py, meta, del, base_del);
+        crate::molt_set_attr_name_attached_body(py, derived, del, own_del);
         let overridden = dynamic_class(
             py,
             b"OverriddenType",
@@ -329,11 +363,11 @@ fn metaclass_finalizers_follow_late_mro_mutation_for_type_payloads() {
             MoltObject::none().bits(),
         );
         dec_ref_bits(py, overridden);
-        crate::molt_gc_collect(MoltObject::from_int(2).bits());
+        crate::object::ops_sys::molt_gc_collect_attached_body(py, MoltObject::from_int(2).bits());
         assert_eq!(OWN_FINALIZERS.load(Ordering::SeqCst), 1);
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
-        crate::molt_del_attr_name(derived, del);
-        crate::molt_del_attr_name(meta, del);
+        crate::molt_del_attr_name_attached_body(py, derived, del);
+        crate::molt_del_attr_name_attached_body(py, meta, del);
         for bits in [namespace, derived, meta, del, base_del, own_del] {
             dec_ref_bits(py, bits);
         }
@@ -353,7 +387,7 @@ fn type_construction_finalizes_only_after_preallocation_admission() {
         );
         let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
-        crate::molt_set_attr_name(meta, del, callback);
+        crate::molt_set_attr_name_attached_body(py, meta, del, callback);
         let slots = crate::dynamic_attr_name_bits(py, b"__slots__").unwrap();
         let qualname = crate::dynamic_attr_name_bits(py, b"__qualname__").unwrap();
         let bad_slots =
@@ -387,15 +421,18 @@ fn type_construction_finalizes_only_after_preallocation_admission() {
             let result = dynamic_class(py, b"RejectedType", meta, namespace, bases);
             assert!(obj_from_bits(result).is_none());
             assert!(crate::exception_pending(py));
-            crate::molt_exception_clear();
-            crate::molt_gc_collect(MoltObject::from_int(2).bits());
+            crate::molt_exception_clear_attached_body(py);
+            crate::object::ops_sys::molt_gc_collect_attached_body(
+                py,
+                MoltObject::from_int(2).bits(),
+            );
             assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), expected);
             dec_ref_bits(py, namespace);
             if bases == duplicate_bases {
                 dec_ref_bits(py, value);
             }
         }
-        crate::molt_del_attr_name(meta, del);
+        crate::molt_del_attr_name_attached_body(py, meta, del);
         for bits in [
             meta,
             del,
@@ -423,17 +460,17 @@ fn builtin_spelled_class_and_metaclass_names_do_not_suppress_finalizers() {
         for name in [b"frame".as_slice(), b"traceback".as_slice()] {
             BASE_FINALIZERS.store(0, Ordering::SeqCst);
             let ordinary = child_class(py, name, crate::builtin_classes(py).object);
-            crate::molt_set_attr_name(ordinary, del, callback);
+            crate::molt_set_attr_name_attached_body(py, ordinary, del, callback);
             let value = instance(py, ordinary);
             assert!(unsafe { object_has_finalizer(py, obj_from_bits(value).as_ptr().unwrap()) });
             dec_ref_bits(py, value);
             assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
-            crate::molt_del_attr_name(ordinary, del);
+            crate::molt_del_attr_name_attached_body(py, ordinary, del);
             dec_ref_bits(py, ordinary);
 
             BASE_FINALIZERS.store(0, Ordering::SeqCst);
             let meta = child_class(py, name, crate::builtin_classes(py).type_obj);
-            crate::molt_set_attr_name(meta, del, callback);
+            crate::molt_set_attr_name_attached_body(py, meta, del, callback);
             let class = dynamic_class(
                 py,
                 b"NamedMetaclassInstance",
@@ -444,9 +481,12 @@ fn builtin_spelled_class_and_metaclass_names_do_not_suppress_finalizers() {
             assert!(!crate::exception_pending(py));
             assert!(unsafe { object_has_finalizer(py, obj_from_bits(class).as_ptr().unwrap()) });
             dec_ref_bits(py, class);
-            crate::molt_gc_collect(MoltObject::from_int(2).bits());
+            crate::object::ops_sys::molt_gc_collect_attached_body(
+                py,
+                MoltObject::from_int(2).bits(),
+            );
             assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
-            crate::molt_del_attr_name(meta, del);
+            crate::molt_del_attr_name_attached_body(py, meta, del);
             dec_ref_bits(py, meta);
         }
         for bits in [del, callback, namespace] {
@@ -468,7 +508,7 @@ fn finalizer_raw_owner_releases_when_callback_panics_before_binding() {
         );
         let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
-        crate::molt_set_attr_name(class, del, callback);
+        crate::molt_set_attr_name_attached_body(py, class, del, callback);
         let baseline = refcount(callback);
         let value = instance(py, class);
         let value_ptr = obj_from_bits(value).as_ptr().unwrap();
@@ -492,7 +532,7 @@ fn finalizer_raw_owner_releases_when_callback_panics_before_binding() {
         dec_ref_bits(py, callback);
         assert_eq!(refcount(callback), baseline);
 
-        crate::molt_del_attr_name(class, del);
+        crate::molt_del_attr_name_attached_body(py, class, del);
         for bits in [value, callback, class, del] {
             dec_ref_bits(py, bits);
         }
@@ -513,7 +553,7 @@ fn finalizer_bound_owner_and_exception_scope_restore_on_panic() {
         );
         let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
-        crate::molt_set_attr_name(class, del, callback);
+        crate::molt_set_attr_name_attached_body(py, class, del, callback);
         let callback_baseline = refcount(callback);
         let value = instance(py, class);
         let value_ptr = obj_from_bits(value).as_ptr().unwrap();
@@ -573,7 +613,7 @@ fn finalizer_bound_owner_and_exception_scope_restore_on_panic() {
 
         crate::clear_exception(py);
         crate::builtins::exceptions::exception_stack_set_depth(py, entry_depth);
-        crate::molt_del_attr_name(class, del);
+        crate::molt_del_attr_name_attached_body(py, class, del);
         for bits in [value, callback, class, del] {
             dec_ref_bits(py, bits);
         }
@@ -609,7 +649,7 @@ fn finalizer_raw_callable_survives_self_deletion_and_replacement_through_reporti
             assert!(!raw_ptr.is_null());
             let raw = MoltObject::from_ptr(raw_ptr).bits();
             let replacement = finalizer(py, false);
-            crate::molt_set_attr_name(class, del, raw);
+            crate::molt_set_attr_name_attached_body(py, class, del, raw);
             MUTATING_FINALIZER_RAW.store(raw, Ordering::SeqCst);
             MUTATING_FINALIZER_REPLACEMENT
                 .store(if replace { replacement } else { 0 }, Ordering::SeqCst);
@@ -627,7 +667,7 @@ fn finalizer_raw_callable_survives_self_deletion_and_replacement_through_reporti
             dec_ref_bits(py, raw);
 
             if replace {
-                crate::molt_del_attr_name(class, del);
+                crate::molt_del_attr_name_attached_body(py, class, del);
             }
             for bits in [replacement, class, del] {
                 dec_ref_bits(py, bits);

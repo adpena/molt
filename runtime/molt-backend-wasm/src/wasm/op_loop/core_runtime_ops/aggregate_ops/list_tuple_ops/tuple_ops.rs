@@ -2,8 +2,9 @@ use super::super::super::super::builder_ops::{WordRangeConstructor, emit_word_ra
 use super::super::super::super::result_sink::{finish_owned_local_result, store_runtime_result};
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_tuple_op(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<'_>) {
     match op.kind {

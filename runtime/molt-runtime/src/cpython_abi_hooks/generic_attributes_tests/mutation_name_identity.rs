@@ -13,9 +13,17 @@ thread_local! {
     static HASH_FAIL: Cell<bool> = const { Cell::new(false) };
 }
 
-extern "C" fn named_set(_receiver: u64, name: u64, _value: u64) -> u64 {
+extern "C" fn named_set(__context: u64, _receiver: u64, name: u64, _value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     LAST_NAME.with(|slot| slot.set(name));
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         EXACT_NAME_BYTES.with(|slot| {
             slot.set(
                 crate::type_of_bits(py, name) == crate::builtin_classes(py).str
@@ -23,41 +31,63 @@ extern "C" fn named_set(_receiver: u64, name: u64, _value: u64) -> u64 {
                         == Some("mutation_name_identity"),
             )
         });
-    });
+    };
     NAME_CALLS.with(|slot| slot.set(slot.get() + 1));
     let failure = FAILURE.with(Cell::get);
     if failure != 0 {
-        return crate::molt_raise(failure);
+        return crate::molt_raise_attached_body(__py, failure);
     }
     MoltObject::none().bits()
 }
 
-extern "C" fn named_delete(receiver: u64, name: u64) -> u64 {
-    named_set(receiver, name, MoltObject::none().bits())
+extern "C" fn named_delete(__context: u64, receiver: u64, name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    named_set(__context, receiver, name, MoltObject::none().bits())
 }
 
-extern "C" fn name_hash(_name: u64) -> u64 {
+extern "C" fn name_hash(__context: u64, _name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     HASH_CALLS.with(|slot| slot.set(slot.get() + 1));
     if HASH_FAIL.with(Cell::get) {
-        return crate::with_gil_entry_nopanic!(py, {
+        return {
+            let py = __py;
             crate::raise_exception::<u64>(
                 py,
                 BuiltinExc::ValueError,
                 "attribute-name hash sentinel",
             )
-        });
+        };
     }
     NAME_HASH.with(Cell::get)
 }
 
-extern "C" fn name_equal(left: u64, right: u64) -> u64 {
+extern "C" fn name_equal(__context: u64, left: u64, right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_bool(left == right).bits()
 }
 
 fn new_class(py: &crate::PyToken<'_>, name: &[u8], base: u64) -> u64 {
     let name = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
-    let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
-    crate::molt_class_set_base(class.bits(), base);
+    let class = ExceptionValue::adopt(py, crate::molt_class_new_attached_body(py, name.bits()));
+    crate::molt_class_set_base_attached_body(py, class.bits(), base);
     assert!(!crate::exception_pending(py));
     class.into_bits()
 }
@@ -71,7 +101,7 @@ fn subclass_name(py: &crate::PyToken<'_>) -> (u64, u64, u64) {
     HASH_FAIL.with(|slot| slot.set(false));
     let spelling = crate::dynamic_attr_name_bits(py, b"mutation_name_identity").unwrap();
     let spelling_owner = ExceptionValue::adopt(py, spelling);
-    let ordinary_hash = crate::molt_hash_builtin(spelling);
+    let ordinary_hash = crate::molt_hash_builtin_attached_body(py, spelling);
     let alternate = MoltObject::from_int(if ordinary_hash == MoltObject::from_int(137).bits() {
         138
     } else {
@@ -124,8 +154,9 @@ fn named_mutation_preserves_original_name_for_every_override_family() {
                     crate::call::bind::call_bind_borrowed(py, class, None, &[spelling], &[], &[])
                 } else if base == classes.type_obj {
                     let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-                    let namespace = crate::molt_dict_new(0);
-                    let receiver = crate::builtins::types::molt_type_new(
+                    let namespace = crate::molt_dict_new_attached_body(py, 0);
+                    let receiver = crate::builtins::types::molt_type_new_attached_body(
+                        py,
                         class,
                         spelling,
                         bases,
@@ -142,9 +173,14 @@ fn named_mutation_preserves_original_name_for_every_override_family() {
                 let name_ptr = obj_from_bits(name).as_ptr().unwrap();
                 let before = (*crate::header_from_obj_ptr(name_ptr)).ref_count_snapshot();
                 NAME_CALLS.with(|slot| slot.set(0));
-                crate::molt_set_attr_name(receiver, name, MoltObject::from_int(19).bits());
+                crate::molt_set_attr_name_attached_body(
+                    py,
+                    receiver,
+                    name,
+                    MoltObject::from_int(19).bits(),
+                );
                 assert_eq!(LAST_NAME.with(Cell::get), name);
-                crate::molt_del_attr_name(receiver, name);
+                crate::molt_del_attr_name_attached_body(py, receiver, name);
                 assert_eq!(LAST_NAME.with(Cell::get), name);
                 assert_eq!(NAME_CALLS.with(Cell::get), 2);
                 assert_eq!(
@@ -155,14 +191,20 @@ fn named_mutation_preserves_original_name_for_every_override_family() {
                 // Both byte ABI directions create their one exact string and
                 // enter the same named override transaction.
                 let bytes = b"mutation_name_identity";
-                crate::molt_set_attr_object(
+                crate::molt_set_attr_object_attached_body(
+                    py,
                     receiver,
                     bytes.as_ptr(),
                     bytes.len() as u64,
                     MoltObject::none().bits(),
                 );
                 assert!(EXACT_NAME_BYTES.with(Cell::get));
-                crate::molt_del_attr_object(receiver, bytes.as_ptr(), bytes.len() as u64);
+                crate::builtins::attributes::molt_del_attr_object_attached_body(
+                    py,
+                    receiver,
+                    bytes.as_ptr(),
+                    bytes.len() as u64,
+                );
                 assert!(EXACT_NAME_BYTES.with(Cell::get));
                 assert_eq!(NAME_CALLS.with(Cell::get), 4);
                 assert!(!crate::exception_pending(py));
@@ -173,15 +215,21 @@ fn named_mutation_preserves_original_name_for_every_override_family() {
                 ))
                 .bits();
                 FAILURE.with(|slot| slot.set(failure));
-                let result = crate::molt_set_attr_name(receiver, name, MoltObject::none().bits());
-                let observed = crate::builtins::exceptions::molt_exception_last_pending();
+                let result = crate::molt_set_attr_name_attached_body(
+                    py,
+                    receiver,
+                    name,
+                    MoltObject::none().bits(),
+                );
+                let observed =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert_eq!(observed, failure);
                 assert_eq!(LAST_NAME.with(Cell::get), name);
                 assert_eq!(
                     (*crate::header_from_obj_ptr(name_ptr)).ref_count_snapshot(),
                     before
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 FAILURE.with(|slot| slot.set(0));
                 for value in [observed, result, failure] {
                     dec_ref_bits(py, value);
@@ -320,9 +368,9 @@ fn foreign_normal_mutation_receives_original_name_projection() {
                 .molt_value_for_pyobj(&raw mut receiver)
                 .unwrap();
             NAME_CALLS.with(|slot| slot.set(0));
-            crate::molt_set_attr_name(bits, name, MoltObject::from_int(9).bits());
+            crate::molt_set_attr_name_attached_body(py, bits, name, MoltObject::from_int(9).bits());
             assert_eq!(LAST_NAME.with(Cell::get), name);
-            crate::molt_del_attr_name(bits, name);
+            crate::molt_del_attr_name_attached_body(py, bits, name);
             assert_eq!(LAST_NAME.with(Cell::get), name);
             assert_eq!(NAME_CALLS.with(Cell::get), 2);
             assert!(!crate::exception_pending(py));
@@ -375,12 +423,18 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
             for explicit in [false, true] {
                 if explicit {
                     crate::builtins::methods::type_setattr(
+                        py.attached_context(),
                         class,
                         name,
                         MoltObject::from_int(31).bits(),
                     );
                 } else {
-                    crate::molt_set_attr_name(class, name, MoltObject::from_int(31).bits());
+                    crate::molt_set_attr_name_attached_body(
+                        py,
+                        class,
+                        name,
+                        MoltObject::from_int(31).bits(),
+                    );
                 }
                 assert!(!crate::exception_pending(py));
                 assert_name_unprojected(if explicit {
@@ -403,9 +457,9 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                 assert_ne!(key, name);
                 assert!(!GLOBAL_BRIDGE.type_has_projection(class));
                 if explicit {
-                    crate::builtins::methods::type_delattr(class, name);
+                    crate::builtins::methods::type_delattr(py.attached_context(), class, name);
                 } else {
-                    crate::molt_del_attr_name(class, name);
+                    crate::molt_del_attr_name_attached_body(py, class, name);
                 }
                 assert!(!crate::exception_pending(py));
                 assert_name_unprojected(if explicit {
@@ -445,8 +499,9 @@ fn managed_metaclass_override_precedes_immutability_and_keeps_original_name() {
             method(py, meta, b"__delattr__", named_delete as *const (), 2);
             finish_class(py, meta);
             let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-            let namespace = crate::molt_dict_new(0);
-            let class = crate::builtins::types::molt_type_new(
+            let namespace = crate::molt_dict_new_attached_body(py, 0);
+            let class = crate::builtins::types::molt_type_new_attached_body(
+                py,
                 meta,
                 spelling,
                 bases,
@@ -459,19 +514,24 @@ fn managed_metaclass_override_precedes_immutability_and_keeps_original_name() {
                 obj_from_bits(class).as_ptr().unwrap()
             ));
             NAME_CALLS.with(|calls| calls.set(0));
-            crate::molt_set_attr_name(class, name, MoltObject::none().bits());
+            crate::molt_set_attr_name_attached_body(py, class, name, MoltObject::none().bits());
             assert_eq!(LAST_NAME.with(Cell::get), name);
-            crate::molt_del_attr_name(class, name);
+            crate::molt_del_attr_name_attached_body(py, class, name);
             assert_eq!(LAST_NAME.with(Cell::get), name);
             assert_eq!(NAME_CALLS.with(Cell::get), 2);
             assert!(!crate::exception_pending(py));
             assert!(!GLOBAL_BRIDGE.type_has_projection(class));
             // Explicit default still owns immutable rejection after an override
             // elects to delegate, and cannot invoke the override a second time.
-            crate::builtins::methods::type_setattr(class, name, MoltObject::none().bits());
+            crate::builtins::methods::type_setattr(
+                py.attached_context(),
+                class,
+                name,
+                MoltObject::none().bits(),
+            );
             assert!(crate::exception_pending(py));
             assert_eq!(NAME_CALLS.with(Cell::get), 2);
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             for bits in [class, namespace, bases, meta, name, spelling, name_class] {
                 dec_ref_bits(py, bits);
             }

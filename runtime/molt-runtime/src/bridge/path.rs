@@ -19,9 +19,10 @@ pub fn require_operation(_py: &CoreGilToken, operation: &str, arg: AuditArg) -> 
         AuditArg::None => AuditArgs::None,
         AuditArg::Path(path) => AuditArgs::Path(path),
     };
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::require_named_operation::<u64>(py, operation, args)
-    })
+    }
 }
 
 #[cfg(not(feature = "stdlib_path"))]
@@ -31,15 +32,17 @@ pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<PathBuf, u64> {
 
 #[cfg(any(not(feature = "stdlib_path"), all(test, unix)))]
 pub fn path_from_bits_with_flavor(_py: &CoreGilToken, bits: u64) -> Result<(PathBuf, bool), u64> {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::builtins::io::path_from_bits_with_flavor(py, bits)
             .map(|(path, flavor)| (path, flavor == crate::builtins::io::PathFlavor::Bytes))
-    })
+    }
 }
 
 #[cfg(any(not(feature = "stdlib_path"), all(test, unix)))]
 pub fn path_result(_py: &CoreGilToken, value: &std::path::Path, bytes: bool) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         use crate::builtins::io::PathFlavor;
         crate::builtins::io::path_result_bits(
             py,
@@ -50,17 +53,18 @@ pub fn path_result(_py: &CoreGilToken, value: &std::path::Path, bytes: bool) -> 
                 PathFlavor::Str
             },
         )
-    })
+    }
 }
 
 /// Return the canonical owned Python path without converting its str/bytes type.
-pub fn fspath_bits(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn fspath_bits(_py: &molt_runtime_core::PyToken, bits: u64) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         match crate::builtins::io_path_utils::fspath_bits_with_flavor(py, bits) {
             Ok((path, _)) => path,
             Err(error) => error,
         }
-    })
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -79,7 +83,7 @@ mod tests {
                     crate::alloc_string(py, raw)
                 };
                 assert!(!pointer.is_null());
-                let _input = crate::PtrDropGuard::new(pointer);
+                let _input = crate::PtrDropGuard::new(py, pointer);
                 let bits = MoltObject::from_ptr(pointer).bits();
                 molt_runtime_core::with_core_gil!(core, {
                     let (path, actual_bytes) = path_from_bits_with_flavor(core, bits).unwrap();
@@ -126,14 +130,15 @@ pub fn path_metadata(
     operation: OperationId,
     suppress: bool,
 ) -> Result<Option<molt_runtime_platform::stat_support::PathMetadata>, u64> {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         match crate::builtins::io::path_metadata(py, path, follow, operation) {
             Err(error) => Err(error),
             Ok(Ok(metadata)) => Ok(Some(metadata)),
             Ok(Err(_)) if suppress => Ok(None),
             Ok(Err(error)) => Err(error.raise(py, operation.as_str())),
         }
-    })
+    }
 }
 
 #[cfg(not(feature = "stdlib_path"))]
@@ -143,22 +148,24 @@ pub fn paths_same_file(
     right: &std::path::Path,
     operation: OperationId,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         match crate::builtins::io::paths_same_file(py, left, right, operation) {
             Err(error) => error,
             Ok(Ok(same)) => MoltObject::from_bool(same).bits(),
             Ok(Err(error)) => error.raise(py, operation.as_str()),
         }
-    })
+    }
 }
 
 #[cfg(not(feature = "stdlib_path"))]
 pub fn path_read_link(_py: &CoreGilToken, path: &std::path::Path, bytes: bool) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         match crate::builtins::io::path_read_link(py, path, OperationId::OsReadlink) {
             Err(error) => error,
             Ok(Ok(value)) => path_result(_py, &value, bytes),
             Ok(Err(error)) => error.raise(py, "readlink"),
         }
-    })
+    }
 }

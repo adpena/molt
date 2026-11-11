@@ -2,12 +2,14 @@ use super::support::*;
 use crate::wasm::test_execution::{
     run_execution_command, run_node_test_script, wasm_ld_path, wasm_test_temp_dir,
 };
+use crate::wasm_binary::Function;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use wasm_encoder::FunctionSection;
 use wasm_encoder::{
-    CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, LinkingSection,
-    Module, SymbolTable, TypeSection, ValType,
+    CodeSection, ExportKind, ExportSection, Instruction, LinkingSection, Module, SymbolTable,
+    TypeSection, ValType,
 };
 
 #[test]
@@ -59,7 +61,7 @@ fn guarded_python_calls_bind_nonexact_shapes_and_share_direct_admission() {
         assert_eq!(admitted, supplied == 1, "supplied={supplied}");
         if supplied == 1 {
             // The direct leg hands the callee over through the thread record.
-            assert!(calls.contains(&imports["thread_record"]));
+            assert!(!imports.contains_key("thread_record"));
             assert!(!imports.contains_key("frame_invocation_enter"));
             assert!(!imports.contains_key("frame_invocation_exit"));
         }
@@ -349,7 +351,10 @@ fn relocatable_native_callable_links_provider_object_and_executes_in_node() {
             .arg("--no-entry")
             .arg("--import-memory")
             .arg("--import-table")
-            .arg("--export=molt_main")
+            .arg(format!(
+                "--export={}",
+                molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_main")
+            ))
             .arg("-o")
             .arg(&linked_path)
             .arg(&app_path)
@@ -376,8 +381,8 @@ for (const entry of WebAssembly.Module.imports(wasmModule)) {{
   imports[entry.module] ??= {{}};
   imports[entry.module][entry.name] = () => 0n;
 }}
-const instance = new WebAssembly.Instance(wasmModule, imports);
-const actual = instance.exports.molt_main();
+const instance = new WebAssembly.Instance(wasmModule, attachedImports(imports));
+const actual = instance.exports[compiledSymbol('molt_main')](executionContext);
 const expected = BigInt('{SENTINEL}');
 if (actual !== expected) throw new Error(`direct-symbol ABI returned ${{actual}}, expected ${{expected}}`);
 "#
@@ -730,10 +735,14 @@ fn native_callable_pyinit_passes_app_owned_table_address_to_runtime_transaction(
         operators[site + 2].starts_with("LocalGet"),
         "the boxed module name must follow the initializer address: {operators:?}"
     );
+    let transaction = operators
+        .iter()
+        .position(|op| op == &format!("Call {{ function_index: {run_init} }}"))
+        .expect("runtime initialization transaction");
     assert_eq!(
-        operators[site + 3],
-        format!("Call {{ function_index: {run_init} }}"),
-        "the address and module name must feed the runtime transaction: {operators:?}"
+        attached_call_operands_end(&operators, transaction, 2),
+        site + 3,
+        "the exact address and module name feed the runtime transaction: {operators:?}"
     );
 }
 
@@ -768,7 +777,10 @@ fn relocatable_pyinit_links_provider_initializer_into_runtime_transaction_table_
             .arg("--no-entry")
             .arg("--import-memory")
             .arg("--import-table")
-            .arg("--export=molt_main")
+            .arg(format!(
+                "--export={}",
+                molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_main")
+            ))
             .arg("-o")
             .arg(&linked_path)
             .arg(&app_path)
@@ -803,10 +815,10 @@ const imports = {{env}};
 for (const entry of WebAssembly.Module.imports(wasmModule)) {{
   if (entry.module === 'env') continue;
   imports[entry.module] ??= {{}};
-  imports[entry.module][entry.name] = runInitNames.has(entry.name) ? runStaticExtensionInit : () => 0n;
+  imports[entry.module][entry.name] = runInitNames.has(runtimeImportName(entry.name)) ? runStaticExtensionInit : () => 0n;
 }}
-const instance = new WebAssembly.Instance(wasmModule, imports);
-const actual = instance.exports.molt_main();
+const instance = new WebAssembly.Instance(wasmModule, attachedImports(imports));
+const actual = instance.exports[compiledSymbol('molt_main')](executionContext);
 if (transactions !== 1) throw new Error('runtime transaction ran ' + transactions + ' times');
 if (actual !== {OWNED_MODULE}n) throw new Error('molt_main returned ' + actual + ', not the owned module');
 "#,

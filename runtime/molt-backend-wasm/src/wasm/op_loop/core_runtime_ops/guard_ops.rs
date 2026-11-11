@@ -2,9 +2,10 @@ use super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 /// `guard_layout` operands are `[obj, expected_version]`; the class statement
 /// it trusts is the op's `class_definition`, a compile-time slot (HF-220).

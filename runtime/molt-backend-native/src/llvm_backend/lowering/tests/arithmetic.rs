@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 
 #[test]
 fn lower_i64_add_overflow_safe_uses_native_add() {
@@ -24,12 +26,12 @@ fn lower_i64_add_overflow_safe_uses_native_add() {
     let ir = llvm_fn.print_to_string().to_string();
 
     assert!(
-        ir.contains("add i64"),
+        ir.contains_execution("add i64"),
         "expected native i64 add for an overflow-safe result: {}",
         ir
     );
     assert!(
-        !ir.contains("call") || !ir.contains("molt_add"),
+        !ir.contains_execution("call") || !ir.contains_execution("molt_add"),
         "overflow-safe i64+i64 add must NOT call the runtime: {}",
         ir
     );
@@ -50,7 +52,7 @@ fn lower_i64_add_not_overflow_safe_routes_to_runtime() {
     let ir = llvm_fn.print_to_string().to_string();
 
     assert!(
-        ir.contains("call i64 @molt_add"),
+        ir.contains_execution("call i64 @molt_add"),
         "non-overflow-safe i64+i64 add must route through molt_add: {}",
         ir
     );
@@ -74,6 +76,7 @@ fn f64_add_requires_exact_producers() {
             for (id, value) in [(left, 1.25), (right, 2.5)] {
                 entry.ops.push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstFloat,
                     operands: vec![],
@@ -92,6 +95,7 @@ fn f64_add_requires_exact_producers() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands,
@@ -103,8 +107,8 @@ fn f64_add_requires_exact_producers() {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         backend.module.verify().unwrap();
         let ir = llvm_fn.print_to_string().to_string();
-        assert_eq!(ir.contains("call i64 @molt_add"), !exact, "{ir}");
-        assert_eq!(ir.contains("ret double"), exact, "{ir}");
+        assert_eq!(ir.contains_execution("call i64 @molt_add"), !exact, "{ir}");
+        assert_eq!(ir.contains_execution("ret double"), exact, "{ir}");
     }
 }
 
@@ -124,6 +128,7 @@ fn lower_dynbox_add_calls_runtime() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -139,7 +144,7 @@ fn lower_dynbox_add_calls_runtime() {
     let ir = llvm_fn.print_to_string().to_string();
 
     assert!(
-        ir.contains("molt_add"),
+        ir.contains_execution("molt_add"),
         "expected runtime call to molt_add in IR: {}",
         ir
     );
@@ -180,6 +185,7 @@ fn lower_conditional_branch() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -205,6 +211,7 @@ fn lower_conditional_branch() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -227,19 +234,27 @@ fn lower_conditional_branch() {
 
     // Should have 3 blocks and a conditional branch
     assert!(
-        ir.contains("br i1"),
+        ir.contains_execution("br i1"),
         "expected conditional branch in IR: {}",
         ir
     );
-    assert!(ir.contains("bb1"), "expected then block in IR: {}", ir);
-    assert!(ir.contains("bb2"), "expected else block in IR: {}", ir);
+    assert!(
+        ir.contains_execution("bb1"),
+        "expected then block in IR: {}",
+        ir
+    );
+    assert!(
+        ir.contains_execution("bb2"),
+        "expected else block in IR: {}",
+        ir
+    );
 }
 
 #[test]
 fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend.module.add_function(
+    backend.module.add_compiled_function(
         "helper_raw",
         ctx.i64_type().fn_type(&[ctx.i64_type().into(); 2], false),
         Some(inkwell::module::Linkage::External),
@@ -255,7 +270,7 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -269,25 +284,28 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
         .verify()
         .expect("trampoline owns its cleanup transport");
     let ir = trampoline.print_to_string().to_string();
-    let target = ir.find("call i64 @helper_raw").expect("raw target entry");
+    let target = ir
+        .find_execution("call i64 @helper_raw")
+        .expect("raw target entry");
     let cleanup = ir
-        .find("call void @molt_call_inputs_release")
+        .find_execution("call void @molt_call_inputs_release")
         .expect("canonical input retirement");
     assert!(target < cleanup, "{ir}");
     assert_eq!(
-        ir.matches("call void @molt_call_inputs_release").count(),
+        ir.matches_execution("call void @molt_call_inputs_release")
+            .count(),
         1,
         "{ir}"
     );
-    assert!(ir.contains("alloca i64, i64 2"), "{ir}");
-    assert!(!ir.contains("@__molt_inline_release"), "{ir}");
+    assert!(ir.contains_execution("alloca i64, i64 2"), "{ir}");
+    assert!(!ir.contains_execution("@__molt_inline_release"), "{ir}");
 }
 
 #[test]
 fn plain_trampoline_boxes_bool_return_into_i64_abi() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    let _target = backend.module.add_function(
+    let _target = backend.module.add_compiled_function(
         "helper_bool",
         ctx.bool_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -302,7 +320,7 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -316,15 +334,18 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
     );
     backend.module.verify().expect("llvm module should verify");
     let ir = trampoline.print_to_string().to_string();
-    assert!(ir.contains("box_bool") || ir.contains("zext_bool"), "{ir}");
-    assert!(ir.contains("ret i64"), "{ir}");
+    assert!(
+        ir.contains_execution("box_bool") || ir.contains_execution("zext_bool"),
+        "{ir}"
+    );
+    assert!(ir.contains_execution("ret i64"), "{ir}");
 }
 
 #[test]
 fn plain_trampoline_boxes_f64_return_into_i64_abi() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    let _target = backend.module.add_function(
+    let _target = backend.module.add_compiled_function(
         "helper_f64",
         ctx.f64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -339,7 +360,7 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -354,9 +375,188 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
     backend.module.verify().expect("llvm module should verify");
     let ir = trampoline.print_to_string().to_string();
     assert!(
-        ir.contains("f64_to_i64") || ir.contains("bitcast double"),
+        ir.contains_execution("f64_to_i64") || ir.contains_execution("bitcast double"),
         "{ir}"
     );
-    assert!(ir.contains("fcmp uno"), "{ir}");
-    assert!(ir.contains("ret i64"), "{ir}");
+    assert!(ir.contains_execution("fcmp uno"), "{ir}");
+    assert!(ir.contains_execution("ret i64"), "{ir}");
+}
+
+/// The late lowering stage's integer lane end to end (HF-821): `a + b` over two
+/// boxed words expands in TIR, and LLVM selects instructions for each piece —
+/// the shared tag test, the shared unbox, an exact `add nsw`, the full-range
+/// box, and the cold `molt_add` call.
+#[test]
+fn late_lowered_boxed_add_selects_the_inline_int_lane() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "late_add".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let sum = func.fresh_value();
+    func.value_types.insert(sum, TirType::DynBox);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.push(TirOp::new(
+        OpCode::Add,
+        vec![ValueId(0), ValueId(1)],
+        vec![sum],
+    ));
+    block.terminator = Terminator::Return { values: vec![sum] };
+
+    // The selected runtime exports the slow entry, as a built runtime does.
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+        .insert(RuntimeFn::Add.symbol().into());
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    // Production order (finalize_function_drops): refine, then the stage.
+    crate::tir::type_refine::refine_types(&mut func);
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    let ir = llvm_fn.print_to_string().to_string();
+    let int_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_INT);
+    assert!(
+        ir.contains_execution("icmp eq i64 %word_and") && ir.contains_execution(&int_tag),
+        "shared inline-int tag test: {ir}"
+    );
+    assert!(
+        ir.contains_execution("word_shl") && ir.contains_execution("word_sar"),
+        "shared unbox: {ir}"
+    );
+    assert!(
+        ir.contains_execution("add nsw i64"),
+        "exact payload add: {ir}"
+    );
+    assert!(
+        ir.contains_execution("molt_int_from_i64"),
+        "full-range box of the exact sum: {ir}"
+    );
+    assert!(ir.contains_execution("molt_add"), "cold runtime edge: {ir}");
+    backend
+        .module
+        .verify()
+        .expect("late-lowered function verifies in LLVM");
+}
+
+/// Late-lowered comparison (HF-821 C4): `a < b` on two boxed words tests both
+/// int tags, compares the payloads with one signed compare and boxes the raw
+/// bool; only the cold edge calls `molt_lt`.
+#[test]
+fn late_lowered_boxed_comparison_selects_a_signed_compare() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "late_lt".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let less = func.fresh_value();
+    func.value_types.insert(less, TirType::DynBox);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.push(TirOp::new(
+        OpCode::Lt,
+        vec![ValueId(0), ValueId(1)],
+        vec![less],
+    ));
+    block.terminator = Terminator::Return { values: vec![less] };
+
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+        .insert(RuntimeFn::Lt.symbol().into());
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    // Production order (finalize_function_drops): refine, then the stage.
+    crate::tir::type_refine::refine_types(&mut func);
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    let ir = llvm_fn.print_to_string().to_string();
+    let int_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_INT);
+    assert!(
+        ir.contains_execution(&int_tag),
+        "shared inline-int tag test: {ir}"
+    );
+    assert!(
+        ir.contains_execution("icmp slt i64"),
+        "payload compare: {ir}"
+    );
+    assert!(ir.contains_execution("molt_lt"), "cold runtime edge: {ir}");
+    backend
+        .module
+        .verify()
+        .expect("late-lowered comparison verifies in LLVM");
+}
+
+/// Late-lowered truthiness (HF-821 C3): `bool(x)` on a boxed word tests the
+/// bool tag and reads its low bit, then the int tag and compares the payload
+/// with zero, and only then calls `molt_is_truthy`.
+#[test]
+fn late_lowered_truthiness_tests_bool_and_int_words_inline() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "late_truth".into(),
+        vec![TirType::DynBox],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let truth = func.fresh_value();
+    func.value_types.insert(truth, TirType::Bool);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block
+        .ops
+        .push(TirOp::new(OpCode::Bool, vec![ValueId(0)], vec![truth]));
+    block.terminator = Terminator::Return {
+        values: vec![truth],
+    };
+
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    // Production order (finalize_function_drops): refine, then the stage.
+    crate::tir::type_refine::refine_types(&mut func);
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    let ir = llvm_fn.print_to_string().to_string();
+    let bool_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_BOOL);
+    let int_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_INT);
+    assert!(ir.contains_execution(&bool_tag), "bool tag test: {ir}");
+    assert!(
+        ir.contains_execution("and i64 %0, 1"),
+        "low bit of the bool word: {ir}"
+    );
+    assert!(ir.contains_execution(&int_tag), "int tag test: {ir}");
+    assert!(
+        ir.contains_execution("icmp ne i64"),
+        "payload compared with zero: {ir}"
+    );
+    assert!(
+        ir.contains_execution("molt_is_truthy"),
+        "cold runtime truthiness: {ir}"
+    );
+    backend
+        .module
+        .verify()
+        .expect("late-lowered truthiness verifies in LLVM");
 }

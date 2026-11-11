@@ -9,11 +9,12 @@ use crate::wasm::state_dispatch::common::{
 };
 use crate::wasm::state_dispatch::plan::{ControlScopeDepth, NonLinearControlPlan};
 use crate::wasm::state_dispatch::stateful_ops::emit_activation_op;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use molt_ir::simple_verify::EdgeRole;
 use std::collections::BTreeMap;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 #[derive(Default)]
 pub(super) struct DispatchOpScratch {

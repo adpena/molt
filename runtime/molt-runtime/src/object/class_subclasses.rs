@@ -132,7 +132,7 @@ mod tests {
         let name = crate::object::builders::alloc_string(py, name);
         assert!(!name.is_null());
         let name = MoltObject::from_ptr(name).bits();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
         assert!(obj_from_bits(class).as_ptr().is_some());
         class
@@ -166,14 +166,14 @@ mod tests {
             let grandchild = class_named(py, b"Grandchild");
             let sibling = class_named(py, b"Sibling");
             let diamond = class_named(py, b"Diamond");
-            crate::molt_class_set_base(base, object);
-            crate::molt_class_set_base(child, base);
-            crate::molt_class_set_base(grandchild, child);
-            crate::molt_class_set_base(sibling, object);
+            crate::molt_class_set_base_attached_body(py, base, object);
+            crate::molt_class_set_base_attached_body(py, child, base);
+            crate::molt_class_set_base_attached_body(py, grandchild, child);
+            crate::molt_class_set_base_attached_body(py, sibling, object);
             let pair = crate::object::builders::alloc_tuple(py, &[child, sibling]);
             assert!(!pair.is_null());
             let pair = MoltObject::from_ptr(pair).bits();
-            crate::molt_class_set_base(diamond, pair);
+            crate::molt_class_set_base_attached_body(py, diamond, pair);
             assert!(!exception_pending(py));
             assert_eq!(
                 descendants(base),
@@ -186,7 +186,7 @@ mod tests {
             let before = classes.map(version);
             let name = crate::object::builders::alloc_string(py, b"x");
             let name = MoltObject::from_ptr(name).bits();
-            crate::molt_set_attr_name(base, name, MoltObject::from_int(1).bits());
+            crate::molt_set_attr_name_attached_body(py, base, name, MoltObject::from_int(1).bits());
             assert!(!exception_pending(py));
             let after = classes.map(version);
             let advanced = |index: usize| after[index] - before[index];

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 from tests.cli.native_link_test_support import native_codegen_binding
 
 import os
@@ -51,7 +53,10 @@ def link_target(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 @pytest.fixture
 def stdlib_archive(link_target: str) -> bytes:
     return static_archive_bytes(
-        native_relocatable_object(target_triple=link_target, symbols=("molt_init_sys",))
+        native_relocatable_object(
+            target_triple=link_target,
+            symbols=(compiled_execution_symbol("molt_init_sys"),),
+        )
     )
 
 

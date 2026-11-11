@@ -5,9 +5,9 @@ use crate::{
     TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs,
     alloc_list_with_capacity, alloc_string, alloc_tuple, builtin_classes, bytes_like_slice,
     call_callable0, call_callable1, call_callable2, call_callable3, dec_ref_bits,
-    dict_get_in_place, exception_pending, format_obj, inc_ref_bits, is_truthy, molt_is_callable,
-    molt_iter, obj_from_bits, object_class_bits, object_type_id, raise_exception,
-    string_obj_to_owned, to_i64, type_name, type_of_bits,
+    dict_get_in_place, exception_pending, format_obj, inc_ref_bits, is_truthy,
+    molt_is_callable_attached_body, molt_iter_attached_body, obj_from_bits, object_class_bits,
+    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_name, type_of_bits,
 };
 
 fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &str) -> Option<u64> {
@@ -231,14 +231,16 @@ fn pickle_call_with_args(_py: &crate::PyToken<'_>, callable_bits: u64, args: &[u
         2 => unsafe { call_callable2(_py, callable_bits, args[0], args[1]) },
         3 => unsafe { call_callable3(_py, callable_bits, args[0], args[1], args[2]) },
         _ => {
-            let builder_bits = crate::molt_callargs_new(args.len() as u64, 0);
+            let builder_bits = crate::molt_callargs_new_attached_body(_py, args.len() as u64, 0);
             for &arg_bits in args {
-                let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, arg_bits) };
+                let _ = unsafe {
+                    crate::molt_callargs_push_pos_attached_body(_py, builder_bits, arg_bits)
+                };
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
             }
-            crate::molt_call_bind(callable_bits, builder_bits)
+            crate::molt_call_bind_attached_body(_py, callable_bits, builder_bits)
         }
     }
 }
@@ -292,13 +294,17 @@ fn pickle_encode_text(_py: &crate::PyToken<'_>, text: &str, encoding: &str) -> R
 }
 
 mod protocol01;
-pub use protocol01::{molt_pickle_dumps_protocol01, molt_pickle_loads_protocol01};
+pub use {protocol01::molt_pickle_dumps_protocol01, protocol01::molt_pickle_loads_protocol01};
+pub(crate) use {
+    protocol01::molt_pickle_dumps_protocol01_attached_body,
+    protocol01::molt_pickle_loads_protocol01_attached_body,
+};
 mod binary;
 #[cfg(test)]
 pub(crate) use binary::pickle_apply_build;
 pub(crate) use binary::pickle_resolve_global_bits;
-pub use binary::{
-    molt_multiprocessing_codec_dumps, molt_multiprocessing_codec_loads, molt_pickle_dumps_core,
-    molt_pickle_loads_core,
-};
 pub(crate) use binary::{pickle_vm_append_items, pickle_vm_setitems};
+pub use {
+    binary::molt_multiprocessing_codec_dumps, binary::molt_multiprocessing_codec_loads,
+    binary::molt_pickle_dumps_core, binary::molt_pickle_loads_core,
+};

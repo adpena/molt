@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
 
 import contextlib
@@ -86,7 +88,10 @@ def test_generation_and_callable_projection_share_one_content_capture(
 
     coordinate = tmp_path / "dev-fast" / "libmolt_runtime.micro.a"
     generation = publish(
-        coordinate, payload=native_relocatable_object(symbols=("molt_fixture",))
+        coordinate,
+        payload=native_relocatable_object(
+            symbols=(compiled_execution_symbol("molt_len"),)
+        ),
     )
     assert generation is not None
     hashed = []
@@ -113,7 +118,7 @@ def test_generation_and_callable_projection_share_one_content_capture(
             capture=capture,
         )
         assert failure is None and projection is not None
-        assert projection.identity.path.read_bytes() == b"molt_fixture\n"
+        assert projection.identity.path.read_bytes() == b"molt_len\n"
         projections.append(projection)
         assert all(handle.closed for handle in handles)
 

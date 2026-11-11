@@ -45,11 +45,15 @@ mod park;
 mod pipe_transport;
 pub(crate) use park::LoopParker;
 pub(crate) use pipe_transport::PipeTransportRegistry;
-pub use pipe_transport::{
-    molt_pipe_transport_close, molt_pipe_transport_drop, molt_pipe_transport_get_fd,
-    molt_pipe_transport_get_write_buffer_size, molt_pipe_transport_is_closing,
-    molt_pipe_transport_new, molt_pipe_transport_pause_reading, molt_pipe_transport_resume_reading,
-    molt_pipe_transport_write,
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use pipe_transport::molt_pipe_transport_new_attached_body;
+pub use {
+    pipe_transport::molt_pipe_transport_close, pipe_transport::molt_pipe_transport_drop,
+    pipe_transport::molt_pipe_transport_get_fd,
+    pipe_transport::molt_pipe_transport_get_write_buffer_size,
+    pipe_transport::molt_pipe_transport_is_closing, pipe_transport::molt_pipe_transport_new,
+    pipe_transport::molt_pipe_transport_pause_reading,
+    pipe_transport::molt_pipe_transport_resume_reading, pipe_transport::molt_pipe_transport_write,
 };
 
 // --- State constants ---
@@ -460,9 +464,12 @@ pub(super) fn loop_task_sleep_scheduled(
 
 /// Bind scheduling ownership before the Task's first spawn. The existing token
 /// holds the immutable loop identity, so every subsequent wake uses the same FIFO.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_spawn(loop_handle: u64, task_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_spawn_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    task_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if with_loop(_py, loop_handle, |state| !state.is_closed()) != Some(true) {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "Event loop is closed");
         }
@@ -488,16 +495,15 @@ pub extern "C" fn molt_event_loop_spawn(loop_handle: u64, task_bits: u64) -> u64
         if let Err(message) = super::cancellation::bind_task_loop(_py, task_ptr, loop_handle) {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, message);
         }
-        unsafe { super::scheduler::molt_spawn(task_bits) }
+        unsafe { super::scheduler::molt_spawn_attached_body(_py, task_bits) }
     })
 }
 
 // --- Intrinsics ---
 
 /// Create a new event loop. Returns a handle (u64).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match event_loop_registry(_py).alloc_loop() {
             Ok(handle) => MoltObject::from_int(handle as i64).bits(),
             Err(err) => crate::raise_os_error::<u64>(_py, err, "event loop wake pipe"),
@@ -509,9 +515,12 @@ pub extern "C" fn molt_event_loop_new() -> u64 {
 /// This is the fast path — no lock acquire/release Python method calls,
 /// just a direct VecDeque push. Any thread may publish: a parked loop is
 /// signalled, which is what makes `call_soon_threadsafe` wake the loop.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_call_soon(loop_handle: u64, callback_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_call_soon_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    callback_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(published) = with_loop(_py, loop_handle, |state| {
             if state.is_closed() {
                 return Err(());
@@ -548,13 +557,13 @@ fn timer_registration_result(py: &crate::PyToken<'_>, timer: TimerRegistrationRe
 
 /// Schedule a callback after `delay_secs` seconds.
 /// Returns a timer ID that can be used for cancellation.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_call_later(
+pub(crate) fn molt_event_loop_call_later_attached_body(
+    _py: &crate::PyToken<'_>,
     loop_handle: u64,
     delay_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let delay_obj = crate::obj_from_bits(delay_bits);
         let delay_secs = delay_obj
             .as_float()
@@ -581,13 +590,13 @@ pub extern "C" fn molt_event_loop_call_later(
 }
 
 /// Schedule a callback at absolute time `when_secs` (monotonic clock).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_call_at(
+pub(crate) fn molt_event_loop_call_at_attached_body(
+    _py: &crate::PyToken<'_>,
     loop_handle: u64,
     when_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let when_obj = crate::obj_from_bits(when_bits);
         let when_secs = when_obj
             .as_float()
@@ -619,9 +628,12 @@ pub extern "C" fn molt_event_loop_call_at(
 /// timers never leave retained handles or heap tombstones until their deadline.
 /// A parked loop is not signalled: it wakes once at the old deadline, finds
 /// nothing due, and parks toward the next one.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_cancel_timer_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    timer_id_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let timer_id = crate::to_i64(crate::obj_from_bits(timer_id_bits)).unwrap_or(-1) as u64;
         let Some(callback) = with_loop(_py, loop_handle, |state| {
             let ordered = state.timer_deadlines.remove(&TimerKey::Handle(timer_id))?;
@@ -640,13 +652,13 @@ pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: 
 }
 
 /// Register a file descriptor for read readiness notification.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_add_reader(
+pub(crate) fn molt_event_loop_add_reader_attached_body(
+    _py: &crate::PyToken<'_>,
     loop_handle: u64,
     fd_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid file descriptor");
@@ -671,9 +683,12 @@ pub extern "C" fn molt_event_loop_add_reader(
 }
 
 /// Remove a file descriptor's read readiness callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_remove_reader(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_remove_reader_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let Some(removed) = with_loop(_py, loop_handle, |state| {
             state.readers.remove(&fd).map(|entry| entry.callback_bits)
@@ -688,13 +703,13 @@ pub extern "C" fn molt_event_loop_remove_reader(loop_handle: u64, fd_bits: u64) 
 }
 
 /// Register a file descriptor for write readiness notification.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_add_writer(
+pub(crate) fn molt_event_loop_add_writer_attached_body(
+    _py: &crate::PyToken<'_>,
     loop_handle: u64,
     fd_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid file descriptor");
@@ -719,9 +734,12 @@ pub extern "C" fn molt_event_loop_add_writer(
 }
 
 /// Remove a file descriptor's write readiness callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_remove_writer_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let Some(removed) = with_loop(_py, loop_handle, |state| {
             state.writers.remove(&fd).map(|entry| entry.callback_bits)
@@ -738,9 +756,11 @@ pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) 
 /// Execute one turn of the loop's sole callback queue. Tasks may enqueue Handles;
 /// due timers join those Handles before the batch is captured. Anything scheduled
 /// by a callback belongs to the next turn, regardless of the active loop driver.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_run_once_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(closed) = with_loop(_py, loop_handle, |state| state.is_closed()) else {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
@@ -803,9 +823,11 @@ unsafe fn run_event_loop_handle(_py: &crate::PyToken<'_>, handle_bits: u64) {
 }
 
 /// Get the current monotonic time of the event loop (seconds, float).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_time(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_time_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(time) = with_loop(_py, loop_handle, |state| state.monotonic_secs()) else {
             return MoltObject::from_float(monotonic_now_secs(_py)).bits();
         };
@@ -820,9 +842,11 @@ pub extern "C" fn molt_event_loop_time(loop_handle: u64) -> u64 {
 /// Python signal handlers never run here: a delivery ends the wait, and the
 /// generated eval-breaker safepoint after this call returns dispatches them
 /// (`signal_ext::signal_safepoint`), as CPython does after `select` returns.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_wait(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_wait_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let async_work_owner = crate::builtins::signal_ext::async_work_owner(_py);
         loop {
             if async_work_owner && crate::builtins::signal_ext::async_work_pending() {
@@ -859,9 +883,11 @@ pub extern "C" fn molt_event_loop_wait(loop_handle: u64) -> u64 {
 /// Wake the loop for state kept outside its queues (a `stop()` request). The
 /// request is consumed by the next idle observation, so a racing park cannot
 /// lose it. `stop()` never raises in CPython: a retired handle is a no-op.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_wake(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_wake_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let parked = with_loop(_py, loop_handle, |state| {
             state.wake_requested = true;
             state.claim_parked_for_ready()
@@ -873,9 +899,11 @@ pub extern "C" fn molt_event_loop_wake(loop_handle: u64) -> u64 {
 }
 
 /// Start the event loop (set state to running).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_start(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_start_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(()) = with_loop(_py, loop_handle, |state| {
             state.state.store(STATE_RUNNING, Ordering::Relaxed);
             // A stop wake left by an earlier run does not end this run's waits.
@@ -888,9 +916,11 @@ pub extern "C" fn molt_event_loop_start(loop_handle: u64) -> u64 {
 }
 
 /// Stop the event loop (set state to idle).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_stop(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_stop_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(()) = with_loop(_py, loop_handle, |state| {
             let current = state.state.load(Ordering::Relaxed);
             if current == STATE_RUNNING {
@@ -904,9 +934,11 @@ pub extern "C" fn molt_event_loop_stop(loop_handle: u64) -> u64 {
 }
 
 /// Check if the event loop is currently running.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_is_running(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_is_running_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(running) = with_loop(_py, loop_handle, |state| state.is_running()) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -915,9 +947,11 @@ pub extern "C" fn molt_event_loop_is_running(loop_handle: u64) -> u64 {
 }
 
 /// Check if the event loop is closed.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_is_closed(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_is_closed_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(closed) = with_loop(_py, loop_handle, |state| state.is_closed()) else {
             return MoltObject::from_bool(true).bits();
         };
@@ -928,9 +962,11 @@ pub extern "C" fn molt_event_loop_is_closed(loop_handle: u64) -> u64 {
 /// Close the event loop. Cleans up all pending callbacks and I/O registrations,
 /// releases the wake parker, and wakes a thread still parked on the loop so it
 /// observes the close instead of sleeping on a released pipe.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_close(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_close_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let loop_key = unbox_loop_handle(loop_handle);
         let (callbacks_to_free, parked, parker) = {
             let mut map = event_loop_registry(_py).loops.lock().unwrap();
@@ -962,12 +998,14 @@ pub extern "C" fn molt_event_loop_close(loop_handle: u64) -> u64 {
 }
 
 /// Drop the event loop handle. Closes if not already closed, then removes from registry.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_drop(loop_handle: u64) -> u64 {
+pub(crate) fn molt_event_loop_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
     // Close first to ensure proper cleanup.
-    molt_event_loop_close(loop_handle);
+    molt_event_loop_close_attached_body(_py, loop_handle);
     let loop_key = unbox_loop_handle(loop_handle);
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let removed = event_loop_registry(_py)
             .loops
             .lock()
@@ -980,9 +1018,12 @@ pub extern "C" fn molt_event_loop_drop(loop_handle: u64) -> u64 {
 }
 
 /// Set the event loop's debug mode.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_set_debug(loop_handle: u64, enabled_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_set_debug_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    enabled_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let enabled = crate::is_truthy(_py, crate::obj_from_bits(enabled_bits));
         let Some(()) = with_loop(_py, loop_handle, |state| {
             state.debug = enabled;
@@ -994,9 +1035,11 @@ pub extern "C" fn molt_event_loop_set_debug(loop_handle: u64, enabled_bits: u64)
 }
 
 /// Get the event loop's debug mode.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_get_debug(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_get_debug_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(debug) = with_loop(_py, loop_handle, |state| state.debug) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1005,12 +1048,12 @@ pub extern "C" fn molt_event_loop_get_debug(loop_handle: u64) -> u64 {
 }
 
 /// Set the event loop's exception handler callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_set_exception_handler(
+pub(crate) fn molt_event_loop_set_exception_handler_attached_body(
+    _py: &crate::PyToken<'_>,
     loop_handle: u64,
     handler_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(old) = with_loop(_py, loop_handle, |state| {
             let old = state.exception_handler_bits;
             inc_ref_bits(_py, handler_bits);
@@ -1025,9 +1068,11 @@ pub extern "C" fn molt_event_loop_set_exception_handler(
 }
 
 /// Get the event loop's exception handler callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_get_exception_handler(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_get_exception_handler_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(bits) = with_loop(_py, loop_handle, |state| {
             inc_ref_bits(_py, state.exception_handler_bits);
             state.exception_handler_bits
@@ -1039,9 +1084,12 @@ pub extern "C" fn molt_event_loop_get_exception_handler(loop_handle: u64) -> u64
 }
 
 /// Set the event loop's task factory callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_set_task_factory(loop_handle: u64, factory_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_set_task_factory_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    factory_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(old) = with_loop(_py, loop_handle, |state| {
             let old = state.task_factory_bits;
             inc_ref_bits(_py, factory_bits);
@@ -1056,9 +1104,11 @@ pub extern "C" fn molt_event_loop_set_task_factory(loop_handle: u64, factory_bit
 }
 
 /// Get the event loop's task factory callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_get_task_factory(loop_handle: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_get_task_factory_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(bits) = with_loop(_py, loop_handle, |state| {
             inc_ref_bits(_py, state.task_factory_bits);
             state.task_factory_bits
@@ -1072,9 +1122,12 @@ pub extern "C" fn molt_event_loop_get_task_factory(loop_handle: u64) -> u64 {
 /// Notify the event loop that a file descriptor is ready for reading.
 /// Called by the IoPoller when I/O readiness is detected.
 /// Moves the reader's callback to the ready queue for execution.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_notify_reader_ready(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_notify_reader_ready_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let parked = with_loop(_py, loop_handle, |state| {
             let callback = state.readers.get(&fd)?.callback_bits;
@@ -1089,9 +1142,12 @@ pub extern "C" fn molt_event_loop_notify_reader_ready(loop_handle: u64, fd_bits:
 }
 
 /// Notify the event loop that a file descriptor is ready for writing.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_event_loop_notify_writer_ready(loop_handle: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_event_loop_notify_writer_ready_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_handle: u64,
+    fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         let parked = with_loop(_py, loop_handle, |state| {
             let callback = state.writers.get(&fd)?.callback_bits;
@@ -1122,16 +1178,16 @@ mod tests {
             let bits = MoltObject::from_ptr(ptr).bits();
             let initial_refs = ref_count(ptr);
 
-            let loop_handle = molt_event_loop_new();
-            let _ = molt_event_loop_call_soon(loop_handle, bits);
-            let _ = molt_event_loop_set_exception_handler(loop_handle, bits);
-            let _ = molt_event_loop_set_task_factory(loop_handle, bits);
+            let loop_handle = molt_event_loop_new_attached_body(_py);
+            let _ = molt_event_loop_call_soon_attached_body(_py, loop_handle, bits);
+            let _ = molt_event_loop_set_exception_handler_attached_body(_py, loop_handle, bits);
+            let _ = molt_event_loop_set_task_factory_attached_body(_py, loop_handle, bits);
             assert_eq!(ref_count(ptr), initial_refs + 3);
 
-            let _ = molt_event_loop_close(loop_handle);
+            let _ = molt_event_loop_close_attached_body(_py, loop_handle);
             assert_eq!(ref_count(ptr), initial_refs);
 
-            let _ = molt_event_loop_drop(loop_handle);
+            let _ = molt_event_loop_drop_attached_body(_py, loop_handle);
             dec_ref_bits(_py, bits);
         });
     }
@@ -1143,21 +1199,22 @@ mod tests {
             let ptr = alloc_string(_py, b"long-timeout-callback");
             let bits = MoltObject::from_ptr(ptr).bits();
             let initial_refs = ref_count(ptr);
-            let loop_handle = molt_event_loop_new();
+            let loop_handle = molt_event_loop_new_attached_body(_py);
             for _ in 0..100_000 {
-                let timer = molt_event_loop_call_later(
+                let timer = molt_event_loop_call_later_attached_body(
+                    _py,
                     loop_handle,
                     MoltObject::from_float(86_400.0).bits(),
                     bits,
                 );
                 assert_eq!(ref_count(ptr), initial_refs + 1);
                 assert_eq!(
-                    molt_event_loop_cancel_timer(loop_handle, timer),
+                    molt_event_loop_cancel_timer_attached_body(_py, loop_handle, timer),
                     MoltObject::from_bool(true).bits()
                 );
                 assert_eq!(ref_count(ptr), initial_refs);
                 assert_eq!(
-                    molt_event_loop_cancel_timer(loop_handle, timer),
+                    molt_event_loop_cancel_timer_attached_body(_py, loop_handle, timer),
                     MoltObject::from_bool(false).bits()
                 );
             }
@@ -1166,7 +1223,7 @@ mod tests {
                 assert!(state.timer_deadlines.is_empty());
             })
             .unwrap();
-            molt_event_loop_drop(loop_handle);
+            molt_event_loop_drop_attached_body(_py, loop_handle);
             dec_ref_bits(_py, bits);
         });
     }
@@ -1177,11 +1234,11 @@ mod tests {
     fn equal_deadline_timers_run_in_registration_order() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let loop_handle = molt_event_loop_new();
+            let loop_handle = molt_event_loop_new_attached_body(_py);
             let when = MoltObject::from_float(86_400.0).bits();
             let callbacks: Vec<u64> = (0..3).map(|i| MoltObject::from_int(i).bits()).collect();
             for &callback in &callbacks {
-                let _ = molt_event_loop_call_at(loop_handle, when, callback);
+                let _ = molt_event_loop_call_at_attached_body(_py, loop_handle, when, callback);
             }
             let order: Vec<u64> = with_loop(_py, loop_handle, |state| {
                 state
@@ -1195,7 +1252,7 @@ mod tests {
             })
             .unwrap();
             assert_eq!(order, callbacks);
-            molt_event_loop_drop(loop_handle);
+            molt_event_loop_drop_attached_body(_py, loop_handle);
         });
     }
 }
@@ -1208,11 +1265,11 @@ mod task_timer_tests {
     fn loop_task_timer_cancel_and_close_release_owned_reference() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let task = crate::molt_future_new(0, 0);
+            let task = crate::molt_future_new_attached_body(py, 0, 0);
             let task_ptr = crate::ptr_from_bits(task);
             let refs = || unsafe { (*crate::header_from_obj_ptr(task_ptr)).ref_count_snapshot() };
             let initial = refs();
-            let owner = molt_event_loop_new();
+            let owner = molt_event_loop_new_attached_body(py);
             let deadline = Instant::now() + Duration::from_secs(86400);
             register_loop_sleep(py, owner, task_ptr, deadline);
             register_loop_sleep(py, owner, task_ptr, deadline);
@@ -1230,9 +1287,9 @@ mod task_timer_tests {
             .unwrap();
             register_loop_sleep(py, owner, task_ptr, deadline);
             assert_eq!(refs(), initial + 1);
-            molt_event_loop_close(owner);
+            molt_event_loop_close_attached_body(py, owner);
             assert_eq!(refs(), initial);
-            molt_event_loop_drop(owner);
+            molt_event_loop_drop_attached_body(py, owner);
             dec_ref_bits(py, task);
         });
     }
@@ -1270,8 +1327,8 @@ mod park_tests {
     }
 
     fn retire(py: &crate::PyToken<'_>, handle: u64, objects: &[u64]) {
-        molt_event_loop_close(handle);
-        molt_event_loop_drop(handle);
+        molt_event_loop_close_attached_body(py, handle);
+        molt_event_loop_drop_attached_body(py, handle);
         for &bits in objects {
             dec_ref_bits(py, bits);
         }
@@ -1279,8 +1336,8 @@ mod park_tests {
 
     fn take_pending_exception(py: &crate::PyToken<'_>) {
         assert!(exception_pending(py), "expected a pending exception");
-        let raised = crate::molt_exception_last();
-        crate::molt_exception_clear();
+        let raised = crate::molt_exception_last_attached_body(py);
+        crate::molt_exception_clear_attached_body(py);
         dec_ref_bits(py, raised);
     }
 
@@ -1288,9 +1345,9 @@ mod park_tests {
     fn idle_loop_parks_until_its_earliest_deadline_without_a_cap() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let far = object(py, b"far");
-            let _ = molt_event_loop_call_later(handle, seconds(60.0), far);
+            let _ = molt_event_loop_call_later_attached_body(py, handle, seconds(60.0), far);
             match begin(py, handle) {
                 ParkStep::Block {
                     timeout: Some(timeout),
@@ -1310,7 +1367,7 @@ mod park_tests {
     fn publication_after_park_registration_ends_the_block_at_once() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let ready = object(py, b"ready");
             let ParkStep::Block {
                 parker,
@@ -1320,7 +1377,7 @@ mod park_tests {
                 panic!("an empty loop parks without a deadline");
             };
             // The publisher runs after the park decision and before the block.
-            let _ = molt_event_loop_call_soon(handle, ready);
+            let _ = molt_event_loop_call_soon_attached_body(py, handle, ready);
             assert_eq!(park_state(py, handle), ParkState::Signalled);
             let started = Instant::now();
             parker.park(py, Some(FAR), false).expect("park");
@@ -1338,14 +1395,14 @@ mod park_tests {
     fn a_second_publication_after_a_claim_issues_no_second_token() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let first = object(py, b"first");
             let second = object(py, b"second");
             let ParkStep::Block { parker, .. } = begin(py, handle) else {
                 panic!("an empty loop parks");
             };
-            let _ = molt_event_loop_call_soon(handle, first);
-            let _ = molt_event_loop_call_soon(handle, second);
+            let _ = molt_event_loop_call_soon_attached_body(py, handle, first);
+            let _ = molt_event_loop_call_soon_attached_body(py, handle, second);
             parker.park(py, Some(FAR), false).expect("park");
             end(py, handle);
             // One claim, one token: the drained parker holds no stale token.
@@ -1362,18 +1419,18 @@ mod park_tests {
     fn only_an_earlier_deadline_signals_a_parked_loop() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let timer = object(py, b"timer");
-            let _ = molt_event_loop_call_later(handle, seconds(60.0), timer);
+            let _ = molt_event_loop_call_later_attached_body(py, handle, seconds(60.0), timer);
             let ParkStep::Block { parker, .. } = begin(py, handle) else {
                 panic!("expected a timed park");
             };
-            let _ = molt_event_loop_call_later(handle, seconds(120.0), timer);
+            let _ = molt_event_loop_call_later_attached_body(py, handle, seconds(120.0), timer);
             assert!(
                 matches!(park_state(py, handle), ParkState::Parked { .. }),
                 "a later deadline must leave the parked loop asleep"
             );
-            let _ = molt_event_loop_call_later(handle, seconds(0.5), timer);
+            let _ = molt_event_loop_call_later_attached_body(py, handle, seconds(0.5), timer);
             assert_eq!(park_state(py, handle), ParkState::Signalled);
             let started = Instant::now();
             parker.park(py, Some(FAR), false).expect("park");
@@ -1396,11 +1453,11 @@ mod park_tests {
     fn an_earlier_task_sleep_signals_a_parked_loop() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
-            let task = crate::molt_future_new(0, 0);
+            let handle = molt_event_loop_new_attached_body(py);
+            let task = crate::molt_future_new_attached_body(py, 0, 0);
             let task_ptr = crate::ptr_from_bits(task);
             let far = object(py, b"far");
-            let _ = molt_event_loop_call_later(handle, seconds(60.0), far);
+            let _ = molt_event_loop_call_later_attached_body(py, handle, seconds(60.0), far);
             let ParkStep::Block { .. } = begin(py, handle) else {
                 panic!("expected a timed park");
             };
@@ -1424,17 +1481,17 @@ mod park_tests {
     fn requested_wake_is_consumed_by_exactly_one_wait() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
-            let _ = molt_event_loop_wake(handle);
+            let handle = molt_event_loop_new_attached_body(py);
+            let _ = molt_event_loop_wake_attached_body(py, handle);
             assert!(matches!(begin(py, handle), ParkStep::Proceed));
             assert!(matches!(begin(py, handle), ParkStep::Block { .. }));
             end(py, handle);
             // Starting a run discards a stale stop wake.
-            let _ = molt_event_loop_wake(handle);
-            let _ = molt_event_loop_start(handle);
+            let _ = molt_event_loop_wake_attached_body(py, handle);
+            let _ = molt_event_loop_start_attached_body(py, handle);
             assert!(matches!(begin(py, handle), ParkStep::Block { .. }));
             end(py, handle);
-            let _ = molt_event_loop_stop(handle);
+            let _ = molt_event_loop_stop_attached_body(py, handle);
             retire(py, handle, &[]);
         });
     }
@@ -1443,9 +1500,9 @@ mod park_tests {
     fn waking_a_retired_handle_is_a_no_op() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             retire(py, handle, &[]);
-            let _ = molt_event_loop_wake(handle);
+            let _ = molt_event_loop_wake_attached_body(py, handle);
             assert!(
                 !exception_pending(py),
                 "stop() on a retired loop must not raise"
@@ -1457,16 +1514,16 @@ mod park_tests {
     fn close_releases_a_parked_loop_and_the_wait_reports_closed() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let ParkStep::Block { parker, .. } = begin(py, handle) else {
                 panic!("an empty loop parks");
             };
-            let _ = molt_event_loop_close(handle);
+            let _ = molt_event_loop_close_attached_body(py, handle);
             let started = Instant::now();
             parker.park(py, Some(FAR), false).expect("park");
             assert!(started.elapsed() < PROMPT);
             end(py, handle);
-            let _ = molt_event_loop_wait(handle);
+            let _ = molt_event_loop_wait_attached_body(py, handle);
             take_pending_exception(py);
             with_loop(py, handle, |state| assert!(state.parker.is_none())).expect("live loop");
             retire(py, handle, &[]);
@@ -1502,16 +1559,18 @@ mod park_tests {
     fn cross_thread_publication_ends_a_blocked_park_before_its_far_deadline() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let far = object(py, b"far");
             let ready = object(py, b"cross-thread");
-            let _ = molt_event_loop_call_later(handle, seconds(30.0), far);
+            let _ = molt_event_loop_call_later_attached_body(py, handle, seconds(30.0), far);
             let origin =
                 crate::state::runtime_state::RuntimeWorkerOrigin::new(crate::runtime_state(py));
             let publisher = std::thread::spawn(move || {
                 crate::state::run_runtime_worker(origin, || {
                     std::thread::sleep(Duration::from_millis(50));
-                    let _ = molt_event_loop_call_soon(handle, ready);
+                    let _ = crate::with_gil_entry_nopanic!(publisher_py, {
+                        molt_event_loop_call_soon_attached_body(publisher_py, handle, ready)
+                    });
                 })
             });
             let started = Instant::now();
@@ -1546,8 +1605,8 @@ mod park_tests {
     fn cross_thread_task_wake_ends_a_blocked_park() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
-            let task = crate::molt_future_new(0, 0);
+            let handle = molt_event_loop_new_attached_body(py);
+            let task = crate::molt_future_new_attached_body(py, 0, 0);
             // Transfer the scheduler's admitted Send handle, not a raw-pointer
             // field captured separately by the closure. The caller's task
             // reference stays live until the worker has joined.
@@ -1598,12 +1657,25 @@ mod park_tests {
         assert_eq!(C_PENDING_CALLBACKS.load(Ordering::SeqCst), 0);
         // No ready callback or loop deadline: the C queue alone makes the
         // public wait return to its generated eval-breaker safepoint.
-        assert_eq!(molt_event_loop_wait(handle), MoltObject::none().bits());
+        assert_eq!(
+            molt_event_loop_wait_attached_body(py, handle),
+            MoltObject::none().bits()
+        );
         assert!(!exception_pending(py));
-        assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+        assert_eq!(
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(
+                py
+            ),
+            0
+        );
         assert!(!has_pending_calls());
         assert_eq!(C_PENDING_CALLBACKS.load(Ordering::SeqCst), 1);
-        assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+        assert_eq!(
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(
+                py
+            ),
+            0
+        );
         assert_eq!(C_PENDING_CALLBACKS.load(Ordering::SeqCst), 1);
     }
 
@@ -1612,7 +1684,7 @@ mod park_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             C_PENDING_CALLBACKS.store(0, Ordering::SeqCst);
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let ParkStep::Block { parker, .. } = begin(py, handle) else {
                 panic!("an empty loop parks");
             };
@@ -1642,7 +1714,7 @@ mod park_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             C_PENDING_CALLBACKS.store(0, Ordering::SeqCst);
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let ParkStep::Block { parker, .. } = begin(py, handle) else {
                 panic!("an empty loop parks");
             };
@@ -1685,7 +1757,7 @@ mod park_tests {
     fn signal_owner_park_returns_without_blocking_on_a_recorded_delivery() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let ParkStep::Block { parker, .. } = begin(py, handle) else {
                 panic!("an empty loop parks");
             };
@@ -1698,7 +1770,7 @@ mod park_tests {
             );
             end(py, handle);
             // The wait reports the delivery instead of parking again.
-            let _ = molt_event_loop_wait(handle);
+            let _ = molt_event_loop_wait_attached_body(py, handle);
             assert!(!exception_pending(py));
             // No Python handler is installed, so the safepoint only retires it.
             assert!(!crate::builtins::signal_ext::signal_safepoint(py));
@@ -1712,7 +1784,7 @@ mod park_tests {
     fn raw_delivery_on_another_thread_wakes_the_owner_park() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
+            let handle = molt_event_loop_new_attached_body(py);
             let ParkStep::Block { parker, .. } = begin(py, handle) else {
                 panic!("an empty loop parks");
             };
@@ -1738,3 +1810,5 @@ mod park_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/async_rt/event_loop.rs");

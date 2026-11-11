@@ -14,6 +14,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if matches!(target_os.as_str(), "linux" | "android" | "freebsd") {
-        println!("cargo:rustc-link-arg-bins=-Wl,--export-dynamic-symbol=molt_isolate_bootstrap");
+        println!(
+            "cargo:rustc-link-arg-bins=-Wl,--export-dynamic-symbol={}",
+            molt_codegen_abi::attached_symbol!("molt_isolate_bootstrap")
+        );
     }
 }

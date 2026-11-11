@@ -2,12 +2,21 @@ use super::*;
 
 extern "C" fn observe_native_initializer_and_raise() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let frame = DcValue::owned(crate::molt_getframe(MoltObject::from_int(0).bits()));
+        let frame = DcValue::owned(
+            py,
+            crate::builtins::frames::molt_getframe_attached_body(
+                py,
+                MoltObject::from_int(0).bits(),
+            ),
+        );
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
         for (name, expected) in [(crate::NameId::FLineno, 2), (crate::NameId::FLasti, 0)] {
-            let value = DcValue::owned(crate::molt_get_attr_name(frame.bits, name.bits(py)));
+            let value = DcValue::owned(
+                py,
+                crate::molt_get_attr_name_attached_body(py, frame.bits, name.bits(py)),
+            );
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
@@ -32,7 +41,8 @@ fn native_initializer_observes_its_entry_and_captures_one_escaping_origin() {
         let no = MoltObject::from_bool(false).bits();
         let yes = MoltObject::from_bool(true).bits();
         let class_name = text(py, b"NativeInitializerLocation").unwrap();
-        let class = dc_result(py, crate::molt_class_new(class_name.bits)).unwrap();
+        let class =
+            dc_result(py, crate::molt_class_new_attached_body(py, class_name.bits)).unwrap();
         let receiver = text(py, b"dc_receiver").unwrap();
         let field = text(py, b"dc_value").unwrap();
         let capture = text(py, b"__dataclass_dflt_dc_value__").unwrap();
@@ -46,16 +56,21 @@ fn native_initializer_observes_its_entry_and_captures_one_escaping_origin() {
             0,
         );
         assert!(!factory_ptr.is_null());
-        let factory = DcValue::owned(MoltObject::from_ptr(factory_ptr).bits());
+        let factory = DcValue::owned(py, MoltObject::from_ptr(factory_ptr).bits());
         let captures = owned_tuple(py, &[factory.bits]).unwrap();
         let store = owned_tuple(py, &[field.bits, int(-1), int(-1), int(0), yes]).unwrap();
         let stores = owned_tuple(py, &[store.bits]).unwrap();
         let empty = owned_tuple(py, &[]).unwrap();
         let absent = owned_tuple(py, &[int(-1), int(-1)]).unwrap();
-        let dict =
-            || DcValue::owned(MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits());
+        let dict = || {
+            DcValue::owned(
+                py,
+                MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits(),
+            )
+        };
         let builtins = dict();
         let globals = DcValue::owned(
+            py,
             MoltObject::from_ptr(crate::alloc_dict_with_pairs(
                 py,
                 &[crate::NameId::DunderBuiltins.bits(py), builtins.bits],
@@ -91,11 +106,16 @@ fn native_initializer_observes_its_entry_and_captures_one_escaping_origin() {
         let function = build_initializer(py, class.bits, schema.bits, spec.bits).unwrap();
         let code =
             unsafe { crate::function_code_bits(obj_from_bits(function.bits).as_ptr().unwrap()) };
-        let instance = dc_result(py, crate::molt_object_new_bound(class.bits)).unwrap();
-        let result =
-            DcValue::owned(unsafe { crate::call_callable1(py, function.bits, instance.bits) });
+        let instance = dc_result(
+            py,
+            crate::molt_object_new_bound_attached_body(py, class.bits),
+        )
+        .unwrap();
+        let result = DcValue::owned(py, unsafe {
+            crate::call_callable1(py, function.bits, instance.bits)
+        });
         assert!(exception_pending(py));
-        let exception = DcValue::owned(crate::molt_exception_last_pending());
+        let exception = DcValue::owned(py, crate::molt_exception_last_pending_attached_body(py));
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
             exception.bits,

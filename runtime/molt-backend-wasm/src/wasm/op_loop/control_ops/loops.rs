@@ -1,7 +1,8 @@
 use super::{ControlKind, ControlOpContext};
 use crate::OpIR;
+use crate::wasm_binary::Function;
 use crate::wasm_values::emit_branch_truthiness_i32;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 pub(super) fn emit_loop_control_op(
     context: &mut ControlOpContext<'_>,

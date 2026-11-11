@@ -10,14 +10,14 @@ use molt_runtime_capi::{BufferAcquireError, ByteInput};
 
 #[cfg(feature = "stdlib_regex")]
 crate::object::native_handle::native_handle_bridge!(
-    __molt_regex_pattern_handle_new,
-    __molt_regex_pattern_handle_clone,
+    __molt_regex_pattern_handle_new => "__molt_regex_pattern_handle_new",
+    __molt_regex_pattern_handle_clone => "__molt_regex_pattern_handle_clone",
     molt_runtime_regex::PatternHandle
 );
 #[cfg(feature = "stdlib_regex")]
 crate::object::native_handle::native_handle_bridge!(
-    __molt_regex_scanner_handle_new,
-    __molt_regex_scanner_handle_clone,
+    __molt_regex_scanner_handle_new => "__molt_regex_scanner_handle_new",
+    __molt_regex_scanner_handle_clone => "__molt_regex_scanner_handle_clone",
     std::sync::Mutex<molt_runtime_regex::ScannerHandle>
 );
 
@@ -60,9 +60,9 @@ fn immutable_regex_subject(py: &PyToken<'_>, bits: u64) -> bool {
 /// Admit a regex subject once at the Python buffer boundary. Text and exact
 /// immutable bytes retain their existing object; mutable and arbitrary
 /// exporters become an immutable byte snapshot for the matching operation.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_subject_snapshot(subject_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_re_subject_snapshot_attached_body(_py: &PyToken<'_>, subject_bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         if immutable_regex_subject(_py, subject_bits) {
             inc_ref_bits(_py, subject_bits);
             return subject_bits;
@@ -102,15 +102,15 @@ pub extern "C" fn molt_re_subject_snapshot(subject_bits: u64) -> u64 {
             }
         }
         MoltObject::from_ptr(snapshot).bits()
-    })
+    }
 }
 
 /// Retain immutable subjects directly; otherwise acquire exactly one SIMPLE
 /// export and transfer it to the ordinary traced memoryview storage owner.
 /// The Python scanner owns this view until exhaustion, never a GREEN handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_re_subject_view_attached_body(_py: &PyToken<'_>, subject_bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         if immutable_regex_subject(_py, subject_bits) {
             inc_ref_bits(_py, subject_bits);
             return subject_bits;
@@ -136,15 +136,21 @@ pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
         unsafe {
             crate::object::memoryview::from_native_descriptor(_py, &descriptor, format, Some(lease))
         }
-    })
+    }
 }
 
 /// Copy one requested byte capture from the original subject. Allocate the
 /// destination before borrowing exporter memory so no live slice crosses a
 /// possible GC/finalizer boundary; only the capture bytes are copied.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, end: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_subject_slice"))]
+pub extern "C" fn __molt_regex_subject_slice(
+    __molt_context: u64,
+    subject_bits: u64,
+    start: usize,
+    end: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if start > end {
             return raise_exception::<u64>(_py, BuiltinExc::IndexError, "invalid group span");
         }
@@ -241,70 +247,94 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
             }
         }
         MoltObject::from_ptr(ptr).bits()
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_raise_exception"))]
 pub extern "C" fn __molt_regex_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_alloc_tuple"))]
+pub extern "C" fn __molt_regex_alloc_tuple(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_alloc_list"))]
+pub extern "C" fn __molt_regex_alloc_list(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_alloc_string"))]
+pub extern "C" fn __molt_regex_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_alloc_bytes"))]
+pub extern "C" fn __molt_regex_alloc_bytes(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_alloc_dict_with_pairs"))]
 pub extern "C" fn __molt_regex_alloc_dict_with_pairs(
+    __molt_context: u64,
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -354,11 +384,12 @@ pub extern "C" fn __molt_regex_bytes_view(
 // Reference counting
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_dec_ref_bits"))]
+pub extern "C" fn __molt_regex_dec_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         dec_ref_bits(_py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,24 +418,33 @@ mod tests;
 // Container helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_seq_snapshot"))]
 pub extern "C" fn __molt_regex_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_regex_dict_snapshot"))]
 pub extern "C" fn __molt_regex_dict_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export_dict(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
+
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/regex_bridge.rs"
+));

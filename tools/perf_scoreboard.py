@@ -2004,10 +2004,10 @@ def _merge_boards(
 
 
 def main(argv: list[str]) -> int:
-    if argv[:1] == ["primitives"]:
-        from tools.perf_scoreboard_primitives import main as primitive_main
+    if argv[:1] == ["instructions"]:
+        from tools.perf_instructions import main as instructions_main
 
-        return primitive_main(argv[1:])
+        return instructions_main(argv[1:])
     return _perf_scoreboard_cli.main(globals(), argv)
 
 

@@ -42,6 +42,7 @@ fn entry_reentry_seeds_once_and_reloads_parallel_arguments_in_both_lowering_form
         );
         body_block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,
             operands: vec![],
@@ -410,6 +411,7 @@ fn missing_label_after_lowering_is_never_an_optional_warning() {
         .ops
         .push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],

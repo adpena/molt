@@ -22,18 +22,20 @@ use crate::*;
 use num_bigint::{BigInt, Sign};
 
 type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_runtime_state_get_or_init"))]
 pub extern "C" fn __molt_math_runtime_state_get_or_init(
+    __molt_context: u64,
     key_ptr: *const u8,
     key_len: usize,
     init: RuntimeExtensionStateInit,
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         crate::state::runtime_extension_state_get_or_init(
             crate::state::runtime_state::runtime_state(_py),
@@ -42,56 +44,76 @@ pub extern "C" fn __molt_math_runtime_state_get_or_init(
             clear,
             drop,
         )
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_raise_exception"))]
 pub extern "C" fn __molt_math_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_exception_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_exception_pending"))]
+pub extern "C" fn __molt_math_exception_pending(__molt_context: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        if exception_pending(_py) { 1 } else { 0 }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_alloc_tuple"))]
+pub extern "C" fn __molt_math_alloc_tuple(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_alloc_list"))]
+pub extern "C" fn __molt_math_alloc_list(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_alloc_string"))]
+pub extern "C" fn __molt_math_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,26 +141,29 @@ pub extern "C" fn __molt_math_string_obj_to_owned(
     }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_type_name"))]
 pub extern "C" fn __molt_math_type_name(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_is_truthy"))]
+pub extern "C" fn __molt_math_is_truthy(__molt_context: u64, bits: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -199,9 +224,12 @@ pub extern "C" fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32
 
 /// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
 /// inline; NaN values are heap-allocated.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_float_result_bits(val: f64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { crate::object::ops::float_result_bits(_py, val) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_float_result_bits"))]
+pub extern "C" fn __molt_math_float_result_bits(__molt_context: u64, val: f64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        crate::object::ops::float_result_bits(_py, val)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,18 +241,20 @@ pub extern "C" fn __molt_math_release_ptr(ptr: *mut u8) {
     release_ptr(ptr);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_dec_ref_bits"))]
+pub extern "C" fn __molt_math_dec_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         dec_ref_bits(_py, bits);
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_inc_ref_bits"))]
+pub extern "C" fn __molt_math_inc_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         inc_ref_bits(_py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -247,9 +277,14 @@ pub extern "C" fn __molt_math_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 // Conversion boundaries use the shared numeric protocol owner. The older
 // to_* exports below remain pure carrier probes for their existing consumers.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_float_as_double(bits: u64, out: *mut f64) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_float_as_double"))]
+pub extern "C" fn __molt_math_float_as_double(
+    __molt_context: u64,
+    bits: u64,
+    out: *mut f64,
+) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match crate::builtins::numbers::float_as_double(py, bits) {
             Some(value) => {
                 unsafe {
@@ -259,12 +294,17 @@ pub extern "C" fn __molt_math_float_as_double(bits: u64, out: *mut f64) -> i32 {
             }
             None => -1,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_exact_float_value(bits: u64, out: *mut f64) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_exact_float_value"))]
+pub extern "C" fn __molt_math_exact_float_value(
+    __molt_context: u64,
+    bits: u64,
+    out: *mut f64,
+) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match crate::builtins::numbers::exact_float_storage_value(py, bits) {
             Ok(Some(value)) => {
                 unsafe {
@@ -275,17 +315,19 @@ pub extern "C" fn __molt_math_exact_float_value(bits: u64, out: *mut f64) -> i32
             Ok(None) => 0,
             Err(()) => -1,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_integer_storage"))]
 pub extern "C" fn __molt_math_integer_storage(
+    __molt_context: u64,
     bits: u64,
     out_sign: *mut i32,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let value = match crate::builtins::numbers::integer_storage_bigint(py, bits) {
             Ok(Some(value)) => value,
             Ok(None) => return 0,
@@ -315,12 +357,15 @@ pub extern "C" fn __molt_math_integer_storage(
             };
         }
         1
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_target_minor() -> i64 {
-    crate::with_gil_entry_nopanic!(py, { crate::object::ops_sys::runtime_target_minor(py) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_target_minor"))]
+pub extern "C" fn __molt_math_target_minor(__molt_context: u64) -> i64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        crate::object::ops_sys::runtime_target_minor(py)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -368,18 +413,23 @@ pub extern "C" fn __molt_math_to_bigint(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_int_bits_from_i64"))]
+pub extern "C" fn __molt_math_int_bits_from_i64(__molt_context: u64, val: i64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        int_bits_from_i64(_py, val)
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_int_bits_from_bigint"))]
 pub extern "C" fn __molt_math_int_bits_from_bigint(
+    __molt_context: u64,
     sign: i32,
     data_ptr: *const u8,
     data_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
             -1 => Sign::Minus,
@@ -388,7 +438,7 @@ pub extern "C" fn __molt_math_int_bits_from_bigint(
         };
         let value = BigInt::from_bytes_be(sign, bytes);
         int_bits_from_bigint(_py, value)
-    })
+    }
 }
 
 /// CPython's exact modular numeric hash over a rational `numerator/denominator`
@@ -481,21 +531,24 @@ pub extern "C" fn __molt_math_bigint_from_f64_trunc(
     1
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_index_i64_from_obj"))]
 pub extern "C" fn __molt_math_index_i64_from_obj(
+    __molt_context: u64,
     obj_bits: u64,
     err_ptr: *const u8,
     err_len: usize,
 ) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         _index_i64_from_obj(_py, obj_bits, err)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_index_bigint_from_obj"))]
 pub extern "C" fn __molt_math_index_bigint_from_obj(
+    __molt_context: u64,
     obj_bits: u64,
     err_ptr: *const u8,
     err_len: usize,
@@ -503,7 +556,8 @@ pub extern "C" fn __molt_math_index_bigint_from_obj(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         match _index_bigint_from_obj(_py, obj_bits, err) {
@@ -528,32 +582,43 @@ pub extern "C" fn __molt_math_index_bigint_from_obj(
             }
             None => 0,
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Callable / protocol helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_call_callable0(call_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { unsafe { call_callable0(_py, call_bits) } })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_call_callable0"))]
+pub extern "C" fn __molt_math_call_callable0(__molt_context: u64, call_bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        unsafe { call_callable0(_py, call_bits) }
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_call_callable2"))]
+pub extern "C" fn __molt_math_call_callable2(
+    __molt_context: u64,
+    call_bits: u64,
+    arg0: u64,
+    arg1: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { call_callable2(_py, call_bits, arg0, arg1) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_lookup_special_method"))]
 pub extern "C" fn __molt_math_lookup_special_method(
+    __molt_context: u64,
     ptr: *mut u8,
     name_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(name) = crate::NameId::from_bits(_py, name_bits) else {
             raise_exception::<()>(
                 _py,
@@ -577,7 +642,7 @@ pub extern "C" fn __molt_math_lookup_special_method(
             Ok(None) => 0,
             Err(()) => -1,
         }
-    })
+    }
 }
 
 fn unsupported_math_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
@@ -589,16 +654,21 @@ fn unsupported_math_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_intern_static_name"))]
+pub extern "C" fn __molt_math_intern_static_name(
+    __molt_context: u64,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         match crate::state::cache::intern_bridge_protocol_name(_py, key) {
             Ok(Some(bits)) => bits,
             Ok(None) => unsupported_math_intern_name(_py, key),
             Err(()) => MoltObject::none().bits(),
         }
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -612,9 +682,12 @@ pub extern "C" fn __molt_math_class_name_for_error(
     unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_type_of_bits(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { _type_of_bits(_py, val_bits) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_type_of_bits"))]
+pub extern "C" fn __molt_math_type_of_bits(__molt_context: u64, val_bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        _type_of_bits(_py, val_bits)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -625,22 +698,26 @@ pub extern "C" fn __molt_math_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_molt_is_callable(bits: u64) -> i32 {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_molt_is_callable"))]
+pub extern "C" fn __molt_math_molt_is_callable(__molt_context: u64, bits: u64) -> i32 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
     // molt_is_callable is already a pub extern "C" function that does its own GIL entry.
     // We call it directly and check its result (returns True/False bits).
-    let result = builtins::callable::molt_is_callable(bits);
+    let result = builtins::callable::molt_is_callable_attached_body(_py, bits);
     let obj = MoltObject::from_bits(result);
     if obj.as_bool() == Some(true) { 1 } else { 0 }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_format_obj"))]
 pub extern "C" fn __molt_math_format_obj(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let bytes = match _format_obj(_py, obj).into_bytes_result(_py) {
             Ok(bytes) => bytes.into_boxed_slice(),
@@ -650,16 +727,18 @@ pub extern "C" fn __molt_math_format_obj(
             }
         };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_format_obj_str"))]
 pub extern "C" fn __molt_math_format_obj_str(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let bytes = match _format_obj_str(_py, obj).into_bytes_result(_py) {
             Ok(bytes) => bytes.into_boxed_slice(),
@@ -669,27 +748,30 @@ pub extern "C" fn __molt_math_format_obj_str(
             }
         };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_current_int_max_str_digits() -> usize {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_current_int_max_str_digits"))]
+pub extern "C" fn __molt_math_current_int_max_str_digits(__molt_context: u64) -> usize {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         crate::builtins::sys_ext::current_int_max_str_digits(_py)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Container helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_dict_get_in_place"))]
 pub extern "C" fn __molt_math_dict_get_in_place(
+    __molt_context: u64,
     dict_ptr: *mut u8,
     key_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Ok(Some(bits)) => {
                 unsafe {
@@ -700,18 +782,20 @@ pub extern "C" fn __molt_math_dict_get_in_place(
             Ok(None) => 0,
             Err(()) => -1,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_dict_set_in_place"))]
 pub extern "C" fn __molt_math_dict_set_in_place(
+    __molt_context: u64,
     dict_ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -719,20 +803,28 @@ pub extern "C" fn __molt_math_list_len(ptr: *mut u8) -> usize {
     unsafe { _list_len(ptr) }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_seq_snapshot"))]
 pub extern "C" fn __molt_math_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_list_swap(list_bits: u64, left: usize, right: usize) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_list_swap"))]
+pub extern "C" fn __molt_math_list_swap(
+    __molt_context: u64,
+    list_bits: u64,
+    left: usize,
+    right: usize,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
             return 0;
         };
@@ -741,49 +833,59 @@ pub extern "C" fn __molt_math_list_swap(list_bits: u64, left: usize, right: usiz
         } else {
             0
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_molt_iter(bits: u64) -> u64 {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_molt_iter"))]
+pub extern "C" fn __molt_math_molt_iter(__molt_context: u64, bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
     // molt_iter is a pub extern "C" fn(u64) -> u64 that does its own GIL entry.
-    crate::object::ops_iter::molt_iter(bits)
+    crate::object::ops_iter::molt_iter_attached_body(_py, bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_raise_not_iterable(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { raise_not_iterable::<u64>(_py, bits) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_raise_not_iterable"))]
+pub extern "C" fn __molt_math_raise_not_iterable(__molt_context: u64, bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        raise_not_iterable::<u64>(_py, bits)
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_molt_sorted_builtin(bits: u64) -> u64 {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_molt_sorted_builtin"))]
+pub extern "C" fn __molt_math_molt_sorted_builtin(__molt_context: u64, bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
     // molt_sorted_builtin takes (iter_bits, key_bits, reverse_bits)
     // We pass None for key and False for reverse (default sorted behavior).
     let none = MoltObject::none().bits();
     let false_bits = MoltObject::from_bool(false).bits();
-    crate::molt_sorted_builtin(bits, none, false_bits)
+    crate::molt_sorted_builtin_attached_body(_py, bits, none, false_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_molt_mul(a: u64, b: u64) -> u64 {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_molt_mul"))]
+pub extern "C" fn __molt_math_molt_mul(__molt_context: u64, a: u64, b: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
     // molt_mul is pub extern "C" fn(u64, u64) -> u64
-    crate::object::ops_arith::molt_mul(a, b)
+    crate::object::ops_arith::molt_mul_attached_body(_py, a, b)
 }
 
 // ---------------------------------------------------------------------------
 // OS randomness
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_require_random_entropy() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_require_random_entropy"))]
+pub extern "C" fn __molt_math_require_random_entropy(__molt_context: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         crate::require_operation::<u64>(_py, crate::OperationId::RandomEntropy, AuditArgs::None)
             .is_ok() as i32
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -799,32 +901,50 @@ pub extern "C" fn __molt_math_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -
 // Container / object protocol helpers (used by math + statistics + random)
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_dict_new(capacity_bits: u64) -> u64 {
-    crate::builtins::containers_alloc::molt_dict_new(capacity_bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_dict_new"))]
+pub extern "C" fn __molt_math_dict_new(__molt_context: u64, capacity_bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::builtins::containers_alloc::molt_dict_new_attached_body(_py, capacity_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_hash_builtin(val_bits: u64) -> u64 {
-    crate::object::ops::molt_hash_builtin(val_bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_hash_builtin"))]
+pub extern "C" fn __molt_math_hash_builtin(__molt_context: u64, val_bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops::molt_hash_builtin_attached_body(_py, val_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::object::ops_slice::molt_slice_new(start_bits, stop_bits, step_bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_slice_new"))]
+pub extern "C" fn __molt_math_slice_new(
+    __molt_context: u64,
+    start_bits: u64,
+    stop_bits: u64,
+    step_bits: u64,
+) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops_slice::molt_slice_new_attached_body(_py, start_bits, stop_bits, step_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_index(obj_bits: u64, key_bits: u64) -> u64 {
-    crate::object::ops::molt_index(obj_bits, key_bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_index"))]
+pub extern "C" fn __molt_math_index(__molt_context: u64, obj_bits: u64, key_bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops::molt_index_attached_body(_py, obj_bits, key_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_alloc_bytes"))]
+pub extern "C" fn __molt_math_alloc_bytes(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         crate::alloc_bytes(_py, data)
-    })
+    }
 }
 
 #[cfg(test)]
@@ -839,7 +959,8 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             clear_exception(_py);
             let key = b"__bool__";
-            let bits = __molt_math_intern_static_name(key.as_ptr(), key.len());
+            let bits =
+                __molt_math_intern_static_name(_py.attached_context(), key.as_ptr(), key.len());
             assert!(!exception_pending(_py));
             assert_eq!(
                 crate::NameId::DunderBool
@@ -856,7 +977,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             clear_exception(_py);
             let key = b"__molt_unknown__";
-            let _ = __molt_math_intern_static_name(key.as_ptr(), key.len());
+            let _ = __molt_math_intern_static_name(_py.attached_context(), key.as_ptr(), key.len());
             assert!(exception_pending(_py));
             clear_exception(_py);
         });
@@ -959,10 +1080,10 @@ mod numeric_protocol_tests {
         }
     }
 
-    struct WarningPolicy;
-    impl Drop for WarningPolicy {
+    struct WarningPolicy<'scope, 'py>(&'scope crate::PyToken<'py>);
+    impl Drop for WarningPolicy<'_, '_> {
         fn drop(&mut self) {
-            crate::molt_warnings_resetwarnings();
+            crate::molt_warnings_resetwarnings_attached_body(self.0);
         }
     }
 
@@ -1009,7 +1130,10 @@ mod numeric_protocol_tests {
             );
             let result = ExceptionValue::adopt(
                 py,
-                molt_runtime_math::math::molt_math_log2(integer_bits.bits()),
+                molt_runtime_math::math::molt_math_log2_attached_body(
+                    py.core_token(),
+                    integer_bits.bits(),
+                ),
             );
             assert_eq!(
                 crate::as_float_extended(crate::obj_from_bits(result.bits())),
@@ -1018,7 +1142,10 @@ mod numeric_protocol_tests {
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
             let result = ExceptionValue::adopt(
                 py,
-                molt_runtime_math::math::molt_math_sqrt(integer_bits.bits()),
+                molt_runtime_math::math::molt_math_sqrt_attached_body(
+                    py.core_token(),
+                    integer_bits.bits(),
+                ),
             );
             assert_eq!(
                 crate::as_float_extended(crate::obj_from_bits(result.bits())),
@@ -1063,7 +1190,10 @@ mod numeric_protocol_tests {
             );
             let result = ExceptionValue::adopt(
                 py,
-                molt_runtime_math::math::molt_math_sqrt(float_bits.bits()),
+                molt_runtime_math::math::molt_math_sqrt_attached_body(
+                    py.core_token(),
+                    float_bits.bits(),
+                ),
             );
             assert_eq!(
                 crate::as_float_extended(crate::obj_from_bits(result.bits())),
@@ -1072,7 +1202,10 @@ mod numeric_protocol_tests {
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
             let result = ExceptionValue::adopt(
                 py,
-                molt_runtime_math::math::molt_math_floor(float_bits.bits()),
+                molt_runtime_math::math::molt_math_floor_attached_body(
+                    py.core_token(),
+                    float_bits.bits(),
+                ),
             );
             assert_eq!(
                 crate::builtins::numbers::integer_storage_i64(py, result.bits()),
@@ -1091,7 +1224,10 @@ mod numeric_protocol_tests {
             );
             let result = ExceptionValue::adopt(
                 py,
-                molt_runtime_math::math::molt_math_floor(exact_bits.bits()),
+                molt_runtime_math::math::molt_math_floor_attached_body(
+                    py.core_token(),
+                    exact_bits.bits(),
+                ),
             );
             assert_eq!(
                 crate::builtins::numbers::integer_storage_i64(py, result.bits()),
@@ -1135,20 +1271,32 @@ mod numeric_protocol_tests {
                     (float_bits.bits(), 9.0),
                     (integer_bits.bits(), 4.0),
                 ] {
-                    assert_eq!(super::__molt_math_float_as_double(bits, &mut value), 1);
+                    assert_eq!(
+                        super::__molt_math_float_as_double(py.attached_context(), bits, &mut value),
+                        1
+                    );
                     assert_eq!(value, expected);
                 }
                 assert_eq!(
-                    super::__molt_math_exact_float_value(exact_bits.bits(), &mut value),
+                    super::__molt_math_exact_float_value(
+                        py.attached_context(),
+                        exact_bits.bits(),
+                        &mut value
+                    ),
                     1
                 );
                 assert_eq!(value, 9.5);
                 assert_eq!(
-                    super::__molt_math_exact_float_value(integer_bits.bits(), &mut value),
+                    super::__molt_math_exact_float_value(
+                        py.attached_context(),
+                        integer_bits.bits(),
+                        &mut value
+                    ),
                     0
                 );
                 assert_eq!(
                     super::__molt_math_exact_float_value(
+                        py.attached_context(),
                         crate::MoltObject::none().bits(),
                         &mut value
                     ),
@@ -1159,6 +1307,7 @@ mod numeric_protocol_tests {
                 let mut len = 0;
                 assert_eq!(
                     super::__molt_math_integer_storage(
+                        py.attached_context(),
                         integer_bits.bits(),
                         &mut sign,
                         &mut bytes,
@@ -1174,6 +1323,7 @@ mod numeric_protocol_tests {
                 drop(owned);
                 assert_eq!(
                     super::__molt_math_integer_storage(
+                        py.attached_context(),
                         exact_bits.bits(),
                         &mut sign,
                         &mut bytes,
@@ -1183,6 +1333,7 @@ mod numeric_protocol_tests {
                 );
                 assert_eq!(
                     super::__molt_math_integer_storage(
+                        py.attached_context(),
                         crate::MoltObject::none().bits(),
                         &mut sign,
                         &mut bytes,
@@ -1232,7 +1383,8 @@ mod numeric_protocol_tests {
                 molt_runtime_math::math::molt_math_log2,
                 molt_runtime_math::math::molt_math_log10,
             ] {
-                let result = ExceptionValue::adopt(py, operation(index_bits.bits()));
+                let result =
+                    ExceptionValue::adopt(py, operation(py.attached_context(), index_bits.bits()));
                 assert!(crate::obj_from_bits(result.bits()).is_none());
                 let error = NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
                 assert!(!error.as_ptr().is_null());
@@ -1316,7 +1468,14 @@ mod numeric_protocol_tests {
                 }
                 for bits in [float_bits.bits(), index_bits.bits()] {
                     let mut output = 7.0;
-                    assert_eq!(super::__molt_math_float_as_double(bits, &mut output), 1);
+                    assert_eq!(
+                        super::__molt_math_float_as_double(
+                            py.attached_context(),
+                            bits,
+                            &mut output
+                        ),
+                        1
+                    );
                     assert_eq!(output, -1.0);
                 }
                 assert_eq!(numbers::PyFloat_AsDouble(index.as_ptr()), -1.0);
@@ -1342,7 +1501,11 @@ mod numeric_protocol_tests {
                 }
                 let mut output = 7.0;
                 assert_eq!(
-                    super::__molt_math_float_as_double(plain_bits.bits(), &mut output),
+                    super::__molt_math_float_as_double(
+                        py.attached_context(),
+                        plain_bits.bits(),
+                        &mut output
+                    ),
                     -1
                 );
                 assert_eq!(output, 7.0, "failed conversion must not publish a scalar");
@@ -1363,8 +1526,8 @@ mod numeric_protocol_tests {
         let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
-            let _warning_policy = WarningPolicy;
-            crate::molt_warnings_resetwarnings();
+            let _warning_policy = WarningPolicy(py);
+            crate::molt_warnings_resetwarnings_attached_body(py);
             let mut result_type = NativeType::subtype(&raw mut PyFloat_Type, c"math.RetiringFloat");
             result_type.tp_basicsize = std::mem::size_of::<RetiringFloat>() as Py_ssize_t;
             result_type.tp_dealloc = Some(retiring_float_drop);
@@ -1395,13 +1558,14 @@ mod numeric_protocol_tests {
             let _callbacks = CallbackState;
             RETIRING_FLOAT_TYPE.store(&raw mut *result_type, Ordering::SeqCst);
             for warning_error in [false, true] {
-                crate::molt_warnings_resetwarnings();
+                crate::molt_warnings_resetwarnings_attached_body(py);
                 let action: &[u8] = if warning_error { b"error" } else { b"ignore" };
                 let action =
                     ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, action).unwrap());
                 let configured = ExceptionValue::adopt(
                     py,
-                    crate::molt_warnings_simplefilter(
+                    crate::molt_warnings_simplefilter_attached_body(
+                        py,
                         action.bits(),
                         crate::builtins::exceptions::exception_class_bits(
                             py,
@@ -1426,7 +1590,11 @@ mod numeric_protocol_tests {
                         errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr()));
                     }
                     let mut value = 19.25;
-                    let status = super::__molt_math_float_as_double(input_bits.bits(), &mut value);
+                    let status = super::__molt_math_float_as_double(
+                        py.attached_context(),
+                        input_bits.bits(),
+                        &mut value,
+                    );
                     assert_eq!(
                         RETIRING_FLOAT_INPUT_ERROR.load(Ordering::SeqCst),
                         prior.as_ptr(),
@@ -1470,31 +1638,40 @@ mod numeric_protocol_tests {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_exact_builtin_sequence(bits: u64) -> bool {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_exact_builtin_sequence"))]
+pub extern "C" fn __molt_math_exact_builtin_sequence(__molt_context: u64, bits: u64) -> bool {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let classes = builtin_classes(py);
         let class = _type_of_bits(py, bits);
         class == classes.list || class == classes.tuple
-    })
+    }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_exact_builtin_real(bits: u64) -> bool {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_exact_builtin_real"))]
+pub extern "C" fn __molt_math_exact_builtin_real(__molt_context: u64, bits: u64) -> bool {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let classes = builtin_classes(py);
         let class = _type_of_bits(py, bits);
         class == classes.int || class == classes.bool || class == classes.float
-    })
+    }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_not_implemented_bits() -> u64 {
-    crate::with_gil_entry_nopanic!(py, { not_implemented_bits(py) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_not_implemented_bits"))]
+pub extern "C" fn __molt_math_not_implemented_bits(__molt_context: u64) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        not_implemented_bits(py)
+    }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_molt_add(a: u64, b: u64) -> u64 {
-    molt_add(a, b)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_molt_add"))]
+pub extern "C" fn __molt_math_molt_add(__molt_context: u64, a: u64, b: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    molt_add_attached_body(_py, a, b)
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_molt_div(a: u64, b: u64) -> u64 {
-    molt_div(a, b)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_molt_div"))]
+pub extern "C" fn __molt_math_molt_div(__molt_context: u64, a: u64, b: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    molt_div_attached_body(_py, a, b)
 }

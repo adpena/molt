@@ -118,13 +118,6 @@ pub(crate) use capabilities::{
     require_operation_with_capabilities,
 };
 pub use channel::molt_chan_recv_blocking;
-pub use channel::{
-    MoltChannel, molt_chan_drop, molt_chan_new, molt_chan_recv, molt_chan_send,
-    molt_chan_send_blocking, molt_chan_try_recv, molt_chan_try_send,
-};
-pub use db::{molt_db_exec, molt_db_exec_obj, molt_db_query, molt_db_query_obj};
-#[cfg(not(target_arch = "wasm32"))]
-pub use db::{molt_db_set_exec_hook, molt_db_set_query_hook};
 pub(crate) use molt_runtime_core::host_capabilities_generated::OperationId;
 pub use stream::*;
 pub(crate) use stream::{
@@ -134,6 +127,14 @@ pub(crate) use stream::{
 pub use websocket::*;
 #[cfg(molt_net)]
 pub(crate) use websocket::{ws_wait_detach_resource, ws_wait_release_detached_resource};
+pub use {
+    channel::MoltChannel, channel::molt_chan_drop, channel::molt_chan_new, channel::molt_chan_recv,
+    channel::molt_chan_send, channel::molt_chan_send_blocking, channel::molt_chan_try_recv,
+    channel::molt_chan_try_send,
+};
+pub use {db::molt_db_exec, db::molt_db_exec_obj, db::molt_db_query, db::molt_db_query_obj};
+#[cfg(not(target_arch = "wasm32"))]
+pub use {db::molt_db_set_exec_hook, db::molt_db_set_query_hook};
 
 #[cfg(test)]
 mod send_result_tests {
@@ -155,9 +156,10 @@ mod send_result_tests {
                 crate::BuiltinExc::ValueError,
                 "preserve caller failure",
             );
-            let preserved = crate::builtins::exceptions::molt_exception_last_pending();
+            let preserved =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(super::send_result_into_object(py, 0), closed);
-            let after = crate::builtins::exceptions::molt_exception_last_pending();
+            let after = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(after, preserved);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
@@ -185,7 +187,7 @@ mod capacity_tests {
             }
             let too_wide =
                 crate::int_bits_from_bigint(py, num_bigint::BigInt::from(1u8) << usize::BITS);
-            let constructors: [extern "C" fn(u64) -> u64; 3] = [
+            let constructors: [unsafe extern "C" fn(u64, u64) -> u64; 3] = [
                 super::molt_chan_new,
                 super::molt_stream_new,
                 super::molt_ws_pair_obj,
@@ -207,8 +209,12 @@ mod capacity_tests {
                     ),
                     (too_wide, crate::BuiltinExc::OverflowError),
                 ] {
-                    assert_eq!(constructor(bits), crate::MoltObject::none().bits());
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    assert_eq!(
+                        unsafe { constructor(py.attached_context(), bits) },
+                        crate::MoltObject::none().bits()
+                    );
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py, error, exception
                     ));
@@ -219,7 +225,10 @@ mod capacity_tests {
             crate::dec_ref_bits(py, too_wide);
 
             for capacity in [0, 1] {
-                let bits = super::molt_chan_new(crate::MoltObject::from_int(capacity).bits());
+                let bits = super::channel::molt_chan_new_attached_body(
+                    py,
+                    crate::MoltObject::from_int(capacity).bits(),
+                );
                 let ptr = crate::ptr_from_bits(bits);
                 assert!(!ptr.is_null());
                 let channel = unsafe { &*(ptr as *mut super::MoltChannel) };
@@ -227,7 +236,7 @@ mod capacity_tests {
                     channel.sender.capacity(),
                     (capacity != 0).then_some(capacity as usize)
                 );
-                unsafe { super::molt_chan_drop(bits) };
+                unsafe { super::channel::molt_chan_drop_attached_body(py, bits) };
             }
         });
     }

@@ -648,8 +648,8 @@ fn collect_child_nodes(_py: &crate::PyToken<'_>, node_bits: u64) -> Result<Vec<u
     Ok(children)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ast_parse(
+pub(crate) fn molt_ast_parse_attached_body(
+    _py: &crate::PyToken<'_>,
     source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
@@ -657,7 +657,7 @@ pub extern "C" fn molt_ast_parse(
     feature_version_bits: u64,
     ctors_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(value) => value,
             None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "source must be str"),
@@ -751,9 +751,8 @@ pub extern "C" fn molt_ast_parse(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ast_walk_attached_body(_py: &crate::PyToken<'_>, node_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let kind = match node_kind_name(_py, node_bits) {
             Ok(value) => value,
             Err(err) => return err,
@@ -821,9 +820,12 @@ pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ast_get_docstring_attached_body(
+    _py: &crate::PyToken<'_>,
+    node_bits: u64,
+    clean_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let _ = clean_bits;
         let Some(body_bits) = (match get_attr_optional(_py, node_bits, crate::NameId::Body) {
             Ok(value) => value,
@@ -886,9 +888,8 @@ pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64
 
 /// Return a list of (field_name, value) tuples for an AST node.
 /// Reads the `_fields` class attribute and extracts each named attribute.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ast_iter_fields_attached_body(_py: &crate::PyToken<'_>, node_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if obj_from_bits(node_bits).is_none() {
             return raise_exception::<_>(
                 _py,
@@ -993,9 +994,11 @@ fn has_fields_attr(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool {
 /// Return a list of direct AST child nodes for an AST node.
 /// Inspects `_fields`, collects values that are AST instances or
 /// lists containing AST instances.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ast_iter_child_nodes_attached_body(
+    _py: &crate::PyToken<'_>,
+    node_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if obj_from_bits(node_bits).is_none() {
             return raise_exception::<_>(
                 _py,
@@ -1090,6 +1093,8 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
     })
 }
 
+include!("../attached_exports_generated/builtins/ast.rs");
+
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
@@ -1115,9 +1120,17 @@ mod snapshot_tests {
         }
     }
 
-    extern "C" fn clear_constructor_source(value: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
-            crate::molt_list_clear(SOURCE.load(Ordering::SeqCst));
+    extern "C" fn clear_constructor_source(__context: u64, value: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
+            crate::molt_list_clear_attached_body(py, SOURCE.load(Ordering::SeqCst));
             // The test's observer keeps this assertion safe on the old code;
             // only the parser's retained snapshot can supply the extra owner.
             assert_eq!(
@@ -1138,14 +1151,22 @@ mod snapshot_tests {
             }
             inc_ref_bits(py, value);
             value
-        })
+        }
     }
 
-    extern "C" fn finish_expression(value: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn finish_expression(__context: u64, value: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, value);
             value
-        })
+        }
     }
 
     #[test]
@@ -1180,7 +1201,8 @@ mod snapshot_tests {
                 let list = MoltObject::from_ptr(crate::alloc_list(py, &values)).bits();
                 SOURCE.store(list, Ordering::SeqCst);
                 FAIL.store(fail, Ordering::SeqCst);
-                let out = molt_ast_parse(
+                let out = molt_ast_parse_attached_body(
+                    py,
                     source,
                     filename,
                     mode,
@@ -1201,7 +1223,7 @@ mod snapshot_tests {
                         crate::exception_last_bits_noinc(py),
                         Some(CALLBACK_ERROR.load(Ordering::SeqCst))
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 }
                 dec_if_heap(py, out);
                 dec_if_heap(py, list);
@@ -1212,8 +1234,16 @@ mod snapshot_tests {
         });
     }
 
-    extern "C" fn mutating_ast_getattribute(object: u64, name: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn mutating_ast_getattribute(__context: u64, object: u64, name: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let name = string_obj_to_owned(obj_from_bits(name)).unwrap();
             if object == PARENT.load(Ordering::SeqCst) {
                 if name == "_fields" {
@@ -1223,7 +1253,7 @@ mod snapshot_tests {
                 }
                 FIELD_READS.fetch_add(1, Ordering::SeqCst);
                 if name == "first dynamic field" {
-                    crate::molt_list_clear(SOURCE.load(Ordering::SeqCst));
+                    crate::molt_list_clear_attached_body(py, SOURCE.load(Ordering::SeqCst));
                     assert_eq!(
                         owners(LATER.load(Ordering::SeqCst)) as u64,
                         BASE_OWNERS.load(Ordering::SeqCst) + 1
@@ -1239,7 +1269,7 @@ mod snapshot_tests {
             if name == "_fields" {
                 CHILD_READS.fetch_add(1, Ordering::SeqCst);
                 if object == FIRST_CHILD.load(Ordering::SeqCst) {
-                    crate::molt_list_clear(CHILDREN.load(Ordering::SeqCst));
+                    crate::molt_list_clear_attached_body(py, CHILDREN.load(Ordering::SeqCst));
                     assert_eq!(
                         owners(LATER_CHILD.load(Ordering::SeqCst)),
                         2,
@@ -1249,7 +1279,7 @@ mod snapshot_tests {
                 return alloc_tuple_bits(py, &[]);
             }
             raise_exception::<u64>(py, BuiltinExc::AttributeError, "missing test field")
-        })
+        }
     }
 
     #[test]
@@ -1257,8 +1287,8 @@ mod snapshot_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let name = dynamic_attr_name_bits(py, b"AstSnapshotNode").unwrap();
-            let class = crate::molt_class_new(name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let class = crate::molt_class_new_attached_body(py, name);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             let getter_name = dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
@@ -1269,7 +1299,7 @@ mod snapshot_tests {
                 2,
             ))
             .bits();
-            crate::molt_set_attr_name(class, getter_name, getter);
+            crate::molt_set_attr_name_attached_body(py, class, getter_name, getter);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             unsafe {
                 crate::object::class_finish_definition(py, class_ptr).unwrap();
@@ -1282,14 +1312,20 @@ mod snapshot_tests {
             BASE_OWNERS.store(owners(later_name) as u64, Ordering::SeqCst);
             CHILDREN.store(0, Ordering::SeqCst);
             for (run, expected) in [
-                (molt_ast_iter_fields as extern "C" fn(u64) -> u64, 2),
-                (molt_ast_iter_child_nodes as extern "C" fn(u64) -> u64, 0),
+                (
+                    molt_ast_iter_fields as unsafe extern "C" fn(u64, u64) -> u64,
+                    2,
+                ),
+                (
+                    molt_ast_iter_child_nodes as unsafe extern "C" fn(u64, u64) -> u64,
+                    0,
+                ),
             ] {
                 let fields =
                     MoltObject::from_ptr(crate::alloc_list(py, &[first_name, later_name])).bits();
                 SOURCE.store(fields, Ordering::SeqCst);
                 FIELD_READS.store(0, Ordering::SeqCst);
-                let out = run(parent);
+                let out = unsafe { run(py.attached_context(), parent) };
                 assert!(!exception_pending(py));
                 assert_eq!(FIELD_READS.load(Ordering::SeqCst), 2);
                 assert_eq!(
@@ -1316,7 +1352,7 @@ mod snapshot_tests {
                 MoltObject::from_ptr(crate::alloc_list(py, &[first_name, later_name])).bits();
             SOURCE.store(fields, Ordering::SeqCst);
             CHILD_READS.store(0, Ordering::SeqCst);
-            let out = molt_ast_iter_child_nodes(parent);
+            let out = molt_ast_iter_child_nodes_attached_body(py, parent);
             assert!(!exception_pending(py));
             assert_eq!(CHILD_READS.load(Ordering::SeqCst), 2);
             assert_eq!(owners(later), 2, "observer plus output list");
@@ -1395,8 +1431,8 @@ mod snapshot_tests {
             let ctors =
                 MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::none().bits(); 14]))
                     .bits();
-            crate::molt_set_attr_name(node, fields_key, source);
-            crate::molt_set_attr_name(node, body_key, source);
+            crate::molt_set_attr_name_attached_body(py, node, fields_key, source);
+            crate::molt_set_attr_name_attached_body(py, node, body_key, source);
             let _ = missing_bits(py);
             for boundary in 0..5 {
                 struct Reset;
@@ -1427,15 +1463,24 @@ mod snapshot_tests {
                     }
                     2 => {
                         assert!(
-                            obj_from_bits(molt_ast_get_docstring(node, MoltObject::none().bits()))
-                                .is_none()
+                            obj_from_bits(molt_ast_get_docstring_attached_body(
+                                py,
+                                node,
+                                MoltObject::none().bits()
+                            ))
+                            .is_none()
                         );
                     }
                     3 => {
-                        assert!(obj_from_bits(molt_ast_iter_fields(node)).is_none());
+                        assert!(
+                            obj_from_bits(molt_ast_iter_fields_attached_body(py, node)).is_none()
+                        );
                     }
                     _ => {
-                        assert!(obj_from_bits(molt_ast_iter_child_nodes(node)).is_none());
+                        assert!(
+                            obj_from_bits(molt_ast_iter_child_nodes_attached_body(py, node))
+                                .is_none()
+                        );
                     }
                 }
                 crate::test_support::assert_and_clear_emergency_memory_error(py);

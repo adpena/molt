@@ -12,11 +12,13 @@ use molt_runtime_core::prelude::*;
 // ---------------------------------------------------------------------------
 
 pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_logging_runtime_state_get_or_init")]
     fn __molt_logging_runtime_state_get_or_init(
+        __molt_context: u64,
         key_ptr: *const u8,
         key_len: usize,
         init: RuntimeExtensionStateInit,
@@ -26,12 +28,22 @@ unsafe extern "C" {
 }
 
 pub fn runtime_state_get_or_init(
+    _py: &PyToken,
     key: &[u8],
     init: RuntimeExtensionStateInit,
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
-    unsafe { __molt_logging_runtime_state_get_or_init(key.as_ptr(), key.len(), init, clear, drop) }
+    unsafe {
+        __molt_logging_runtime_state_get_or_init(
+            _py.attached_context(),
+            key.as_ptr(),
+            key.len(),
+            init,
+            clear,
+            drop,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -39,9 +51,16 @@ pub fn runtime_state_get_or_init(
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_logging_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_logging_raise_exception")]
+    fn __molt_logging_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 
-    fn __molt_logging_exception_pending() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_logging_exception_pending")]
+    fn __molt_logging_exception_pending(__molt_context: u64) -> i32;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -49,13 +68,19 @@ pub fn raise_exception<T: ExceptionSentinel>(
     type_name: impl Into<ExcKind>,
     msg: &str,
 ) -> T {
-    let bits =
-        unsafe { __molt_logging_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len()) };
+    let bits = unsafe {
+        __molt_logging_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
     T::from_bits(bits)
 }
 
 pub fn exception_pending(_py: &CoreGilToken) -> bool {
-    unsafe { __molt_logging_exception_pending() != 0 }
+    unsafe { __molt_logging_exception_pending(_py.attached_context()) != 0 }
 }
 
 /// Trait for exception return sentinels.
@@ -87,11 +112,16 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_logging_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_logging_alloc_string")]
+    fn __molt_logging_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_logging_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_logging_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,11 +153,12 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_logging_dec_ref_bits(bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_logging_dec_ref_bits")]
+    fn __molt_logging_dec_ref_bits(__molt_context: u64, bits: u64);
 }
 
 pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_logging_dec_ref_bits(bits) }
+    unsafe { __molt_logging_dec_ref_bits(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------

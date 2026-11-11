@@ -3,12 +3,12 @@
 //! owning caller: SSA values may need boxing; trampoline words are borrowed.
 
 use super::*;
-use crate::runtime_import_abi::{
-    MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
-};
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use inkwell::builder::Builder;
 use inkwell::values::{IntValue, PointerValue};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 enum CompletionImports<'ctx> {
@@ -39,16 +39,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let completion = match layout.completion() {
             TaskCompletion::ReturnTask => CompletionImports::ReturnTask,
             TaskCompletion::RegisterCancelToken => CompletionImports::Register {
-                token: self.ensure_runtime_import(MOLT_CANCEL_TOKEN_GET_CURRENT),
-                register: self.ensure_runtime_import(MOLT_TASK_REGISTER_EXECUTION),
+                token: self.ensure_runtime_import(RuntimeFn::CancelTokenGetCurrent),
+                register: self.ensure_runtime_import(RuntimeFn::TaskRegisterExecution),
             },
             TaskCompletion::WrapAsyncGen => CompletionImports::Wrap {
-                wrap: self.ensure_runtime_import(MOLT_ASYNCGEN_NEW),
+                wrap: self.ensure_runtime_import(RuntimeFn::AsyncgenNew),
                 release: self.ensure_refcount_helper(RefcountOperation::Release),
             },
         };
         TaskConstructorImports {
-            allocate: self.ensure_runtime_import(MOLT_TASK_NEW),
+            allocate: self.ensure_runtime_import(RuntimeFn::TaskNew),
             kind: crate::native_task_runtime_kind_bits(layout.runtime_kind()),
             completion,
         }
@@ -78,7 +78,7 @@ impl<'ctx> TaskConstruction<'ctx> {
     ) -> Self {
         let i64_ty = backend.context.i64_type();
         let object = builder
-            .build_call(
+            .build_execution_call(
                 imports.allocate,
                 &[
                     poll.into(),
@@ -141,12 +141,12 @@ impl<'ctx> TaskConstruction<'ctx> {
             CompletionImports::ReturnTask => self.object,
             CompletionImports::Register { token, register } => {
                 let token = builder
-                    .build_call(token, &[], "task_current_token")
+                    .build_execution_call(token, &[], "task_current_token")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
                 builder
-                    .build_call(
+                    .build_execution_call(
                         register,
                         &[
                             self.object.into(),
@@ -164,13 +164,13 @@ impl<'ctx> TaskConstruction<'ctx> {
             }
             CompletionImports::Wrap { wrap, release } => {
                 let wrapped = builder
-                    .build_call(wrap, &[self.object.into()], "task_asyncgen")
+                    .build_execution_call(wrap, &[self.object.into()], "task_asyncgen")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()
                     .into_int_value();
                 builder
-                    .build_call(
+                    .build_execution_call(
                         release,
                         &[self.object.into(), self.refcount_admission.into()],
                         "",

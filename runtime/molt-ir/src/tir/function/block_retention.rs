@@ -292,6 +292,7 @@ mod tests {
     fn labelled_op(opcode: OpCode, label: i64) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],

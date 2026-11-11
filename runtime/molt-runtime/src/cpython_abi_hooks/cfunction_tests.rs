@@ -14,7 +14,7 @@ fn managed_exception_class_creation_and_calls_use_runtime_authority() {
 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
-    unsafe {
+    with_gil(|_| unsafe {
         // PyErr_NewException calls the canonical type(name, bases, dict),
         // then its result must itself be callable through the C API.
         let class = errors::PyErr_NewException(
@@ -71,7 +71,7 @@ fn managed_exception_class_creation_and_calls_use_runtime_authority() {
         ] {
             refcount::Py_DECREF(value);
         }
-    }
+    });
 }
 
 #[derive(Debug, PartialEq)]
@@ -243,35 +243,52 @@ unsafe fn register(target: *const (), flags: c_int, class: u64) -> u64 {
     }
 }
 
-fn bind(function: u64, positional: &[i64], keywords: &[(&str, i64)]) -> u64 {
-    let builder = crate::molt_callargs_new(positional.len() as u64, keywords.len() as u64);
+fn bind(
+    py: &crate::PyToken<'_>,
+    function: u64,
+    positional: &[i64],
+    keywords: &[(&str, i64)],
+) -> u64 {
+    let builder =
+        crate::molt_callargs_new_attached_body(py, positional.len() as u64, keywords.len() as u64);
     assert_ne!(builder, 0);
     for &value in positional {
-        unsafe { crate::molt_callargs_push_pos(builder, MoltObject::from_int(value).bits()) };
+        unsafe {
+            crate::molt_callargs_push_pos_attached_body(
+                py,
+                builder,
+                MoltObject::from_int(value).bits(),
+            )
+        };
     }
     for &(name, value) in keywords {
-        with_gil(|py| unsafe {
-            let name = alloc_string(&py, name.as_bytes());
+        unsafe {
+            let name = alloc_string(py, name.as_bytes());
             assert!(!name.is_null());
             let name = MoltObject::from_ptr(name).bits();
-            crate::molt_callargs_push_kw(builder, name, MoltObject::from_int(value).bits());
-            dec_ref_bits(&py, name);
-        });
+            crate::call::bind::molt_callargs_push_kw_attached_body(
+                py,
+                builder,
+                name,
+                MoltObject::from_int(value).bits(),
+            );
+            dec_ref_bits(py, name);
+        };
     }
-    crate::molt_call_bind(function, builder)
+    crate::molt_call_bind_attached_body(py, function, builder)
 }
 
 fn defining_class() -> u64 {
     with_gil(|py| unsafe {
-        let name = alloc_string(&py, b"DefiningClass");
+        let name = alloc_string(py, b"DefiningClass");
         assert!(!name.is_null());
         let name_bits = MoltObject::from_ptr(name).bits();
-        let class = crate::molt_class_new(name_bits);
-        dec_ref_bits(&py, name_bits);
+        let class = crate::molt_class_new_attached_body(py, name_bits);
+        dec_ref_bits(py, name_bits);
         let class_ptr = MoltObject::from_bits(class).as_ptr().unwrap();
-        crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
-        crate::object::class_finish_definition(&py, class_ptr).unwrap();
-        assert!(!crate::exception_pending(&py));
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
+        crate::object::class_finish_definition(py, class_ptr).unwrap();
+        assert!(!crate::exception_pending(py));
         class
     })
 }
@@ -281,7 +298,7 @@ unsafe fn assert_callable_class_identity(callable: *mut PyObject, is_method: boo
     use molt_cpython_abi::api::{object, refcount, typeobj};
 
     with_gil(|py| unsafe {
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         let expected_class = if is_method {
             classes.builtin_method
         } else {
@@ -296,7 +313,7 @@ unsafe fn assert_callable_class_identity(callable: *mut PyObject, is_method: boo
             .molt_handle_for_pyobj(callable)
             .expect("callable runtime identity")
             .bits();
-        assert_eq!(crate::type_of_bits(&py, bits), expected_class);
+        assert_eq!(crate::type_of_bits(py, bits), expected_class);
         assert_eq!((*callable).ob_type, expected_view);
         let reported = typeobj::PyObject_Type(callable);
         assert_eq!(reported, expected_view.cast());
@@ -313,17 +330,17 @@ unsafe fn assert_callable_class_identity(callable: *mut PyObject, is_method: boo
             i32::from(is_method),
         );
         for hidden in [b"__code__".as_slice(), b"__closure__".as_slice()] {
-            let name = alloc_string(&py, hidden);
+            let name = alloc_string(py, hidden);
             assert!(!name.is_null());
             let name_bits = MoltObject::from_ptr(name).bits();
             let result =
                 hook_object_get_attr(bits, name_bits, AttributeAccess::Normal, ptr::null(), false);
-            dec_ref_bits(&py, name_bits);
+            dec_ref_bits(py, name_bits);
             assert!(matches!(result.decode(), DecodedHandleResult::Error));
-            assert!(crate::exception_pending(&py));
-            crate::clear_exception(&py);
+            assert!(crate::exception_pending(py));
+            crate::clear_exception(py);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
     });
 }
@@ -338,9 +355,9 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
     with_gil(|py| unsafe {
-        let _provider = crate::test_support::NativeProviderTestNamespace::new(&py, "builtins");
+        let _provider = crate::test_support::NativeProviderTestNamespace::new(py, "builtins");
         // A genuine runtime builtin has no PyMethodDef/native C callback.
-        let bits = crate::builtins::functions::lookup_builtin_name(&py, "len")
+        let bits = crate::builtins::functions::lookup_builtin_name(py, "len")
             .expect("builtin lookup succeeds")
             .expect("canonical len builtin");
         assert_eq!(hook_classify_heap(bits), MoltTypeTag::RuntimeCallable as u8);
@@ -397,8 +414,8 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
             .molt_handle_for_pyobj(value)
             .expect("string runtime identity")
             .bits();
-        let bound_bits = crate::molt_bound_method_new(bits, value_bits);
-        assert!(!crate::exception_pending(&py));
+        let bound_bits = crate::molt_bound_method_new_attached_body(py, bits, value_bits);
+        assert!(!crate::exception_pending(py));
         assert_eq!(
             hook_classify_heap(bound_bits),
             MoltTypeTag::RuntimeCallable as u8
@@ -420,7 +437,7 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
         for value in [result, tuple, value, semantic, callable] {
             refcount::Py_DECREF(value);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
     });
 }
@@ -429,6 +446,9 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
 fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     register_cpython_hooks();
+    let fixture_execution = RuntimeExecutionGuard::enter();
+    let py = fixture_execution.token();
+
     let class = defining_class();
     let cases = [
         (METH_NOARGS, noargs as *const (), 0, false),
@@ -464,8 +484,8 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
         let function = unsafe { register(target, flags, defining_class) };
         assert_ne!(function, 0, "flags={flags:#x}");
         with_gil(|py| {
-            let classes = crate::builtin_classes(&py);
-            let actual = crate::type_of_bits(&py, function);
+            let classes = crate::builtin_classes(py);
+            let actual = crate::type_of_bits(py, function);
             assert_eq!(
                 actual,
                 if flags & METH_METHOD != 0 {
@@ -482,11 +502,8 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
                 continue;
             }
             OBSERVED.with(|slot| *slot.borrow_mut() = None);
-            let result = bind(function, &[10, 20, 30][..count], keywords);
-            assert!(
-                !with_gil(|py| crate::exception_pending(&py)),
-                "flags={flags:#x}"
-            );
+            let result = bind(py, function, &[10, 20, 30][..count], keywords);
+            assert!(!with_gil(crate::exception_pending), "flags={flags:#x}");
             assert_eq!(MoltObject::from_bits(result).as_int(), Some(197));
             let observed = OBSERVED
                 .with(|slot| slot.borrow_mut().take())
@@ -514,25 +531,25 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
         }
         if !accepts_keywords {
             OBSERVED.with(|slot| *slot.borrow_mut() = None);
-            let result = bind(function, &[10, 20, 30][..count], &[("unexpected", 2)]);
-            assert!(with_gil(|py| crate::exception_pending(&py)));
+            let result = bind(py, function, &[10, 20, 30][..count], &[("unexpected", 2)]);
+            assert!(with_gil(crate::exception_pending));
             assert!(OBSERVED.with(|slot| slot.borrow().is_none()));
             unsafe { hook_dec_ref(result) };
-            let _ = crate::molt_exception_clear();
+            let _ = crate::molt_exception_clear_attached_body(py);
             unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         }
         if flags & (METH_NOARGS | METH_O) != 0 {
             OBSERVED.with(|slot| *slot.borrow_mut() = None);
-            let result = bind(function, &[1, 2], &[]);
-            assert!(with_gil(|py| crate::exception_pending(&py)));
+            let result = bind(py, function, &[1, 2], &[]);
+            assert!(with_gil(crate::exception_pending));
             assert!(OBSERVED.with(|slot| slot.borrow().is_none()));
             unsafe { hook_dec_ref(result) };
-            let _ = crate::molt_exception_clear();
+            let _ = crate::molt_exception_clear_attached_body(py);
             unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         }
         if accepts_keywords {
-            let result = bind(function, &[1, 2, 3, 4, 5, 6, 7, 8, 9], &[("tail", 10)]);
-            assert!(!with_gil(|py| crate::exception_pending(&py)));
+            let result = bind(py, function, &[1, 2, 3, 4, 5, 6, 7, 8, 9], &[("tail", 10)]);
+            assert!(!with_gil(crate::exception_pending));
             assert_eq!(MoltObject::from_bits(result).as_int(), Some(197));
             let observed = OBSERVED.with(|slot| slot.borrow_mut().take()).unwrap();
             assert_eq!(observed.positional, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -555,6 +572,7 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
     with_gil(|py| unsafe {
+        let outer_custody = hook_foreign_execution_capture();
         for (flags, target, width, expected) in [
             (
                 METH_NOARGS,
@@ -613,27 +631,28 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
                     "abi-vectorcall-tuple",
                 ] {
                     OBSERVED.with(|slot| *slot.borrow_mut() = None);
+                    let custody_before = hook_foreign_execution_capture();
                     let runtime_result = match route {
                         "fixed" => Some(match width {
-                            0 => function::call_function_obj0(&py, callable_bits),
-                            1 => function::call_function_obj1(&py, callable_bits, args[0]),
-                            2 => function::call_function_obj2(&py, callable_bits, args[0], args[1]),
+                            0 => function::call_function_obj0(py, callable_bits),
+                            1 => function::call_function_obj1(py, callable_bits, args[0]),
+                            2 => function::call_function_obj2(py, callable_bits, args[0], args[1]),
                             _ => unreachable!(),
                         }),
                         "bound-vector" => Some(function::call_function_obj_bound_vec(
-                            &py,
+                            py,
                             callable_bits,
                             &args,
                         )),
                         "runtime-vector" => {
-                            Some(function::call_function_obj_vec(&py, callable_bits, &args))
+                            Some(function::call_function_obj_vec(py, callable_bits, &args))
                         }
                         "trampoline" => Some(function::call_function_obj_trampoline(
-                            &py,
+                            py,
                             callable_bits,
                             &args,
                         )),
-                        "binder" => Some(bind(callable_bits, &positional[..width], &[])),
+                        "binder" => Some(bind(py, callable_bits, &positional[..width], &[])),
                         _ => {
                             let result = match route {
                                 "abi-tuple" => object::PyObject_Call(
@@ -662,7 +681,7 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
                         }
                     };
                     if let Some(result) = runtime_result {
-                        dec_ref_bits(&py, result);
+                        dec_ref_bits(py, result);
                     }
                     assert!(
                         OBSERVED.with(|slot| slot.borrow().is_none()),
@@ -694,19 +713,29 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
                             "{route}: flags={flags:#x}, admitted={admitted}",
                         );
                     }
+                    assert_eq!(
+                        hook_foreign_execution_capture(),
+                        custody_before,
+                        "{route}: exact execution custody must be restored"
+                    );
                     assert!(errors::PyErr_Occurred().is_null());
-                    assert!(!crate::exception_pending(&py));
-                    assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                    assert!(!crate::exception_pending(py));
+                    assert!(
+                        current_thread_has_c_extension_execution_context(),
+                        "the surrounding Python execution remains attached"
+                    );
                 }
             }
             drop(tuple);
             drop(callable);
-            dec_ref_bits(&py, callable_bits);
+            dec_ref_bits(py, callable_bits);
         }
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
-        assert!(!current_thread_has_c_extension_execution_context());
+        assert!(!crate::exception_pending(py));
+        assert!(current_thread_has_c_extension_execution_context());
+        assert_eq!(hook_foreign_execution_capture(), outer_custody);
     });
+    assert!(!current_thread_has_c_extension_execution_context());
 }
 
 #[test]
@@ -724,8 +753,8 @@ fn cext_method_defining_class_is_validated_and_traced() {
             (METH_NOARGS, class),
         ] {
             assert_eq!(register(method as *const (), bad_flags, bad_class), 0);
-            assert!(crate::exception_pending(&py));
-            crate::clear_exception(&py);
+            assert!(crate::exception_pending(py));
+            crate::clear_exception(py);
             assert_eq!(
                 with_cext_callable_registry(|registry| registry.len()),
                 count
@@ -740,7 +769,7 @@ fn cext_method_defining_class_is_validated_and_traced() {
         assert_eq!(context.defining_class, class);
         let mut class_edges = 0;
         crate::object::heap_lifecycle::visit_owned_edges(
-            &py,
+            py,
             MoltObject::from_bits(closure).as_ptr().unwrap(),
             &mut |child| {
                 class_edges += usize::from(child == class_ptr);
@@ -751,12 +780,12 @@ fn cext_method_defining_class_is_validated_and_traced() {
             (*header_from_obj_ptr(class_ptr)).ref_count_snapshot(),
             baseline + 1
         );
-        dec_ref_bits(&py, function);
+        dec_ref_bits(py, function);
         assert_eq!(
             (*header_from_obj_ptr(class_ptr)).ref_count_snapshot(),
             baseline
         );
-        dec_ref_bits(&py, class);
+        dec_ref_bits(py, class);
     });
 }
 
@@ -770,12 +799,12 @@ unsafe extern "C" fn runtime_error_with_tuple(
 ) -> *mut PyObject {
     with_gil(|py| {
         crate::raise_exception::<u64>(
-            &py,
+            py,
             BuiltinExc::ValueError,
             "runtime-only C convention error",
         );
-        let bits = crate::exception_last_bits_noinc(&py).unwrap();
-        inc_ref_bits(&py, bits);
+        let bits = crate::exception_last_bits_noinc(py).unwrap();
+        inc_ref_bits(py, bits);
         ORIGINAL_ERROR.with(|slot| slot.set(bits));
     });
     ptr::null_mut()
@@ -785,6 +814,9 @@ unsafe extern "C" fn runtime_error_with_tuple(
 fn cext_tuple_adapter_preserves_exact_runtime_only_exception() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     register_cpython_hooks();
+    let fixture_execution = RuntimeExecutionGuard::enter();
+    let py = fixture_execution.token();
+
     let function = unsafe {
         register(
             runtime_error_with_tuple as *const (),
@@ -793,15 +825,15 @@ fn cext_tuple_adapter_preserves_exact_runtime_only_exception() {
         )
     };
     assert_ne!(function, 0);
-    let result = bind(function, &[1, 2], &[]);
+    let result = bind(py, function, &[1, 2], &[]);
     assert_eq!(result, 0);
     let original = ORIGINAL_ERROR.with(|slot| slot.replace(0));
     assert_ne!(original, 0);
     with_gil(|py| {
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
-        crate::clear_exception(&py);
-        dec_ref_bits(&py, original);
-        dec_ref_bits(&py, function);
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(original));
+        crate::clear_exception(py);
+        dec_ref_bits(py, original);
+        dec_ref_bits(py, function);
     });
 }
 
@@ -811,7 +843,7 @@ fn cext_raw_cmethod_releases_runtime_closure_owners() {
     register_cpython_hooks();
     with_gil(|py| unsafe {
         let class = defining_class();
-        let receiver = alloc_dict_with_pairs(&py, &[]);
+        let receiver = alloc_dict_with_pairs(py, &[]);
         assert!(!receiver.is_null());
         let receiver_bits = MoltObject::from_ptr(receiver).bits();
         let class_ptr = MoltObject::from_bits(class).as_ptr().unwrap();
@@ -854,9 +886,9 @@ fn cext_raw_cmethod_releases_runtime_closure_owners() {
             .molt_handle_for_pyobj(callable)
             .expect("runtime function published")
             .bits();
-        let result = bind(function, &[10], &[("argument", 20)]);
+        let result = bind(py, function, &[10], &[("argument", 20)]);
         assert_eq!(MoltObject::from_bits(result).as_int(), Some(197));
-        dec_ref_bits(&py, result);
+        dec_ref_bits(py, result);
         molt_cpython_abi::api::refcount::Py_DECREF(callable);
         assert_eq!(
             (*header_from_obj_ptr(receiver)).ref_count_snapshot(),
@@ -870,8 +902,8 @@ fn cext_raw_cmethod_releases_runtime_closure_owners() {
         );
         molt_cpython_abi::api::refcount::Py_DECREF(receiver_view);
         molt_cpython_abi::api::refcount::Py_DECREF(class_view);
-        dec_ref_bits(&py, receiver_bits);
-        dec_ref_bits(&py, class);
+        dec_ref_bits(py, receiver_bits);
+        dec_ref_bits(py, class);
     });
 }
 
@@ -879,6 +911,9 @@ fn cext_raw_cmethod_releases_runtime_closure_owners() {
 fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_calls() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     register_cpython_hooks();
+    let fixture_execution = RuntimeExecutionGuard::enter();
+    let py = fixture_execution.token();
+
     unsafe {
         let zero_owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
             numeric::PyFloat_FromDouble(0.0),
@@ -950,7 +985,7 @@ fn cext_null_none_and_zero_receivers_remain_distinct_across_raw_and_runtime_call
                 .molt_handle_for_pyobj(callable)
                 .unwrap()
                 .bits();
-            let result = bind(function, &[], &[]);
+            let result = bind(py, function, &[], &[]);
             assert_eq!(MoltObject::from_bits(result).as_int(), Some(197));
             hook_dec_ref(result);
             let runtime = OBSERVED.with(|slot| slot.borrow_mut().take()).unwrap();
@@ -978,7 +1013,7 @@ fn cext_method_accepts_and_preserves_physical_extension_defining_class() {
     ) -> *mut PyObject {
         unsafe { molt_cpython_abi::api::object::Py_NewRef(class.cast()) }
     }
-    unsafe {
+    with_gil(|_| unsafe {
         let mut class: Box<PyTypeObject> = Box::new(std::mem::zeroed());
         class.ob_base.ob_base.ob_refcnt = 1;
         class.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
@@ -1019,8 +1054,8 @@ fn cext_method_accepts_and_preserves_physical_extension_defining_class() {
             ),
             crate::TYPE_ID_FOREIGN
         );
-        let result = bind(function, &[1], &[("keyword", 2)]);
-        assert!(!with_gil(|py| crate::exception_pending(&py)));
+        let result = with_gil(|py| bind(py, function, &[1], &[("keyword", 2)]));
+        assert!(!with_gil(crate::exception_pending));
         assert_eq!(result, context.defining_class);
         hook_dec_ref(result);
         let raw_result = molt_cpython_abi::api::object::PyObject_Vectorcall(
@@ -1036,7 +1071,7 @@ fn cext_method_accepts_and_preserves_physical_extension_defining_class() {
             class.ob_base.ob_base.ob_refcnt, 1,
             "both class custody edges must retire"
         );
-    }
+    });
 }
 
 thread_local! {
@@ -1058,19 +1093,52 @@ unsafe extern "C" fn ingress_vector_override(
     unsafe { numeric::PyLong_FromLong(619) }
 }
 
-extern "C" fn ingress_bound_python_target(_receiver: u64, left: u64, right: u64) -> u64 {
-    ingress_python_target(left, right)
+extern "C" fn ingress_bound_python_target(
+    __context: u64,
+    _receiver: u64,
+    left: u64,
+    right: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    ingress_python_target(__context, left, right)
 }
 
-extern "C" fn ingress_keyword_hash(_key: u64) -> u64 {
+extern "C" fn ingress_keyword_hash(__context: u64, _key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     INGRESS_HASHES.set(INGRESS_HASHES.get() + 1);
     MoltObject::from_int(29).bits()
 }
-extern "C" fn ingress_keyword_equal(_left: u64, _right: u64) -> u64 {
+extern "C" fn ingress_keyword_equal(__context: u64, _left: u64, _right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     INGRESS_EQUALS.set(INGRESS_EQUALS.get() + 1);
     MoltObject::from_bool(false).bits()
 }
-extern "C" fn ingress_python_target(left: u64, right: u64) -> u64 {
+extern "C" fn ingress_python_target(__context: u64, left: u64, right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(
         MoltObject::from_bits(left).as_int().unwrap()
             + MoltObject::from_bits(right).as_int().unwrap(),
@@ -1094,36 +1162,37 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
     assert!(register_cpython_hooks());
     with_gil(|py| unsafe {
         let hash = crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::provenance::abi::expose_function_address(ingress_keyword_hash as *const ()),
             1,
         );
         let equal = crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::provenance::abi::expose_function_address(ingress_keyword_equal as *const ()),
             2,
         );
         let hash_bits = MoltObject::from_ptr(hash).bits();
         let equal_bits = MoltObject::from_ptr(equal).bits();
-        let hash_name = MoltObject::from_ptr(alloc_string(&py, b"__hash__")).bits();
-        let eq_name = MoltObject::from_ptr(alloc_string(&py, b"__eq__")).bits();
+        let hash_name = MoltObject::from_ptr(alloc_string(py, b"__hash__")).bits();
+        let eq_name = MoltObject::from_ptr(alloc_string(py, b"__eq__")).bits();
         let namespace =
-            crate::alloc_dict_with_pairs(&py, &[hash_name, hash_bits, eq_name, equal_bits]);
+            crate::alloc_dict_with_pairs(py, &[hash_name, hash_bits, eq_name, equal_bits]);
         assert!(!namespace.is_null());
         let namespace_bits = MoltObject::from_ptr(namespace).bits();
-        let class_name = MoltObject::from_ptr(alloc_string(&py, b"IngressName")).bits();
-        let builtins = crate::builtin_classes(&py);
-        let class = crate::builtins::types::molt_type_new(
+        let class_name = MoltObject::from_ptr(alloc_string(py, b"IngressName")).bits();
+        let builtins = crate::builtin_classes(py);
+        let class = crate::builtins::types::molt_type_new_attached_body(
+            py,
             builtins.type_obj,
             class_name,
             builtins.str,
             namespace_bits,
             MoltObject::none().bits(),
         );
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         let keys = [b"first".as_slice(), b"second".as_slice()].map(|text| {
             let key = crate::object::builders::alloc_native_inline_bytes(
-                &py,
+                py,
                 class,
                 crate::object::native_instance::NativePayload::String,
                 text,
@@ -1135,7 +1204,7 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
             MoltObject::from_int(31).bits(),
             MoltObject::from_int(47).bits(),
         ];
-        let dict = crate::alloc_dict_with_pairs(&py, &[keys[0], values[0], keys[1], values[1]]);
+        let dict = crate::alloc_dict_with_pairs(py, &[keys[0], values[0], keys[1], values[1]]);
         assert!(!dict.is_null());
         assert!(
             INGRESS_HASHES.get() >= 2 && INGRESS_EQUALS.get() > 0,
@@ -1145,7 +1214,7 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
         let kwargs =
             refcount::OwnedPyObject::from_owned(cext_new_pyobject_from_borrowed_bits(dict_bits));
         let positional = refcount::OwnedPyObject::from_owned(sequences::PyTuple_New(0));
-        let names_bits = MoltObject::from_ptr(crate::alloc_tuple(&py, &keys)).bits();
+        let names_bits = MoltObject::from_ptr(crate::alloc_tuple(py, &keys)).bits();
         let names = refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(names_bits));
         let c_values = values.map(|value| {
             refcount::OwnedPyObject::from_owned(cext_new_pyobject_from_borrowed_bits(value))
@@ -1155,46 +1224,49 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
         // names use these same valid string objects, making the pointer-match
         // path independent of user equality during the binder's own lookup.
         let python = crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::provenance::abi::expose_function_address(ingress_python_target as *const ()),
             2,
         );
         assert!(!python.is_null());
-        let argument_names = MoltObject::from_ptr(crate::alloc_tuple(&py, &keys)).bits();
-        let metadata_name = MoltObject::from_ptr(alloc_string(&py, b"__molt_arg_names__")).bits();
+        let argument_names = MoltObject::from_ptr(crate::alloc_tuple(py, &keys)).bits();
+        let metadata_name = MoltObject::from_ptr(alloc_string(py, b"__molt_arg_names__")).bits();
         assert!(crate::call::class_init::function_set_attr_bits(
-            &py,
+            py,
             python,
             metadata_name,
             argument_names
         ));
-        dec_ref_bits(&py, argument_names);
-        dec_ref_bits(&py, metadata_name);
+        dec_ref_bits(py, argument_names);
+        dec_ref_bits(py, metadata_name);
         let python_callable = refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(
             MoltObject::from_ptr(python).bits(),
         ));
         let bound_python = crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::provenance::abi::expose_function_address(
                 ingress_bound_python_target as *const (),
             ),
             3,
         );
         assert!(!bound_python.is_null());
-        let self_name = MoltObject::from_ptr(alloc_string(&py, b"self")).bits();
+        let self_name = MoltObject::from_ptr(alloc_string(py, b"self")).bits();
         let bound_names =
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[self_name, keys[0], keys[1]])).bits();
-        let metadata_name = MoltObject::from_ptr(alloc_string(&py, b"__molt_arg_names__")).bits();
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[self_name, keys[0], keys[1]])).bits();
+        let metadata_name = MoltObject::from_ptr(alloc_string(py, b"__molt_arg_names__")).bits();
         assert!(crate::call::class_init::function_set_attr_bits(
-            &py,
+            py,
             bound_python,
             metadata_name,
             bound_names
         ));
         let bound_python_bits = MoltObject::from_ptr(bound_python).bits();
-        let bound_bits =
-            crate::molt_bound_method_new(bound_python_bits, MoltObject::from_int(7).bits());
-        assert!(!crate::exception_pending(&py));
+        let bound_bits = crate::molt_bound_method_new_attached_body(
+            py,
+            bound_python_bits,
+            MoltObject::from_int(7).bits(),
+        );
+        assert!(!crate::exception_pending(py));
         let bound_callable =
             refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(bound_bits));
         let physical_func = refcount::OwnedPyObject::from_owned(
@@ -1206,23 +1278,24 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
             physical_self.as_ptr(),
         ));
         assert!(!physical_method.as_ptr().is_null());
-        let call_name = MoltObject::from_ptr(alloc_string(&py, b"__call__")).bits();
+        let call_name = MoltObject::from_ptr(alloc_string(py, b"__call__")).bits();
         let callable_namespace = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
-            &py,
+            py,
             &[call_name, bound_python_bits],
         ))
         .bits();
-        let callable_name = MoltObject::from_ptr(alloc_string(&py, b"NonVectorCallable")).bits();
-        let callable_class = crate::builtins::types::molt_type_new(
+        let callable_name = MoltObject::from_ptr(alloc_string(py, b"NonVectorCallable")).bits();
+        let callable_class = crate::builtins::types::molt_type_new_attached_body(
+            py,
             builtins.type_obj,
             callable_name,
             builtins.object,
             callable_namespace,
             MoltObject::none().bits(),
         );
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         let callable_instance = crate::call::class_init::alloc_instance_for_class(
-            &py,
+            py,
             MoltObject::from_bits(callable_class).as_ptr().unwrap(),
         );
         let custom_callable =
@@ -1252,10 +1325,10 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
         drop(custom_callable);
         drop(custom_type);
         for bits in [call_name, callable_namespace, callable_name, callable_class] {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
         for bits in [self_name, bound_names, metadata_name, bound_python_bits] {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
         for (label, callable) in [
             ("function", python_callable.as_ptr()),
@@ -1435,9 +1508,9 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
             hash_bits,
             equal_bits,
         ]) {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1445,6 +1518,9 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
 fn vector_hook_validates_complete_spans_before_reading_and_accepts_empty_null_spans() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
+    let fixture_execution = RuntimeExecutionGuard::enter();
+    let py = fixture_execution.token();
+
     unsafe {
         let function = register(noargs as *const (), METH_NOARGS, MoltObject::none().bits());
         let dangling = std::ptr::NonNull::<u64>::dangling().as_ptr();
@@ -1459,8 +1535,8 @@ fn vector_hook_validates_complete_spans_before_reading_and_accepts_empty_null_sp
                 hook_object_vectorcall(function, values, positional, names, keywords).decode(),
                 DecodedHandleResult::Error
             ));
-            assert!(with_gil(|py| crate::exception_pending(&py)));
-            crate::molt_exception_clear();
+            assert!(with_gil(crate::exception_pending));
+            crate::molt_exception_clear_attached_body(py);
             molt_cpython_abi::api::errors::PyErr_Clear();
         }
         let result = hook_object_vectorcall(function, ptr::null(), 0, ptr::null(), 0);
@@ -1497,10 +1573,10 @@ unsafe extern "C" fn ingress_constructor_new(
             .unwrap();
         with_gil(|py| {
             let result = crate::call::class_init::alloc_instance_for_class(
-                &py,
+                py,
                 MoltObject::from_bits(class).as_ptr().unwrap(),
             );
-            dec_ref_bits(&py, class);
+            dec_ref_bits(py, class);
             cext_owned_pyobject_from_bits(result)
         })
     }
@@ -1537,16 +1613,17 @@ fn constructor_phases_preserve_original_mapping_and_observe_new_mutation() {
             METH_VARARGS | METH_KEYWORDS,
             MoltObject::none().bits(),
         );
-        let new_name = MoltObject::from_ptr(alloc_string(&py, b"__new__")).bits();
-        let init_name = MoltObject::from_ptr(alloc_string(&py, b"__init__")).bits();
+        let new_name = MoltObject::from_ptr(alloc_string(py, b"__new__")).bits();
+        let init_name = MoltObject::from_ptr(alloc_string(py, b"__init__")).bits();
         let namespace = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
-            &py,
+            py,
             &[new_name, new, init_name, init],
         ))
         .bits();
-        let name = MoltObject::from_ptr(alloc_string(&py, b"MappingConstructor")).bits();
-        let builtins = crate::builtin_classes(&py);
-        let class = crate::builtins::types::molt_type_new(
+        let name = MoltObject::from_ptr(alloc_string(py, b"MappingConstructor")).bits();
+        let builtins = crate::builtin_classes(py);
+        let class = crate::builtins::types::molt_type_new_attached_body(
+            py,
             builtins.type_obj,
             name,
             builtins.object,
@@ -1554,7 +1631,7 @@ fn constructor_phases_preserve_original_mapping_and_observe_new_mutation() {
             MoltObject::none().bits(),
         );
         // The real metaclass, rather than a helper-only target, owns type_call.
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         let callable =
             refcount::OwnedPyObject::from_owned(cext_new_pyobject_from_borrowed_bits(class));
         let args = refcount::OwnedPyObject::from_owned(sequences::PyTuple_New(0));
@@ -1573,9 +1650,9 @@ fn constructor_phases_preserve_original_mapping_and_observe_new_mutation() {
         drop(args);
         drop(kwargs);
         for bits in [class, name, namespace, new_name, init_name, new, init] {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1647,10 +1724,10 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
     with_gil(|py| unsafe {
         for fail in [false, true] {
             for channel in 0..4 {
-                let list = crate::alloc_list(&py, &[MoltObject::from_int(101).bits()]);
+                let list = crate::alloc_list(py, &[MoltObject::from_int(101).bits()]);
                 assert!(!list.is_null());
                 let list_bits = MoltObject::from_ptr(list).bits();
-                let name = MoltObject::from_ptr(alloc_string(&py, b"payload")).bits();
+                let name = MoltObject::from_ptr(alloc_string(py, b"payload")).bits();
                 let (target, flags) = match channel {
                     0 => (publication_positional as *const (), METH_O),
                     1 => (publication_self as *const (), METH_NOARGS),
@@ -1680,19 +1757,19 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
                 PUBLICATION_FAIL.set(fail);
                 PUBLICATION_REPLACEMENT.set(0);
                 let result = if channel >= 2 {
-                    let dict = crate::alloc_dict_with_pairs(&py, &[name, list_bits]);
+                    let dict = crate::alloc_dict_with_pairs(py, &[name, list_bits]);
                     let dict_bits = MoltObject::from_ptr(dict).bits();
                     let result =
-                        crate::call::bind::call_bind_capi(&py, function, None, &[], dict_bits);
+                        crate::call::bind::call_bind_capi(py, function, None, &[], dict_bits);
                     if channel == 3 {
                         assert_eq!(crate::dict_len(dict), 0);
                     }
-                    dec_ref_bits(&py, dict_bits);
+                    dec_ref_bits(py, dict_bits);
                     result
                 } else {
                     let positional = [list_bits];
                     crate::call::bind::call_bind_capi_vector(
-                        &py,
+                        py,
                         function,
                         if channel == 0 { &positional } else { &[] },
                         &[],
@@ -1701,21 +1778,21 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
                 };
                 // This reads the tracked runtime Vec directly. It deliberately
                 // never rereads the C view or calls bridge observation first.
-                let actual = crate::object::seq_access::pin_item(&py, list, 0).unwrap();
+                let actual = crate::object::seq_access::pin_item(py, list, 0).unwrap();
                 assert_eq!(
                     crate::builtins::numbers::to_i64(MoltObject::from_bits(actual.bits())),
                     Some(907),
                     "channel={channel}, fail={fail}"
                 );
-                assert_eq!(crate::exception_pending(&py), fail);
+                assert_eq!(crate::exception_pending(py), fail);
                 if fail {
-                    let error = crate::exception_last_bits_noinc(&py).unwrap();
+                    let error = crate::exception_last_bits_noinc(py).unwrap();
                     let ptr = MoltObject::from_bits(error).as_ptr().unwrap();
                     assert_eq!(
-                        crate::format_exception_message(&py, ptr),
+                        crate::format_exception_message(py, ptr),
                         "publication callback failure"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 }
                 // Only after the direct runtime read and pending-error oracle:
                 // exposing that item must recover the exact C-origin pointer,
@@ -1730,19 +1807,26 @@ fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
                 assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
                 drop(exposed_owner);
                 if result != 0 {
-                    dec_ref_bits(&py, result);
+                    dec_ref_bits(py, result);
                 }
                 drop(actual);
                 for bits in [function, name, list_bits] {
-                    dec_ref_bits(&py, bits);
+                    dec_ref_bits(py, bits);
                 }
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
         }
     });
 }
 
-extern "C" fn method_nested_target(first: u64, second: u64, third: u64) -> u64 {
+extern "C" fn method_nested_target(__context: u64, first: u64, second: u64, third: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let value = |bits| MoltObject::from_bits(bits).as_int().unwrap();
     MoltObject::from_int(value(first) * 100 + value(second) * 10 + value(third)).bits()
 }
@@ -1755,7 +1839,7 @@ fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding()
     assert!(register_cpython_hooks());
     with_gil(|py| unsafe {
         let target = crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::provenance::abi::expose_function_address(method_nested_target as *const ()),
             3,
         );
@@ -1803,14 +1887,14 @@ fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding()
             ));
             assert_eq!(value.as_ptr(), expected);
         }
-        let shadow = crate::dynamic_attr_name_bits(&py, b"__hash__").unwrap();
+        let shadow = crate::dynamic_attr_name_bits(py, b"__hash__").unwrap();
         assert!(crate::call::class_init::function_set_attr_bits(
-            &py,
+            py,
             target,
             shadow,
             MoltObject::from_int(991).bits()
         ));
-        dec_ref_bits(&py, shadow);
+        dec_ref_bits(py, shadow);
         let function_hash = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
             function.as_ptr(),
             c"__hash__".as_ptr(),
@@ -1896,7 +1980,7 @@ fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding()
         let function_bits = GLOBAL_BRIDGE
             .managed_handle_for_pyobj(function.as_ptr())
             .unwrap();
-        let cls = crate::builtins::types::method_class(&py);
+        let cls = crate::builtins::types::method_class(py);
         for (func, receiver) in [
             (function_bits, MoltObject::none().bits()),
             (
@@ -1904,25 +1988,28 @@ fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding()
                 MoltObject::from_int(2).bits(),
             ),
         ] {
-            let rejected = crate::builtins::types::molt_types_method_new(cls, func, receiver);
-            assert!(crate::exception_pending(&py));
-            dec_ref_bits(&py, rejected);
-            crate::clear_exception(&py);
+            let rejected = crate::builtins::types::molt_types_method_new_attached_body(
+                py, cls, func, receiver,
+            );
+            assert!(crate::exception_pending(py));
+            dec_ref_bits(py, rejected);
+            crate::clear_exception(py);
         }
         let inner_bits = GLOBAL_BRIDGE
             .managed_handle_for_pyobj(inner.as_ptr())
             .unwrap();
-        let explicit = crate::builtins::types::molt_types_method_new(
+        let explicit = crate::builtins::types::molt_types_method_new_attached_body(
+            py,
             cls,
             inner_bits,
             MoltObject::from_int(2).bits(),
         );
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert_eq!(
             crate::bound_method_func_bits(MoltObject::from_bits(explicit).as_ptr().unwrap()),
             inner_bits
         );
-        dec_ref_bits(&py, explicit);
+        dec_ref_bits(py, explicit);
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -1938,7 +2025,7 @@ fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() 
         let value = refcount::OwnedPyObject::from_owned(numeric::PyLong_FromLong(1234));
         let (prior_bits, prior, trace) = with_gil(|py| {
             let prior = crate::builtins::exceptions::alloc_exception(
-                &py,
+                py,
                 BuiltinExc::LookupError,
                 "operation preserves its caller",
             );
@@ -1946,12 +2033,12 @@ fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() 
             let bits = crate::MoltObject::from_ptr(prior).bits();
             let prior =
                 refcount::OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(bits));
-            let trace_class = crate::obj_from_bits(crate::builtin_classes(&py).traceback)
+            let trace_class = crate::obj_from_bits(crate::builtin_classes(py).traceback)
                 .as_ptr()
                 .unwrap();
             let trace = refcount::OwnedPyObject::from_owned(
                 GLOBAL_BRIDGE
-                    .owned_handle_to_pyobj(crate::alloc_instance_for_class(&py, trace_class)),
+                    .owned_handle_to_pyobj(crate::alloc_instance_for_class(py, trace_class)),
             );
             assert!(!prior.as_ptr().is_null() && !trace.as_ptr().is_null());
             assert_eq!(
@@ -1968,13 +2055,13 @@ fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() 
                 let raised_before = with_gil(|py| {
                     match channel {
                         0 => crate::record_exception(
-                            &py,
+                            py,
                             crate::obj_from_bits(prior_bits).as_ptr().unwrap(),
                         ),
                         1 => errors::PyErr_SetRaisedException(object::Py_NewRef(prior.as_ptr())),
-                        _ => crate::record_memory_error_without_allocation(&py),
+                        _ => crate::record_memory_error_without_allocation(py),
                     }
-                    crate::exception_last_bits_noinc(&py)
+                    crate::exception_last_bits_noinc(py)
                 });
                 assert_eq!(gil_owned_by_current_thread(), nested);
                 let attached = object::runtime_execution_thread_is_attached();
@@ -1994,8 +2081,8 @@ fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() 
                 if channel == 2 {
                     with_gil(|py| {
                         assert!(raised_before.is_some(), "the reserve owns a real instance");
-                        assert_eq!(crate::exception_last_bits_noinc(&py), raised_before);
-                        crate::test_support::assert_and_clear_emergency_memory_error(&py);
+                        assert_eq!(crate::exception_last_bits_noinc(py), raised_before);
+                        crate::test_support::assert_and_clear_emergency_memory_error(py);
                     });
                 } else {
                     let raised =
@@ -2018,7 +2105,7 @@ fn capi_numeric_readonly_members_use_runtime_descriptors() {
     use molt_cpython_abi::api::{errors, object, refcount};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
-    unsafe {
+    with_gil(|_| unsafe {
         for (value, owner, fields) in [
             (
                 numeric::PyLong_FromLong(37),
@@ -2083,7 +2170,7 @@ fn capi_numeric_readonly_members_use_runtime_descriptors() {
             }
         }
         assert!(errors::PyErr_Occurred().is_null());
-    }
+    });
 }
 
 #[test]
@@ -2091,7 +2178,7 @@ fn capi_numeric_origins_survive_method_container_and_attribute_owners() {
     use molt_cpython_abi::api::{errors, object, refcount, typeobj};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
-    unsafe {
+    with_gil(|_| unsafe {
         for floating in [false, true] {
             let new = || {
                 if floating {
@@ -2145,7 +2232,7 @@ fn capi_numeric_origins_survive_method_container_and_attribute_owners() {
             assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(second).is_none());
             assert!(errors::PyErr_Occurred().is_null());
         }
-    }
+    });
 }
 
 #[test]
@@ -2175,14 +2262,14 @@ fn capi_direct_list_commit_retains_self_and_mutual_cycles_without_recursive_obse
             assert_ne!(second_bits, 0);
             {
                 let item = crate::object::seq_access::pin_item(
-                    &py,
+                    py,
                     MoltObject::from_bits(first_bits).as_ptr().unwrap(),
                     0,
                 )
                 .unwrap();
                 assert_eq!(item.bits(), second_bits);
                 let item = crate::object::seq_access::pin_item(
-                    &py,
+                    py,
                     MoltObject::from_bits(second_bits).as_ptr().unwrap(),
                     0,
                 )
@@ -2217,21 +2304,21 @@ fn owned_hook_result_error_retires_transferred_owner_and_preserves_error() {
     assert!(register_cpython_hooks());
     with_gil(|py| {
         use crate::builtins::exceptions::ExceptionValue;
-        let child_ptr = crate::alloc_list(&py, &[]);
+        let child_ptr = crate::alloc_list(py, &[]);
         assert!(!child_ptr.is_null());
         let child_bits = MoltObject::from_ptr(child_ptr).bits();
-        let child = ExceptionValue::adopt(&py, child_bits);
+        let child = ExceptionValue::adopt(py, child_bits);
         let count = || unsafe { (*crate::header_from_obj_ptr(child_ptr)).ref_count_snapshot() };
         assert_eq!(count(), 1);
-        let result_ptr = crate::alloc_list(&py, &[child_bits]);
+        let result_ptr = crate::alloc_list(py, &[child_bits]);
         assert!(!result_ptr.is_null());
         assert_eq!(count(), 2);
-        let not_implemented = crate::not_implemented_bits(&py);
+        let not_implemented = crate::not_implemented_bits(py);
         let not_implemented_ptr = MoltObject::from_bits(not_implemented).as_ptr().unwrap();
         let immortal_count =
             unsafe { (*crate::header_from_obj_ptr(not_implemented_ptr)).ref_count_snapshot() };
-        crate::raise_exception::<()>(&py, BuiltinExc::ValueError, "incoming owned result error");
-        let original = crate::exception_last_bits_noinc(&py).unwrap();
+        crate::raise_exception::<()>(py, BuiltinExc::ValueError, "incoming owned result error");
+        let original = crate::exception_last_bits_noinc(py).unwrap();
         assert!(matches!(
             owned_result_from_pending(MoltObject::from_ptr(result_ptr).bits()).decode(),
             molt_cpython_abi::hooks::DecodedHandleResult::Error
@@ -2241,7 +2328,7 @@ fn owned_hook_result_error_retires_transferred_owner_and_preserves_error() {
             1,
             "failed result releases its sole container owner and child edge"
         );
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(original));
         for immediate in [
             MoltObject::none().bits(),
             MoltObject::from_float(0.0).bits(),
@@ -2251,7 +2338,7 @@ fn owned_hook_result_error_retires_transferred_owner_and_preserves_error() {
                 molt_cpython_abi::hooks::DecodedHandleResult::Error
             ));
             assert_eq!(count(), 1);
-            assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
+            assert_eq!(crate::exception_last_bits_noinc(py), Some(original));
         }
         assert!(matches!(
             owned_result_from_pending(not_implemented).decode(),
@@ -2261,16 +2348,16 @@ fn owned_hook_result_error_retires_transferred_owner_and_preserves_error() {
             unsafe { (*crate::header_from_obj_ptr(not_implemented_ptr)).ref_count_snapshot() },
             immortal_count
         );
-        assert_eq!(crate::not_implemented_bits(&py), not_implemented);
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
-        crate::clear_exception(&py);
-        let success_ptr = crate::alloc_list(&py, &[child_bits]);
+        assert_eq!(crate::not_implemented_bits(py), not_implemented);
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(original));
+        crate::clear_exception(py);
+        let success_ptr = crate::alloc_list(py, &[child_bits]);
         assert!(!success_ptr.is_null());
         let success_bits = MoltObject::from_ptr(success_ptr).bits();
         assert_eq!(count(), 2);
         let returned = match owned_result_from_pending(success_bits).decode() {
             molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => {
-                ExceptionValue::adopt(&py, bits)
+                ExceptionValue::adopt(py, bits)
             }
             _ => panic!("successful result must transfer its existing owner"),
         };
@@ -2290,6 +2377,6 @@ fn owned_hook_result_error_retires_transferred_owner_and_preserves_error() {
             "zero is a valid inline float result"
         );
         drop(child);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }

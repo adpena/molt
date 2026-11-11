@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -8,11 +10,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         call: molt_ir::runtime_calls::RuntimeCall,
     ) {
         use molt_ir::runtime_calls::RuntimeCall;
-        let function = match call {
-            RuntimeCall::Iter => call.function(),
-            RuntimeCall::DictSet => call.function(),
+        let abi = match call {
+            RuntimeCall::Iter => call.boxed_abi(),
+            RuntimeCall::DictSet => call.boxed_abi(),
         };
-        self.emit_boxed_runtime_call(op, function.boxed_abi());
+        self.emit_boxed_runtime_call(op, abi);
     }
 
     /// Lower a preserved operation through its admitted runtime boxed-call ABI.
@@ -26,7 +28,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.emit_contract_runtime_call(op, call);
             return true;
         }
-        if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {
+        if let Some(abi) = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(kind) {
             self.emit_boxed_runtime_call(op, abi);
             return true;
         }
@@ -48,8 +50,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Emit a classified positional boxed ABI call for either a direct runtime
     /// CALL or a preserved operation. Both routes share admission, the
     /// borrowed-operand custody and the canonical result custody.
-    pub(super) fn emit_boxed_runtime_call(&mut self, op: &TirOp, abi: &RuntimeBoxedAbi) {
-        let symbol = abi.symbol;
+    pub(super) fn emit_boxed_runtime_call(&mut self, op: &TirOp, abi: RuntimeBoxedAbi) {
+        let symbol = abi.symbol();
         // Semantic classification is not availability in the selected runtime.
         // Direct calls and preserved operations must share this admission before
         // declaring symbols or materializing any temporary argument owners.
@@ -59,7 +61,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ));
             return;
         }
-        if op.operands.len() != abi.arity {
+        if op.operands.len() != abi.arity() {
             self.record_fatal(format!(
                 "boxed runtime symbol `{symbol}` has mismatched arity"
             ));
@@ -73,7 +75,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         };
         // Keep declaration custody distinct from value semantics. Dedicated
         // raw/mixed lowering may use the same machine-signature authority.
-        if runtime_import_return_abi(symbol, abi.arity) != Some(return_abi) {
+        if runtime_import_return_abi(symbol, abi.arity()) != Some(return_abi) {
             self.record_fatal(format!(
                 "boxed runtime symbol `{symbol}` has no matching LLVM machine ABI"
             ));
@@ -92,8 +94,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         let callee = match return_abi {
-            RuntimeReturnAbi::Void => self.ensure_runtime_void_fn(symbol, abi.arity),
-            RuntimeReturnAbi::I64 => self.ensure_runtime_i64_fn(symbol, abi.arity),
+            RuntimeReturnAbi::Void => self.ensure_runtime_void_fn(symbol, abi.arity()),
+            RuntimeReturnAbi::I64 => self.ensure_runtime_i64_fn(symbol, abi.arity()),
         };
         self.emit_positional_runtime_call(
             op,
@@ -108,15 +110,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// ABI (all-word manifest rows with a raw_bits return) authorizes the
     /// signature, operands pass as borrowed words, and the result is bound
     /// without an owner and never released.
-    pub(super) fn emit_raw_runtime_call(&mut self, op: &TirOp, abi: &RuntimeRawAbi) {
-        let symbol = abi.symbol;
+    pub(super) fn emit_raw_runtime_call(&mut self, op: &TirOp, function: RuntimeFn) {
+        let symbol = function.symbol();
         if !self.backend.runtime_callable_symbols.contains(symbol) {
             self.record_fatal(format!(
                 "raw runtime symbol `{symbol}` is unavailable in the selected runtime"
             ));
             return;
         }
-        if op.operands.len() != abi.arity {
+        if op.operands.len() != function.params() {
             self.record_fatal(format!(
                 "raw runtime symbol `{symbol}` has mismatched arity"
             ));
@@ -128,7 +130,32 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ));
             return;
         }
-        let callee = self.ensure_runtime_i64_fn(symbol, abi.arity);
+        if function.form() == molt_ir::runtime_fn_generated::RuntimeCallForm::Helper {
+            // A machine helper takes and returns machine words: each operand
+            // goes as the word it is, and a raw-bits result stays raw.
+            let callee = self.ensure_runtime_import(function);
+            let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
+                .operands
+                .iter()
+                .map(|&operand| self.ensure_i64(self.resolve(operand)).into())
+                .collect();
+            let call = self
+                .backend
+                .builder
+                .build_execution_call(callee, &args, "helper_call")
+                .unwrap();
+            if let Some(&result) = op.results.first() {
+                let word = call.try_as_basic_value().unwrap_basic();
+                let result_ty = match function.result() {
+                    molt_ir::runtime_fn_generated::RuntimeReturnContract::RawBits => TirType::I64,
+                    _ => TirType::DynBox,
+                };
+                self.values.insert(result, word);
+                self.value_types.insert(result, result_ty);
+            }
+            return;
+        }
+        let callee = self.ensure_runtime_i64_fn(symbol, function.params());
         self.emit_positional_runtime_call(
             op,
             callee,
@@ -174,7 +201,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let builder_bits = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 new_fn,
                 &[
                     i64_ty.const_int(args.len() as u64, false).into(),
@@ -190,7 +217,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         for &arg in args {
             self.backend
                 .builder
-                .build_call(push_fn, &[builder_bits.into(), arg.into()], "callargs_push")
+                .build_execution_call(push_fn, &[builder_bits.into(), arg.into()], "callargs_push")
                 .unwrap();
         }
         consume(&mut *self, builder_bits)
@@ -236,7 +263,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.with_callargs(args, |this, builder| {
             this.backend
                 .builder
-                .build_call(bind_fn, &[callable.into(), builder.into()], "call_result")
+                .build_execution_call(bind_fn, &[callable.into(), builder.into()], "call_result")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -264,7 +291,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
         self.backend
             .builder
-            .build_call(fast_fn, &call_args, "call_func")
+            .build_execution_call(fast_fn, &call_args, "call_func")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -322,7 +349,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 owned_fn,
                 &[
                     words[0].into(),
@@ -351,7 +378,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let is_func_bits = self
             .backend
             .builder
-            .build_call(is_func_fn, &[callable_bits.into()], "is_function_obj")
+            .build_execution_call(is_func_fn, &[callable_bits.into()], "is_function_obj")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -360,7 +387,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let is_func_truthy = self
             .backend
             .builder
-            .build_call(truthy_fn, &[is_func_bits.into()], "is_function_truthy")
+            .build_execution_call(truthy_fn, &[is_func_bits.into()], "is_function_truthy")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -454,16 +481,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.inline_int_constant(site_id)
     }
 
-    /// Compiled polls receive exactly one raw frame address, independent of
-    /// Python-visible parameter names and constructor arity.
+    /// Compiled polls receive the attached context and one raw frame address,
+    /// independent of Python-visible parameter names and constructor arity.
     pub(super) fn poll_frame_address(&self) -> inkwell::values::IntValue<'ctx> {
         assert_eq!(
             self.llvm_fn.count_params(),
-            1,
-            "compiled poll requires one frame parameter"
+            2,
+            "compiled poll requires an execution context and one frame parameter"
         );
         self.llvm_fn
-            .get_first_param()
+            .get_nth_param(1)
             .expect("compiled poll requires its frame address")
             .into_int_value()
     }

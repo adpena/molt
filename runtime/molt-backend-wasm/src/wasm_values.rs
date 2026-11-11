@@ -25,7 +25,7 @@ pub(crate) use truthiness::emit_branch_truthiness_i32;
 /// sentinel locally: integer zero is the boxed-float representation of `0.0`,
 /// not Python `None`.
 #[inline]
-pub(crate) fn emit_boxed_none(func: &mut wasm_encoder::Function) {
+pub(crate) fn emit_boxed_none(func: &mut crate::wasm_binary::Function) {
     func.instruction(&wasm_encoder::Instruction::I64Const(box_none()));
 }
 

@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
-"""Fail-closed audit for the controlled canonical performance authority.
+"""Fail-closed audit for the controlled candidate-cost workflow.
 
-The canonical scoreboard is expensive measurement, not a shared-runner push
-smoke test. A prior push trigger combined with cancel-in-progress consumed hours
-of runner time while repeated main updates cancelled every result. This audit
-keeps one honest contract: scheduled and explicit controlled runs invoke the real
-blocking scoreboard; push/PR allocation and active-run cancellation are forbidden.
+`.github/workflows/perf-gate.yml` keeps one job, `candidate-runtime-costs`:
+explicit-dispatch evidence with no comparative or release claim. A prior push
+trigger combined with cancel-in-progress consumed hours of runner time while
+repeated main updates cancelled every result. This audit keeps one honest
+contract: only an explicit dispatch allocates the job, an active run is never
+cancelled, and the job executes its one fixed proof family blocking. The
+instruction signal on main runs on the farm (tools/perf_instructions.py).
 
-The proof plan runs it as a landing gate and as ``repository.perf-gate-wiring``,
-so trigger, queueing, and blocking semantics cannot silently regress while a separate fast PR performance plane is developed.
+The proof plan runs it as a landing gate and as ``repository.perf-gate-wiring``.
 """
 
 from __future__ import annotations
 
 import re
 import sys
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parent.parent
 PERF_GATE = REPO / ".github" / "workflows" / "perf-gate.yml"
-PRIMITIVE_GATE = REPO / ".github" / "workflows" / "primitive-instructions.yml"
-SCOREBOARD_CMD = "perf_scoreboard.py"
-MEASUREMENT_EVENTS = {"workflow_dispatch", "schedule"}
+CANDIDATE_JOB = "candidate-runtime-costs"
+CANDIDATE_RUN = "--run-family runtime_candidate_costs --receipt"
+ADMITTED_EVENTS = {"workflow_dispatch"}
 
 
 def _load_yaml(path: Path):
@@ -268,80 +268,22 @@ def _nonblocking_continue_on_error(value: object) -> bool:
     return normalized not in {"", "false", "0"}
 
 
-def _if_condition_problem(value: object) -> str | None:
-    if value is None:
-        return None
-    normalized = _expr(value).strip().lower()
-    compact = re.sub(r"\s+", "", normalized)
-    if compact in {"", "true", "always()"}:
-        return None
-    if compact in {"false", "0"} or compact.startswith("false&&"):
-        return "has a trivially false if condition"
-
-    event_matches = re.findall(
-        r"github\.event_name\s*==\s*['\"]([^'\"]+)['\"]", normalized
-    )
-    if event_matches and MEASUREMENT_EVENTS.isdisjoint(event_matches):
-        return (
-            "is gated away from workflow_dispatch/schedule events, so the "
-            "controlled scoreboard can never execute"
-        )
-    return None
-
-
-def _scoreboard_steps(doc: object) -> list[tuple[str, int, dict, dict]]:
-    if not isinstance(doc, dict):
-        return []
-    jobs = doc.get("jobs")
-    if not isinstance(jobs, dict):
-        return []
-
-    hits: list[tuple[str, int, dict, dict]] = []
-    for job_name, job in jobs.items():
-        if not isinstance(job, dict):
-            continue
-        steps = job.get("steps")
-        if not isinstance(steps, list):
-            continue
-        for idx, step in enumerate(steps):
-            if not isinstance(step, dict):
-                continue
-            run = step.get("run")
-            if isinstance(run, str) and SCOREBOARD_CMD in run:
-                hits.append((str(job_name), idx, job, step))
-    return hits
-
-
-CANONICAL_ADMISSION = (
-    "github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs'"
-)
-
-
-def _candidate_mode_problems(doc: dict) -> list[str]:
-    """Keep the optional candidate lane separate from canonical acceptance."""
-    jobs = doc.get("jobs", {})
-    dispatch = _triggers(doc).get("workflow_dispatch") or {}
-    inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
-    if "candidate-runtime-costs" not in jobs and "mode" not in inputs:
-        return []
+def candidate_problems(doc: object) -> list[str]:
+    """The one candidate job runs blocking on every explicit dispatch."""
+    jobs = doc.get("jobs") if isinstance(doc, Mapping) else None
+    if not isinstance(jobs, Mapping):
+        return ["perf-gate.yml declares no jobs"]
     problems: list[str] = []
-    mode = inputs.get("mode", {})
-    if (
-        set(inputs) != {"mode"}
-        or mode.get("type") != "choice"
-        or mode.get("default") != "canonical"
-        or mode.get("options") != ["canonical", "candidate-runtime-costs"]
-    ):
+    if set(jobs) != {CANDIDATE_JOB}:
         problems.append(
-            "candidate cost dispatch requires only the fixed mode choice with canonical default"
+            f"perf-gate.yml runs only {CANDIDATE_JOB!r}; found {sorted(jobs)!r}"
         )
-    candidate = jobs.get("candidate-runtime-costs", {})
-    if (
-        _expr(candidate.get("if"))
-        != "github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate-runtime-costs'"
-    ):
+    candidate = jobs.get(CANDIDATE_JOB)
+    if not isinstance(candidate, Mapping):
+        return problems
+    if candidate.get("if") is not None:
         problems.append(
-            "candidate costs must run only on explicit candidate-mode dispatch"
+            "candidate costs run on every explicit dispatch, never under a condition"
         )
     if _nonblocking_continue_on_error(candidate.get("continue-on-error")):
         problems.append(
@@ -350,7 +292,7 @@ def _candidate_mode_problems(doc: dict) -> list[str]:
     captures = [
         step
         for step in candidate.get("steps", [])
-        if "--run-family runtime_candidate_costs --receipt" in str(step.get("run", ""))
+        if isinstance(step, Mapping) and CANDIDATE_RUN in str(step.get("run", ""))
     ]
     if len(captures) != 1:
         problems.append("candidate mode must execute its one fixed proof family")
@@ -362,228 +304,49 @@ def _candidate_mode_problems(doc: dict) -> list[str]:
         problems.append(
             "candidate proof execution must propagate failure without conditional skipping"
         )
-    for _name, _index, job, _step in _scoreboard_steps(doc):
-        admitted = {CANONICAL_ADMISSION}
-        if _job_needs(job):
-            # An aggregate must still run, and publish its evidence, after a
-            # red predecessor; it keeps the same admission otherwise.
-            admitted.add(f"always() && ({CANONICAL_ADMISSION})")
-        if _expr(job.get("if")) not in admitted:
-            problems.append(
-                "canonical scoreboard must retain schedule and default manual dispatch"
-            )
     return problems
 
 
-SHARD_ARGUMENT = re.compile(r"--shard\s+\"?\$\{\{\s*matrix\.shard\s*\}\}/(\d+)")
-
-
-def _job_needs(job: Mapping) -> set[str]:
-    needs = job.get("needs")
-    if isinstance(needs, str):
-        return {needs}
-    if isinstance(needs, list):
-        return {str(item) for item in needs}
-    return set()
-
-
-def _matrix_axis(job: Mapping, axis: str) -> object:
-    strategy = job.get("strategy")
-    matrix = strategy.get("matrix") if isinstance(strategy, Mapping) else None
-    return matrix.get(axis) if isinstance(matrix, Mapping) else None
-
-
-def _shard_problems(doc: object) -> list[str]:
-    """A sharded scoreboard must name every shard of its count and be merged.
-
-    The merge proves exact coverage at run time; this audit refuses the
-    misconfiguration before any runner measures a partial set.
-    """
-    jobs = doc.get("jobs") if isinstance(doc, Mapping) else None
-    if not isinstance(jobs, Mapping):
-        return []
-    problems: list[str] = []
-    for job_name, _idx, job, step in _scoreboard_steps(doc):
-        run = str(step.get("run", ""))
-        if "--shard" not in run:
-            continue
-        match = SHARD_ARGUMENT.search(run)
-        if match is None:
-            problems.append(
-                f"job {job_name!r} passes --shard without ${{{{ matrix.shard }}}}/COUNT"
-            )
-            continue
-        count = int(match.group(1))
-        axis = _matrix_axis(job, "shard")
-        values = [str(value) for value in axis] if isinstance(axis, list) else None
-        if values != [str(index) for index in range(count)]:
-            problems.append(
-                f"job {job_name!r} shards its scoreboard {count} ways but its "
-                f"matrix shard axis is {axis!r}, not 0..{count - 1}"
-            )
-        merged = any(
-            job_name in _job_needs(other)
-            and any(
-                SCOREBOARD_CMD in str(s.get("run", ""))
-                and "--merge" in str(s.get("run", ""))
-                for s in other.get("steps", [])
-                if isinstance(s, Mapping)
-            )
-            for other in jobs.values()
-            if isinstance(other, Mapping)
-        )
-        if not merged:
-            problems.append(
-                f"no job needs {job_name!r} and merges its scoreboard shards"
-            )
-    return problems
-
-
-def check() -> list[str]:
+def check(path: Path | None = None) -> list[str]:
     """Return a list of wiring problems; empty list == correctly wired."""
-    if not PERF_GATE.exists():
-        return [f"{PERF_GATE} is missing -- the canonical perf gate does not exist"]
-    text = PERF_GATE.read_text(encoding="utf-8")
-    try:
-        doc = _load_yaml(PERF_GATE)
-    except Exception as exc:  # noqa: BLE001 - any parse failure is a wiring failure
-        return [f"perf-gate.yml does not parse as YAML: {exc}"]
-
-    problems: list[str] = _candidate_mode_problems(doc)
-    problems.extend(_shard_problems(doc))
-    triggers = _triggers(doc)
-
-    # (1) It must invoke the REAL scoreboard in an executable workflow step,
-    # not merely mention it in prose or comments.
-    scoreboard_steps = _scoreboard_steps(doc)
-    if SCOREBOARD_CMD not in text:
-        problems.append(
-            f"perf-gate.yml never invokes {SCOREBOARD_CMD} -- it is not the canonical gate"
-        )
-    elif not scoreboard_steps:
-        problems.append(
-            f"perf-gate.yml mentions {SCOREBOARD_CMD} but no executable run step invokes it"
-        )
-
-    # (2) Controlled measurement has exactly two admission paths. Push/PR events
-    # allocate noisy shared runners too often and cancel before producing evidence.
-    trigger_names = set(map(str, triggers))
-    missing_events = MEASUREMENT_EVENTS - trigger_names
-    if missing_events:
-        problems.append(
-            "perf-gate.yml is missing controlled measurement trigger(s) "
-            f"{sorted(missing_events)!r}; observed triggers are {sorted(trigger_names)!r}"
-        )
-    forbidden_events = {"push", "pull_request", "pull_request_target"} & trigger_names
-    if forbidden_events:
-        problems.append(
-            "perf-gate.yml allocates canonical measurement on high-churn event(s) "
-            f"{sorted(forbidden_events)!r}; use the separate fast PR plane"
-        )
-
-    # (3) Pending work may debounce before allocation, but an active canonical
-    # measurement must finish and publish its evidence.
-    if not re.search(r"(?m)^\s*cancel-in-progress:\s*false\s*$", text):
-        problems.append(
-            "perf-gate.yml must set cancel-in-progress: false so active canonical "
-            "measurements finish and publish evidence"
-        )
-
-    # (4) The scoreboard invocation itself must be blocking. A workflow that
-    # invokes the scoreboard under continue-on-error or a dead `if` is still a
-    # proxy: it observes the gate without letting the gate block a merge.
-    for job_name, step_idx, job, step in scoreboard_steps:
-        job_label = f"job {job_name!r}"
-        step_name = step.get("name") or f"step #{step_idx + 1}"
-        step_label = f"{job_label} scoreboard step {step_name!r}"
-
-        if _nonblocking_continue_on_error(job.get("continue-on-error")):
-            problems.append(
-                f"{job_label} has continue-on-error set; the canonical perf gate is non-blocking"
-            )
-        if _nonblocking_continue_on_error(step.get("continue-on-error")):
-            problems.append(
-                f"{step_label} has continue-on-error set; the canonical perf gate is non-blocking"
-            )
-
-        job_if_problem = _if_condition_problem(job.get("if"))
-        if job_if_problem:
-            problems.append(f"{job_label} {job_if_problem}")
-        step_if_problem = _if_condition_problem(step.get("if"))
-        if step_if_problem:
-            problems.append(f"{step_label} {step_if_problem}")
-
-    return problems
-
-
-def primitive_problems(path: Path = PRIMITIVE_GATE) -> list[str]:
-    """The postsubmit axis must have one explicit PR activation flag."""
+    path = PERF_GATE if path is None else path
+    if not path.exists():
+        return [f"{path} is missing -- the candidate cost workflow does not exist"]
+    text = path.read_text(encoding="utf-8")
     try:
         doc = _load_yaml(path)
-        triggers = _triggers(doc)
-        job = doc["jobs"]["primitive-instructions"]
-    except (OSError, KeyError, TypeError, ValueError) as exc:
-        return [f"primitive instruction workflow is unavailable: {exc}"]
-    problems = []
-    if set(triggers) != {"push", "pull_request", "merge_group", "workflow_dispatch"}:
+    except Exception as exc:  # noqa: BLE001 - any parse failure is a wiring failure
+        return [f"perf-gate.yml does not parse as YAML: {exc}"]
+    problems = candidate_problems(doc)
+    # Push/PR/schedule events allocate noisy shared runners and cancel before
+    # producing evidence; only an explicit dispatch admits a measurement.
+    triggers = set(map(str, _triggers(doc)))
+    if triggers != ADMITTED_EVENTS:
         problems.append(
-            "primitive instructions must run postsubmit with declared PR/merge-queue triggers"
+            "perf-gate.yml admits only workflow_dispatch; observed triggers are "
+            f"{sorted(triggers)!r}"
         )
-    if (
-        job.get("if")
-        != "github.event_name == 'push' || github.event_name == 'workflow_dispatch' || vars.MOLT_PRIMITIVE_PRESUBMIT == 'true'"
-    ):
+    # Pending work may debounce before allocation, but an active measurement
+    # must finish and publish its evidence.
+    if not re.search(r"(?m)^\s*cancel-in-progress:\s*false\s*$", text):
         problems.append(
-            "primitive presubmit activation must use only MOLT_PRIMITIVE_PRESUBMIT"
-        )
-    if _nonblocking_continue_on_error(job.get("continue-on-error")):
-        problems.append("primitive instruction job cannot continue-on-error")
-    runs = [
-        step
-        for step in job.get("steps", [])
-        if "--run-family primitive_instructions" in step.get("run", "")
-    ]
-    if len(runs) != 1:
-        problems.append(
-            "primitive instruction job must execute its proof-plan family once"
-        )
-    elif runs[0].get("if") or _nonblocking_continue_on_error(
-        runs[0].get("continue-on-error")
-    ):
-        problems.append(
-            "primitive instruction proof step must always block selected runs"
+            "perf-gate.yml must set cancel-in-progress: false so active "
+            "measurements finish and publish evidence"
         )
     return problems
-
-
-def primitive_command_problems(commands: list[dict]) -> list[str]:
-    selected = [
-        row for row in commands if row.get("family") == "primitive_instructions"
-    ]
-    if len(selected) != 1:
-        return ["primitive instruction family must own exactly one measurement command"]
-    argv = selected[0].get("argv", [])
-    if (
-        "tools/perf_scoreboard.py" not in argv
-        or "primitives" not in argv
-        or "--update-ratchet" in argv
-    ):
-        return ["primitive proof must check the scoreboard ratchet without updating it"]
-    return []
 
 
 def main() -> int:
-    problems = check() + primitive_problems()
-    with (REPO / "tools" / "proof_plan.toml").open("rb") as stream:
-        problems.extend(primitive_command_problems(tomllib.load(stream)["command"]))
+    problems = check()
     if problems:
-        print("perf-gate-wiring: FAIL -- controlled perf authority drifted:")
+        print("perf-gate-wiring: FAIL -- controlled candidate measurement drifted:")
         for p in problems:
             print(f"  - {p}")
         print("  (controlled measurement must run to completion and fail honestly.)")
         return 1
     print(
-        "perf-gate-wiring: OK -- scheduled/manual measurement runs the blocking scoreboard without active cancellation."
+        "perf-gate-wiring: OK -- explicit dispatch runs the blocking candidate "
+        "family without active cancellation."
     )
     return 0
 

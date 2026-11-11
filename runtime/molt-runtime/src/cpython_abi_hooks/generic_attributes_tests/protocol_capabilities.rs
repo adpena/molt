@@ -139,19 +139,19 @@ fn native_dictionary_views_have_live_sequence_length_without_mapping_length() {
             for (name, view, class, contains) in [
                 (
                     "dict_keys",
-                    crate::molt_dict_keys(bits),
+                    crate::molt_dict_keys_attached_body(py, bits),
                     crate::builtin_classes(py).dict_keys,
                     true,
                 ),
                 (
                     "dict_items",
-                    crate::molt_dict_items(bits),
+                    crate::molt_dict_items_attached_body(py, bits),
                     crate::builtin_classes(py).dict_items,
                     true,
                 ),
                 (
                     "dict_values",
-                    crate::molt_dict_values(bits),
+                    crate::molt_dict_values_attached_body(py, bits),
                     crate::builtin_classes(py).dict_values,
                     false,
                 ),
@@ -218,8 +218,8 @@ fn python_subclasses_keep_both_length_slots_through_override_and_deletion() {
                 crate::builtin_classes(py).dict,
                 crate::builtin_classes(py).set,
             ] {
-                let class = crate::molt_class_new(name);
-                crate::molt_class_set_base(class, base);
+                let class = crate::molt_class_new_attached_body(py, name);
+                crate::molt_class_set_base_attached_body(py, class, base);
                 crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                     .unwrap();
                 let class_view =
@@ -233,7 +233,7 @@ fn python_subclasses_keep_both_length_slots_through_override_and_deletion() {
                 );
                 for expected in [0, 17, 0] {
                     if expected == 17 {
-                        crate::molt_set_attr_name(class, key, seventeen);
+                        crate::molt_set_attr_name_attached_body(py, class, key, seventeen);
                         assert!(!crate::exception_pending(py));
                     }
                     assert_eq!(
@@ -249,7 +249,7 @@ fn python_subclasses_keep_both_length_slots_through_override_and_deletion() {
                         native_error_description()
                     );
                     if expected == 17 {
-                        crate::molt_del_attr_name(class, key);
+                        crate::molt_del_attr_name_attached_body(py, class, key);
                         assert!(
                             !crate::exception_pending(py),
                             "{}",
@@ -271,15 +271,23 @@ thread_local! {
     static CAPTURED_PROTOCOL_ARGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-extern "C" fn capture_protocol_args(args: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn capture_protocol_args(__context: u64, args: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         inc_ref_bits(py, args);
         let old = CAPTURED_PROTOCOL_ARGS.with(|captured| captured.replace(args));
         if old != 0 {
             dec_ref_bits(py, old);
         }
         MoltObject::none().bits()
-    })
+    }
 }
 
 const TUPLE_PROTOCOL_SLOTS: &[i32] = &[
@@ -300,11 +308,11 @@ fn native_unraisable_args_inherit_tuple_protocol_slots_and_consumers() {
             // Obtain the real hidden native subtype through its production
             // reporting path, retaining the exact argument passed to the hook.
             let sys_name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
-            let sys = crate::builtins::modules::molt_module_new(sys_name);
+            let sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
             crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
             let key = crate::dynamic_attr_name_bits(py, b"unraisablehook").unwrap();
             let hook = function(py, capture_protocol_args as *const (), 1);
-            crate::builtins::modules::molt_module_set_attr(sys, key, hook);
+            crate::builtins::modules::molt_module_set_attr_attached_body(py, sys, key, hook);
             assert!(!crate::exception_pending(py));
             assert_eq!(CAPTURED_PROTOCOL_ARGS.with(|captured| captured.get()), 0);
             errors::PyErr_SetString(
@@ -321,7 +329,9 @@ fn native_unraisable_args_inherit_tuple_protocol_slots_and_consumers() {
             assert_ne!(bits, 0);
             assert_eq!(
                 obj_from_bits(
-                    crate::builtins::exceptions::molt_unraisable_hook_args_is_exact(bits)
+                    crate::builtins::exceptions::molt_unraisable_hook_args_is_exact_attached_body(
+                        py, bits
+                    )
                 )
                 .as_bool(),
                 Some(true)
@@ -423,20 +433,27 @@ fn native_unraisable_args_inherit_tuple_protocol_slots_and_consumers() {
 unsafe fn native_protocol_subclass(py: &crate::PyToken<'_>, name: &[u8], base: u64) -> u64 {
     unsafe {
         let name = crate::dynamic_attr_name_bits(py, name).unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
         let pointer = obj_from_bits(class).as_ptr().unwrap();
         crate::object::class_storage::class_declare_native_slots(
             pointer,
             crate::object::class_storage::ClassSlotPolicy::default(),
         );
-        crate::molt_class_set_base(class, base);
+        crate::molt_class_set_base_attached_body(py, class, base);
         assert!(!crate::exception_pending(py));
         class
     }
 }
 
-extern "C" fn protocol_multiply_seventeen(_: u64, _: u64) -> u64 {
+extern "C" fn protocol_multiply_seventeen(__context: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(17).bits()
 }
 
@@ -459,8 +476,8 @@ fn native_inherited_slot_admission_obeys_nearest_declaration_and_sibling_names()
             let mul = crate::dynamic_attr_name_bits(py, b"__mul__").unwrap();
             let length = function(py, length_seventeen as *const (), 1);
             let multiply = function(py, protocol_multiply_seventeen as *const (), 2);
-            crate::molt_set_attr_name(parent, len, length);
-            crate::molt_set_attr_name(parent, mul, multiply);
+            crate::molt_set_attr_name_attached_body(py, parent, len, length);
+            crate::molt_set_attr_name_attached_body(py, parent, mul, multiply);
             crate::object::class_finish_definition(py, pointer).unwrap();
             let child = native_protocol_subclass(py, b"NativeProtocolChild", parent);
             crate::object::class_finish_definition(py, obj_from_bits(child).as_ptr().unwrap())
@@ -496,8 +513,9 @@ fn native_inherited_slot_admission_obeys_nearest_declaration_and_sibling_names()
             }
             // Copying a tuple descriptor into the excluded own namespace must
             // not bypass that class's mask merely because its callable owner is tuple.
-            let copied = crate::molt_get_attr_name(crate::builtin_classes(py).tuple, len);
-            crate::molt_set_attr_name(parent, len, copied);
+            let copied =
+                crate::molt_get_attr_name_attached_body(py, crate::builtin_classes(py).tuple, len);
+            crate::molt_set_attr_name_attached_body(py, parent, len, copied);
             dec_ref_bits(py, copied);
             for (class, value) in [(&parent_view, &parent_value), (&child_view, &child_value)] {
                 assert_protocol_slots(class.as_ptr().cast(), restricted);
@@ -508,8 +526,8 @@ fn native_inherited_slot_admission_obeys_nearest_declaration_and_sibling_names()
                     native_error_description()
                 );
             }
-            crate::molt_del_attr_name(parent, len);
-            crate::molt_del_attr_name(parent, mul);
+            crate::molt_del_attr_name_attached_body(py, parent, len);
+            crate::molt_del_attr_name_attached_body(py, parent, mul);
             assert!(
                 !crate::exception_pending(py),
                 "{}",
@@ -552,17 +570,20 @@ fn native_mapping_check_matrix_uses_real_runtime_protocols() {
                 ("frozenset", sequences::PyFrozenSet_New(ptr::null_mut()), 0),
                 (
                     "dict_keys",
-                    GLOBAL_BRIDGE.owned_handle_to_pyobj(crate::molt_dict_keys(bits)),
+                    GLOBAL_BRIDGE
+                        .owned_handle_to_pyobj(crate::molt_dict_keys_attached_body(_py, bits)),
                     0,
                 ),
                 (
                     "dict_items",
-                    GLOBAL_BRIDGE.owned_handle_to_pyobj(crate::molt_dict_items(bits)),
+                    GLOBAL_BRIDGE
+                        .owned_handle_to_pyobj(crate::molt_dict_items_attached_body(_py, bits)),
                     0,
                 ),
                 (
                     "dict_values",
-                    GLOBAL_BRIDGE.owned_handle_to_pyobj(crate::molt_dict_values(bits)),
+                    GLOBAL_BRIDGE
+                        .owned_handle_to_pyobj(crate::molt_dict_values_attached_body(_py, bits)),
                     0,
                 ),
             ] {
@@ -914,7 +935,7 @@ fn native_factory_classes_finish_before_projection_and_first_instance() {
                 py,
                 crate::BuiltinExc::BinasciiError,
             );
-            let repeat = crate::molt_itertools_repeat_type();
+            let repeat = crate::molt_itertools_repeat_type_attached_body(py.core_token());
             assert!(
                 !crate::exception_pending(py),
                 "{}",

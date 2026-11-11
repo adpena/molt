@@ -226,9 +226,12 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         // A runtime poll is called through its own Rust pointer, never through
         // the app's `molt_call_indirect1` (K2).
         let result = match crate::builtins::functions::runtime_poll_call_target(poll_fn_addr) {
-            Some(PollTarget::Runtime(poll)) => poll(MoltObject::from_ptr(task_ptr).bits()),
+            Some(PollTarget::Runtime(poll)) => poll(
+                _py.attached_context(),
+                MoltObject::from_ptr(task_ptr).bits(),
+            ),
             Some(PollTarget::AppTableIndex(index)) => {
-                call_app_poll(index, crate::provenance::abi::expose_address(task_ptr))
+                call_app_poll(_py, index, crate::provenance::abi::expose_address(task_ptr))
             }
             None => {
                 return crate::raise_exception::<i64>(
@@ -249,7 +252,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             MoltObject::from_ptr(task_ptr).bits(),
         ) && crate::exception_pending(_py)
         {
-            let exception = crate::molt_exception_last_pending();
+            let exception = crate::molt_exception_last_pending_attached_body(_py);
             crate::clear_exception(_py);
             if result != crate::pending_bits_i64() {
                 crate::dec_ref_bits(_py, result as u64);
@@ -265,19 +268,22 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
 /// the app's own `molt_call_indirect1` dispatches its table index.
 /// Requires: `index` came from `runtime_poll_call_target`.
 #[inline]
-unsafe fn call_app_poll(index: u64, payload_address: u64) -> i64 {
+unsafe fn call_app_poll(py: &PyToken<'_>, index: u64, payload_address: u64) -> i64 {
     #[cfg(target_arch = "wasm32")]
     {
-        unsafe { crate::molt_call_indirect1(index, payload_address) }
+        unsafe { crate::molt_call_indirect1(py.attached_context(), index, payload_address) }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let target = crate::provenance::abi::function_ptr(index)
             .expect("runtime_poll_call_target admits only machine-word identities");
         // SAFETY: compiled code stores the address of a task poll function,
-        // whose ABI is (i64) -> i64 (the backend validates every task target).
-        let poll = unsafe { std::mem::transmute::<*const (), extern "C" fn(u64) -> i64>(target) };
-        poll(payload_address)
+        // whose ABI takes the attached context then the raw task payload address
+        // (the backend validates every task target).
+        let poll = unsafe {
+            std::mem::transmute::<*const (), unsafe extern "C" fn(u64, u64) -> i64>(target)
+        };
+        unsafe { poll(py.attached_context(), payload_address) }
     }
 }
 
@@ -472,8 +478,14 @@ mod tests {
     static COMPILED_SELF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     #[cfg(not(target_arch = "wasm32"))]
-    extern "C" fn raw_self_probe_poll(raw: u64) -> i64 {
+    static COMPILED_CONTEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn raw_self_probe_poll(__context: u64, raw: u64) -> i64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         COMPILED_SELF.store(raw, std::sync::atomic::Ordering::Relaxed);
+        COMPILED_CONTEXT.store(__context, std::sync::atomic::Ordering::Relaxed);
         crate::MoltObject::from_int(73).bits() as i64
     }
 
@@ -491,7 +503,11 @@ mod tests {
             assert_eq!(owners(), 1);
             {
                 let poll = super::promise_poll_fn_addr();
-                let promise = crate::molt_future_new(poll, std::mem::size_of::<u64>() as u64);
+                let promise = crate::molt_future_new_attached_body(
+                    py,
+                    poll,
+                    std::mem::size_of::<u64>() as u64,
+                );
                 let ptr = ptr_from_bits(promise);
                 assert!(!ptr.is_null());
                 assert_eq!(
@@ -502,10 +518,10 @@ mod tests {
                     crate::object::object_shape_id(ptr),
                     crate::object::ObjectShapeId::Promise
                 );
-                unsafe { crate::molt_promise_set_result(promise, value) };
+                unsafe { crate::molt_promise_set_result_attached_body(py, promise, value) };
                 assert!(!crate::exception_pending(py));
-                let first = crate::molt_future_poll(promise) as u64;
-                let cached = crate::molt_future_poll(promise) as u64;
+                let first = crate::molt_future_poll_attached_body(py, promise) as u64;
+                let cached = crate::molt_future_poll_attached_body(py, promise) as u64;
                 assert_eq!(
                     first, value,
                     "runtime poll must receive a decodable object word in release"
@@ -524,7 +540,11 @@ mod tests {
 
             {
                 let poll = async_sleep_poll_fn_addr();
-                let future = crate::molt_future_new(poll, (2 * std::mem::size_of::<u64>()) as u64);
+                let future = crate::molt_future_new_attached_body(
+                    py,
+                    poll,
+                    (2 * std::mem::size_of::<u64>()) as u64,
+                );
                 let ptr = ptr_from_bits(future);
                 assert!(!ptr.is_null());
                 unsafe {
@@ -541,9 +561,12 @@ mod tests {
                         MoltObject::from_int(41).bits(),
                     );
                 }
-                assert_eq!(crate::molt_future_poll(future), crate::pending_bits_i64());
                 assert_eq!(
-                    crate::molt_future_poll(future) as u64,
+                    crate::molt_future_poll_attached_body(py, future),
+                    crate::pending_bits_i64()
+                );
+                assert_eq!(
+                    crate::molt_future_poll_attached_body(py, future) as u64,
                     MoltObject::from_int(41).bits()
                 );
                 dec_ref_bits(py, future);
@@ -551,18 +574,23 @@ mod tests {
 
             let compiled =
                 crate::provenance::abi::expose_function_address(raw_self_probe_poll as *const ());
-            let future = crate::molt_future_new(compiled, 0);
+            let future = crate::molt_future_new_attached_body(py, compiled, 0);
             let ptr = ptr_from_bits(future);
             assert!(!ptr.is_null());
             assert_eq!(crate::object::object_poll_fn(ptr), compiled);
             COMPILED_SELF.store(0, std::sync::atomic::Ordering::Relaxed);
+            COMPILED_CONTEXT.store(0, std::sync::atomic::Ordering::Relaxed);
             assert_eq!(
-                crate::molt_future_poll(future) as u64,
+                crate::molt_future_poll_attached_body(py, future) as u64,
                 MoltObject::from_int(73).bits()
             );
             assert_eq!(
                 COMPILED_SELF.load(std::sync::atomic::Ordering::Relaxed),
                 crate::provenance::abi::expose_address(ptr)
+            );
+            assert_eq!(
+                COMPILED_CONTEXT.load(std::sync::atomic::Ordering::Relaxed),
+                py.attached_context()
             );
             dec_ref_bits(py, future);
             assert!(!crate::exception_pending(py));
@@ -570,9 +598,11 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    extern "C" fn namespace_probe_poll(task_address: u64) -> i64 {
-        crate::with_gil_entry_nopanic!(_py, {
-            crate::molt_trace_enter_slot(0);
+    extern "C" fn namespace_probe_poll(__context: u64, task_address: u64) -> i64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, _py, {
+            crate::molt_trace_enter_slot_attached_body(_py, 0);
             let globals = crate::builtins::frames::frame_stack_active_globals_bits();
             let task = std::ptr::with_exposed_provenance_mut::<u8>(task_address as usize);
             assert_eq!(
@@ -585,7 +615,7 @@ mod tests {
                 crate::object::aux_header::object_frame_builtins_bits(task),
                 "resume must use captured builtins, not the mutated globals entry",
             );
-            crate::molt_trace_exit();
+            crate::molt_trace_exit_attached_body(_py);
             globals as i64
         })
     }
@@ -628,7 +658,7 @@ mod tests {
             dec_ref_bits(py, locations);
             dec_ref_bits(py, name);
             dec_ref_bits(py, empty);
-            crate::molt_code_slot_set(0, code_bits, lexical);
+            crate::molt_code_slot_set_attached_body(py, 0, code_bits, lexical);
             let poll = namespace_probe_poll as *const () as usize as u64;
             for bits in [code_bits, replacement_code_bits] {
                 let function = crate::builtins::functions::alloc_runtime_function_obj(py, poll, 0);
@@ -664,7 +694,7 @@ mod tests {
                 crate::TASK_KIND_COROUTINE,
                 crate::TASK_KIND_FUTURE,
             ] {
-                crate::molt_code_slot_set(0, code_bits, lexical);
+                crate::molt_code_slot_set_attached_body(py, 0, code_bits, lexical);
                 unsafe {
                     assert!(crate::dict_set_in_place(
                         py,
@@ -675,7 +705,12 @@ mod tests {
                 }
                 let creator = invoked(rebound);
                 let creation = FrameInvocationGuard::for_function(py, creator);
-                let task = crate::molt_task_new(poll, crate::GEN_CONTROL_SIZE as u64, kind);
+                let task = crate::molt_task_new_attached_body(
+                    py,
+                    poll,
+                    crate::GEN_CONTROL_SIZE as u64,
+                    kind,
+                );
                 drop(creation);
                 release(creator);
                 let ptr = crate::obj_from_bits(task).as_ptr().unwrap();
@@ -685,7 +720,7 @@ mod tests {
                     crate::object::aux_header::object_frame_code_bits(ptr),
                     code_bits
                 );
-                crate::molt_code_slot_set(0, replacement_code_bits, lexical);
+                crate::molt_code_slot_set_attached_body(py, 0, replacement_code_bits, lexical);
                 unsafe {
                     assert!(crate::dict_set_in_place(
                         py,
@@ -715,7 +750,7 @@ mod tests {
 
                 let caller_fn = invoked(caller);
                 let calling = FrameInvocationGuard::for_function(py, caller_fn);
-                crate::molt_trace_enter_slot(0);
+                crate::molt_trace_enter_slot_attached_body(py, 0);
                 for _ in 0..2 {
                     assert_eq!(
                         unsafe { super::call_poll_fn(py, poll, ptr) } as u64,
@@ -729,7 +764,10 @@ mod tests {
                 let mut views = Vec::new();
                 if kind == crate::TASK_KIND_GENERATOR {
                     views.push((task, b"gi_frame".as_slice()));
-                    views.push((crate::molt_asyncgen_new(task), b"ag_frame".as_slice()));
+                    views.push((
+                        crate::molt_asyncgen_new_attached_body(py, task),
+                        b"ag_frame".as_slice(),
+                    ));
                 } else if kind == crate::TASK_KIND_COROUTINE {
                     views.push((task, b"cr_frame".as_slice()));
                 }
@@ -801,7 +839,7 @@ mod tests {
                         dec_ref_bits(py, owner);
                     }
                 }
-                crate::molt_trace_exit();
+                crate::molt_trace_exit_attached_body(py);
                 drop(calling);
                 release(caller_fn);
                 dec_ref_bits(py, task);
@@ -828,8 +866,9 @@ mod tests {
             }
             let caller_fn = invoked(caller);
             let calling = FrameInvocationGuard::for_function(py, caller_fn);
-            crate::molt_trace_enter_slot(0);
-            let native_task = crate::molt_task_new(
+            crate::molt_trace_enter_slot_attached_body(py, 0);
+            let native_task = crate::molt_task_new_attached_body(
+                py,
                 poll,
                 crate::GEN_CONTROL_SIZE as u64,
                 crate::TASK_KIND_FUTURE,
@@ -841,7 +880,7 @@ mod tests {
                 crate::object::aux_header::object_frame_code_bits(native_ptr),
                 0
             );
-            crate::molt_trace_exit();
+            crate::molt_trace_exit_attached_body(py);
             drop(calling);
             release(caller_fn);
             dec_ref_bits(py, native_task);

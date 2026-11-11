@@ -8,7 +8,7 @@ fn named_class(py: &PyToken<'_>, name: &[u8]) -> u64 {
     let name = alloc_string(py, name);
     assert!(!name.is_null());
     let name = MoltObject::from_ptr(name).bits();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
     assert!(obj_from_bits(class).as_ptr().is_some());
     class
@@ -24,8 +24,8 @@ fn managed_ancestry_preserves_identity_before_and_after_mro_publication() {
             let child = named_class(py, b"StructuralIdentity");
             let unrelated = named_class(py, b"StructuralIdentity");
             let builtins = builtin_classes(py);
-            crate::molt_class_set_base(base, builtins.object);
-            crate::molt_class_set_base(unrelated, builtins.object);
+            crate::molt_class_set_base_attached_body(py, base, builtins.object);
+            crate::molt_class_set_base_attached_body(py, unrelated, builtins.object);
             assert!(!exception_pending(py));
             let child_ptr = obj_from_bits(child).as_ptr().unwrap();
             crate::object::layout::class_set_bases_bits(py, child_ptr, base);
@@ -39,7 +39,7 @@ fn managed_ancestry_preserves_identity_before_and_after_mro_publication() {
             let pending_bits = MoltObject::from_ptr(pending).bits();
             for published in [false, true] {
                 if published {
-                    crate::molt_class_set_base(child, base);
+                    crate::molt_class_set_base_attached_body(py, child, base);
                     assert!(!exception_pending(py));
                     let mro = obj_from_bits(class_mro_bits(child_ptr)).as_ptr().unwrap();
                     assert_eq!(object_type_id(mro), TYPE_ID_TUPLE);
@@ -80,10 +80,10 @@ fn managed_ancestry_keeps_published_native_mro_ownership_and_pending_identity() 
             let base = named_class(py, b"PublishedStructuralBase");
             let child = named_class(py, b"PublishedStructuralChild");
             let builtins = builtin_classes(py);
-            crate::molt_class_set_base(base, builtins.object);
+            crate::molt_class_set_base_attached_body(py, base, builtins.object);
             crate::object::class_finish_definition(py, obj_from_bits(base).as_ptr().unwrap())
                 .expect("completed base class");
-            crate::molt_class_set_base(child, base);
+            crate::molt_class_set_base_attached_body(py, child, base);
             assert!(!exception_pending(py));
             let child_ptr = obj_from_bits(child).as_ptr().unwrap();
             crate::object::class_finish_definition(py, child_ptr).expect("completed child class");

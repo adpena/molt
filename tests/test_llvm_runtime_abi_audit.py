@@ -43,48 +43,44 @@ def test_boxed_projection_does_not_infer_semantics_from_machine_facts() -> None:
 
 
 def test_dedicated_machine_facts_do_not_mirror_generated_boxed_contracts() -> None:
-    conservative, duplicates = AUDIT.runtime_import_abi_facts(include_fixed=False)
+    # Helpers and raw calls come from the generated RuntimeFn table, which
+    # gives each entry one form, so no machine fact can mirror a boxed one.
+    dedicated, duplicates = AUDIT.runtime_import_abi_facts(include_fixed=False)
+    boxed = AUDIT.runtime_boxed_abi_facts()
     assert not duplicates
-    assert not conservative.keys() & AUDIT.runtime_boxed_abi_facts().keys()
-    assert ("molt_asyncgen_new", 1) in conservative
-    assert ("molt_asyncgen_new", 1) not in AUDIT.runtime_boxed_abi_facts()
+    assert not dedicated.keys() & boxed.keys()
+    assert dedicated[("molt_asyncgen_new", 1)].return_abi == "I64"
+    assert ("molt_asyncgen_new", 1) not in boxed
 
 
 def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:
-    exports = AUDIT.runtime_exports(AUDIT.runtime_src_roots(ROOT))
-    mean_source = exports["molt_statistics_mean"].source.replace("\\", "/")
-    stdev_source = exports["molt_statistics_stdev"].source.replace("\\", "/")
+    from molt._wasm_abi_generated import runtime_execution_abi
 
-    assert mean_source.endswith("runtime/molt-runtime-math/src/math/statistics_tail.rs")
-    assert stdev_source.endswith(
-        "runtime/molt-runtime-math/src/math/statistics_tail.rs"
-    )
+    exports = AUDIT.runtime_exports(AUDIT.runtime_src_roots(ROOT))
+    for logical in ("molt_statistics_mean", "molt_statistics_stdev"):
+        execution = runtime_execution_abi(logical)
+        assert execution is not None
+        source = exports[execution.physical_symbol].source.replace("\\", "/")
+        assert source.endswith(
+            "runtime/molt-runtime-math/src/attached_exports_generated/math/statistics_tail.rs"
+        )
 
 
 def test_runtime_import_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None:
-    conservative_imports = tmp_path / "abi_facts.rs"
     fixed_imports = tmp_path / "fixed.rs"
-    constants = tmp_path / "runtime_import_abi.rs"
-    conservative_imports.write_text(
+    fixed_imports.write_text(
         "\n".join(
             [
-                "pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[",
-                'runtime_sig("molt_alpha", 1, RuntimeReturnAbi::I64),',
-                'runtime_sig("molt_alpha", 1, RuntimeReturnAbi::Void),',
+                "pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[",
+                'i64_ret("molt_alpha", 1, ATTR_NONE),',
+                'void_ret("molt_alpha", 1, ATTR_NONE),',
                 "];",
             ]
         ),
         encoding="utf-8",
     )
-    fixed_imports.write_text(
-        "pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[];",
-        encoding="utf-8",
-    )
-    constants.write_text("", encoding="utf-8")
 
-    facts, duplicates = AUDIT.runtime_import_abi_facts(
-        conservative_imports, fixed_imports, constants
-    )
+    facts, duplicates = AUDIT.runtime_import_abi_facts(fixed_imports)
 
     assert facts[("molt_alpha", 1)] == AUDIT.AbiFact(
         "molt_alpha",
@@ -98,13 +94,7 @@ def test_runtime_import_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None
 def test_runtime_import_abi_facts_reads_custom_fixed_pointer_params(
     tmp_path: Path,
 ) -> None:
-    conservative_imports = tmp_path / "abi_facts.rs"
     fixed_imports = tmp_path / "fixed.rs"
-    constants = tmp_path / "runtime_import_abi.rs"
-    conservative_imports.write_text(
-        "pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[];",
-        encoding="utf-8",
-    )
     fixed_imports.write_text(
         "\n".join(
             [
@@ -120,11 +110,7 @@ def test_runtime_import_abi_facts_reads_custom_fixed_pointer_params(
         ),
         encoding="utf-8",
     )
-    constants.write_text("", encoding="utf-8")
-
-    facts, duplicates = AUDIT.runtime_import_abi_facts(
-        conservative_imports, fixed_imports, constants
-    )
+    facts, duplicates = AUDIT.runtime_import_abi_facts(fixed_imports)
 
     assert facts[("molt_ptr_pair", 2)] == AUDIT.AbiFact(
         "molt_ptr_pair",
@@ -268,3 +254,73 @@ def test_classified_fact_validation_normalizes_return_aliases() -> None:
         AUDIT.validate_classified_facts(exports, facts, aliases={"ChanHandle": "u64"})
         == ()
     )
+
+
+def test_physical_context_and_boundary_contracts_are_distinct() -> None:
+    from molt._wasm_abi_generated import runtime_execution_abi
+
+    facts = {
+        ("molt_add", 2): AUDIT.AbiFact("molt_add", 2, "I64", ("I64", "I64")),
+        ("molt_runtime_init", 0): AUDIT.AbiFact("molt_runtime_init", 0, "Void", ()),
+    }
+    physical = AUDIT.physical_runtime_import_facts(facts)
+    attached = runtime_execution_abi("molt_add")
+    assert attached is not None
+    assert physical[(attached.physical_symbol, 3)].param_abis == ("I64", "I64", "I64")
+    assert physical[("molt_runtime_init", 0)].param_abis == ()
+
+
+def test_export_observation_keeps_physical_context_shape(tmp_path: Path) -> None:
+    source = tmp_path / "runtime.rs"
+    source.write_text(
+        "\n".join(
+            [
+                '#[unsafe(export_name = "attached_probe")]',
+                'pub extern "C" fn local_name(context: *mut u8, value: u64) -> u64 { value }',
+                'pub extern "C" fn private_callback(value: u64) -> u64 { value }',
+                "#[cfg(test)] mod tests {",
+                '#[unsafe(export_name = "attached_probe")]',
+                'pub extern "C" fn fixture(value: u64) -> u64 { value }',
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    exports = AUDIT.runtime_exports(tmp_path)
+    assert set(exports) == {"attached_probe"}
+    facts = {
+        ("attached_probe", 2): AUDIT.AbiFact("attached_probe", 2, "I64", ("I64", "I64"))
+    }
+    issues = AUDIT.validate_classified_facts(exports, facts)
+    assert [issue.problem for issue in issues] == ["param-mismatch"]
+    assert issues[0].actual == "Ptr,I64"
+
+
+def test_stale_logical_export_does_not_satisfy_attached_declaration(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "runtime.rs"
+    source.write_text(
+        '#[unsafe(no_mangle)] pub extern "C" fn molt_add(a: u64, b: u64) -> u64 { a + b }',
+        encoding="utf-8",
+    )
+    facts = {("molt_add", 2): AUDIT.AbiFact("molt_add", 2, "I64", ("I64", "I64"))}
+    issues = AUDIT.validate_classified_facts(
+        AUDIT.runtime_exports(tmp_path), AUDIT.physical_runtime_import_facts(facts)
+    )
+    assert [issue.problem for issue in issues] == ["missing-runtime-export"]
+
+
+def test_raw_close_and_native_completion_keep_their_original_link_protocol() -> None:
+    facts = {
+        ("__molt_bridge_free_u8", 2): AUDIT.AbiFact(
+            "__molt_bridge_free_u8", 2, "Void", ("Ptr", "I64")
+        ),
+        ("__molt_bridge_free_u64", 2): AUDIT.AbiFact(
+            "__molt_bridge_free_u64", 2, "Void", ("Ptr", "I64")
+        ),
+        ("__molt_native_reference_complete", 0): AUDIT.AbiFact(
+            "__molt_native_reference_complete", 0, "Void", ()
+        ),
+    }
+    assert AUDIT.physical_runtime_import_facts(facts) == facts

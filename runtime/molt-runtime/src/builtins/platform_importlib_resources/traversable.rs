@@ -168,7 +168,7 @@ pub(super) fn importlib_traversable_iterdir_names(
         };
         let entry_bits = entry.bits();
         let missing = missing_bits(_py);
-        let name_bits = molt_getattr_builtin(entry_bits, name_attr, missing);
+        let name_bits = molt_getattr_builtin_attached_body(_py, entry_bits, name_attr, missing);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }

@@ -15,12 +15,12 @@ thread_local! {
 
 unsafe fn call_type(_py: &PyToken<'_>, name: u64, bases: u64, namespace: u64) -> u64 {
     unsafe {
-        let args = molt_callargs_new(3, 0);
+        let args = molt_callargs_new_attached_body(_py, 3, 0);
         assert!(obj_from_bits(args).as_ptr().is_some());
-        molt_callargs_push_pos(args, name);
-        molt_callargs_push_pos(args, bases);
-        molt_callargs_push_pos(args, namespace);
-        molt_call_bind(builtin_classes(_py).type_obj, args)
+        molt_callargs_push_pos_attached_body(_py, args, name);
+        molt_callargs_push_pos_attached_body(_py, args, bases);
+        molt_callargs_push_pos_attached_body(_py, args, namespace);
+        molt_call_bind_attached_body(_py, builtin_classes(_py).type_obj, args)
     }
 }
 
@@ -30,7 +30,8 @@ unsafe fn empty_type(_py: &PyToken<'_>, name: &[u8], meta: u64, bases: &[u64]) -
         let ns = alloc_dict_with_pairs(_py, &[]);
         let base_tuple = alloc_tuple(_py, bases);
         assert!(!name_ptr.is_null() && !ns.is_null() && !base_tuple.is_null());
-        let result = molt_type_new(
+        let result = molt_type_new_attached_body(
+            _py,
             meta,
             MoltObject::from_ptr(name_ptr).bits(),
             MoltObject::from_ptr(base_tuple).bits(),
@@ -59,29 +60,30 @@ unsafe fn function_constructor_call(
         let class = builtin_classes(py).function;
         let callable = if direct_new {
             let name = crate::dynamic_attr_name_bits(py, b"__new__").unwrap();
-            let result = crate::molt_get_attr_name(class, name);
+            let result = crate::molt_get_attr_name_attached_body(py, class, name);
             dec_ref_bits(py, name);
             assert!(!exception_pending(py));
             result
         } else {
             class
         };
-        let builder = molt_callargs_new(
+        let builder = molt_callargs_new_attached_body(
+            py,
             positional.len() as u64 + u64::from(direct_new),
             keywords.len() as u64,
         );
         if direct_new {
-            molt_callargs_push_pos(builder, class);
+            molt_callargs_push_pos_attached_body(py, builder, class);
         }
         for &value in positional {
-            molt_callargs_push_pos(builder, value);
+            molt_callargs_push_pos_attached_body(py, builder, value);
         }
         for &(name, value) in keywords {
             let key = crate::dynamic_attr_name_bits(py, name).unwrap();
-            molt_callargs_push_kw(builder, key, value);
+            molt_callargs_push_kw_attached_body(py, builder, key, value);
             dec_ref_bits(py, key);
         }
-        let result = molt_call_bind(callable, builder);
+        let result = molt_call_bind_attached_body(py, callable, builder);
         if direct_new {
             dec_ref_bits(py, callable);
         }
@@ -160,7 +162,7 @@ fn function_type_constructor_keywords_share_clinic_error_precedence() {
                                 ),
                                 expected
                             );
-                            crate::molt_exception_clear();
+                            crate::molt_exception_clear_attached_body(py);
                             dec_ref_bits(py, result);
                         }
                     }
@@ -170,7 +172,14 @@ fn function_type_constructor_keywords_share_clinic_error_precedence() {
     });
 }
 
-extern "C" fn function_constructor_probe() -> u64 {
+extern "C" fn function_constructor_probe(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits()
 }
 
@@ -181,7 +190,7 @@ fn function_type_new_descriptor_requires_positional_subtype_and_lambda_alias() {
         unsafe {
             let class = builtin_classes(py).function;
             let new_name = crate::dynamic_attr_name_bits(py, b"__new__").unwrap();
-            let constructor = crate::molt_get_attr_name(class, new_name);
+            let constructor = crate::molt_get_attr_name_attached_body(py, class, new_name);
             assert!(!exception_pending(py));
             for (receiver, expected) in [
                 (None, "function.__new__(): not enough arguments"),
@@ -194,34 +203,34 @@ fn function_type_new_descriptor_requires_positional_subtype_and_lambda_alias() {
                     "function.__new__(dict): dict is not a subtype of function",
                 ),
             ] {
-                let builder = molt_callargs_new(1, 0);
+                let builder = molt_callargs_new_attached_body(py, 1, 0);
                 if let Some(receiver) = receiver {
-                    molt_callargs_push_pos(builder, receiver);
+                    molt_callargs_push_pos_attached_body(py, builder, receiver);
                 }
-                let result = molt_call_bind(constructor, builder);
+                let result = molt_call_bind_attached_body(py, constructor, builder);
                 assert!(obj_from_bits(result).is_none());
                 let error = crate::exception_last_bits_noinc(py).expect("receiver failure");
                 assert_eq!(
                     crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                     expected
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 dec_ref_bits(py, result);
             }
-            let builder = molt_callargs_new(0, 1);
+            let builder = molt_callargs_new_attached_body(py, 0, 1);
             let receiver_name = crate::dynamic_attr_name_bits(py, b"type").unwrap();
-            molt_callargs_push_kw(builder, receiver_name, class);
-            let result = molt_call_bind(constructor, builder);
+            molt_callargs_push_kw_attached_body(py, builder, receiver_name, class);
+            let result = molt_call_bind_attached_body(py, constructor, builder);
             let error = crate::exception_last_bits_noinc(py).expect("receiver is positional-only");
             assert_eq!(
                 crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                 "function.__new__(): not enough arguments"
             );
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             dec_ref_bits(py, result);
             dec_ref_bits(py, receiver_name);
 
-            let payload = crate::builtins::types::molt_types_bootstrap();
+            let payload = crate::builtins::types::molt_types_bootstrap_attached_body(py);
             assert!(!exception_pending(py));
             let dictionary = obj_from_bits(payload).as_ptr().unwrap();
             for spelling in [b"FunctionType".as_slice(), b"LambdaType".as_slice()] {
@@ -323,7 +332,7 @@ fn function_type_constructor_binds_named_defaults_and_retains_identity_by_target
                                 "arg 6 (kwdefaults) must be None or dict",
                                 "kwdefaults type admission precedes closure length/cell validation"
                             );
-                            crate::molt_exception_clear();
+                            crate::molt_exception_clear_attached_body(py);
                             dec_ref_bits(py, invalid_closure);
                             dec_ref_bits(py, result);
                         }
@@ -392,7 +401,8 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
                         ],
                     ))
                     .bits();
-                    crate::builtins::functions::molt_function_init_metadata_packed(
+                    crate::builtins::functions::molt_function_init_metadata_packed_attached_body(
+                        py,
                         source_bits,
                         metadata,
                         code_bits,
@@ -400,7 +410,8 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
                     );
                     dec_ref_bits(py, metadata);
                 } else {
-                    crate::builtins::functions::molt_function_init_metadata(
+                    crate::builtins::functions::molt_function_init_metadata_attached_body(
+                        py,
                         source_bits,
                         name,
                         qualname,
@@ -421,14 +432,14 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
                 assert!(crate::object::layout::code_declaration_is_published(code));
                 for field in [b"__name__".as_slice(), b"__qualname__", b"__doc__"] {
                     let key = text(field);
-                    crate::molt_set_attr_name(source_bits, key, mutable);
+                    crate::molt_set_attr_name_attached_body(py, source_bits, key, mutable);
                     dec_ref_bits(py, key);
                     assert!(!exception_pending(py));
                 }
                 assert_eq!(Field::QualName.load(source), Some(mutable));
                 assert_eq!(Field::Doc.load(source), Some(mutable));
                 let attribute = text(b"co_qualname");
-                let observed = crate::molt_get_attr_name(code_bits, attribute);
+                let observed = crate::molt_get_attr_name_attached_body(py, code_bits, attribute);
                 assert!(!exception_pending(py));
                 assert_eq!(observed, qualname);
                 dec_ref_bits(py, observed);
@@ -458,7 +469,7 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
                     );
                     assert_eq!(Field::Doc.load(function), Some(doc));
                     let key = text(b"__code__");
-                    crate::molt_set_attr_name(result, key, other_code);
+                    crate::molt_set_attr_name_attached_body(py, result, key, other_code);
                     dec_ref_bits(py, key);
                     assert!(!exception_pending(py));
                     assert_eq!(crate::function_code_bits(function), other_code);
@@ -501,9 +512,9 @@ fn function_type_code_declaration_preserves_mutable_native_string_subclasses() {
                 classes.type_obj,
                 &[classes.str],
             );
-            let builder = molt_callargs_new(1, 0);
-            molt_callargs_push_pos(builder, name);
-            let mutable = molt_call_bind(subclass, builder);
+            let builder = molt_callargs_new_attached_body(py, 1, 0);
+            molt_callargs_push_pos_attached_body(py, builder, name);
+            let mutable = molt_call_bind_attached_body(py, subclass, builder);
             assert!(!exception_pending(py));
             let mutable_ptr = obj_from_bits(mutable).as_ptr().unwrap();
             assert_eq!(object_type_id(mutable_ptr), TYPE_ID_STRING);
@@ -581,7 +592,11 @@ fn function_type_constructor_retains_dict_subclass_keyword_defaults_for_invocati
                 classes.type_obj,
                 &[classes.dict],
             );
-            let mapping = molt_call_bind(subclass, molt_callargs_new(0, 0));
+            let mapping = molt_call_bind_attached_body(
+                py,
+                subclass,
+                molt_callargs_new_attached_body(py, 0, 0),
+            );
             assert!(!exception_pending(py));
             let mapping_ptr = obj_from_bits(mapping).as_ptr().unwrap();
             assert_eq!(object_type_id(mapping_ptr), TYPE_ID_OBJECT);
@@ -613,7 +628,11 @@ fn function_type_constructor_retains_dict_subclass_keyword_defaults_for_invocati
                             (*crate::header_from_obj_ptr(mapping_ptr)).ref_count_snapshot(),
                             baseline + 1
                         );
-                        let initial = molt_call_bind(result, molt_callargs_new(0, 0));
+                        let initial = molt_call_bind_attached_body(
+                            py,
+                            result,
+                            molt_callargs_new_attached_body(py, 0, 0),
+                        );
                         assert!(!exception_pending(py));
                         assert_eq!(initial, MoltObject::from_int(73).bits());
                         assert!(dict_set_in_place(
@@ -622,7 +641,11 @@ fn function_type_constructor_retains_dict_subclass_keyword_defaults_for_invocati
                             flag,
                             MoltObject::from_int(101).bits()
                         ));
-                        let changed = molt_call_bind(result, molt_callargs_new(0, 0));
+                        let changed = molt_call_bind_attached_body(
+                            py,
+                            result,
+                            molt_callargs_new_attached_body(py, 0, 0),
+                        );
                         assert!(!exception_pending(py));
                         assert_eq!(
                             changed,
@@ -790,7 +813,7 @@ fn type_call_invalid_cell_releases_copied_namespace_payload() {
                 let result = call_type(_py, name, MoltObject::none().bits(), ns_bits);
                 assert!(obj_from_bits(result).is_none());
                 assert!(exception_pending(_py));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(_py);
                 assert_eq!(
                     (*crate::header_from_obj_ptr(payload)).ref_count_snapshot(),
                     before
@@ -836,7 +859,8 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
                     let bases_bits = MoltObject::from_ptr(bases).bits();
                     let result = call_type(_py, name, bases_bits, ns_bits);
                     assert!(obj_from_bits(result).is_none());
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         _py,
                         error,
@@ -850,7 +874,7 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
                         message.contains("type __qualname__ must be a str, not int"),
                         "{message}"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(_py);
                     assert_eq!(crate::object::cells::cell_value_bits(cell), marker);
                     assert_eq!(
                         dict_get_in_place(_py, ns, qualname).expect("dictionary lookup succeeds"),
@@ -868,8 +892,16 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
     });
 }
 
-extern "C" fn record_set_name(_descriptor: u64, owner: u64, name: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn record_set_name(__context: u64, _descriptor: u64, owner: u64, name: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    ({
+        let _py = __py;
         unsafe {
             let name_text = crate::string_obj_to_owned(obj_from_bits(name)).unwrap();
             let (prepared, class_cell, namespace_cell) = CALLBACKS.with(|state| {
@@ -901,7 +933,14 @@ extern "C" fn record_set_name(_descriptor: u64, owner: u64, name: u64) -> i64 {
     }) as i64
 }
 
-extern "C" fn record_left_hook(_owner: u64) -> i64 {
+extern "C" fn record_left_hook(__context: u64, _owner: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     CALLBACKS.with(|state| state.borrow_mut().events.push("init:left".to_string()));
     MoltObject::none().bits() as i64
 }
@@ -963,7 +1002,7 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
                     crate::call::function::call_function_obj_vec(py, descriptor, arguments);
                 assert_eq!(exception_pending(py), rejects);
                 if exception_pending(py) {
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 } else {
                     assert!(obj_from_bits(result).is_none());
                 }
@@ -976,7 +1015,7 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
                 (instance, child),
                 (super_bits, child),
             ] {
-                let hook = crate::molt_get_attr_name(lookup, key);
+                let hook = crate::molt_get_attr_name_attached_body(py, lookup, key);
                 assert!(!exception_pending(py));
                 let hook_ptr = obj_from_bits(hook).as_ptr().unwrap();
                 assert_eq!(object_type_id(hook_ptr), TYPE_ID_BOUND_METHOD);
@@ -994,24 +1033,33 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
                     Some(function),
                     fn_key!(molt_object_init_subclass)
                 ));
-                let builder = molt_callargs_new(0, 0);
-                let result = molt_call_bind(hook, builder);
+                let builder = molt_callargs_new_attached_body(py, 0, 0);
+                let result = molt_call_bind_attached_body(py, hook, builder);
                 assert!(obj_from_bits(result).is_none());
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, result);
                 for keyword in [false, true] {
-                    let builder = molt_callargs_new(1, 1);
+                    let builder = molt_callargs_new_attached_body(py, 1, 1);
                     if keyword {
-                        molt_callargs_push_kw(builder, key, MoltObject::from_int(1).bits());
+                        molt_callargs_push_kw_attached_body(
+                            py,
+                            builder,
+                            key,
+                            MoltObject::from_int(1).bits(),
+                        );
                     } else {
-                        molt_callargs_push_pos(builder, MoltObject::from_int(1).bits());
+                        molt_callargs_push_pos_attached_body(
+                            py,
+                            builder,
+                            MoltObject::from_int(1).bits(),
+                        );
                     }
-                    let result = molt_call_bind(hook, builder);
+                    let result = molt_call_bind_attached_body(py, hook, builder);
                     assert!(
                         exception_pending(py),
                         "class hook must reject extra arguments"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     dec_ref_bits(py, result);
                 }
                 dec_ref_bits(py, hook);
@@ -1023,7 +1071,7 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
                 &[key],
                 &[MoltObject::from_int(1).bits()]
             ));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             for bits in [key, super_bits, instance, child, base] {
                 dec_ref_bits(py, bits);
             }
@@ -1031,7 +1079,14 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
         }
     });
 }
-extern "C" fn record_right_hook(_owner: u64) -> i64 {
+extern "C" fn record_right_hook(__context: u64, _owner: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     CALLBACKS.with(|state| state.borrow_mut().events.push("init:right".to_string()));
     MoltObject::none().bits() as i64
 }
@@ -1063,7 +1118,7 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
                 // classmethod. This fixture mutates an already-created base
                 // dictionary directly, so preserve that namespace contract
                 // explicitly before exercising class-mode super dispatch.
-                let hook = crate::molt_classmethod_new(bits);
+                let hook = crate::molt_classmethod_new_attached_body(_py, bits);
                 assert!(!obj_from_bits(hook).is_none());
                 let dictionary = crate::class_dict_bits(obj_from_bits(owner).as_ptr().unwrap());
                 assert!(crate::dict_set_in_place(

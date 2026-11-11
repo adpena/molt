@@ -8,6 +8,7 @@ use crate::tir::values::ValueId;
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -20,6 +21,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
 fn make_call_builtin(name: &str, operand: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: vec![operand],
@@ -84,6 +86,7 @@ fn build_iter_sum_function() -> TirFunction {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ForIter,
                 operands: vec![iter_val],
@@ -179,6 +182,7 @@ fn make_unpack_sequence(source: ValueId, results: Vec<ValueId>, count: i64) -> T
     attrs.insert("value".into(), AttrValue::Int(count));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnpackSequence,
         operands: vec![source],

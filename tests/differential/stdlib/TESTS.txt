@@ -1937,6 +1937,8 @@ tests/differential/stdlib/threading_enumerate_main_thread.py
 tests/differential/stdlib/threading_event_lock_condition.py
 tests/differential/stdlib/threading_excepthook_basic.py
 tests/differential/stdlib/threading_exception_propagation.py
+tests/differential/stdlib/threading_local_finalizer_raise.py
+tests/differential/stdlib/threading_local_finalizer_sleep.py
 tests/differential/stdlib/threading_local_isolation.py
 tests/differential/stdlib/threading_lock_acquire_timeout.py
 tests/differential/stdlib/threading_locks.py

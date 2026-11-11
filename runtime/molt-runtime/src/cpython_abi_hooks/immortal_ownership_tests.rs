@@ -23,20 +23,20 @@ unsafe fn assert_unique(view: *mut PyObject, expected: c_int) {
 fn managed_unique_reference_queries_count_runtime_and_c_owners() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let bits = MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits();
+        let bits = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits);
         assert!(!view.is_null());
         assert_eq!(hook_ref_count(bits), 2);
         assert_eq!((*view).ob_refcnt, 1);
         assert_unique(view, 1);
 
-        inc_ref_bits(&py, bits);
+        inc_ref_bits(py, bits);
         assert_eq!(hook_ref_count(bits), 3);
         assert_eq!((*view).ob_refcnt, 1, "the C header is still only a bias");
         assert_unique(view, 0);
         assert_eq!(object::PyUnstable_SetImmortal(view), 0);
         assert_eq!((*view).ob_refcnt, 1);
-        dec_ref_bits(&py, bits);
+        dec_ref_bits(py, bits);
         assert_unique(view, 1);
 
         let direct = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
@@ -59,7 +59,7 @@ fn managed_unique_reference_queries_count_runtime_and_c_owners() {
         assert_unique(view, 1);
         refcount::Py_DECREF(owned);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -67,12 +67,12 @@ fn managed_unique_reference_queries_count_runtime_and_c_owners() {
 fn managed_unique_reference_queries_discount_only_mirrored_c_owners() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let child = MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits();
-        let parent = MoltObject::from_ptr(crate::alloc_list(&py, &[child])).bits();
+        let child = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
+        let parent = MoltObject::from_ptr(crate::alloc_list(py, &[child])).bits();
         let child_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(child);
         let parent_view = GLOBAL_BRIDGE.owned_handle_to_pyobj(parent);
         assert!(!child_view.is_null() && !parent_view.is_null());
-        dec_ref_bits(&py, child);
+        dec_ref_bits(py, child);
         assert_eq!(hook_ref_count(child), 2);
         assert_eq!(GLOBAL_BRIDGE.mirrored_c_refcount(child_view.addr()), 1);
         assert_eq!((*child_view).ob_refcnt, 2);
@@ -84,7 +84,7 @@ fn managed_unique_reference_queries_discount_only_mirrored_c_owners() {
         assert_unique(child_view, 1);
         refcount::Py_DECREF(parent_view);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -93,7 +93,7 @@ fn immortal_promotion_rejects_a_unique_managed_unicode_without_error() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
         let value =
-            crate::object::builders::alloc_string_nointern(&py, b"unique non-interned text!");
+            crate::object::builders::alloc_string_nointern(py, b"unique non-interned text!");
         assert!(!value.is_null());
         let bits = MoltObject::from_ptr(value).bits();
         let view = GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);
@@ -105,7 +105,7 @@ fn immortal_promotion_rejects_a_unique_managed_unicode_without_error() {
         assert_eq!((*view).ob_refcnt, 1);
         refcount::Py_DECREF(view);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -133,7 +133,7 @@ fn immortal_c_views_preserve_runtime_roots_and_gc() {
 
             // Raw header promotion also covers a pre-existing mirror ledger.
             let mirror_owner = if route == 2 {
-                let owner = MoltObject::from_ptr(crate::alloc_list(&py, &[bits])).bits();
+                let owner = MoltObject::from_ptr(crate::alloc_list(py, &[bits])).bits();
                 let owner_view = GLOBAL_BRIDGE.owned_handle_to_pyobj(owner);
                 assert!(!owner_view.is_null());
                 assert_eq!(GLOBAL_BRIDGE.mirrored_c_refcount(view.addr()), 1);
@@ -173,14 +173,14 @@ fn immortal_c_views_preserve_runtime_roots_and_gc() {
             assert_eq!((*view).ob_refcnt, IMMORTAL_REFCNT);
 
             assert_eq!(sequences::PyList_Append(view, view), 0);
-            let collection = crate::object::gc::collect_cycles(&py);
+            let collection = crate::object::gc::collect_cycles(py);
             assert_eq!(
                 collection.status,
                 crate::object::gc::GcCollectStatus::Completed
             );
             assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits), view);
             assert_eq!(sequences::PyList_Size(view), 1);
-            crate::molt_list_clear(bits);
+            crate::molt_list_clear_attached_body(py, bits);
             assert_eq!(hook_ref_count(bits), 1);
             let retained = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
             assert_eq!(retained, view);
@@ -188,7 +188,7 @@ fn immortal_c_views_preserve_runtime_roots_and_gc() {
             assert_eq!(hook_ref_count(bits), 1);
             assert_eq!((*view).ob_refcnt, IMMORTAL_REFCNT);
             assert!(errors::PyErr_Occurred().is_null());
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             // The interpreter cannot revoke explicit C immortality. Its stable
             // bridge hold intentionally survives until this test process exits.
         }
@@ -225,7 +225,7 @@ fn immortal_c_views_preserve_runtime_roots_and_gc() {
         assert_eq!(hook_ref_count(dict_bits), 1);
         assert_eq!((*dictionary).ob_refcnt, IMMORTAL_REFCNT);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 

@@ -4,7 +4,7 @@ mod unpack_ops;
 
 use super::AggregateRuntimeContext;
 use crate::OpIR;
-use wasm_encoder::Function;
+use crate::wasm_binary::Function;
 
 pub(super) fn emit_list_tuple_op(
     func: &mut Function,

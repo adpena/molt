@@ -863,7 +863,7 @@ impl<'a, 'py> Writer<'a, 'py> {
             if left == right {
                 return Ok(false);
             }
-            let value = owned(py, molt_eq(left, right))?;
+            let value = owned(py, molt_eq_attached_body(py, left, right))?;
             let equal = is_truthy(py, obj_from_bits(value.bits()));
             if exception_pending(py) {
                 return Err(());
@@ -871,7 +871,7 @@ impl<'a, 'py> Writer<'a, 'py> {
             if equal {
                 return Ok(false);
             }
-            let value = owned(py, molt_lt(left, right))?;
+            let value = owned(py, molt_lt_attached_body(py, left, right))?;
             let less = is_truthy(py, obj_from_bits(value.bits()));
             if exception_pending(py) {
                 return Err(());

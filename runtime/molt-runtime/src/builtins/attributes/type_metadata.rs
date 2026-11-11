@@ -214,8 +214,51 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
 use super::*;
 use molt_cpython_abi::api::typeobj::TypeAttributeField as Field;
 
-// Public doc and abstract methods read only the receiver's namespace. A heap
-// signature reads the private creation doc, interpreted with the current name.
+/// CPython's `type_get_text_signature` reads each static type's own tp_doc;
+/// these are the static types whose internal doc carries a signature, from
+/// the first target minor that has it (CPython 3.12-3.15 tp_doc). The newest
+/// applicable row wins. Every other static type answers None, and nothing
+/// inherits: the value is per type.
+fn static_text_signature(py: &PyToken<'_>, class_bits: u64) -> Option<&'static str> {
+    let roots = builtin_classes(py);
+    let minor = crate::object::ops_sys::runtime_target_minor(py);
+    [
+        (roots.object, 12, "()"),
+        (
+            roots.property,
+            12,
+            "(fget=None, fset=None, fdel=None, doc=None)",
+        ),
+        (roots.memoryview, 12, "(object)"),
+        (roots.enumerate, 12, "(iterable, start=0)"),
+        (roots.reversed, 12, "(sequence, /)"),
+        (roots.reversed, 15, "(object, /)"),
+        (roots.complex, 12, "(real=0, imag=0)"),
+        (roots.float, 12, "(x=0, /)"),
+        (roots.list, 12, "(iterable=(), /)"),
+        (roots.tuple, 12, "(iterable=(), /)"),
+        (roots.bool, 13, "(object=False, /)"),
+        (roots.set, 13, "(iterable=(), /)"),
+        (roots.frozenset, 13, "(iterable=(), /)"),
+        (roots.staticmethod, 13, "(function, /)"),
+        (roots.classmethod, 13, "(function, /)"),
+        (roots.zip, 13, "(*iterables, strict=False)"),
+        (roots.map, 13, "(function, iterable, /, *iterables)"),
+        (
+            roots.map,
+            14,
+            "(function, iterable, /, *iterables, strict=False)",
+        ),
+        (roots.filter, 13, "(function, iterable, /)"),
+    ]
+    .into_iter()
+    .rfind(|&(owner, since, _)| owner == class_bits && since <= minor)
+    .map(|(_, _, signature)| signature)
+}
+
+// Public doc and abstract methods read only the receiver's namespace. A
+// signature is never namespace content: a heap type reads its private creation
+// doc, interpreted with the current name; a static type reads its declaration.
 unsafe fn read_namespace_metadata(
     py: &PyToken<'_>,
     class: *mut u8,
@@ -231,21 +274,23 @@ unsafe fn read_namespace_metadata(
                 Ok(MoltObject::none().bits())
             };
         }
-        if field == Field::TextSignature && crate::object::class_storage::class_is_heap_type(class)
-        {
-            use crate::object::class_storage::ClassReferenceSlot;
-            let doc = ClassReferenceSlot::CreationDoc.load(class);
-            let Some(doc) = obj_from_bits(doc).as_ptr() else {
-                return Ok(MoltObject::none().bits());
-            };
-            let name = obj_from_bits(class_name_bits(class))
-                .as_ptr()
-                .expect("class name");
-            let name = std::slice::from_raw_parts(string_bytes(name), string_len(name));
-            let doc = std::slice::from_raw_parts(string_bytes(doc), string_len(doc));
-            let Some(signature) =
+        if field == Field::TextSignature {
+            let signature = if crate::object::class_storage::class_is_heap_type(class) {
+                use crate::object::class_storage::ClassReferenceSlot;
+                let doc = ClassReferenceSlot::CreationDoc.load(class);
+                let Some(doc) = obj_from_bits(doc).as_ptr() else {
+                    return Ok(MoltObject::none().bits());
+                };
+                let name = obj_from_bits(class_name_bits(class))
+                    .as_ptr()
+                    .expect("class name");
+                let name = std::slice::from_raw_parts(string_bytes(name), string_len(name));
+                let doc = std::slice::from_raw_parts(string_bytes(doc), string_len(doc));
                 molt_cpython_abi::api::typeobj::documentation_bytes(name, doc, true)
-            else {
+            } else {
+                static_text_signature(py, bits).map(str::as_bytes)
+            };
+            let Some(signature) = signature else {
                 return Ok(MoltObject::none().bits());
             };
             let result = alloc_string(py, signature);
@@ -303,8 +348,10 @@ unsafe fn write_namespace_metadata(
             false
         };
         let name = crate::NameId::from(field).owned_bits(py).ok_or(())?;
-        let _name =
-            crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("metadata name"));
+        let _name = crate::PtrDropGuard::preserving(
+            py,
+            obj_from_bits(name).as_ptr().expect("metadata name"),
+        );
         let mut publication = super::TypeMutation::prepare(py, class, name).ok_or(())?;
         if matches!(field, Field::Doc | Field::Module) && !publication.invalidate_native() {
             return Err(());
@@ -313,7 +360,7 @@ unsafe fn write_namespace_metadata(
         if field == Field::Module && crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
             let firstline = crate::NameId::DunderFirstlineno.owned_bits(py).ok_or(())?;
             let _firstline =
-                crate::PtrDropGuard::preserving(obj_from_bits(firstline).as_ptr().unwrap());
+                crate::PtrDropGuard::preserving(py, obj_from_bits(firstline).as_ptr().unwrap());
             let retired = crate::object::ops::dict_del_deferred(py, dictionary, firstline)?;
             if retired.is_some() {
                 class_bump_layout_version(class);
@@ -451,11 +498,14 @@ pub(crate) unsafe fn read_type_annotations(
             let name = crate::NameId::DunderAnnotate.owned_bits(py)?;
             // The owning normal lookup includes metaclass overrides. Its result
             // must survive removal/replacement of the namespace's last edge.
-            let annotate = molt_get_attr_name(class_bits, name);
+            let annotate = molt_get_attr_name_attached_body(py, class_bits, name);
             dec_ref_bits(py, name);
             let result = if exception_pending(py) {
                 MoltObject::none().bits()
-            } else if is_truthy(py, obj_from_bits(molt_is_callable(annotate))) {
+            } else if is_truthy(
+                py,
+                obj_from_bits(molt_is_callable_attached_body(py, annotate)),
+            ) {
                 call_callable1(py, annotate, MoltObject::from_int(1).bits())
             } else if exception_pending(py) {
                 MoltObject::none().bits()

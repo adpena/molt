@@ -238,10 +238,26 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   excluded from Python callable publication remain excluded. A direct `call`
   to a runtime entry uses the generated boxed ABI, or, for a manifest row that
   opts in with `raw_call = true` (a raw-bits return through an all-i64 word
-  signature, such as the host init's `molt_runtime_init`), the generated raw
-  ABI (`runtime/molt-ir/src/runtime_raw_abi_generated.rs`): LLVM binds that
-  word without an owner and never releases it. Raw machine helpers whose
+  signature, such as the host init's `molt_runtime_init`), its `RawCall` form
+  in the generated `RuntimeFn` table (`runtime/molt-ir/src/runtime_fn_generated.rs`):
+  LLVM binds that word without an owner and never releases it. Raw machine helpers whose
   operands or results are not Python values never become generic call targets.
+- **Late lowering stage (HF-821)**: for a target whose backend consumes final TIR
+  (`FinalLowering::FinalTir` in `TargetInfo::lowering`; LLVM today), the drop
+  phase's `finalize_function_drops` first runs `run_late_lowering`. It expands
+  each value-level fast path into representation-level control flow over three
+  final-TIR ops (`final_tir_opcodes`, never on the SimpleIR wire):
+  `IsInlineInt` (the runtime's tag test), `UnboxInlineInt` (the sign-extended
+  47-bit payload, total) and `CallRuntime`, whose callee is the typed
+  `TirOp::runtime` entry that the verifier requires on it and forbids elsewhere.
+  First slice: `Add`/`Sub`/`InplaceAdd`/`InplaceSub` on two boxed words become a
+  tag-test diamond whose fast arm adds the payloads exactly (`RawI64FullDeopt`)
+  and boxes through the full-range path, and whose cold arm calls the op's own
+  entry, `TirOp::numeric_runtime` (`numeric_runtime_fn`, generated from the WASM
+  ABI manifest's `numeric_runtime_selector` rows). GVN then merges a value's
+  repeated tag tests and DCE drops the rest; debug builds verify after each
+  pass. Backends lower the primitives through molt-codegen-abi's shared
+  `boxed_word` generators. A function without an eligible op is unchanged.
 - **SSA**: every value is defined once; all uses are dominated by the definition (loop index carried via block params).
   SimpleIR construction uses one definition-stack walk over the augmented
   dominator tree. Explicit branch and state-resume arguments read those stacks

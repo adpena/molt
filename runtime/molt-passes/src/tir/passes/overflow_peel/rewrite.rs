@@ -442,6 +442,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             .iter()
             .map(|op| TirOp {
                 origin: op.origin,
+                runtime: None,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands: op
@@ -572,6 +573,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         attrs.insert("value".into(), crate::tir::ops::AttrValue::Bool(false));
         pre.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,
             operands: vec![],
@@ -625,6 +627,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         let guard_block = func.blocks.get_mut(&guard).expect("guard exists");
         guard_block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Not,
             operands: vec![of_phi],
@@ -634,6 +637,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         });
         guard_block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::And,
             operands: vec![cond, not_of],
@@ -687,6 +691,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             func.value_types.insert(folded, TirType::Bool);
             body_block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Or,
                 operands: vec![of_next, f],
@@ -706,6 +711,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             func.value_types.insert(snap, TirType::I64);
             body_block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![plan.phi],

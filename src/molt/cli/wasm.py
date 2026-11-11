@@ -14,9 +14,10 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLES,
     WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
-    wasm_import_result_kind,
-    wasm_import_signature,
+    WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
     wasm_runtime_import_name,
+    compiled_execution_symbol,
+    runtime_execution_abi,
 )
 from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
 from molt.wasm_artifact import (
@@ -27,6 +28,9 @@ from molt._wasm_runtime_exports import (
     wasm_split_runtime_canonical_import_name,
     wasm_split_runtime_export_name_for_import,
     wasm_split_runtime_import_name_for_export,
+    wasm_split_runtime_import_signature,
+    wasm_runtime_lifetime_export_names,
+    wasm_runtime_is_attached_physical_export,
 )
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
@@ -119,10 +123,15 @@ def _runtime_import_signature_from_manifest(
     import_name: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
     manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
-    return wasm_import_signature(manifest_import_name)
+    return wasm_split_runtime_import_signature(manifest_import_name)
 
 
 def _runtime_lookup_import_name_from_manifest(name: str) -> str:
+    if (
+        name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
+        or wasm_runtime_is_attached_physical_export(name)
+    ):
+        return name
     canonical_name = wasm_split_runtime_canonical_import_name(name)
     return wasm_runtime_import_name(canonical_name) or canonical_name
 
@@ -146,6 +155,11 @@ def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | Non
 
 
 def _runtime_import_name_for_export_from_manifest(export_name: str) -> str | None:
+    if (
+        export_name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
+        or wasm_runtime_is_attached_physical_export(export_name)
+    ):
+        return export_name
     import_name = wasm_runtime_import_name(export_name)
     if import_name is not None:
         return import_name
@@ -196,15 +210,26 @@ def _runtime_export_signature_for_cpython_abi_link_import(
 
 
 def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
-    manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
-    return wasm_import_result_kind(manifest_import_name)
+    signature = _runtime_import_signature_from_manifest(import_name)
+    if signature is None:
+        return None
+    results = signature[1]
+    return "nil" if not results else ", ".join(results)
 
 
 def _reserved_runtime_callables_from_manifest() -> list[dict[str, object]]:
+    def physical_symbol(logical: str) -> str:
+        abi = runtime_execution_abi(logical)
+        if abi is None:
+            raise ValueError(
+                f"missing execution ABI for reserved runtime callable {logical}"
+            )
+        return abi.physical_symbol
+
     return [
         {
             "index": index,
-            "runtime_export": runtime_name,
+            "runtime_export": physical_symbol(runtime_name),
             "import_name": import_name,
             "arity": arity,
             "dispatch": dispatch,
@@ -218,7 +243,9 @@ def _reserved_runtime_callables_from_manifest() -> list[dict[str, object]]:
 
 def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
     return {
-        "call_indirect_imports": list(WASM_CALL_INDIRECT_IMPORTS),
+        "call_indirect_imports": [
+            compiled_execution_symbol(name) for name in WASM_CALL_INDIRECT_IMPORTS
+        ],
         "reserved_runtime_callables": _reserved_runtime_callables_from_manifest(),
         "table_layout": {
             "default_app_table_base": WASM_DEFAULT_APP_TABLE_BASE,
@@ -273,9 +300,10 @@ def _generate_split_worker_js(
         runtime_import_names,
         runtime_export_signatures=runtime_export_signatures,
     )
-    runtime_import_export_names = _runtime_import_export_names_from_manifest(
-        runtime_import_names,
-    )
+    runtime_import_export_names = {
+        **_runtime_import_export_names_from_manifest(runtime_import_names),
+        **wasm_runtime_lifetime_export_names(),
+    }
     runtime_import_result_kinds_json = json.dumps(
         runtime_import_result_kinds, sort_keys=True
     )
@@ -288,10 +316,8 @@ def _generate_split_worker_js(
     runtime_export_signatures_json = json.dumps(
         dict(runtime_export_signatures or {}), sort_keys=True
     )
-    call_indirect_imports_json = json.dumps(list(WASM_CALL_INDIRECT_IMPORTS))
-    reserved_runtime_callables_json = json.dumps(
-        _reserved_runtime_callables_from_manifest(),
-        sort_keys=True,
+    call_indirect_imports_json = json.dumps(
+        [compiled_execution_symbol(name) for name in WASM_CALL_INDIRECT_IMPORTS]
     )
     reserved_runtime_callable_base = WASM_RESERVED_RUNTIME_CALLABLE_BASE
     reserved_runtime_shared_prefix_len = (
@@ -308,6 +334,13 @@ import appModule from "./app.wasm";
 
 const {
   requireMoltDeploymentManifest,
+  requireAttachedExecutionAbi,
+  compiledExecutionSymbol,
+  requireSharedExecutionMemory,
+  requireSharedExecutionMemoryImport,
+  callIsolateImportExport,
+  callReservedRuntimeCallable,
+  reservedRuntimeCallablesFromManifest,
   deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callableTableFromModule,
@@ -319,7 +352,7 @@ const {
 } = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
-const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, runtimeExport, combinedError } = globalThis.MoltRuntimeLifecycle;
 const tableAdmission = prepareWasmTableAdmission({
   module: appModule,
   manifest: { ...deploymentManifest, wasm_table_base: __MOLT_SHARED_TABLE_BASE__ },
@@ -413,7 +446,7 @@ export default {
     const runtimeImportExportNames = __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__;
     const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
-    const reservedRuntimeCallables = __MOLT_RESERVED_RUNTIME_CALLABLES__;
+    const reservedRuntimeCallables = reservedRuntimeCallablesFromManifest(deploymentManifest);
     const DEFAULT_WASM_APP_TABLE_BASE = __MOLT_DEFAULT_WASM_APP_TABLE_BASE__;
     const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
     const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
@@ -925,14 +958,6 @@ export default {
       return BigInt.asUintN(64, BigInt(value));
     };
 
-    const callIsolateImportExport = (fn, args) => {
-      if (args.length !== 1) {
-        throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
-      }
-      const handle = normalizeI64BridgeValue(args[0], "molt_isolate_import handle");
-      return normalizeI64BridgeValue(fn(handle), "molt_isolate_import result");
-    };
-
     const formatDebugValue = (value) => {
       if (typeof value === "bigint") {
         return `${value}n`;
@@ -1006,59 +1031,6 @@ export default {
         reservedRuntimeCallable,
         dispatchReservedRuntimeCallable: Boolean(reservedRuntimeCallable),
       };
-    };
-
-    const readRuntimeCallargsVector = (ptr, len) => {
-      const count = Number(len);
-      if (!Number.isInteger(count) || count < 0) {
-        throw new Error(`reserved runtime trampoline arg count must be non-negative, got ${len}`);
-      }
-      const base = Number(ptr);
-      if (!Number.isInteger(base) || base < 0) {
-        throw new Error(`reserved runtime trampoline argv pointer must be non-negative, got ${ptr}`);
-      }
-      const view = new DataView(wasmMemory.buffer);
-      const args = [];
-      for (let idx = 0; idx < count; idx += 1) {
-        args.push(view.getBigUint64(base + idx * 8, true));
-      }
-      return args;
-    };
-
-    const callReservedRuntimeCallable = (entry, indirectName, args) => {
-      const fn = rtInstance?.exports?.[entry.runtime_export];
-      if (typeof fn !== "function") {
-        throw new Error(`${indirectName} reserved runtime callable ${entry.runtime_export} is not exported`);
-      }
-      let callArgs = args;
-      if (entry.trampoline) {
-        if (args.length !== 3) {
-          throw new Error(
-            `${indirectName} reserved runtime trampoline ${entry.runtime_export} expects closure, argv, argc; got ${args.length} args`,
-          );
-        }
-        if (entry.trampoline_abi === "call_frame") {
-          callArgs = args;
-        } else {
-          const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
-          if (closureBits !== 0n) {
-            throw new Error(
-              `${indirectName} reserved runtime trampoline ${entry.runtime_export} does not accept closure bits ${closureBits}`,
-            );
-          }
-          callArgs = readRuntimeCallargsVector(args[1], args[2]);
-        }
-      }
-      if (callArgs.length !== entry.arity) {
-        throw new Error(
-          `${indirectName} reserved runtime callable ${entry.runtime_export} arity mismatch: expected ${entry.arity}, got ${callArgs.length}`,
-        );
-      }
-      return callWithSignature(
-        fn,
-        { params: Array.from({ length: entry.arity }, () => "i64"), result: "i64" },
-        callArgs,
-      );
     };
 
     const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports(
@@ -1145,11 +1117,11 @@ export default {
           return writeErrno(err, EINVAL) * -1;
         }
       },
-      molt_isolate_import(...args) {
-        if (!appInstance || !appInstance.exports.molt_isolate_import) {
+      [compiledExecutionSymbol("molt_isolate_import")](...args) {
+        if (!appInstance || !appInstance.exports[compiledExecutionSymbol("molt_isolate_import")]) {
           throw new Error("molt_isolate_import called before app instantiation");
         }
-        return callIsolateImportExport(appInstance.exports.molt_isolate_import, args);
+        return callIsolateImportExport(appInstance.exports[compiledExecutionSymbol("molt_isolate_import")], args);
       },
       molt_time_timezone_host()  { return 0n; },
       molt_time_local_offset_host() { return 0n; },
@@ -1204,7 +1176,7 @@ export default {
     };
 
     for (const indirectName of callIndirectImportNames) {
-      hostEnv[indirectName] = (fnIndex, ...args) => {
+      hostEnv[indirectName] = (context, fnIndex, ...args) => {
         const idx = Number(fnIndex);
         const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);
         const reservedDispatch = planReservedRuntimeDispatch({
@@ -1213,11 +1185,8 @@ export default {
         const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
         if (reservedDispatch.dispatchReservedRuntimeCallable) {
           try {
-            return callReservedRuntimeCallable(
-              reservedRuntimeCallable,
-              indirectName,
-              args,
-            );
+            return callReservedRuntimeCallable({runtimeExports: rtInstance.exports, memory: wasmMemory,
+              context, entry: reservedRuntimeCallable, indirectName, args});
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
@@ -1229,7 +1198,7 @@ export default {
           callableTableSignature(runtimeCallableTable, dispatchIdx);
         if (typeof tableFn === "function" && directSignature) {
           try {
-            return callWithSignature(tableFn, directSignature, args);
+            return callWithSignature(tableFn, directSignature, [context, ...args]);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             const fnName = tableFn.name || "<anon>";
@@ -1268,7 +1237,7 @@ export default {
         if (runtimeExceptionPending(rtInstance)) {
           throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception");
         }
-      });
+      }, deploymentManifest.abi.runtime_imports);
       lifetime.admit();
       verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
       // 2. Instantiate the app module.
@@ -1282,22 +1251,26 @@ export default {
         },
         molt_runtime: buildRuntimeImports(appModule, rtInstance),
       };
+      requireAttachedExecutionAbi(appModule, rtInstance, deploymentManifest.abi.runtime_imports);
+      requireSharedExecutionMemoryImport(appModule);
       appInstance = await WebAssembly.instantiate(appModule, appImports);
+      requireSharedExecutionMemory(rtInstance.exports.molt_memory || rtInstance.exports.memory || wasmMemory,
+        appInstance.exports.molt_memory || appInstance.exports.memory || wasmMemory);
       // 3. Bind WASI/libc constructors as lifetime-owned bootstrap, then run
       //    application code under the canonical execution lease.
       verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
       lifetime.initialize(() => {
         if (rtInstance.exports._initialize) rtInstance.exports._initialize();
       });
-      lifetime.execute(() => {
-        if (typeof appInstance.exports.molt_main !== "function") {
+      lifetime.execute((context) => {
+        if (typeof appInstance.exports[compiledExecutionSymbol("molt_main")] !== "function") {
           throw new Error("missing application startup export");
         }
-        appInstance.exports.molt_main();
+        appInstance.exports[compiledExecutionSymbol("molt_main")](context);
         // The runtime reports an exception the entry left pending (CPython's
         // PyErr_Print, through sys.excepthook into stderr) and returns the
         // program's exit status, as the native main stub does.
-        exitStatus = Number(rtInstance.exports.molt_main_exit_status());
+        exitStatus = Number(runtimeExport(rtInstance, "molt_main_exit_status")());
       });
     } catch (err) {
       if (err instanceof ProcExit) procExit = err;
@@ -1344,7 +1317,6 @@ export default {
         "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__": runtime_import_export_names_json,
         "__MOLT_RUNTIME_EXPORT_SIGNATURES__": runtime_export_signatures_json,
         "__MOLT_CALL_INDIRECT_IMPORTS__": call_indirect_imports_json,
-        "__MOLT_RESERVED_RUNTIME_CALLABLES__": reserved_runtime_callables_json,
         "__MOLT_DEFAULT_WASM_APP_TABLE_BASE__": str(WASM_DEFAULT_APP_TABLE_BASE),
         "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__": str(reserved_runtime_callable_base),
         "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__": str(

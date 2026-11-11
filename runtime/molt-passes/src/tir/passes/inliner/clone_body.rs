@@ -354,6 +354,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
                 remap_exception_label_attr(op.opcode, &mut attrs, &label_remap, &callee.name);
                 Some(TirOp {
                     origin: op.origin,
+                    runtime: None,
                     dialect: op.dialect,
                     opcode: op.opcode,
                     operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
@@ -504,6 +505,7 @@ mod transport_tests {
             attrs.insert("_var".into(), AttrValue::Str(raw.into()));
             let op = TirOp {
                 origin,
+                runtime: None,
                 dialect: if matches!(opcode, OpCode::ScfFor | OpCode::ScfWhile) {
                     Dialect::Scf
                 } else {

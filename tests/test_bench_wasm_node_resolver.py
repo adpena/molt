@@ -640,14 +640,15 @@ def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
     script.write_text(
         "const mod = require(%r);\n"
         "const {withRuntimeOwnedValues} = require(%r);\n"
+        "const {fixtureScopeExports} = require(%r);\n"
         "const events = [];\n"
-        "const runtime = { exports: {\n"
-        "  molt_exception_pending: () => 0n,\n"
+        "const runtime = { exports: fixtureScopeExports({\n"
+        "  molt_exception_pending_detached: () => 0n,\n"
         "  molt_runtime_execution_enter: () => { events.push('enter'); return 41n; },\n"
         "  molt_runtime_execution_leave: (token) => events.push(`leave:${token}`),\n"
         "  molt_runtime_shutdown: () => 1n,\n"
         "  molt_dec_ref_obj: (value) => { events.push(`release:${value}`); throw new Error('release'); },\n"
-        "} };\n"
+        "}) };\n"
         "try { mod.withRuntimeExecution(runtime, () => { events.push('body'); throw new Error('boom'); }); }\n"
         "catch (error) { if (error.message !== 'boom') throw error; }\n"
         "try { withRuntimeOwnedValues(runtime, [99n], value => value, () => { throw new Error('decode'); }); }\n"
@@ -657,6 +658,7 @@ def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
         % (
             str(repo_root / "wasm" / "run_wasm.js"),
             str(repo_root / "wasm" / "runtime_lifecycle.js"),
+            str(repo_root / "tests" / "wasm_runtime_fixture.js"),
         ),
         encoding="utf-8",
     )
@@ -673,5 +675,7 @@ def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
         "enter",
         "body",
         "leave:41",
+        "enter",
         "release:99",
+        "leave:41",
     ]

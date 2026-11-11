@@ -74,7 +74,7 @@ fn type_lookup_rearms_watchers_after_error_free_hits_and_misses_but_not_errors()
                     ptr::null_mut()
                 }
             );
-            expect_no_error(&_py);
+            expect_no_error(_py);
             assert_ne!((*tp).tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
             assert_ne!((*tp).tp_version_tag, 0);
             typeobj::PyType_Modified(tp);
@@ -123,7 +123,7 @@ fn watcher_api_uses_canonical_errors_and_allows_unassignable_tags() {
             ob_type: &raw mut PyType_Type,
         };
         assert_eq!(typeobj::PyType_Watch(ids[0], (&raw mut unready).cast()), 0);
-        expect_no_error(&_py);
+        expect_no_error(_py);
         assert_eq!(unready.tp_watched, 1 << ids[0]);
         assert_eq!(unready.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
         assert_eq!(
@@ -141,21 +141,22 @@ fn checked_type_observers_reject_terminal_managed_pins_without_resurrection() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         assert!(super::register_cpython_hooks());
-        let name = crate::dynamic_attr_name_bits(&py, b"TerminalWatcherSubject").unwrap();
-        let namespace = crate::alloc_dict_with_pairs(&py, &[]);
+        let name = crate::dynamic_attr_name_bits(py, b"TerminalWatcherSubject").unwrap();
+        let namespace = crate::alloc_dict_with_pairs(py, &[]);
         assert!(!namespace.is_null());
         let namespace = crate::bits_from_ptr(namespace);
         let none = crate::MoltObject::none().bits();
-        let class = crate::builtins::types::molt_type_new(
-            crate::builtin_classes(&py).type_obj,
+        let class = crate::builtins::types::molt_type_new_attached_body(
+            py,
+            crate::builtin_classes(py).type_obj,
             name,
             none,
             namespace,
             none,
         );
-        crate::dec_ref_bits(&py, namespace);
-        crate::dec_ref_bits(&py, name);
-        assert!(!crate::exception_pending(&py));
+        crate::dec_ref_bits(py, namespace);
+        crate::dec_ref_bits(py, name);
+        assert!(!crate::exception_pending(py));
         let pointer = crate::obj_from_bits(class).as_ptr().expect("sealed class");
         let view = molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class);
         assert!(!view.is_null());
@@ -194,10 +195,10 @@ fn checked_type_observers_reject_terminal_managed_pins_without_resurrection() {
         assert_eq!((*tp).tp_version_tag, version_tag);
         assert_eq!((*view).ob_refcnt, c_refs);
         assert_eq!((*header).ref_count_snapshot(), runtime_refs);
-        expect_no_error(&py);
+        expect_no_error(py);
         assert_eq!(typeobj::PyType_Unwatch(watcher, view), 0);
         assert_eq!(typeobj::PyType_ClearWatcher(watcher), 0);
-        crate::dec_ref_bits(&py, class);
+        crate::dec_ref_bits(py, class);
     });
 }
 
@@ -215,11 +216,11 @@ fn best_effort_version_tags_preserve_errors_for_malformed_physical_bases() {
         let watcher = typeobj::PyType_AddWatcher(Some(observe_type));
         assert!(watcher >= 0);
         assert_eq!(typeobj::PyType_Watch(watcher, owner.as_ptr()), 0);
-        expect_no_error(&py);
+        expect_no_error(py);
         assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 0);
-        expect_no_error(&py);
+        expect_no_error(py);
         let runtime = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::LookupError,
             "runtime original",
         );
@@ -230,13 +231,13 @@ fn best_effort_version_tags_preserve_errors_for_malformed_physical_bases() {
         assert!(!original.as_ptr().is_null());
         molt_cpython_abi::api::refcount::Py_INCREF(original.as_ptr());
         errors::PyErr_SetRaisedException(original.as_ptr());
-        crate::test_support::restore_runtime_raised(&py, runtime);
+        crate::test_support::restore_runtime_raised(py, runtime);
         assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 0);
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(runtime));
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
         let observed = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert_eq!(observed.as_ptr(), original.as_ptr());
-        assert!(!crate::exception_pending(&py));
-        crate::dec_ref_bits(&py, runtime);
+        assert!(!crate::exception_pending(py));
+        crate::dec_ref_bits(py, runtime);
         (*tp).tp_bases = saved;
         assert_eq!(typeobj::PyType_Unwatch(watcher, owner.as_ptr()), 0);
         assert_eq!(typeobj::PyType_ClearWatcher(watcher), 0);

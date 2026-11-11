@@ -23,7 +23,7 @@ fn raw_function_allocation_publishes_specialized_binder_policy() {
                 exception_pending(py),
                 "object.__new__ needs a type receiver"
             );
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             dec_ref_bits(py, result);
             dec_ref_bits(py, function);
         }
@@ -48,7 +48,7 @@ fn direct_code_attachment_publishes_signature_binder_policy() {
                 ],
                 false,
             );
-            let code = crate::builtins::functions::molt_function_get_code(source);
+            let code = crate::builtins::functions::molt_function_get_code_attached_body(py, source);
             assert!(!exception_pending(py));
             assert!(!obj_from_bits(code).is_none());
             let pointer = crate::builtins::functions::alloc_runtime_function_obj(
@@ -85,7 +85,7 @@ fn direct_code_attachment_publishes_signature_binder_policy() {
                 .is_err()
             );
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             let replacement = crate::object::layout::prepare_code_signature(
                 py,
                 [names, zero, positional, none, none],
@@ -102,7 +102,7 @@ fn direct_code_attachment_publishes_signature_binder_policy() {
                 .is_err()
             );
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(
                 crate::object::layout::code_kwonly_names_bits(code_pointer),
                 names
@@ -120,7 +120,7 @@ fn direct_code_attachment_publishes_signature_binder_policy() {
                 MoltObject::from_int(17).bits(),
             );
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             dec_ref_bits(py, result);
             for bits in [function, code, source, positional, names, name] {
                 dec_ref_bits(py, bits);
@@ -191,14 +191,19 @@ fn call_bind_builtin_full_binding_preserves_callee_owned_alias_return() {
         assert!(!list_ptr.is_null());
         let list_bits = MoltObject::from_ptr(list_ptr).bits();
 
-        let builder_bits = crate::call::bind::arguments::molt_callargs_new(1, 0);
+        let builder_bits = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 0);
         assert!(!obj_from_bits(builder_bits).is_none());
         let _ = unsafe {
-            crate::call::bind::arguments::molt_callargs_push_pos(builder_bits, list_bits)
+            crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                _py,
+                builder_bits,
+                list_bits,
+            )
         };
 
         dec_ref_bits(_py, list_bits);
-        let result_bits = crate::call::bind::molt_call_bind(func_bits, builder_bits);
+        let result_bits =
+            crate::call::bind::molt_call_bind_attached_body(_py, func_bits, builder_bits);
         assert_eq!(
             result_bits, list_bits,
             "identity callable must return the argument bits unchanged"
@@ -255,16 +260,18 @@ fn call_bind_builtin_default_padded_argv_preserves_callee_owned_alias_return() {
             "function __defaults__ tuple should be the only default owner before call"
         );
 
-        let builder_bits = crate::call::bind::arguments::molt_callargs_new(1, 0);
+        let builder_bits = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 0);
         assert!(!obj_from_bits(builder_bits).is_none());
         let _ = unsafe {
-            crate::call::bind::arguments::molt_callargs_push_pos(
+            crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                _py,
                 builder_bits,
                 MoltObject::from_int(5).bits(),
             )
         };
 
-        let result_bits = crate::call::bind::molt_call_bind(func_bits, builder_bits);
+        let result_bits =
+            crate::call::bind::molt_call_bind_attached_body(_py, func_bits, builder_bits);
         assert_eq!(result_bits, default_bits);
         let result_ptr = obj_from_bits(result_bits)
             .as_ptr()
@@ -307,7 +314,7 @@ fn call_bind_builtin_default_padded_argv_preserves_callee_owned_alias_return() {
                     assert_eq!(result, value);
                 } else {
                     assert!(exception_pending(_py));
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(_py);
                 }
                 dec_ref_bits(_py, result);
             }
@@ -368,22 +375,23 @@ fn specialized_builtin_binding_owns_raw_admission_with_or_without_trampolines() 
                         crate::call::bind::frame_binding::function_binding_shape(py, ptr)
                             .full_binder
                     );
-                    let result = crate::call::bind::molt_call_bind(
+                    let result = crate::call::bind::molt_call_bind_attached_body(
+                        py,
                         bits,
-                        crate::call::bind::arguments::molt_callargs_new(0, 0),
+                        crate::call::bind::arguments::molt_callargs_new_attached_body(py, 0, 0),
                     );
                     assert!(
                         crate::exception_pending(py),
                         "missing receiver cannot be synthesized"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     dec_ref_bits(py, result);
                     let result = crate::call::function::call_function_obj_vec(py, bits, &[]);
                     assert!(
                         crate::exception_pending(py),
                         "raw vector calls must use the same binder"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     dec_ref_bits(py, result);
                 }
                 crate::object::layout::function_set_trampoline_ptr(py, ptr, original);
@@ -426,7 +434,7 @@ fn published_native_constructors_own_raw_admission_and_argument_custody() {
                         py, class
                     )
                 );
-                let function = crate::molt_get_attr_name(class, key);
+                let function = crate::molt_get_attr_name_attached_body(py, class, key);
                 assert!(!exception_pending(py), "{name}.__new__ lookup");
                 let pointer = obj_from_bits(function).as_ptr().unwrap();
                 assert_eq!(object_type_id(pointer), TYPE_ID_FUNCTION);
@@ -456,17 +464,23 @@ fn published_native_constructors_own_raw_admission_and_argument_custody() {
                 // Keep the real entry/trampoline: variadic packing precedes
                 // the constructor's missing/non-type receiver admission.
                 for arguments in [&[][..], &[receiver][..]] {
-                    let builder =
-                        crate::call::bind::arguments::molt_callargs_new(arguments.len() as u64, 0);
+                    let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(
+                        py,
+                        arguments.len() as u64,
+                        0,
+                    );
                     for &argument in arguments {
-                        crate::call::bind::arguments::molt_callargs_push_pos(builder, argument);
+                        crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                            py, builder, argument,
+                        );
                     }
-                    let result = crate::call::bind::molt_call_bind(function, builder);
+                    let result =
+                        crate::call::bind::molt_call_bind_attached_body(py, function, builder);
                     assert!(
                         exception_pending(py),
                         "{name}.__new__ must reject invalid receiver"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     dec_ref_bits(py, result);
                     assert_eq!(
                         (*crate::object::header_from_obj_ptr(receiver_ptr)).ref_count_snapshot(),
@@ -479,7 +493,7 @@ fn published_native_constructors_own_raw_admission_and_argument_custody() {
                         exception_pending(py),
                         "{name}.__new__ vector admission must agree"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     dec_ref_bits(py, result);
                     assert_eq!(
                         (*crate::object::header_from_obj_ptr(receiver_ptr)).ref_count_snapshot(),
@@ -527,7 +541,8 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                 let original_entry = function_fn_ptr(pointer);
                 let original_version = crate::function_mutation_version(pointer);
                 let original_trampoline = function_trampoline_ptr(pointer);
-                crate::builtins::functions::molt_function_set_fixed_builtin(
+                crate::builtins::functions::molt_function_set_fixed_builtin_attached_body(
+                    py,
                     function,
                     MoltObject::from_int(arity as i64).bits(),
                 );
@@ -587,22 +602,31 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                         crate::object::layout::function_set_trampoline_ptr(py, pointer, 1);
                         for form in [CallForm::Stack, CallForm::Expanded] {
                             let builder = match form {
-                                CallForm::Stack => arguments::molt_callargs_new(
+                                CallForm::Stack => arguments::molt_callargs_new_attached_body(
+                                    py,
                                     supplied as u64,
                                     u64::from(has_keyword),
                                 ),
-                                CallForm::Expanded => arguments::molt_callargs_new_expanded(
-                                    supplied as u64,
-                                    u64::from(has_keyword),
-                                ),
+                                CallForm::Expanded => {
+                                    arguments::molt_callargs_new_expanded_attached_body(
+                                        py,
+                                        supplied as u64,
+                                        u64::from(has_keyword),
+                                    )
+                                }
                             };
                             for &value in &positional[..supplied] {
-                                arguments::molt_callargs_push_pos(builder, value);
+                                arguments::molt_callargs_push_pos_attached_body(py, builder, value);
                             }
                             if has_keyword {
-                                arguments::molt_callargs_push_kw(builder, keyword, positional[0]);
+                                arguments::molt_callargs_push_kw_attached_body(
+                                    py,
+                                    builder,
+                                    keyword,
+                                    positional[0],
+                                );
                             }
-                            let result = molt_call_bind(function, builder);
+                            let result = molt_call_bind_attached_body(py, function, builder);
                             assert!(obj_from_bits(result).is_none());
                             let error = crate::exception_last_bits_noinc(py)
                                 .expect("fixed argument rejection");
@@ -613,7 +637,7 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                                 ),
                                 expected
                             );
-                            crate::molt_exception_clear();
+                            crate::molt_exception_clear_attached_body(py);
                         }
                         if !has_keyword {
                             call_function_obj_vec(py, function, &positional[..supplied]);
@@ -626,7 +650,7 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                                 ),
                                 expected
                             );
-                            crate::molt_exception_clear();
+                            crate::molt_exception_clear_attached_body(py);
                         }
                         crate::object::layout::function_set_trampoline_ptr(
                             py,
@@ -639,7 +663,7 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                 // changes error display without changing convention or entry.
                 let key = crate::dynamic_attr_name_bits(py, b"__module__").unwrap();
                 let builtins = crate::dynamic_attr_name_bits(py, b"builtins").unwrap();
-                crate::molt_set_attr_name(function, key, builtins);
+                crate::molt_set_attr_name_attached_body(py, function, key, builtins);
                 assert!(!exception_pending(py));
                 call_function_obj_vec(py, function, &positional[..2]);
                 let error = crate::exception_last_bits_noinc(py).unwrap();
@@ -647,7 +671,7 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                     crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap())
                         .starts_with("declared_qualified() takes ")
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 for bits in [key, builtins, function] {
                     dec_ref_bits(py, bits);
                 }
@@ -663,7 +687,8 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                 ],
                 false,
             );
-            crate::builtins::functions::molt_function_set_fixed_builtin(
+            crate::builtins::functions::molt_function_set_fixed_builtin_attached_body(
+                py,
                 alias,
                 MoltObject::from_int(1).bits(),
             );
@@ -675,12 +700,12 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                     call_function_obj_vec(py, alias, &[value])
                 } else {
                     let builder = if carrier == 1 {
-                        arguments::molt_callargs_new(1, 0)
+                        arguments::molt_callargs_new_attached_body(py, 1, 0)
                     } else {
-                        arguments::molt_callargs_new_expanded(1, 0)
+                        arguments::molt_callargs_new_expanded_attached_body(py, 1, 0)
                     };
-                    arguments::molt_callargs_push_pos(builder, value);
-                    molt_call_bind(alias, builder)
+                    arguments::molt_callargs_push_pos_attached_body(py, builder, value);
+                    molt_call_bind_attached_body(py, alias, builder)
                 };
                 assert!(!exception_pending(py));
                 assert_eq!(
@@ -731,7 +756,8 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
                 );
                 let invalid_pointer = obj_from_bits(invalid).as_ptr().unwrap();
                 let invalid_class = object_class_bits(invalid_pointer);
-                crate::builtins::functions::molt_function_set_fixed_builtin(
+                crate::builtins::functions::molt_function_set_fixed_builtin_attached_body(
+                    py,
                     invalid,
                     MoltObject::from_int(1).bits(),
                 );
@@ -743,7 +769,7 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
                     )
                     .is_none()
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 dec_ref_bits(py, invalid);
             }
             let pointer = obj_from_bits(function).as_ptr().unwrap();
@@ -756,23 +782,26 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
                 MoltObject::none().bits(),
                 MoltObject::from_int(0).bits(),
             ] {
-                crate::builtins::functions::molt_function_set_fixed_builtin(function, count);
+                crate::builtins::functions::molt_function_set_fixed_builtin_attached_body(
+                    py, function, count,
+                );
                 assert!(exception_pending(py));
                 assert_eq!(object_class_bits(pointer), original_class);
                 assert_eq!(Field::BindKind.load(pointer), original_kind);
                 assert_eq!(function_fn_ptr(pointer), original_entry);
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
             }
             crate::raise_exception::<()>(py, BuiltinExc::RuntimeError, "original pending failure");
             let pending = crate::exception_last_bits_noinc(py).unwrap();
-            crate::builtins::functions::molt_function_set_fixed_builtin(
+            crate::builtins::functions::molt_function_set_fixed_builtin_attached_body(
+                py,
                 function,
                 MoltObject::from_int(1).bits(),
             );
             assert_eq!(crate::exception_last_bits_noinc(py), Some(pending));
             assert_eq!(object_class_bits(pointer), original_class);
             assert_eq!(Field::BindKind.load(pointer), original_kind);
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             let two = metadata_function(
                 py,
                 none_of_two as *const (),
@@ -784,19 +813,22 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
             let two_class = object_class_bits(two_pointer);
             let two_kind = Field::BindKind.load(two_pointer);
             for count in 0..=1 {
-                crate::builtins::functions::molt_function_set_fixed_builtin(
+                crate::builtins::functions::molt_function_set_fixed_builtin_attached_body(
+                    py,
                     two,
                     MoltObject::from_int(count).bits(),
                 );
                 assert!(exception_pending(py));
                 assert_eq!(object_class_bits(two_pointer), two_class);
                 assert_eq!(Field::BindKind.load(two_pointer), two_kind);
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
             }
-            let two_code = crate::builtins::functions::molt_function_get_code(two);
+            let two_code =
+                crate::builtins::functions::molt_function_get_code_attached_body(py, two);
             assert!(!exception_pending(py));
             assert!(!obj_from_bits(two_code).is_none());
-            crate::builtins::functions::molt_function_set_fixed_builtin(
+            crate::builtins::functions::molt_function_set_fixed_builtin_attached_body(
+                py,
                 function,
                 MoltObject::from_int(1).bits(),
             );
@@ -810,13 +842,13 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
                 (b"__molt_arg_names__".as_slice(), defaults),
             ] {
                 let key = crate::dynamic_attr_name_bits(py, field).unwrap();
-                crate::molt_set_attr_name(function, key, replacement);
+                crate::molt_set_attr_name_attached_body(py, function, key, replacement);
                 let error = crate::exception_last_bits_noinc(py)
                     .expect("native shape is not public mutable state");
                 assert!(crate::builtins::attr::exception_is_attribute_error(
                     py, error
                 ));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(function_arity(pointer), 1);
                 assert_eq!(function_fn_ptr(pointer), original_entry);
                 assert_eq!(Field::BindKind.load(pointer), fixed_kind);
@@ -833,7 +865,7 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
             assert!(!exception_pending(py));
             // Existing promotions retain their original interpretation and
             // cannot silently rewrite an explicitly fixed convention.
-            crate::builtins::functions::molt_function_set_builtin(function);
+            crate::builtins::functions::molt_function_set_builtin_attached_body(py, function);
             assert!(!exception_pending(py));
             assert_eq!(Field::BindKind.load(pointer), fixed_kind);
             for bits in [defaults, two_code, two, function, qualified] {

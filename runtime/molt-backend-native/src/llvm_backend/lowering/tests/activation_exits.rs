@@ -4,6 +4,8 @@
 //! owner that TIR placed.
 
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 
 const RESUME_STATE: i64 = 7;
 const RUNNING_STATE: i64 = 9;
@@ -17,6 +19,7 @@ struct NormalizedWait {
 fn tir_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>, attrs: AttrDict) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -159,46 +162,52 @@ fn activation_ops_save_state_test_the_exact_sentinel_and_register_the_frame() {
     // including a running state that no dispatch case resumes.
     for state in [RESUME_STATE, RUNNING_STATE] {
         let save = format!("call void @molt_obj_set_state(i64 %0, i64 {state})");
-        assert_eq!(ir.matches(save.as_str()).count(), 1, "{ir}");
+        assert_eq!(ir.matches_execution(save.as_str()).count(), 1, "{ir}");
     }
     // IsPending compares the poll word itself with the sentinel, and the
     // branch consumes that bit: no truthiness, no callback.
     assert!(
-        ir.contains(&format!(
+        ir.contains_execution(&format!(
             "%is_pending = icmp eq i64 %closure_load2, {pending}"
         )),
         "{ir}"
     );
     assert!(
-        ir.contains(&format!(
+        ir.contains_execution(&format!(
             "br i1 %is_pending, label %bb{}, label %bb{}",
             wait.pending.0, wait.ready.0
         )),
         "{ir}"
     );
-    assert!(!ir.contains("@molt_is_truthy("), "{ir}");
+    assert!(!ir.contains_execution("@molt_is_truthy("), "{ir}");
     // TaskWait registers the raw frame and the future's object address.
     assert!(
-        ir.contains("%task_wait_frame = inttoptr i64 %0 to ptr"),
+        ir.contains_execution("%task_wait_frame = inttoptr i64 %0 to ptr"),
         "{ir}"
     );
     assert!(
-        ir.contains(&format!("and i64 %closure_load, {}", nanbox::POINTER_MASK)),
+        ir.contains_execution(&format!("and i64 %closure_load, {}", nanbox::POINTER_MASK)),
         "{ir}"
     );
     assert!(
-        ir.contains("@molt_sleep_register(ptr %task_wait_frame, ptr %task_wait_future)"),
+        ir.contains_execution("@molt_sleep_register(ptr %task_wait_frame, ptr %task_wait_future)"),
         "{ir}"
     );
     // Both exits transfer the poll owner and release the payload-loaded future.
-    assert!(!ir.contains("@__molt_inline_retain("), "{ir}");
+    assert!(!ir.contains_execution("@__molt_inline_retain("), "{ir}");
     assert_eq!(
-        ir.matches("call void @__molt_inline_release(i64 %closure_load, i64 %rc_admission)")
-            .count(),
+        ir.matches_execution(
+            "call void @__molt_inline_release(i64 %closure_load, i64 %rc_admission)"
+        )
+        .count(),
         2,
         "{ir}"
     );
-    assert_eq!(ir.matches("ret i64 %closure_load2\n").count(), 2, "{ir}");
+    assert_eq!(
+        ir.matches_execution("ret i64 %closure_load2\n").count(),
+        2,
+        "{ir}"
+    );
 }
 
 /// A first-class TIR `Call` names its static target in `s_value`. With a
@@ -234,13 +243,16 @@ fn first_class_calls_use_only_their_canonical_runtime_row() {
                 .print_to_string()
                 .to_string();
             assert!(
-                ir.contains(&format!("%{symbol} = call i64 @{symbol}(i64 %0)")),
+                ir.contains_execution(&format!("%{symbol} = call i64 @{symbol}(i64 %0)")),
                 "{ir}"
             );
             // The owned poll word is the returned value itself.
-            assert!(ir.contains(&format!("ret i64 %{symbol}\n")), "{ir}");
-            assert!(!ir.contains("@__molt_inline_retain("), "{ir}");
-            assert!(!ir.contains("@__molt_inline_release("), "{ir}");
+            assert!(
+                ir.contains_execution(&format!("ret i64 %{symbol}\n")),
+                "{ir}"
+            );
+            assert!(!ir.contains_execution("@__molt_inline_retain("), "{ir}");
+            assert!(!ir.contains_execution("@__molt_inline_release("), "{ir}");
         } else {
             let err = lowered.expect_err("an unclassified first-class call must fail closed");
             assert_lowering_error_contains(&err, "has no exact native linkage ABI");
@@ -269,25 +281,31 @@ fn normalized_wait_polls_through_the_canonical_poll_row() {
     // The poll borrows the future word; its owned result is the word tested
     // and returned, with no retain or release on either exit.
     assert_eq!(
-        ir.matches("%molt_future_poll = call i64 @molt_future_poll(i64 %closure_load)")
+        ir.matches_execution("%molt_future_poll = call i64 @molt_future_poll(i64 %closure_load)")
             .count(),
         1,
         "{ir}"
     );
     assert!(
-        ir.contains(&format!(
+        ir.contains_execution(&format!(
             "%is_pending = icmp eq i64 %molt_future_poll, {pending}"
         )),
         "{ir}"
     );
-    assert!(!ir.contains("@__molt_inline_retain("), "{ir}");
+    assert!(!ir.contains_execution("@__molt_inline_retain("), "{ir}");
     assert_eq!(
-        ir.matches("call void @__molt_inline_release(i64 %closure_load, i64 %rc_admission)")
-            .count(),
+        ir.matches_execution(
+            "call void @__molt_inline_release(i64 %closure_load, i64 %rc_admission)"
+        )
+        .count(),
         2,
         "{ir}"
     );
-    assert_eq!(ir.matches("ret i64 %molt_future_poll\n").count(), 2, "{ir}");
+    assert_eq!(
+        ir.matches_execution("ret i64 %molt_future_poll\n").count(),
+        2,
+        "{ir}"
+    );
 }
 
 #[test]
@@ -356,10 +374,11 @@ fn pointer_decode_constant_folding_preserves_unsigned_high_addresses() {
         TirType::None,
         molt_ir::FunctionReturnAbi::Void,
     );
-    let llvm_fn =
-        backend
-            .module
-            .add_function("pointer_decode", ctx.void_type().fn_type(&[], false), None);
+    let llvm_fn = backend.module.add_compiled_function(
+        "pointer_decode",
+        ctx.void_type().fn_type(&[], false),
+        None,
+    );
     backend
         .builder
         .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));

@@ -115,12 +115,18 @@ REQUIRED_FAMILY_FIELDS = (
 )
 REQUIRED_SCHEDULED_FAMILY_FIELDS = (
     "description",
-    "workflow",
-    "job",
+    "executor",
     "tiers",
     "timeout_minutes",
     "resource_class",
 )
+# A scheduled family runs either as a GitHub workflow job, which declares the
+# job and transports evidence as workflow artifacts, or on an inventoried farm
+# host through tools/trunk_loop.py, whose stage archive and `collect` are the
+# evidence transport. A farm family names no workflow, job or GitHub runner.
+FARM_EXECUTOR = "farm"
+SCHEDULED_EXECUTORS = ("github-workflow", FARM_EXECUTOR)
+GITHUB_JOB_FIELDS = ("workflow", "job", "job_reserve_seconds")
 REQUIRED_NAMED_LANE_FIELDS = (
     "cache_domain",
     "description",
@@ -1962,6 +1968,13 @@ class ProofPlan:
 
         return self.toolchain_closure(command.toolchains)
 
+    def farm_families(self) -> frozenset[str]:
+        return frozenset(
+            family.name
+            for family in self.scheduled_families
+            if family.data.get("executor") == FARM_EXECUTOR
+        )
+
     def family_cells(self, family_name: str) -> tuple[str, ...]:
         """Return the family's matrix cells in first-declaration order."""
         return tuple(
@@ -2700,9 +2713,22 @@ class ProofPlan:
             errors.append("matrix_cell IDs must be non-empty")
         if len(cell_ids) != len(set(cell_ids)):
             errors.append("matrix_cell IDs must be unique")
+        farm = self.farm_families()
         for cell in self.matrix_cells:
+            families = {
+                command.family
+                for command in self.commands
+                if command.data.get("cell") == cell.id
+            }
+            # A cell that only farm families use runs on no GitHub runner.
+            if families and families <= farm:
+                if "runner" in cell.data:
+                    errors.append(f"{cell.id}: a farm-only matrix cell names no runner")
+            elif (
+                not isinstance(cell.data.get("runner"), str) or not cell.data["runner"]
+            ):
+                errors.append(f"{cell.id}: matrix cell missing non-empty runner")
             for field in (
-                "runner",
                 "os",
                 "arch",
                 "python",
@@ -2718,9 +2744,13 @@ class ProofPlan:
         if len(names) != len(set(names)):
             errors.append("ci_family names must be unique")
         for family in (*self.families, *self.scheduled_families):
-            models_job = isinstance(family, ScheduledFamily) or family.data.get(
-                "executor"
-            ) in {"github-job", "github-matrix"}
+            models_job = family.data.get("executor") in {
+                "github-job",
+                "github-matrix",
+            } or (
+                isinstance(family, ScheduledFamily)
+                and family.data.get("executor") != FARM_EXECUTOR
+            )
             reserve = family.data.get("job_reserve_seconds")
             if models_job:
                 if type(reserve) is not int or reserve <= 0:
@@ -2890,6 +2920,24 @@ class ProofPlan:
             for field in REQUIRED_SCHEDULED_FAMILY_FIELDS:
                 if field not in family.data:
                     errors.append(f"{family.name}: missing {field}")
+            executor = family.data.get("executor")
+            if executor not in SCHEDULED_EXECUTORS:
+                errors.append(
+                    f"{family.name}: scheduled executor {executor!r} must come "
+                    f"from {list(SCHEDULED_EXECUTORS)!r}"
+                )
+            elif executor == FARM_EXECUTOR:
+                errors.extend(
+                    f"{family.name}: a farm family has no GitHub {field}"
+                    for field in GITHUB_JOB_FIELDS
+                    if field in family.data
+                )
+            else:
+                errors.extend(
+                    f"{family.name}: missing {field}"
+                    for field in ("workflow", "job")
+                    if field not in family.data
+                )
             if family.data.get("resource_class") not in set(resource_names):
                 errors.append(
                     f"{family.name}: unknown resource class "
@@ -2951,6 +2999,8 @@ class ProofPlan:
                     f"{family.name}: item_timeout_seconds must be a positive "
                     "per-item bound inside the shard deadline"
                 )
+            if family.data.get("executor") != "github-workflow":
+                continue
             workflow = ROOT / str(family.data.get("workflow", ""))
             if not workflow.is_file():
                 errors.append(f"{family.name}: workflow does not exist: {workflow}")
@@ -3322,7 +3372,8 @@ class ProofPlan:
                         where = "" if cell is None else f" in matrix cell {cell!r}"
                         errors.append(f"{name}: tier {tier!r} gates no command{where}")
         # Declared evidence that never leaves the runner attests nothing: the
-        # owning job must transport every output as a workflow artifact.
+        # owning job must transport every output as a workflow artifact. A
+        # farm family's transport is trunk_loop's stage archive and collect.
         scheduled_names = {family.name for family in self.scheduled_families}
         for family in (*self.families, *self.scheduled_families):
             outputs = tuple(
@@ -3337,6 +3388,8 @@ class ProofPlan:
                         f"{family.name}: scheduled family has no declared "
                         "evidence outputs"
                     )
+                continue
+            if family.name in farm:
                 continue
             if "workflow" not in family.data or "job" not in family.data:
                 errors.append(
@@ -3455,7 +3508,19 @@ class ProofPlan:
                     errors.append(str(exc))
                     continue
                 job_budget = int(family.data["timeout_minutes"]) * 60
-                reserve = family.data.get("job_reserve_seconds")
+                # A farm run has no GitHub job to reserve setup time for.
+                reserve = family.data.get(
+                    "job_reserve_seconds",
+                    0 if family.name in farm else None,
+                )
+                if family.name in farm and reserve == 0:
+                    if envelope.projected_makespan_seconds > job_budget:
+                        errors.append(
+                            f"{family.name}: projected resource-aware timeout "
+                            f"envelope {envelope.projected_makespan_seconds}s "
+                            f"exceeds farm budget {job_budget}s"
+                        )
+                    continue
                 if type(reserve) is not int or reserve <= 0:
                     continue  # The owning field validation reports this error.
                 if envelope.projected_makespan_seconds + reserve > job_budget:

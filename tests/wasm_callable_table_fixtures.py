@@ -6,6 +6,8 @@ from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_SECTION_NAME,
     WASM_CALLABLE_TABLE_SECTION_VERSION,
     WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
+    ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
 )
 
 
@@ -47,4 +49,8 @@ def attested_empty_callable_table(module: bytes) -> bytes:
         module
         + _custom_section(WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME, layout)
         + _custom_section(WASM_CALLABLE_TABLE_SECTION_NAME, attestation)
+        + _custom_section(
+            ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
+            ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT.to_bytes(8, "little"),
+        )
     )

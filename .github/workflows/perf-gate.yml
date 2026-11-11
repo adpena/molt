@@ -1,39 +1,14 @@
-name: Perf Gate (canonical CPython-floor scoreboard)
+name: Candidate runtime costs (evidence only)
 
-# The ONE release-blocking performance authority. Runs the canonical scoreboard
-# (tools/perf_scoreboard.py) at the release-fast contract profile, cold+warm,
-# native+LLVM, repeat-CI, with the quiescence guard and the 5-state classifier,
-# and FAILS the gate on:
-#   * any warm cell below the CPython floor (warm_speedup <= 1.00 -> FAIL_ENGINE),
-#   * any non-authoritative tree (local tip != origin/main, dirty -> FAIL_STALE),
-#   * any UNSTABLE / BUILD_FAILED / RUN_ERROR cell.
-# The scoreboard gates by default (nonzero exit on RED/FAIL_STALE). This is the
-# perf-plane sibling of the docs ratchets: a single fresh, quiescent,
-# native+LLVM release-fast source is the only citable authority.
-#
-# Every other local perf lane is non-canonical and stamps authoritative=false
-# through tools/perf_authority.py; the freshness gate in ci.yml keeps stale
-# markdown snapshots from masquerading as current.
-#
-# Triggers: explicit dispatch plus a weekly controlled measurement. Per-push
-# allocation is forbidden: rapid main updates repeatedly cancelled expensive
-# jobs after compilation while publishing no authoritative result. Pending runs
-# debounce in GitHub's concurrency queue, but an active measurement is never
-# cancelled. tools/check_perf_gate_wiring.py fails closed on trigger/cancellation
-# drift and on any non-blocking scoreboard invocation.
+# Controlled candidate-only numeric/list/shared-storage measurements: evidence
+# with no comparative or release claim. The instruction signal on main runs on
+# the farm (tools/perf_instructions.py, tools/PERF_AUTHORITY.md); the weekly
+# CPython-floor board that lived here never produced a verdict (HF-222) and is
+# retired. tools/check_perf_gate_wiring.py fails closed on trigger and
+# cancellation drift and on a non-blocking candidate step.
 
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: Controlled measurement purpose
-        type: choice
-        default: canonical
-        options: [canonical, candidate-runtime-costs]
-  schedule:
-    # Weekly canonical re-measure (Mondays 06:00 UTC) so the citable board stays
-    # fresh even between perf-touching PRs.
-    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -47,176 +22,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  cpython-floor-shards:
-    if: github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs'
-    name: CPython-floor shard (${{ matrix.backend }} / release-fast / ${{ matrix.shard }} of 4)
-    runs-on: ubuntu-latest
-    # One unsharded lane ran about 3.7 minutes a cell and never finished the
-    # 72-cell core set inside 180 minutes (HF-185). Four deterministic shards per
-    # backend measure about 18 cells each; every cell still pairs Molt with
-    # CPython on one runner, so its ratio never mixes hosts.
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [native, llvm]
-        shard: [0, 1, 2, 3]
-    env:
-      MOLT_SESSION_ID: perfscore-${{ matrix.backend }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # Full history so the provenance check can resolve origin/main and
-          # the merge-base (authoritative requires HEAD to be on origin/main).
-          fetch-depth: 0
-
-      - name: Setup performance gate toolchains
-        uses: ./.github/actions/setup-project
-        with:
-          rust-toolchain: pinned
-          cache-cargo: "true"
-          cache-namespace: perf-${{ matrix.backend }}
-          sync: "true"
-          sync-frozen: "true"
-          sync-groups: bench, dev
-
-      - name: Setup LLVM backend SDK
-        if: matrix.backend == 'llvm'
-        uses: ./.github/actions/setup-llvm
-
-      - name: Make origin/main resolvable for provenance
-        run: |
-          if ! git fetch --no-tags origin main; then
-            echo "::error title=baseline_fetch_failed::Required origin/main provenance baseline could not be fetched"
-            exit 1
-          fi
-
-      - name: Run canonical CPython-floor scoreboard shard (release-fast, classified)
-        # release-fast is the daily contract profile. --classify yields the
-        # 5-state taxonomy; --require-quiescent stamps authoritative=false on a
-        # contended runner so a loaded-machine red is never treated as a target.
-        # --repeat 5 supplies the confidence interval that separates stable
-        # compiler targets from noise. --shard selects one deterministic slice of
-        # the core set and records it in provenance; the aggregate job refuses to
-        # merge unless the four slices cover the set exactly once. The gate exits
-        # nonzero on any RED warm cell OR FAIL_STALE in this slice.
-        run: |
-          python3 tools/guarded_exec.py --prefix MOLT_BENCH -- \
-            uv run python3 tools/perf_scoreboard.py \
-              --set core \
-              --shard "${{ matrix.shard }}/4" \
-              --backend "${{ matrix.backend }}" \
-              --profile release-fast \
-              --samples 5 \
-              --warmup 2 \
-              --repeat 5 \
-              --classify \
-              --require-quiescent \
-              --quiescence-wait-s 180 \
-              --quiescence-poll-s 15 \
-              --print-provenance \
-              --out "bench/scoreboard/cpython_ci_${{ matrix.backend }}_shard${{ matrix.shard }}.json"
-
-      - name: Upload scoreboard shard
-        if: always() && hashFiles(format('bench/scoreboard/cpython_ci_{0}_shard{1}.json', matrix.backend, matrix.shard)) != ''
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: cpython-floor-shard-${{ matrix.backend }}-${{ matrix.shard }}
-          path: |
-            bench/scoreboard/cpython_ci_${{ matrix.backend }}_shard${{ matrix.shard }}.json
-            bench/scoreboard/logs_*/
-      - name: Save Cargo dependency cache
-        if: ${{ !cancelled() }}
-        uses: ./.github/actions/save-cargo-cache
-
-  cpython-floor:
-    needs: cpython-floor-shards
-    if: always() && (github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs')
-    name: CPython-floor scoreboard (${{ matrix.backend }} / release-fast)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [native, llvm]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup scoreboard aggregation
-        uses: ./.github/actions/setup-project
-        with:
-          sync: "true"
-          sync-frozen: "true"
-          sync-groups: bench, dev
-
-      - name: Download scoreboard shards
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: cpython-floor-shard-${{ matrix.backend }}-*
-          path: bench/scoreboard/shards
-          merge-multiple: true
-
-      - name: Merge and gate the complete board
-        # The merge proves exact coverage of the core set from the shards'
-        # provenance (no missing, repeated or foreign shard) and that every
-        # shard measured the same revision, tool, host class and methodology,
-        # then re-applies the gate to the complete board.
-        run: |
-          shopt -s nullglob
-          boards=(bench/scoreboard/shards/cpython_ci_${{ matrix.backend }}_shard*.json)
-          if [ "${#boards[@]}" -eq 0 ]; then
-            echo "::error title=scoreboard_shards_missing::No ${{ matrix.backend }} scoreboard shard was produced"
-            exit 1
-          fi
-          uv run python3 tools/perf_scoreboard.py \
-            --merge "${boards[@]}" \
-            --out "bench/scoreboard/cpython_ci_${{ matrix.backend }}.json"
-
-      - name: Project the five gated boards (doc 64 §3.2 measurement plane)
-        # Pure consumer of the source scoreboard: project CPython / Backend /
-        # Profile / PyPy / Codon, each its own gated artifact. The plane gate
-        # exits nonzero iff ANY board FAILs -- so a native win cannot hide a
-        # wasm/llvm regression (the Backend board has its own exit code) and a
-        # release-output win cannot hide a release-fast regression. The CLI writes
-        # all five artifacts BEFORE returning the gate exit code, so the views are
-        # materialized even when this step then fails the plane gate. `if: always`
-        # ensures the projection runs (and uploads) even on a merge-gate RED.
-        if: always() && hashFiles(format('bench/scoreboard/cpython_ci_{0}.json', matrix.backend)) != ''
-        run: |
-          uv run python3 tools/perf_board.py \
-            "bench/scoreboard/cpython_ci_${{ matrix.backend }}.json" \
-            --out-dir "bench/scoreboard/plane_${{ matrix.backend }}"
-
-      - name: Board-vs-history regression gate (doc 64 Phase 4)
-        # Compare the projected boards against the most-recent promoted baseline
-        # of the same methodology, suite and host class in the committed
-        # bench/scoreboard/history/. FAILS CI on a previously-green cell that
-        # regressed (CLAUDE.md triage priority #2). CI never records: this
-        # checkout is discarded. A class with no promoted baseline is reported
-        # UNARMED; promote an authoritative board from this run's artifact with
-        # `tools/perf_history.py --promote`.
-        run: |
-          uv run python3 tools/perf_history.py \
-            bench/scoreboard/plane_${{ matrix.backend }}/cpython_*.json \
-            bench/scoreboard/plane_${{ matrix.backend }}/backend_*.json \
-            bench/scoreboard/plane_${{ matrix.backend }}/profile_*.json \
-            --gate
-
-      - name: Upload scoreboard + plane artifacts
-        if: always() && hashFiles(format('bench/scoreboard/cpython_ci_{0}.json', matrix.backend)) != ''
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: cpython-floor-scoreboard-${{ matrix.backend }}
-          path: |
-            bench/scoreboard/cpython_ci_${{ matrix.backend }}.json
-            bench/scoreboard/plane_${{ matrix.backend }}/
-
   candidate-runtime-costs:
     name: Candidate runtime costs (evidence only)
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate-runtime-costs'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:

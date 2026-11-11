@@ -82,10 +82,10 @@ for (const present of [false, true]) for (const fail of [false, true]) {
   for (const entry of WebAssembly.Module.imports(module)) {
     imports[entry.module] ??= {};
     if (entry.kind !== 'function') { assert.ok(entry.module === 'env' && entry.name in imports.env); continue; }
-    imports[entry.module][entry.name] = providers[entry.name] ?? (() => { throw new Error('unexpected runtime call '+entry.name); });
+    imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ?? (() => { throw new Error('unexpected runtime call '+entry.name); });
   }
-  const app = new WebAssembly.Instance(module, imports).exports;
-  assert.equal(app.molt_main(builder, present ? receiver : nullWord), none);
+  const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+  assert.equal(app[compiledSymbol('molt_main')](executionContext, builder, present ? receiver : nullWord), none);
   assert.equal(pushes, Number(present));
   assert.equal(pending, present && fail, 'push failure remains pending after release');
   assert.equal(owners, Number(present && !fail), 'only the builder retains the receiver');
@@ -229,11 +229,11 @@ for (const test of config.cases) {
         assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
         continue;
       }
-      imports[entry.module][entry.name] = providers[entry.name] ??
+      imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
         (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
     }
-    const app = new WebAssembly.Instance(module, imports).exports;
-    const result = app.molt_main(value);
+    const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+    const result = app[compiledSymbol('molt_main')](executionContext, value);
     const retained = test.bound && failure === 'success';
     assert.equal(result, retained ? owner : none, name + ': result');
     assert.equal(allocations, 1, name);
@@ -401,11 +401,11 @@ for (const test of config.cases) {
         assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
         continue;
       }
-      imports[entry.module][entry.name] = providers[entry.name] ??
+      imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
         (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
     }
-    const app = new WebAssembly.Instance(module, imports).exports;
-    const result = app.molt_main(...operands);
+    const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+    const result = app[compiledSymbol('molt_main')](executionContext, ...operands);
     const retained = test.bound && failure === 'success';
     assert.equal(result, retained ? owner : none, name + ': result');
     assert.equal(allocations, words.length ? 1 : 0, name + ': scratch only for a nonempty range');
@@ -499,9 +499,14 @@ fn raw_allocations_publish_before_binding_or_releasing_the_result() {
                 .iter()
                 .position(|operator| operator == &format!("Call {{ function_index: {allocate} }}"))
                 .expect("allocation must be emitted");
+            let publication = operators
+                .iter()
+                .position(|op| op == &format!("Call {{ function_index: {publish} }}"))
+                .expect("publish initialized allocation");
             assert_eq!(
-                operators[position + 1],
-                format!("Call {{ function_index: {publish} }}")
+                attached_call_operands_end(&operators, publication, 1),
+                position + 1,
+                "the exact allocation result feeds publication before binding or cleanup"
             );
             assert_eq!(call_count(&operators, publish), 1, "{kind} {result:?}");
             let releases = rc
@@ -585,7 +590,8 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
 
 #[test]
 fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
-    use crate::wasm_abi_generated::{WASM_NUMERIC_RUNTIME_SELECTORS, WasmRuntimeReturn};
+    use crate::wasm_abi_generated::WASM_NUMERIC_RUNTIME_SELECTORS;
+    use molt_ir::runtime_fn_generated::RuntimeReturnContract;
 
     let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
@@ -594,7 +600,7 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
     for spec in WASM_NUMERIC_RUNTIME_SELECTORS {
         let import = spec.selection.import;
         let (params, _) = import.machine_signature();
-        assert_eq!(import.return_contract(), WasmRuntimeReturn::OwnedObject);
+        assert_eq!(import.return_contract(), RuntimeReturnContract::OwnedObject);
         assert!(params.iter().all(|ty| *ty == wasm_encoder::ValType::I64));
         for (shape, out) in [
             ("absent", None),
@@ -682,12 +688,12 @@ for (const test of config.cases) {
         assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
         continue;
       }
-      imports[entry.module][entry.name] = providers[entry.name] ??
+      imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
         (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
     }
     // A tagged nonnumeric operand selects the boxed runtime path. This test
     // proves call/result ownership, not the provider's arithmetic semantics.
-    const result = new WebAssembly.Instance(module, imports).exports.molt_main(none);
+    const result = new WebAssembly.Instance(module, attachedImports(imports)).exports[compiledSymbol('molt_main')](executionContext, none);
     const retained = test.bound && !failed;
     assert.equal(calls, 1, name + ': selected runtime import');
     assert.equal(result, retained ? owner : none, name + ': result');
@@ -796,9 +802,16 @@ fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
                         operators[index + 1].starts_with("LocalGet {"),
                         "the release site passes the invocation admission: {kind} {result:?}: {operators:?}"
                     );
+                    let release = format!("Call {{ function_index: {} }}", rc["release"]);
+                    let release_index = index
+                        + 1
+                        + operators[index + 1..]
+                            .iter()
+                            .position(|op| op == &release)
+                            .expect("discarded result release");
                     assert_eq!(
-                        operators[index + 2],
-                        format!("Call {{ function_index: {} }}", rc["release"]),
+                        attached_call_operands_end(&operators, release_index, 2),
+                        index + 2,
                         "the effect result enters its release transition unchanged: {kind} {result:?}"
                     );
                 }
@@ -887,9 +900,15 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
                     operators[index + 1].starts_with("LocalGet {"),
                     "the release site passes the invocation admission: {kind}: {operators:?}"
                 );
+                let release_index = index
+                    + 1
+                    + operators[index + 1..]
+                        .iter()
+                        .position(|op| op == &expected)
+                        .expect("effect result release");
                 assert_eq!(
-                    operators[index + 2],
-                    expected,
+                    attached_call_operands_end(&operators, release_index, 2),
+                    index + 2,
                     "the original effect word enters its release transition: {kind}: {operators:?}"
                 );
             }
@@ -1415,9 +1434,16 @@ fn callable_constructors_release_only_discarded_owned_results() {
                     operators[position + 1].starts_with("LocalGet {"),
                     "the release site passes the invocation admission: {operators:?}"
                 );
+                let release = format!("Call {{ function_index: {} }}", rc["release"]);
+                let release_index = position
+                    + 1
+                    + operators[position + 1..]
+                        .iter()
+                        .position(|op| op == &release)
+                        .expect("discarded constructor result release");
                 assert_eq!(
-                    operators[position + 2],
-                    format!("Call {{ function_index: {} }}", rc["release"]),
+                    attached_call_operands_end(&operators, release_index, 2),
+                    position + 2,
                     "the discarded owned result enters its release transition: {operators:?}"
                 );
             }
@@ -1476,9 +1502,16 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
                 operators[position + 2].starts_with("LocalGet {"),
                 "the retain site passes the invocation admission: {operators:?}"
             );
+            let retain = format!("Call {{ function_index: {} }}", rc["retain"]);
+            let retain_index = position
+                + 1
+                + operators[position + 1..]
+                    .iter()
+                    .position(|op| op == &retain)
+                    .expect("bound borrowed result retain");
             assert_eq!(
-                operators[position + 3],
-                format!("Call {{ function_index: {} }}", rc["retain"]),
+                attached_call_operands_end(&operators, retain_index, 2),
+                position + 3,
                 "the selected borrowed result enters its retain transition: {operators:?}"
             );
         } else {
@@ -1498,9 +1531,10 @@ pub(super) fn assert_single_anchor_epilogue(operators: &[String], release_body: 
     );
     assert_eq!(operators.last().map(String::as_str), Some("End"));
     let release_index = operators.iter().rposition(|op| op == &release).unwrap();
+    let operands_end = attached_call_operands_end(operators, release_index, 2);
     assert!(
-        operators[release_index - 1].starts_with("LocalGet {")
-            && operators[release_index - 2].starts_with("I64Store {"),
+        operators[operands_end - 1].starts_with("LocalGet {")
+            && operators[operands_end - 2].starts_with("I64Store {"),
         "publish an empty owner before the cleanup callback: {operators:?}"
     );
     assert!(
@@ -1739,12 +1773,12 @@ for (const failure of [-1, 0, 1, 2, 3]) {
     for (const entry of WebAssembly.Module.imports(module)) {
       if (entry.kind !== 'function') continue;
       imports[entry.module] ??= {};
-      imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {
+      imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {
         throw new Error('unexpected runtime call ' + entry.name);
       });
     }
-    const app = new WebAssembly.Instance(module, imports).exports;
-    assert.equal(app.molt_main(condition), failure || condition === no ? none : yes);
+    const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+    assert.equal(app[compiledSymbol('molt_main')](executionContext, condition), failure || condition === no ? none : yes);
     assert.equal(pending, failure !== 0, 'cleanup preserves the constructor exception');
     assert.equal(constructed, failure === -1 ? 0 : failure || 3);
     assert.equal(live, false); assert.equal(frees, failure === -1 ? 0 : 1);

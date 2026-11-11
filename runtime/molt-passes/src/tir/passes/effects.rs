@@ -168,6 +168,7 @@ mod tests {
             }
             let op = TirOp {
                 origin: Some(molt_ir::OpKind::BuiltinFunc),
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: if named { vec![ValueId(0)] } else { vec![] },
@@ -270,6 +271,7 @@ mod tests {
             assert!(!coarse.consistent || !coarse.effect_free);
             let op = TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],

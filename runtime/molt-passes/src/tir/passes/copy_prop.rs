@@ -272,6 +272,7 @@ mod tests {
     fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -337,6 +338,7 @@ mod tests {
         // Copy with a fused attribute — must NOT be propagated.
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![a],
@@ -443,6 +445,7 @@ mod final_projection_tests {
         let entry = function.blocks.get_mut(&function.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![ValueId(0)],

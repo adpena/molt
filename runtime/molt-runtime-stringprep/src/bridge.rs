@@ -12,8 +12,13 @@ use molt_runtime_core::prelude::*;
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_stringprep_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize)
-    -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_stringprep_raise_exception")]
+    fn __molt_stringprep_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -22,7 +27,12 @@ pub fn raise_exception<T: ExceptionSentinel>(
     msg: &str,
 ) -> T {
     let bits = unsafe {
-        __molt_stringprep_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len())
+        __molt_stringprep_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
     };
     T::from_bits(bits)
 }
@@ -56,11 +66,16 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_stringprep_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_stringprep_alloc_string")]
+    fn __molt_stringprep_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_stringprep_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_stringprep_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 // ---------------------------------------------------------------------------

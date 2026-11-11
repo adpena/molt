@@ -3,9 +3,9 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR};
-use wasm_encoder::Function;
 
 #[allow(unused_variables)]
 pub(super) fn emit_sequence_runtime_op(

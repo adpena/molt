@@ -33,7 +33,10 @@ LOADER_BRIDGE = ROOT / "wasm" / "loader_bridge.js"
 # exact-arity passthrough, and the under-supply hard error.
 _NODE_HARNESS = r"""
 const bridgePath = process.argv[process.argv.length - 1];
-const { callReservedRuntimeCallable } = require(bridgePath);
+const { callReservedRuntimeCallable, compiledExecutionSymbol } = require(bridgePath);
+const abi = require(require("node:path").join(require("node:path").dirname(bridgePath), "wasm_abi_generated.json"));
+const physical = logical => abi.runtime_execution_abis[logical].physical_symbol;
+const context = 32768n;
 
 function assert(cond, msg) {
   if (!cond) {
@@ -44,13 +47,13 @@ function assert(cond, msg) {
 let received = null;
 const runtimeExports = {
   // Declared arity 1: reads only `cls`, ignores any surplus operands.
-  molt_types_capsule_new: (...args) => {
+  [physical("molt_types_capsule_new")]: (...args) => {
     received = args;
     return 123n;
   },
   // Declared arity 2: used to prove under-supply is still rejected.
-  molt_needs_two: (a, b) => 456n,
-  molt_cpython_abi_cext_call_trampoline: (...args) => {
+  [physical("molt_exception_init")]: (ctx, a, b) => { assert(ctx === context, "context lost"); return 456n; },
+  [physical("molt_cpython_abi_cext_call_trampoline")]: (...args) => {
     received = args;
     return 789n;
   },
@@ -58,36 +61,36 @@ const runtimeExports = {
 
 // Case 1: declared arity 1, caller supplies 4 (the `(cls, *args)` __new__ lane).
 const capsuleEntry = {
-  runtimeExport: "molt_types_capsule_new",
+  runtimeExport: physical("molt_types_capsule_new"),
   arity: 1,
   trampoline: false,
 };
 const result = callReservedRuntimeCallable({
-  runtimeExports,
+  runtimeExports, context,
   memory: null,
   entry: capsuleEntry,
-  indirectName: "molt_call_indirect4",
+  indirectName: compiledExecutionSymbol("molt_call_indirect4"),
   args: [10n, 20n, 30n, 40n],
 });
 assert(received !== null, "reserved callable was not invoked");
 assert(
-  received.length === 1,
-  "expected exactly 1 forwarded arg, got " + received.length + " [" + received + "]",
+  received.length === 2,
+  "expected context plus one forwarded arg, got " + received.length + " [" + received + "]",
 );
-assert(received[0] === 10n, "expected cls=10n forwarded, got " + received[0]);
+assert(received[0] === context && received[1] === 10n, "expected cls=10n forwarded, got " + received[0]);
 assert(result === 123n, "unexpected return value " + result);
 
 // Case 2: exact arity still dispatches unchanged.
 received = null;
 callReservedRuntimeCallable({
-  runtimeExports,
+  runtimeExports, context,
   memory: null,
   entry: capsuleEntry,
-  indirectName: "molt_call_indirect1",
+  indirectName: compiledExecutionSymbol("molt_call_indirect1"),
   args: [99n],
 });
 assert(
-  received.length === 1 && received[0] === 99n,
+  received.length === 2 && received[0] === context && received[1] === 99n,
   "exact-arity dispatch broken: [" + received + "]",
 );
 
@@ -95,10 +98,10 @@ assert(
 let threw = false;
 try {
   callReservedRuntimeCallable({
-    runtimeExports,
+    runtimeExports, context,
     memory: null,
-    entry: { runtimeExport: "molt_needs_two", arity: 2, trampoline: false },
-    indirectName: "molt_call_indirect1",
+    entry: { runtimeExport: physical("molt_exception_init"), arity: 2, trampoline: false },
+    indirectName: compiledExecutionSymbol("molt_call_indirect1"),
     args: [1n],
   });
 } catch (err) {
@@ -116,22 +119,23 @@ assert(threw, "under-supply did not throw");
 received = null;
 const closureBits = 9221401712017801271n;
 const callFrameResult = callReservedRuntimeCallable({
-  runtimeExports,
+  runtimeExports, context,
   memory: null,
   entry: {
-    runtimeExport: "molt_cpython_abi_cext_call_trampoline",
+    runtimeExport: physical("molt_cpython_abi_cext_call_trampoline"),
     arity: 3,
     trampoline: true,
     trampolineAbi: "call_frame",
   },
-  indirectName: "molt_call_indirect3",
+  indirectName: compiledExecutionSymbol("molt_call_indirect3"),
   args: [closureBits, 4096n, 2n],
 });
 assert(
-  received.length === 3 &&
-    received[0] === closureBits &&
-    received[1] === 4096n &&
-    received[2] === 2n,
+  received.length === 4 &&
+    received[0] === context &&
+    received[1] === closureBits &&
+    received[2] === 4096n &&
+    received[3] === 2n,
   "call-frame trampoline did not preserve closure/argv/argc: [" + received + "]",
 );
 assert(callFrameResult === 789n, "unexpected call-frame result " + callFrameResult);

@@ -54,6 +54,7 @@ pub(super) fn wire_fused_loop(
     // (the caller's body_block) on continue branches to post_block.
     let elem_op = TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![clone.yield_value],

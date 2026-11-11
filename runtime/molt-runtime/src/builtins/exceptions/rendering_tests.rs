@@ -65,7 +65,11 @@ fn assert_text(py: &PyToken<'_>, result: u64, expected: &[u8]) -> u64 {
 }
 
 fn str_eq(py: &PyToken<'_>, error: u64, expected: &[u8]) -> u64 {
-    assert_text(py, molt_exception_message(error), expected)
+    assert_text(
+        py,
+        molt_exception_message_attached_body(py, error),
+        expected,
+    )
 }
 
 fn set_field(py: &PyToken<'_>, error: u64, field: ExceptionTypedField, value: u64) {
@@ -94,8 +98,16 @@ fn callback_value(py: &PyToken<'_>) -> u64 {
     result
 }
 
-extern "C" fn overridden_str(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn overridden_str(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         EVENTS.with(|events| events.borrow_mut().push("str"));
         let owner = OWNER.with(Cell::get);
         if owner != 0 {
@@ -108,11 +120,19 @@ extern "C" fn overridden_str(_self: u64) -> u64 {
             .unwrap();
         }
         callback_value(py)
-    })
+    }
 }
 
-extern "C" fn overridden_repr(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn overridden_repr(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         EVENTS.with(|events| events.borrow_mut().push("repr"));
         let owner = OWNER.with(Cell::get);
         if owner != 0 {
@@ -125,19 +145,35 @@ extern "C" fn overridden_repr(_self: u64) -> u64 {
             .unwrap();
         }
         callback_value(py)
-    })
+    }
 }
 
-extern "C" fn failed_str(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn failed_str(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         EVENTS.with(|events| events.borrow_mut().push("failure"));
         record_exception(py, obj_from_bits(FAILURE.with(Cell::get)).as_ptr().unwrap());
         MoltObject::none().bits()
-    })
+    }
 }
 
-extern "C" fn unicode_reason(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn unicode_reason(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         EVENTS.with(|events| events.borrow_mut().push("reason"));
         set_field(
             py,
@@ -146,11 +182,19 @@ extern "C" fn unicode_reason(_self: u64) -> u64 {
             ENCODING.with(Cell::get),
         );
         text(py, b"reason").into_bits()
-    })
+    }
 }
 
-extern "C" fn unicode_encoding(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn unicode_encoding(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         EVENTS.with(|events| events.borrow_mut().push("encoding"));
         let owner = OWNER.with(Cell::get);
         set_field(
@@ -172,7 +216,7 @@ extern "C" fn unicode_encoding(_self: u64) -> u64 {
             MoltObject::from_int(1).bits(),
         );
         text(py, b"changed").into_bits()
-    })
+    }
 }
 
 fn subclass<'a, 'py>(
@@ -182,8 +226,8 @@ fn subclass<'a, 'py>(
     methods: &[(&[u8], u64)],
 ) -> ExceptionValue<'a, 'py> {
     let name = text(py, name);
-    let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
-    crate::molt_class_set_base(class.bits(), base);
+    let class = ExceptionValue::adopt(py, crate::molt_class_new_attached_body(py, name.bits()));
+    crate::molt_class_set_base_attached_body(py, class.bits(), base);
     let pointer = obj_from_bits(class.bits()).as_ptr().unwrap();
     unsafe { crate::object::class_finish_definition(py, pointer) }.unwrap();
     for &(name, address) in methods {
@@ -191,7 +235,7 @@ fn subclass<'a, 'py>(
         let pointer = crate::builtins::functions::alloc_runtime_function_obj(py, address, 1);
         assert!(!pointer.is_null());
         let function = ExceptionValue::adopt(py, MoltObject::from_ptr(pointer).bits());
-        crate::molt_set_attr_name(class.bits(), name.bits(), function.bits());
+        crate::molt_set_attr_name_attached_body(py, class.bits(), name.bits(), function.bits());
     }
     assert!(!exception_pending(py));
     class
@@ -235,13 +279,17 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         );
         assert_text(
             py,
-            molt_repr_from_obj(error.bits()),
+            molt_repr_from_obj_attached_body(py, error.bits()),
             format!("{name}('message')").as_bytes(),
         );
     }
     let empty = builtin(py, crate::BuiltinExc::RuntimeError, &[]);
     str_eq(py, empty.bits(), b"");
-    assert_text(py, molt_repr_from_obj(empty.bits()), b"RuntimeError()");
+    assert_text(
+        py,
+        molt_repr_from_obj_attached_body(py, empty.bits()),
+        b"RuntimeError()",
+    );
     let pair = builtin(
         py,
         crate::BuiltinExc::RuntimeError,
@@ -250,7 +298,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     str_eq(py, pair.bits(), b"('message', 7)");
     assert_text(
         py,
-        molt_repr_from_obj(pair.bits()),
+        molt_repr_from_obj_attached_body(py, pair.bits()),
         b"RuntimeError('message', 7)",
     );
     let key = builtin(py, crate::BuiltinExc::KeyError, &[message.bits()]);
@@ -445,7 +493,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     assert_eq!(str_eq(py, error.bits(), b"\xed\xa0\x80"), surrogate.bits());
     assert_text(
         py,
-        molt_repr_from_obj(error.bits()),
+        molt_repr_from_obj_attached_body(py, error.bits()),
         b"ValueError('\\ud800')",
     );
     let encoding = text(py, b"ascii");
@@ -582,7 +630,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     REPLACEMENT.with(|slot| slot.set(replacement.bits()));
     assert_text(
         py,
-        molt_repr_from_obj(outer.bits()),
+        molt_repr_from_obj_attached_body(py, outer.bits()),
         b"ValueError(message, 'new args')",
     );
     events(&["repr"]);
@@ -599,7 +647,10 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     let failure = builtin(py, crate::BuiltinExc::LookupError, &[message.bits()]);
     FAILURE.with(|slot| slot.set(failure.bits()));
     let failing_outer = builtin(py, crate::BuiltinExc::ValueError, &[failing_payload.bits()]);
-    let result = ExceptionValue::adopt(py, molt_exception_message(failing_outer.bits()));
+    let result = ExceptionValue::adopt(
+        py,
+        molt_exception_message_attached_body(py, failing_outer.bits()),
+    );
     assert!(exception_pending(py));
     assert_eq!(
         exception_last_bits_noinc(py),
@@ -850,7 +901,11 @@ mod native_fields {
                         native.as_ptr(),
                     );
                     let refs = (*native.as_ptr()).ob_refcnt;
-                    assert_text(py, super::super::group_str(group.bits()), expected);
+                    assert_text(
+                        py,
+                        super::super::group_str(py.attached_context(), group.bits()),
+                        expected,
+                    );
                     assert_text(
                         py,
                         call_declared(
@@ -888,7 +943,10 @@ mod native_fields {
                     payload.bits(),
                 )
                 .unwrap();
-                let result = ExceptionValue::adopt(py, super::super::group_str(group.bits()));
+                let result = ExceptionValue::adopt(
+                    py,
+                    super::super::group_str(py.attached_context(), group.bits()),
+                );
                 assert_eq!(exception_last_bits_noinc(py), Some(failure.bits()));
                 events(&["failure"]);
                 clear_exception(py);
@@ -929,7 +987,11 @@ mod native_fields {
                         ExceptionTypedField::SyntaxLineNumber,
                         native.as_ptr(),
                     );
-                    assert_text(py, super::super::syntax_str(error.bits()), expected);
+                    assert_text(
+                        py,
+                        super::super::syntax_str(py.attached_context(), error.bits()),
+                        expected,
+                    );
                     assert!(
                         errors::PyErr_Occurred().is_null(),
                         "C-long overflow is not an error"
@@ -945,7 +1007,11 @@ mod native_fields {
                     );
                     OVERRIDES.with(|count| count.set(0));
                     assert_eq!(
-                        assert_text(py, super::super::syntax_str(error.bits()), b"syntax"),
+                        assert_text(
+                            py,
+                            super::super::syntax_str(py.attached_context(), error.bits()),
+                            b"syntax"
+                        ),
                         message.bits()
                     );
                     assert_eq!(
@@ -987,8 +1053,10 @@ mod native_fields {
                     ExceptionTypedField::UnicodeObject,
                     native.as_ptr(),
                 );
-                let result =
-                    ExceptionValue::adopt(py, super::super::unicode_decode_str(error.bits()));
+                let result = ExceptionValue::adopt(
+                    py,
+                    super::super::unicode_decode_str(py.attached_context(), error.bits()),
+                );
                 let failure =
                     ExceptionValue::pin(py, exception_last_bits_noinc(py).expect("typed error"));
                 assert!(exception_matches_type(
@@ -999,7 +1067,7 @@ mod native_fields {
                 clear_exception(py);
                 assert_text(
                     py,
-                    super::super::exception_str(failure.bits()),
+                    super::super::exception_str(py.attached_context(), failure.bits()),
                     b"expected bytes, int found",
                 );
                 assert!(errors::PyErr_Occurred().is_null());
@@ -1035,7 +1103,10 @@ mod native_fields {
                     let context = ManagedRender(py);
                     assert!(context.is_string(bits, false));
                     assert_eq!(context.is_string(bits, true), exact);
-                    let result = ExceptionValue::adopt(py, super::super::import_str(error.bits()));
+                    let result = ExceptionValue::adopt(
+                        py,
+                        super::super::import_str(py.attached_context(), error.bits()),
+                    );
                     assert!(!exception_pending(py));
                     assert_eq!(result.bits(), if exact { bits } else { message.bits() });
                 }

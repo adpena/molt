@@ -15,7 +15,7 @@
     "molt-gpu-runtime": 2,
     "molt-harness": 0,
     "molt-host-process": 10,
-    "molt-ir": 8,
+    "molt-ir": 9,
     "molt-jit": 0,
     "molt-lang-cpython-abi": 8,
     "molt-lang-obj-model": 26,

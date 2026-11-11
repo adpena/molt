@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tools import finding_status, ledger_edit
 
 _LEDGER = """\
@@ -50,11 +52,15 @@ def _root(tmp_path: Path, prior_art: str = _PRIOR_ART) -> Path:
     (tmp_path / "docs/design/findings_prior_art.md").write_text(
         prior_art, encoding="utf-8"
     )
-    (tmp_path / "bench").mkdir()
-    (tmp_path / "bench/primitive_ratchet.json").write_text(
-        '{"axes": {"loop/per_op": {}, "empty/startup": {}}}', encoding="utf-8"
-    )
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _one_measured_primitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixture ledger's registry measures one per-op primitive."""
+    from tools import perf_primitives
+
+    monkeypatch.setattr(perf_primitives, "per_op_axes", lambda: ("loop/per_op",))
 
 
 def _status(root: Path) -> finding_status.FindingStatus:
@@ -323,13 +329,14 @@ def test_family_describe_must_match_its_prior_art(tmp_path: Path) -> None:
 
 
 def test_family_describe_restates_axes_and_keeps_every_per_op_axis_owned(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from tools import perf_primitives
+
     root = _root(tmp_path)
     describe = ["family", "describe", "A", "--name", "Alpha", "--cause", "cause a"]
-    ratchet = root / "bench/primitive_ratchet.json"
-    ratchet.write_text(
-        '{"axes": {"loop/per_op": {}, "call/per_op": {}}}', encoding="utf-8"
+    monkeypatch.setattr(
+        perf_primitives, "per_op_axes", lambda: ("loop/per_op", "call/per_op")
     )
     before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
 

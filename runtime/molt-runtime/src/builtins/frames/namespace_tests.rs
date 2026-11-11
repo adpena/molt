@@ -1,4 +1,6 @@
 //! Namespace custody is independent of call shape, source names and suspension.
+use super::bindings::molt_frame_homes_attached_body;
+use super::locals_proxy::molt_frame_f_locals_get_attached_body;
 use super::*;
 use crate::BuiltinExc;
 use crate::dict_set_in_place;
@@ -42,14 +44,14 @@ fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings
             assert!(dict_set_in_place(py, globals_ptr, key, original));
         }
         let slot = crate::test_support::publish_test_code_slot(py, outer_code, globals);
-        crate::molt_trace_enter_slot(slot);
-        let captured = molt_class_body_builtins(globals);
+        crate::molt_trace_enter_slot_attached_body(py, slot);
+        let captured = molt_class_body_builtins_attached_body(py, globals);
         unsafe {
             assert!(dict_set_in_place(py, globals_ptr, key, replacement));
         }
-        molt_code_set_class_body(class_code);
+        molt_code_set_class_body_attached_body(py, class_code);
         crate::test_support::publish_test_code_slot(py, class_code, globals);
-        crate::molt_class_frame_enter(class_code, globals, captured);
+        crate::molt_class_frame_enter_attached_body(py, class_code, globals, captured);
         assert!(!exception_pending(py));
         assert_eq!(frame_stack_active_builtins_bits(), original);
         assert_eq!(frame_stack_active_globals_bits(), globals);
@@ -58,22 +60,23 @@ fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings
         assert_eq!(entry.bindings.payload_bits, 0);
         // A reflected elided mapping must refuse the observation, rather than
         // exposing the enclosing function or module namespace.
-        let frame = molt_getframe(MoltObject::from_int(0).bits());
+        let frame = molt_getframe_attached_body(py, MoltObject::from_int(0).bits());
         assert!(!exception_pending(py));
-        let unavailable = molt_frame_f_locals_get(MoltObject::none().bits(), frame);
+        let unavailable =
+            molt_frame_f_locals_get_attached_body(py, MoltObject::none().bits(), frame);
         assert!(obj_from_bits(unavailable).is_none());
-        let error = crate::molt_exception_last_pending();
+        let error = crate::molt_exception_last_pending_attached_body(py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
             error,
             BuiltinExc::TypeError
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(py);
         dec_ref_bits(py, error);
         dec_ref_bits(py, unavailable);
         dec_ref_bits(py, frame);
-        molt_frame_class_locals_set(namespace);
-        let observed = molt_locals_builtin();
+        molt_frame_class_locals_set_attached_body(py, namespace);
+        let observed = molt_locals_builtin_attached_body(py);
         assert_eq!(observed, namespace);
         assert_eq!(
             unsafe { dict_get_in_place(py, obj_from_bits(namespace).as_ptr().unwrap(), key) },
@@ -85,9 +88,9 @@ fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings
             } & 3,
             0
         );
-        crate::molt_trace_exit();
+        crate::molt_trace_exit_attached_body(py);
         assert_eq!(frame_stack_active_builtins_bits(), original);
-        crate::molt_trace_exit();
+        crate::molt_trace_exit_attached_body(py);
         for bits in [
             observed,
             captured,
@@ -170,16 +173,18 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                     ))
                 };
                 let slot = crate::test_support::publish_test_code_slot(py, code, namespace);
-                crate::molt_trace_enter_slot(slot);
+                crate::molt_trace_enter_slot_attached_body(py, slot);
                 assert!(!crate::exception_pending(py));
                 let homes = if module {
-                    molt_frame_locals_set(namespace);
+                    molt_frame_locals_set_attached_body(py, namespace);
                     std::ptr::null_mut()
                 } else {
                     // An optimized activation's bindings are its compiled
                     // homes, not a dictionary injected as module locals.
-                    let homes = crate::provenance::abi::mut_ptr::<u64>(molt_frame_homes(1))
-                        .expect("frame homes address fits the target");
+                    let homes = crate::provenance::abi::mut_ptr::<u64>(
+                        molt_frame_homes_attached_body(py, 1),
+                    )
+                    .expect("frame homes address fits the target");
                     assert!(!homes.is_null());
                     unsafe {
                         *homes = molt_codegen_abi::FRAME_HOME_PLAIN as u64;
@@ -187,7 +192,7 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                     }
                     homes
                 };
-                let first = molt_locals_builtin();
+                let first = molt_locals_builtin_attached_body(py);
                 if module {
                     unsafe {
                         assert!(dict_set_in_place(
@@ -201,7 +206,7 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                     // Replacing an immediate int needs no reference release.
                     unsafe { *homes.add(1) = MoltObject::from_int(2).bits() };
                 }
-                let second = molt_locals_builtin();
+                let second = molt_locals_builtin_attached_body(py);
                 let aliases = module || minor == 12;
                 assert_eq!(first == namespace, module, "3.{minor}, module={module}");
                 assert_eq!(first == second, aliases, "3.{minor}, module={module}");
@@ -224,7 +229,7 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                     );
                 }
                 assert!(!crate::exception_pending(py));
-                crate::molt_trace_exit();
+                crate::molt_trace_exit_attached_body(py);
                 for bits in [
                     first,
                     second,
@@ -264,13 +269,13 @@ fn module_entry_prepares_builtins_once_without_changing_captured_or_explicit_val
         let get = || unsafe { crate::dict_get_in_place(py, namespace_ptr, key) }.unwrap();
         assert_eq!(get(), None);
         assert_eq!(
-            molt_frame_locals_set(namespace),
+            molt_frame_locals_set_attached_body(py, namespace),
             MoltObject::from_bool(true).bits()
         );
         assert_eq!(get(), Some(captured));
         assert_eq!(frame_stack_active_builtins_bits(), captured);
         assert_eq!(refs(captured), 3); // caller, frame, module dictionary
-        molt_frame_locals_set(namespace);
+        molt_frame_locals_set_attached_body(py, namespace);
         assert_eq!(
             refs(captured),
             3,
@@ -279,7 +284,7 @@ fn module_entry_prepares_builtins_once_without_changing_captured_or_explicit_val
 
         for explicit in [MoltObject::none().bits(), replacement, module, namespace] {
             unsafe { assert!(dict_set_in_place(py, namespace_ptr, key, explicit)) };
-            molt_frame_locals_set(namespace);
+            molt_frame_locals_set_attached_body(py, namespace);
             assert_eq!(
                 get(),
                 Some(explicit),
@@ -302,7 +307,7 @@ fn module_entry_prepares_builtins_once_without_changing_captured_or_explicit_val
             inc_ref_bits(py, bits);
         }
         frame_stack_push_owned(py, 0, namespace, captured, 0);
-        molt_frame_locals_set(namespace);
+        molt_frame_locals_set_attached_body(py, namespace);
         assert_eq!(get(), Some(captured));
         assert!(!crate::exception_pending(py));
         frame_stack_pop(py);
@@ -320,7 +325,7 @@ fn module_entry_cannot_publish_an_unset_builtins_sentinel() {
         let key = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
         inc_ref_bits(py, namespace);
         frame_stack_push_owned(py, 0, namespace, 0, 0);
-        assert!(obj_from_bits(molt_frame_locals_set(namespace)).is_none());
+        assert!(obj_from_bits(molt_frame_locals_set_attached_body(py, namespace)).is_none());
         assert!(crate::exception_pending(py));
         assert_eq!(
             FRAME_STACK.with(|stack| stack.borrow().last().unwrap().locals_bits),
@@ -344,7 +349,8 @@ fn dict_subclass_instance(py: &PyToken<'_>) -> (u64, u64) {
     let name = MoltObject::from_ptr(crate::alloc_string(py, b"FrameGlobalsDict")).bits();
     let namespace = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
     let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[builtin_classes(py).dict])).bits();
-    let class = crate::builtins::types::molt_type_new(
+    let class = crate::builtins::types::molt_type_new_attached_body(
+        py,
         builtin_classes(py).type_obj,
         name,
         bases,
@@ -368,10 +374,18 @@ fn dict_subclass_instance(py: &PyToken<'_>) -> (u64, u64) {
     (instance, class)
 }
 
-extern "C" fn builtins_mapping_error(_self: u64, _key: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn builtins_mapping_error(__context: u64, _self: u64, _key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         raise_exception::<u64>(py, BuiltinExc::ValueError, "custom builtins lookup failed")
-    })
+    }
 }
 
 fn error_mapping_instance(py: &PyToken<'_>) -> (u64, u64, u64) {
@@ -390,7 +404,8 @@ fn error_mapping_instance(py: &PyToken<'_>) -> (u64, u64, u64) {
     let namespace =
         MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[getitem, function])).bits();
     let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[builtin_classes(py).object])).bits();
-    let class = crate::builtins::types::molt_type_new(
+    let class = crate::builtins::types::molt_type_new_attached_body(
+        py,
         builtin_classes(py).type_obj,
         name,
         bases,
@@ -408,7 +423,7 @@ fn error_mapping_instance(py: &PyToken<'_>) -> (u64, u64, u64) {
 
 fn clear_expected_exception(py: &PyToken<'_>, name: crate::BuiltinExc) {
     assert!(crate::exception_pending(py));
-    let exception = crate::molt_exception_last_pending();
+    let exception = crate::molt_exception_last_pending_attached_body(py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         py, exception, name
     ));
@@ -526,19 +541,27 @@ fn invocation_handoff_is_keyed_nested_single_use_and_restored_when_unconsumed() 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-extern "C" fn namespace_probe() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        crate::molt_trace_enter_slot(0);
+extern "C" fn namespace_probe(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        crate::molt_trace_enter_slot_attached_body(py, 0);
         assert_eq!(
             FRAME_STACK.with(|stack| stack.borrow().len()),
             1,
             "dispatch must not create a frame"
         );
-        let globals = super::molt_globals_builtin();
-        crate::molt_trace_exit();
+        let globals = super::molt_globals_builtin_attached_body(py);
+        crate::molt_trace_exit_attached_body(py);
         assert!(!crate::exception_pending(py));
         globals
-    })
+    }
 }
 
 #[test]
@@ -549,7 +572,7 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
         let (_, code) = super::tests::alloc_test_code(py);
         let lexical = dict(py);
         let rebound = dict(py);
-        crate::molt_code_slot_set(0, code, lexical);
+        crate::molt_code_slot_set_attached_body(py, 0, code, lexical);
         let address = namespace_probe as *const () as usize as u64;
         let function = crate::builtins::functions::alloc_runtime_function_obj(py, address, 0);
         unsafe {
@@ -559,16 +582,22 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
         let callable = MoltObject::from_ptr(function).bits();
         for dispatch in 0..4 {
             let result = match dispatch {
-                0 => crate::molt_call_func_fast0(callable),
+                0 => crate::molt_call_func_fast0_attached_body(py, callable),
                 1 => unsafe { crate::call::function::call_function_obj0(py, callable) },
                 2 => unsafe {
-                    crate::molt_guarded_call_obj(address, std::ptr::null(), 0, callable)
+                    crate::molt_guarded_call_obj_attached_body(
+                        py,
+                        address,
+                        std::ptr::null(),
+                        0,
+                        callable,
+                    )
                 },
                 _ => {
                     // A compiled direct call: the caller hands the callee over
                     // through the thread record around the entry call.
                     let invocation = FrameInvocationGuard::for_callable(py, callable);
-                    let result = namespace_probe();
+                    let result = namespace_probe(py.attached_context());
                     drop(invocation);
                     result
                 }
@@ -576,7 +605,7 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
             assert_eq!(result, rebound, "dispatch {dispatch}");
             dec_ref_bits(py, result);
         }
-        let direct = namespace_probe();
+        let direct = namespace_probe(py.attached_context());
         assert_eq!(direct, lexical);
         dec_ref_bits(py, direct);
         assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
@@ -616,12 +645,12 @@ fn function_type_code_slot_and_invocation_preserve_dict_subclass_identity() {
             .expect("FunctionType result");
         assert_eq!(unsafe { function_globals_bits(callable_ptr) }, globals);
         assert_eq!(unsafe { function_builtins_bits(callable_ptr) }, builtins);
-        let set = crate::molt_code_slot_set(0, code, globals);
+        let set = crate::molt_code_slot_set_attached_body(py, 0, code, globals);
         assert!(obj_from_bits(set).is_none());
         assert!(!crate::exception_pending(py));
 
         let invocation = FrameInvocationGuard::for_callable(py, callable);
-        let observed = namespace_probe();
+        let observed = namespace_probe(py.attached_context());
         drop(invocation);
         assert_eq!(observed, globals);
         assert_eq!(
@@ -676,8 +705,12 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
                 .expect("builtins namespace lookup succeeds");
             assert_eq!(captured, captured_value);
 
-            let task =
-                crate::molt_task_new(1, crate::GEN_CONTROL_SIZE as u64, crate::TASK_KIND_FUTURE);
+            let task = crate::molt_task_new_attached_body(
+                py,
+                1,
+                crate::GEN_CONTROL_SIZE as u64,
+                crate::TASK_KIND_FUTURE,
+            );
             let task_ptr = obj_from_bits(task).as_ptr().expect("suspended task");
             assert!(unsafe {
                 crate::object::aux_header::object_init_frame_context_unpublished(
@@ -693,7 +726,8 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
             inc_ref_bits(py, captured);
             inc_ref_bits(py, code);
             frame_stack_push_owned(py, code, globals, captured, 0);
-            let result = crate::builtins::modules::molt_module_get_global(
+            let result = crate::builtins::modules::molt_module_get_global_attached_body(
+                py,
                 MoltObject::none().bits(),
                 missing_name,
             );
@@ -727,7 +761,7 @@ fn captured_builtins_module_normalizes_to_its_namespace() {
         let builtins_name = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
         let module_name =
             MoltObject::from_ptr(crate::alloc_string(py, b"captured_builtins")).bits();
-        let module = crate::builtins::modules::molt_module_new(module_name);
+        let module = crate::builtins::modules::molt_module_new_attached_body(py, module_name);
         let module_ptr = obj_from_bits(module).as_ptr().expect("builtins module");
         let module_namespace = unsafe { module_dict_bits(module_ptr) };
         unsafe { assert!(dict_set_in_place(py, globals_ptr, builtins_name, module)) };
@@ -779,7 +813,7 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
             (b"f_builtins".as_slice(), builtins),
         ] {
             let key = crate::dynamic_attr_name_bits(py, name).unwrap();
-            let actual = crate::molt_get_attr_name(frame, key);
+            let actual = crate::molt_get_attr_name_attached_body(py, frame, key);
             assert!(!crate::exception_pending(py));
             assert_eq!(actual, expected);
             dec_ref_bits(py, actual);
@@ -803,7 +837,8 @@ fn runtime_native_tasks_never_fabricate_python_frames() {
             crate::TASK_KIND_COROUTINE,
             crate::TASK_KIND_FUTURE,
         ] {
-            let task = crate::molt_task_new(0, crate::GEN_CONTROL_SIZE as u64, kind);
+            let task =
+                crate::molt_task_new_attached_body(py, 0, crate::GEN_CONTROL_SIZE as u64, kind);
             let ptr = obj_from_bits(task).as_ptr().unwrap();
             assert_eq!(
                 unsafe { suspended_frame_bits(py, ptr) },
@@ -899,23 +934,23 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
         let (_, replacement) = super::tests::alloc_test_code(py);
         bind_code_target(py, replacement, 103);
         let globals = dict(py);
-        crate::molt_code_slot_set(0, original, globals);
+        crate::molt_code_slot_set_attached_body(py, 0, original, globals);
         let function = super::tests::alloc_invoked_function(py, original, 103, globals);
         let invocation = FrameInvocationGuard::for_function(py, function);
-        crate::molt_code_slot_set(0, replacement, globals);
+        crate::molt_code_slot_set_attached_body(py, 0, replacement, globals);
         let pending = acquire_pending_invocation_context(py, 103).unwrap();
         assert_eq!(pending[2], original);
         for bits in pending {
             dec_ref_bits(py, bits);
         }
-        let entry_result = crate::molt_trace_enter_slot(0);
+        let entry_result = crate::molt_trace_enter_slot_attached_body(py, 0);
         assert!(obj_from_bits(entry_result).is_none());
         dec_ref_bits(py, entry_result);
         assert_eq!(
             FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
             original
         );
-        crate::molt_trace_exit();
+        crate::molt_trace_exit_attached_body(py);
         drop(invocation);
         dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         assert_eq!(refs(original), 1);
@@ -959,11 +994,11 @@ fn failed_task_allocation_releases_acquired_context_without_consuming_invocation
             // Exceeds every supported address space or overflows the header addition;
             // no machine-wide allocator exhaustion is required to prove the failure.
             assert_eq!(
-                crate::molt_task_new(104, u64::MAX, kind),
+                crate::molt_task_new_attached_body(py, 104, u64::MAX, kind),
                 MoltObject::none().bits()
             );
             assert!(crate::exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(
                 [code, globals, builtins].map(refs),
                 baseline,
@@ -1004,7 +1039,7 @@ fn handed_namespace_without_globals_fails_the_entry_that_takes_it() {
         assert_eq!(take_invocation_namespace(py, 0), Err(()));
         assert!(crate::exception_pending(py));
         assert_eq!(take_invocation_namespace(py, 0), Ok(None), "taken once");
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(py);
         drop(invocation);
         dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         assert_eq!(refs(code), 1);
@@ -1020,7 +1055,7 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
     crate::with_gil_entry_nopanic!(py, {
         let (_, code) = super::tests::alloc_test_code(py);
         let globals = dict(py);
-        crate::molt_code_slot_set(0, code, globals);
+        crate::molt_code_slot_set_attached_body(py, 0, code, globals);
         let function = super::tests::alloc_invoked_function(py, code, 107, globals);
         let baseline = refs(code);
         assert_eq!(
@@ -1030,7 +1065,7 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
         for invoked in [false, true] {
             for _ in 0..4 {
                 let invocation = invoked.then(|| FrameInvocationGuard::for_function(py, function));
-                let result = crate::molt_trace_enter_slot(0);
+                let result = crate::molt_trace_enter_slot_attached_body(py, 0);
                 assert!(obj_from_bits(result).is_none());
                 // Every backend can discard this owned ABI result. The frame's
                 // code must remain retained independently of result disposal.
@@ -1041,7 +1076,7 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
                     FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
                     code
                 );
-                dec_ref_bits(py, crate::molt_trace_exit());
+                dec_ref_bits(py, crate::molt_trace_exit_attached_body(py));
                 drop(invocation);
                 assert_eq!(refs(code), baseline);
                 assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
@@ -1060,21 +1095,21 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
     crate::with_gil_entry_nopanic!(py, {
         let (_, code) = super::tests::alloc_test_code(py);
         let globals = dict(py);
-        crate::molt_code_slot_set(0, code, globals);
-        crate::molt_code_slot_set(1, code, globals);
+        crate::molt_code_slot_set_attached_body(py, 0, code, globals);
+        crate::molt_code_slot_set_attached_body(py, 1, code, globals);
         assert!(crate::exception_pending(py));
         assert_eq!(compiled_slot_for_code(code), Some(0));
-        crate::molt_exception_clear();
-        assert!(obj_from_bits(crate::molt_trace_enter_slot(0)).is_none());
+        crate::molt_exception_clear_attached_body(py);
+        assert!(obj_from_bits(crate::molt_trace_enter_slot_attached_body(py, 0)).is_none());
         assert_eq!(
             FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
             code
         );
-        crate::molt_trace_exit();
-        crate::molt_trace_enter_slot(1);
+        crate::molt_trace_exit_attached_body(py);
+        crate::molt_trace_enter_slot_attached_body(py, 1);
         assert!(crate::exception_pending(py));
-        crate::molt_trace_exit();
-        crate::molt_exception_clear();
+        crate::molt_trace_exit_attached_body(py);
+        crate::molt_exception_clear_attached_body(py);
         assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
         for bits in [code, globals] {
             dec_ref_bits(py, bits);
@@ -1186,11 +1221,19 @@ mod task_growth_refusal {
         (*inputs).map(super::refs)
     }
 
-    extern "C" fn return_raw_awaitable(receiver: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn return_raw_awaitable(__context: u64, receiver: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, receiver);
             receiver
-        })
+        }
     }
 
     /// Run this exact test alone with --test-threads=1. The observer owns the
@@ -1212,7 +1255,8 @@ mod task_growth_refusal {
                 py,
                 MoltObject::from_ptr(crate::alloc_string(py, b"RawAnextOwner")).bits(),
             );
-            let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
+            let class =
+                ExceptionValue::adopt(py, crate::molt_class_new_attached_body(py, name.bits()));
             let method_name = ExceptionValue::adopt(
                 py,
                 MoltObject::from_ptr(crate::alloc_string(py, b"__anext__")).bits(),
@@ -1228,9 +1272,17 @@ mod task_growth_refusal {
                 ))
                 .bits(),
             );
-            crate::molt_set_attr_name(class.bits(), method_name.bits(), method.bits());
+            crate::molt_set_attr_name_attached_body(
+                py,
+                class.bits(),
+                method_name.bits(),
+                method.bits(),
+            );
             assert!(!crate::exception_pending(py));
-            let iterator = ExceptionValue::adopt(py, crate::molt_object_new_bound(class.bits()));
+            let iterator = ExceptionValue::adopt(
+                py,
+                crate::molt_object_new_bound_attached_body(py, class.bits()),
+            );
             assert!(obj_from_bits(iterator.bits()).as_ptr().is_some());
             let default = ExceptionValue::adopt(
                 py,
@@ -1246,8 +1298,10 @@ mod task_growth_refusal {
             ];
             let mut held = Vec::with_capacity(128);
             for _ in 0..2 {
-                let owner =
-                    ExceptionValue::adopt(py, crate::molt_task_new(0, 0, crate::TASK_KIND_FUTURE));
+                let owner = ExceptionValue::adopt(
+                    py,
+                    crate::molt_task_new_attached_body(py, 0, 0, crate::TASK_KIND_FUTURE),
+                );
                 assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
                 held.push(owner);
             }
@@ -1273,9 +1327,9 @@ mod task_growth_refusal {
             for anext in [false, true] {
                 let construct = || {
                     if anext {
-                        crate::molt_anext_builtin(iterator.bits(), default.bits())
+                        crate::molt_anext_builtin_attached_body(py, iterator.bits(), default.bits())
                     } else {
-                        crate::molt_task_new(TARGET, 0, crate::TASK_KIND_FUTURE)
+                        crate::molt_task_new_attached_body(py, TARGET, 0, crate::TASK_KIND_FUTURE)
                     }
                 };
                 let suspended_error = {
@@ -1325,7 +1379,7 @@ mod task_growth_refusal {
                     );
                     let owner = ExceptionValue::adopt(
                         py,
-                        crate::molt_task_new(0, 0, crate::TASK_KIND_FUTURE),
+                        crate::molt_task_new_attached_body(py, 0, 0, crate::TASK_KIND_FUTURE),
                     );
                     assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
                     held.push(owner);

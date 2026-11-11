@@ -1,6 +1,6 @@
 use super::super::*;
-use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 // Single-source kind authority for [`handle_generator_op`], consulted by
 // `op_family::native_op_family`. Mirror the `match op.kind` arms below.
@@ -137,7 +137,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
             let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                MOLT_ASYNCGEN_NEW,
+                RuntimeFn::AsyncgenNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*gen_obj]);

@@ -17,12 +17,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TASK_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Returns the next asyncio task name as a NaN-boxed string: "Task-N".
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_next_name() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_asyncio_task_next_name_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let n = TASK_NAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let name = format!("Task-{}", n);
-        rt_string_from_bytes(name.as_bytes())
+        rt_string_from_bytes(py, name.as_bytes())
     })
 }
 
@@ -35,9 +34,11 @@ pub extern "C" fn molt_asyncio_task_next_name() -> u64 {
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; Python-level errors are reported through the runtime exception
 /// state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_validate_coro(coro_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_validate_coro_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    coro_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let obj = obj_from_bits(coro_bits);
         if obj.is_none() {
             return raise_exception::<u64>(
@@ -58,9 +59,11 @@ pub unsafe extern "C" fn molt_asyncio_validate_coro(coro_bits: u64) -> u64 {
 /// `cancel_requested_bits` must be a NaN-boxed Molt object value produced by
 /// the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_task_cancel_state(cancel_requested_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_task_cancel_state_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    cancel_requested_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let count = to_i64(obj_from_bits(cancel_requested_bits)).unwrap_or(0);
         int_bits_from_i64(py, count + 1)
     })
@@ -74,9 +77,11 @@ pub unsafe extern "C" fn molt_asyncio_task_cancel_state(cancel_requested_bits: u
 /// `cancel_requested_bits` must be a NaN-boxed Molt object value produced by
 /// the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_task_uncancel_state(cancel_requested_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_task_uncancel_state_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    cancel_requested_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let count = to_i64(obj_from_bits(cancel_requested_bits)).unwrap_or(0);
         let new_count = if count <= 0 { 0 } else { count - 1 };
         int_bits_from_i64(py, new_count)
@@ -92,9 +97,11 @@ pub unsafe extern "C" fn molt_asyncio_task_uncancel_state(cancel_requested_bits:
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid Python values are reported through the runtime
 /// exception state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_validate_semaphore_value(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_validate_semaphore_value_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let val = to_i64(obj_from_bits(value_bits)).unwrap_or(-1);
         if val < 0 {
             return raise_exception::<u64>(
@@ -116,9 +123,11 @@ pub unsafe extern "C" fn molt_asyncio_validate_semaphore_value(value_bits: u64) 
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid Python values are reported through the runtime
 /// exception state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_validate_barrier_parties(parties_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_validate_barrier_parties_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    parties_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let val = to_i64(obj_from_bits(parties_bits)).unwrap_or(0);
         if val <= 0 {
             return raise_exception::<u64>(
@@ -138,25 +147,25 @@ pub unsafe extern "C" fn molt_asyncio_validate_barrier_parties(parties_bits: u64
 /// `count_bits` must be a NaN-boxed Molt object value produced by the active
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_barrier_count_incr(count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_barrier_count_incr_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(0);
         int_bits_from_i64(py, count + 1)
     })
 }
 
 /// Barrier reset: returns 0 (new count) as int bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_barrier_reset_state() -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_bits_from_i64(py, 0) })
+pub fn molt_asyncio_barrier_reset_state_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { int_bits_from_i64(py, 0) })
 }
 
 /// Barrier abort: returns 0 (new count) as int bits.
 /// The Python side sets the broken flag separately.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_barrier_abort_state() -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_bits_from_i64(py, 0) })
+pub fn molt_asyncio_barrier_abort_state_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { int_bits_from_i64(py, 0) })
 }
 
 /// Validates the asyncio Lock is acquired before releasing.
@@ -169,9 +178,11 @@ pub extern "C" fn molt_asyncio_barrier_abort_state() -> u64 {
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid lock state is reported through the runtime exception
 /// state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_lock_validate_release(locked_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_lock_validate_release_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    locked_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let obj = obj_from_bits(locked_bits);
         let locked = obj.as_bool().unwrap_or(false);
         if !locked {
@@ -191,9 +202,11 @@ pub unsafe extern "C" fn molt_asyncio_lock_validate_release(locked_bits: u64) ->
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid condition state is reported through the runtime
 /// exception state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_condition_validate_locked(locked_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_condition_validate_locked_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    locked_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let obj = obj_from_bits(locked_bits);
         let locked = obj.as_bool().unwrap_or(false);
         if !locked {
@@ -216,9 +229,12 @@ pub unsafe extern "C" fn molt_asyncio_condition_validate_locked(locked_bits: u64
 /// `_buffer_bits` and `n_bits` must be NaN-boxed Molt object values produced by
 /// the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_stream_buffer_read(_buffer_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub unsafe fn molt_asyncio_stream_buffer_read_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _buffer_bits: u64,
+    n_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let n = to_i64(obj_from_bits(n_bits)).unwrap_or(-1);
         if n == 0 {
             return MoltObject::none().bits();
@@ -240,12 +256,12 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_read(_buffer_bits: u64, n_bi
 /// by the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized; invalid Python values are reported through the
 /// runtime exception state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_stream_writer_buffer_append(
+pub unsafe fn molt_asyncio_stream_writer_buffer_append_attached_body(
+    _py: &molt_runtime_core::PyToken,
     _buffer_bits: u64,
     data_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let data_obj = obj_from_bits(data_bits);
         if data_obj.is_none() {
             return raise_exception::<u64>(py, BuiltinExc::TypeError, "data must be bytes-like");
@@ -254,3 +270,5 @@ pub unsafe extern "C" fn molt_asyncio_stream_writer_buffer_append(
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/asyncio_helpers.rs");

@@ -2,39 +2,61 @@ use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
 
-use crate::builtins::exceptions::{exception_matches_kind, molt_exception_last_pending};
+use crate::builtins::exceptions::{
+    exception_matches_kind, molt_exception_last_pending_attached_body,
+};
 use crate::{
     call_callable0, dec_ref_bits, exception_pending, exception_stack_pop, exception_stack_push,
-    molt_concat, molt_contains, molt_delitem_method, molt_getitem_method, molt_inplace_add,
-    molt_inplace_bit_and, molt_inplace_bit_or, molt_inplace_bit_xor, molt_inplace_concat,
-    molt_inplace_div, molt_inplace_floordiv, molt_inplace_lshift, molt_inplace_matmul,
-    molt_inplace_mod, molt_inplace_mul, molt_inplace_pow, molt_inplace_rshift, molt_inplace_sub,
-    molt_len, molt_setitem_method, obj_from_bits, raise_exception,
+    molt_concat_attached_body, molt_contains_attached_body, molt_delitem_method_attached_body,
+    molt_getitem_method_attached_body, molt_inplace_add_attached_body,
+    molt_inplace_bit_and_attached_body, molt_inplace_bit_or_attached_body,
+    molt_inplace_bit_xor_attached_body, molt_inplace_concat_attached_body,
+    molt_inplace_div_attached_body, molt_inplace_floordiv_attached_body,
+    molt_inplace_lshift_attached_body, molt_inplace_matmul_attached_body,
+    molt_inplace_mod_attached_body, molt_inplace_mul_attached_body, molt_inplace_pow_attached_body,
+    molt_inplace_rshift_attached_body, molt_inplace_sub_attached_body, molt_len_attached_body,
+    molt_setitem_method_attached_body, obj_from_bits, raise_exception,
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_contains(container_bits: u64, item_bits: u64) -> u64 {
-    molt_contains(container_bits, item_bits)
+pub(crate) fn molt_operator_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    container_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    molt_contains_attached_body(_py, container_bits, item_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_getitem(obj_bits: u64, key_bits: u64) -> u64 {
-    molt_getitem_method(obj_bits, key_bits)
+pub(crate) fn molt_operator_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    molt_getitem_method_attached_body(_py, obj_bits, key_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_setitem(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    molt_setitem_method(obj_bits, key_bits, val_bits)
+pub(crate) fn molt_operator_setitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    molt_setitem_method_attached_body(_py, obj_bits, key_bits, val_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_delitem(obj_bits: u64, key_bits: u64) -> u64 {
-    molt_delitem_method(obj_bits, key_bits)
+pub(crate) fn molt_operator_delitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    molt_delitem_method_attached_body(_py, obj_bits, key_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_countof_attached_body(
+    _py: &crate::PyToken<'_>,
+    container_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(mut iter) = crate::object::iterable::OwnedIterator::new(_py, container_bits)
         else {
             return MoltObject::none().bits();
@@ -81,9 +103,12 @@ fn length_hint_integer_value(py: &crate::PyToken<'_>, bits: u64) -> Result<Optio
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_length_hint_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let default = crate::builtins::numbers::index_from_object(_py, default_bits);
         let default_owner = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), default)
@@ -106,16 +131,16 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
         // remains live if ssize extraction above selects an overflow error.
         drop(default_owner);
         exception_stack_push();
-        let length = molt_len(obj_bits);
+        let length = molt_len_attached_body(_py, obj_bits);
         if !exception_pending(_py) {
             exception_stack_pop(_py);
             return length;
         }
         dec_ref_bits(_py, length);
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(_py);
         let type_error = exception_matches_kind(_py, error, crate::BuiltinExc::TypeError);
         if type_error {
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
         }
         dec_ref_bits(_py, error);
         exception_stack_pop(_py);
@@ -149,10 +174,10 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
         drop(method);
         if exception_pending(_py) {
             drop(result);
-            let error = molt_exception_last_pending();
+            let error = molt_exception_last_pending_attached_body(_py);
             let type_error = exception_matches_kind(_py, error, crate::BuiltinExc::TypeError);
             if type_error {
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(_py);
             }
             dec_ref_bits(_py, error);
             exception_stack_pop(_py);
@@ -193,77 +218,72 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_concat(a: u64, b: u64) -> u64 {
-    molt_concat(a, b)
+pub(crate) fn molt_operator_concat_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_concat_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_iconcat(a: u64, b: u64) -> u64 {
-    molt_inplace_concat(a, b)
+pub(crate) fn molt_operator_iconcat_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_concat_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_iadd(a: u64, b: u64) -> u64 {
-    molt_inplace_add(a, b)
+pub(crate) fn molt_operator_iadd_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_add_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_isub(a: u64, b: u64) -> u64 {
-    molt_inplace_sub(a, b)
+pub(crate) fn molt_operator_isub_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_sub_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_imul(a: u64, b: u64) -> u64 {
-    molt_inplace_mul(a, b)
+pub(crate) fn molt_operator_imul_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_mul_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_imatmul(a: u64, b: u64) -> u64 {
-    molt_inplace_matmul(a, b)
+pub(crate) fn molt_operator_imatmul_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_matmul_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_itruediv(a: u64, b: u64) -> u64 {
-    molt_inplace_div(a, b)
+pub(crate) fn molt_operator_itruediv_attached_body(
+    _py: &crate::PyToken<'_>,
+    a: u64,
+    b: u64,
+) -> u64 {
+    molt_inplace_div_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_ifloordiv(a: u64, b: u64) -> u64 {
-    molt_inplace_floordiv(a, b)
+pub(crate) fn molt_operator_ifloordiv_attached_body(
+    _py: &crate::PyToken<'_>,
+    a: u64,
+    b: u64,
+) -> u64 {
+    molt_inplace_floordiv_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_imod(a: u64, b: u64) -> u64 {
-    molt_inplace_mod(a, b)
+pub(crate) fn molt_operator_imod_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_mod_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_ipow(a: u64, b: u64) -> u64 {
-    molt_inplace_pow(a, b)
+pub(crate) fn molt_operator_ipow_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_pow_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_ilshift(a: u64, b: u64) -> u64 {
-    molt_inplace_lshift(a, b)
+pub(crate) fn molt_operator_ilshift_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_lshift_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_irshift(a: u64, b: u64) -> u64 {
-    molt_inplace_rshift(a, b)
+pub(crate) fn molt_operator_irshift_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_rshift_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_iand(a: u64, b: u64) -> u64 {
-    molt_inplace_bit_and(a, b)
+pub(crate) fn molt_operator_iand_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_bit_and_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_ior(a: u64, b: u64) -> u64 {
-    molt_inplace_bit_or(a, b)
+pub(crate) fn molt_operator_ior_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_bit_or_attached_body(_py, a, b)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_ixor(a: u64, b: u64) -> u64 {
-    molt_inplace_bit_xor(a, b)
+pub(crate) fn molt_operator_ixor_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    molt_inplace_bit_xor_attached_body(_py, a, b)
 }
+
+include!("../../attached_exports_generated/builtins/operator/sequence_ops.rs");

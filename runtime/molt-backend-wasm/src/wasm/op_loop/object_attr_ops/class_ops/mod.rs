@@ -6,8 +6,8 @@ mod relationships;
 use super::super::super::context::CompileFuncContext;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::Function;
 
 pub(super) fn emit_class_object_op(
     func: &mut Function,

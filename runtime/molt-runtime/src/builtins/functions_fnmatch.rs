@@ -21,9 +21,13 @@ pub(crate) fn fnmatch_bytes_from_bits(bits: u64) -> Option<Vec<u8>> {
 }
 
 // Runtime fnmatch ABI entrypoints.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fnmatchcase(name_bits: u64, pat_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_fnmatchcase_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    pat_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
             let Some(pat) = string_obj_to_owned(obj_from_bits(pat_bits)) else {
                 if fnmatch_bytes_from_bits(pat_bits).is_some() {
@@ -62,9 +66,12 @@ pub extern "C" fn molt_fnmatchcase(name_bits: u64, pat_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fnmatch(name_bits: u64, pat_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fnmatch_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    pat_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
             let Some(pat) = string_obj_to_owned(obj_from_bits(pat_bits)) else {
                 if fnmatch_bytes_from_bits(pat_bits).is_some() {
@@ -107,9 +114,13 @@ pub extern "C" fn molt_fnmatch(name_bits: u64, pat_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fnmatch_filter_attached_body(
+    _py: &crate::PyToken<'_>,
+    names_bits: u64,
+    pat_bits: u64,
+    invert_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let pat_str = string_obj_to_owned(obj_from_bits(pat_bits));
         let pat_bytes = if pat_str.is_none() {
             fnmatch_bytes_from_bits(pat_bits)
@@ -124,7 +135,7 @@ pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bit
             );
         }
         let invert = is_truthy(_py, obj_from_bits(invert_bits));
-        let iter_bits = molt_iter(names_bits);
+        let iter_bits = molt_iter_attached_body(_py, names_bits);
         let iterator_owner = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
         };
@@ -204,9 +215,8 @@ pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fnmatch_translate_attached_body(_py: &crate::PyToken<'_>, pat_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(pat) = string_obj_to_owned(obj_from_bits(pat_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected str pattern");
         };
@@ -218,3 +228,5 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
         MoltObject::from_ptr(out_ptr).bits()
     })
 }
+
+include!("../attached_exports_generated/builtins/functions_fnmatch.rs");

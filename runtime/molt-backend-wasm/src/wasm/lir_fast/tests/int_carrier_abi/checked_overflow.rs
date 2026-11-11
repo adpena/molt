@@ -14,6 +14,7 @@ fn make_boxed_checked_binary_func(name: &str, opcode: OpCode) -> TirFunction {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(0), ValueId(1)],

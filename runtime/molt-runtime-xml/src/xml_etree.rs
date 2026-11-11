@@ -279,9 +279,11 @@ fn parse_element(data: &[u8], mut pos: usize) -> Result<(i64, usize), String> {
 // Public extern "C" intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_tag(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_xml_element_tag_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.tag.clone()) {
             Some(tag) => mk_str(_py, &tag),
@@ -290,9 +292,11 @@ pub extern "C" fn molt_xml_element_tag(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_text(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_xml_element_text_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.text.clone()) {
             Some(Some(t)) => mk_str(_py, &t),
@@ -301,9 +305,11 @@ pub extern "C" fn molt_xml_element_text(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_tail(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_xml_element_tail_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.tail.clone()) {
             Some(Some(t)) => mk_str(_py, &t),
@@ -312,9 +318,11 @@ pub extern "C" fn molt_xml_element_tail(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_attrib_items(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_xml_element_attrib_items_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| {
             let mut items: Vec<(String, String)> = e
@@ -339,9 +347,11 @@ pub extern "C" fn molt_xml_element_attrib_items(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_children(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_xml_element_children_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.children.clone()) {
             Some(children) => {
@@ -356,16 +366,17 @@ pub extern "C" fn molt_xml_element_children(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_drop(handle_bits: u64) -> u64 {
+pub fn molt_xml_element_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
     let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
     ELEMENTS.with(|m| m.borrow_mut().remove(&handle));
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_fromstring(xml_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_xml_fromstring_attached_body(_py: &molt_runtime_core::PyToken, xml_bits: u64) -> u64 {
+    with_attached_entry!(_py, _py, {
         let xml = match string_obj_to_owned(obj_from_bits(xml_bits)) {
             Some(s) => s,
             None => {
@@ -379,9 +390,12 @@ pub extern "C" fn molt_xml_fromstring(xml_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_register_namespace(prefix_bits: u64, uri_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_xml_register_namespace_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    prefix_bits: u64,
+    uri_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let prefix = match string_obj_to_owned(obj_from_bits(prefix_bits)) {
             Some(s) => s,
             None => return MoltObject::none().bits(),
@@ -394,3 +408,5 @@ pub extern "C" fn molt_xml_register_namespace(prefix_bits: u64, uri_bits: u64) -
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/xml_etree.rs");

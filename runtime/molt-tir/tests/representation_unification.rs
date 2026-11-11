@@ -270,6 +270,7 @@ fn name_keyed_authority_admits_bounded_int_op_results() {
 fn tir_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

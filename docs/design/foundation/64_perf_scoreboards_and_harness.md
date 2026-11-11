@@ -11,6 +11,16 @@
 
 # 64 — The Perf Measurement Plane: Five CI-Gated Scoreboards + the pyperf Harness
 
+> **Status 2026-11-10 (HF-222).** Phases 2 and 4 landed and are now retired:
+> `tools/perf_board.py` (the five projections), `tools/perf_history.py`,
+> `tools/perf_regression.py`, `tools/check_perf_plane_gate.py`,
+> `bench/scoreboard/history/` and the `perf-gate.yml` board jobs. The weekly
+> board never finished inside its runner budget and the history gate never armed.
+> "What did this commit do to speed?" is answered on main by the instruction
+> signal, `tools/perf_instructions.py` (`tools/PERF_AUTHORITY.md`), which compares
+> instructions retired with the nearest measured ancestor on a quiet farm host.
+> The plan below is kept as design history; its Phase 2/4 file names are retired.
+
 > **One-line thesis.** Today molt *can* measure speed (`tools/perf_scoreboard.py`,
 > 4903 lines, is excellent) but speed is **not gated**: no CI job runs the gate, the
 > "five scoreboards" are *columns on one board* rather than five independently-gated

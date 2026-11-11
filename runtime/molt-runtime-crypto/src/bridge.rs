@@ -10,28 +10,35 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 unsafe extern "C" {
-    fn __molt_crypto_hash_owner_new(pointer: *const std::ffi::c_void) -> u64;
-    fn __molt_crypto_hash_owner_clone(bits: u64) -> *const std::ffi::c_void;
-    fn __molt_crypto_hmac_owner_new(pointer: *const std::ffi::c_void) -> u64;
-    fn __molt_crypto_hmac_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_hash_owner_new")]
+    fn __molt_crypto_hash_owner_new(__molt_context: u64, pointer: *const std::ffi::c_void) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_hash_owner_clone")]
+    fn __molt_crypto_hash_owner_clone(__molt_context: u64, bits: u64) -> *const std::ffi::c_void;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_hmac_owner_new")]
+    fn __molt_crypto_hmac_owner_new(__molt_context: u64, pointer: *const std::ffi::c_void) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_hmac_owner_clone")]
+    fn __molt_crypto_hmac_owner_clone(__molt_context: u64, bits: u64) -> *const std::ffi::c_void;
 }
 
-pub(crate) fn new_hash_owner(value: crate::hashlib::HashHandle) -> u64 {
+pub(crate) fn new_hash_owner(_py: &PyToken, value: crate::hashlib::HashHandle) -> u64 {
     let owner = Arc::new(Mutex::new(value));
-    unsafe { molt_runtime_core::transfer_native_arc(owner, __molt_crypto_hash_owner_new) }
+    unsafe { molt_runtime_core::transfer_native_arc(_py, owner, __molt_crypto_hash_owner_new) }
 }
 
-pub(crate) fn hash_owner(bits: u64) -> Option<Arc<Mutex<crate::hashlib::HashHandle>>> {
-    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_crypto_hash_owner_clone) }
+pub(crate) fn hash_owner(
+    _py: &PyToken,
+    bits: u64,
+) -> Option<Arc<Mutex<crate::hashlib::HashHandle>>> {
+    unsafe { molt_runtime_core::clone_native_arc(_py, bits, __molt_crypto_hash_owner_clone) }
 }
 
-pub(crate) fn new_hmac_owner(value: crate::hmac::HmacHandle) -> u64 {
+pub(crate) fn new_hmac_owner(_py: &PyToken, value: crate::hmac::HmacHandle) -> u64 {
     let owner = Arc::new(Mutex::new(value));
-    unsafe { molt_runtime_core::transfer_native_arc(owner, __molt_crypto_hmac_owner_new) }
+    unsafe { molt_runtime_core::transfer_native_arc(_py, owner, __molt_crypto_hmac_owner_new) }
 }
 
-pub(crate) fn hmac_owner(bits: u64) -> Option<Arc<Mutex<crate::hmac::HmacHandle>>> {
-    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_crypto_hmac_owner_clone) }
+pub(crate) fn hmac_owner(_py: &PyToken, bits: u64) -> Option<Arc<Mutex<crate::hmac::HmacHandle>>> {
+    unsafe { molt_runtime_core::clone_native_arc(_py, bits, __molt_crypto_hmac_owner_clone) }
 }
 
 // ---------------------------------------------------------------------------
@@ -39,9 +46,16 @@ pub(crate) fn hmac_owner(bits: u64) -> Option<Arc<Mutex<crate::hmac::HmacHandle>
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_crypto_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_raise_exception")]
+    fn __molt_crypto_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 
-    fn __molt_crypto_exception_pending() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_exception_pending")]
+    fn __molt_crypto_exception_pending(__molt_context: u64) -> i32;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -49,13 +63,19 @@ pub fn raise_exception<T: ExceptionSentinel>(
     type_name: impl Into<ExcKind>,
     msg: &str,
 ) -> T {
-    let bits =
-        unsafe { __molt_crypto_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len()) };
+    let bits = unsafe {
+        __molt_crypto_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
     T::from_bits(bits)
 }
 
 pub fn exception_pending(_py: &PyToken) -> bool {
-    unsafe { __molt_crypto_exception_pending() != 0 }
+    unsafe { __molt_crypto_exception_pending(_py.attached_context()) != 0 }
 }
 
 /// Trait for exception return sentinels.
@@ -75,16 +95,26 @@ impl ExceptionSentinel for u64 {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_crypto_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_crypto_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_alloc_bytes")]
+    fn __molt_crypto_alloc_bytes(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_alloc_string")]
+    fn __molt_crypto_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_crypto_alloc_bytes(data.as_ptr(), data.len()) }
+    unsafe { __molt_crypto_alloc_bytes(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_crypto_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_crypto_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,8 +128,15 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_crypto_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_crypto_is_truthy(bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_type_name")]
+    fn __molt_crypto_type_name(
+        __molt_context: u64,
+        bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_is_truthy")]
+    fn __molt_crypto_is_truthy(__molt_context: u64, bits: u64) -> i32;
 }
 
 /// # Safety
@@ -128,7 +165,14 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_crypto_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_crypto_type_name(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Cow::Owned(String::from_utf8_lossy(&boxed).into_owned())
@@ -138,7 +182,7 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
 }
 
 pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
-    unsafe { __molt_crypto_is_truthy(obj.bits()) != 0 }
+    unsafe { __molt_crypto_is_truthy(_py.attached_context(), obj.bits()) != 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,8 +191,10 @@ pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
 
 unsafe extern "C" {
     fn __molt_crypto_release_ptr(ptr: *mut u8);
-    fn __molt_crypto_dec_ref_bits(bits: u64);
-    fn __molt_crypto_inc_ref_bits(bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_dec_ref_bits")]
+    fn __molt_crypto_dec_ref_bits(__molt_context: u64, bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_inc_ref_bits")]
+    fn __molt_crypto_inc_ref_bits(__molt_context: u64, bits: u64);
 }
 
 /// # Safety
@@ -160,11 +206,11 @@ pub unsafe fn release_ptr(ptr: *mut u8) {
 }
 
 pub fn dec_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { __molt_crypto_dec_ref_bits(bits) }
+    unsafe { __molt_crypto_dec_ref_bits(_py.attached_context(), bits) }
 }
 
 pub fn inc_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { __molt_crypto_inc_ref_bits(bits) }
+    unsafe { __molt_crypto_inc_ref_bits(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,8 +219,15 @@ pub fn inc_ref_bits(_py: &PyToken, bits: u64) {
 
 unsafe extern "C" {
     fn __molt_crypto_to_i64(bits: u64, out: *mut i64) -> i32;
-    fn __molt_crypto_int_bits_from_i64(val: i64) -> u64;
-    fn __molt_crypto_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_int_bits_from_i64")]
+    fn __molt_crypto_int_bits_from_i64(__molt_context: u64, val: i64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_int_bits_from_bigint")]
+    fn __molt_crypto_int_bits_from_bigint(
+        __molt_context: u64,
+        sign: i32,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> u64;
 }
 
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -184,7 +237,7 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
 }
 
 pub fn int_bits_from_i64(_py: &PyToken, val: i64) -> u64 {
-    unsafe { __molt_crypto_int_bits_from_i64(val) }
+    unsafe { __molt_crypto_int_bits_from_i64(_py.attached_context(), val) }
 }
 
 pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
@@ -195,7 +248,14 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
         Sign::NoSign => 0i32,
         Sign::Plus => 1i32,
     };
-    unsafe { __molt_crypto_int_bits_from_bigint(sign_i32, bytes.as_ptr(), bytes.len()) }
+    unsafe {
+        __molt_crypto_int_bits_from_bigint(
+            _py.attached_context(),
+            sign_i32,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,14 +264,28 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_crypto_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_dict_get_in_place")]
+    fn __molt_crypto_dict_get_in_place(
+        __molt_context: u64,
+        dict_ptr: *mut u8,
+        key_bits: u64,
+        out: *mut u64,
+    ) -> i32;
     fn __molt_crypto_list_len(ptr: *mut u8) -> usize;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_seq_snapshot")]
     fn __molt_crypto_seq_snapshot(
+        __molt_context: u64,
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
     ) -> i32;
-    fn molt_seq_read_item_owned(ptr: *mut u8, index: usize, out: *mut u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_seq_read_item_owned") ]
+    fn molt_seq_read_item_owned(
+        __molt_context: u64,
+        ptr: *mut u8,
+        index: usize,
+        out: *mut u64,
+    ) -> i32;
 }
 
 /// # Safety
@@ -224,7 +298,9 @@ pub unsafe fn dict_get_in_place(
     key_bits: u64,
 ) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
     let mut out: u64 = 0;
-    let ok = unsafe { __molt_crypto_dict_get_in_place(dict_ptr, key_bits, &mut out) };
+    let ok = unsafe {
+        __molt_crypto_dict_get_in_place(_py.attached_context(), dict_ptr, key_bits, &mut out)
+    };
     match ok {
         1 => Ok(Some(out)),
         0 => Ok(None),
@@ -243,15 +319,17 @@ pub unsafe fn list_len(ptr: *mut u8) -> usize {
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { __molt_crypto_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_crypto_seq_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }
 
 /// Return one owned sequence handle. The caller assumes the returned reference
@@ -261,9 +339,9 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 ///
 /// `ptr` must refer to a live Molt mutable sequence and the caller must hold
 /// the GIL. Every returned handle transfers one owned reference to the caller.
-pub unsafe fn seq_read_item_owned(ptr: *mut u8, index: usize) -> Option<u64> {
+pub unsafe fn seq_read_item_owned(_py: &PyToken, ptr: *mut u8, index: usize) -> Option<u64> {
     let mut out = 0u64;
-    if unsafe { molt_seq_read_item_owned(ptr, index, &mut out) } != 0 {
+    if unsafe { molt_seq_read_item_owned(_py.attached_context(), ptr, index, &mut out) } != 0 {
         Some(out)
     } else {
         None
@@ -275,7 +353,8 @@ pub unsafe fn seq_read_item_owned(ptr: *mut u8, index: usize) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_crypto_require_random_entropy() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_crypto_require_random_entropy")]
+    fn __molt_crypto_require_random_entropy(__molt_context: u64) -> i32;
     fn __molt_crypto_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32;
 }
 
@@ -283,7 +362,7 @@ unsafe extern "C" {
 pub struct FillOsRandomError;
 
 pub fn require_random_entropy(_py: &PyToken) -> bool {
-    unsafe { __molt_crypto_require_random_entropy() != 0 }
+    unsafe { __molt_crypto_require_random_entropy(_py.attached_context()) != 0 }
 }
 
 pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {

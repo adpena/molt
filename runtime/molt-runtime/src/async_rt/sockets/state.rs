@@ -753,11 +753,15 @@ mod socket_runtime_state_tests {
             });
             let mut left = 0;
             let mut right = 0;
-            assert_eq!(unsafe { crate::molt_ws_pair(0, &mut left, &mut right) }, 0);
+            assert_eq!(
+                unsafe { crate::molt_ws_pair_attached_body(py, 0, &mut left, &mut right) },
+                0
+            );
             let socket_bits =
                 crate::MoltObject::from_int(super::socket_debug_fd(sockets[0]).unwrap()).bits();
             let futures = std::array::from_fn::<_, 2, _>(|_| {
-                crate::molt_io_wait_new(
+                crate::molt_io_wait_new_attached_body(
+                    py,
                     socket_bits,
                     crate::MoltObject::from_int(crate::IO_EVENT_READ as i64).bits(),
                     crate::MoltObject::none().bits(),
@@ -772,7 +776,7 @@ mod socket_runtime_state_tests {
             // Neither future has registered I/O: cancellation must clear
             // both await-graph paths without constructing a worker.
             unsafe {
-                crate::molt_future_cancel(futures[0]);
+                crate::molt_future_cancel_attached_body(py, futures[0]);
             }
             assert!(crate::async_rt::task_cancel_pending(waiter));
             assert!(
@@ -805,9 +809,9 @@ mod socket_runtime_state_tests {
                 super::socket_ref_dec(py, socket);
             }
             unsafe {
-                crate::molt_ws_close(left);
-                crate::molt_ws_drop(left);
-                crate::molt_ws_drop(right);
+                crate::molt_ws_close_attached_body(py, left);
+                crate::molt_ws_drop_attached_body(py, left);
+                crate::molt_ws_drop_attached_body(py, right);
             }
             assert!(!crate::exception_pending(py));
             assert!(state.io_poller.get().is_none());

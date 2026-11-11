@@ -291,11 +291,39 @@ def test_test_item_mask_keeps_mixed_line_production_and_coordinates():
     assert masked.count("\n") == source.count("\n")
 
 
+@pytest.mark.parametrize(
+    ("cfg", "test_only"),
+    [
+        ('all(test, not(target_arch = "wasm32"))', True),
+        ('all(feature = "oracle", test)', True),
+        ("any(all(test, unix), all(test, windows))", True),
+        ("not(not(test))", True),
+        ('any(test, feature = "production")', False),
+        ('all(not(test), feature = "production")', False),
+        ("not(all(test, unix))", False),
+    ],
+)
+def test_composite_cfg_test_scope_preserves_production_alternatives(
+    cfg: str, test_only: bool
+) -> None:
+    from molt.rust_source_scan import mask_rust_test_items
+
+    scoped = f'#[cfg({cfg})]\nmod scope {{ extern "C" fn provider() {{}} }}\n'
+    source = scoped + "fn production_sibling() {}\n"
+    masked = mask_rust_test_items(source)
+    assert ("fn provider" not in masked) is test_only
+    assert masked.index("fn production_sibling") == source.index(
+        "fn production_sibling"
+    )
+    assert len(masked) == len(source)
+    assert masked.count("\n") == source.count("\n")
+
+
 def test_declared_test_module_graph_preserves_shared_production(tmp_path):
     from molt.rust_source_scan import rust_test_only_source_files
 
     (tmp_path / "lib.rs").write_text(
-        '#[cfg(test)] #[path = "specs/mod.rs"] mod validation;\n'
+        '#[cfg(all(test, not(target_arch = "wasm32")))] #[path = "specs/mod.rs"] mod validation;\n'
         '#[path = "shared.rs"] mod live;\n',
         encoding="utf-8",
     )

@@ -7,9 +7,10 @@ use super::super::plan::NonLinearControlPlan;
 use crate::OpIR;
 use crate::wasm::op_loop::WasmFunctionEmitContext;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::{box_pending, emit_box_bool_from_i32};
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(in crate::wasm::state_dispatch) fn emit_activation_op(
     func: &mut Function,

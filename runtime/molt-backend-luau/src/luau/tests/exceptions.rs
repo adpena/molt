@@ -207,7 +207,7 @@ pub(super) fn luau_tir_roundtrip_function(mut func: FunctionIR) -> FunctionIR {
     crate::tir::type_refine::refine_types(&mut tir_func);
     let _stats = crate::tir::passes::run_pipeline(&mut tir_func, &target_info);
     let _drop_changed =
-        crate::tir::drop_phase::finalize_function_drops(&mut tir_func, &target_info);
+        crate::tir::drop_phase::finalize_function_drops(&mut tir_func, &target_info, None);
     crate::tir::type_refine::refine_types(&mut tir_func);
     func.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
     func

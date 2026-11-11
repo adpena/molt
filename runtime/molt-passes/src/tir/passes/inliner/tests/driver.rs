@@ -152,6 +152,7 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
         let block = g.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![p, q],
@@ -318,6 +319,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
         a.insert("s_value".into(), AttrValue::Str(name.to_string()));
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -331,6 +333,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
     block.ops.push(mk_call("constfn", y));
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![x, y],

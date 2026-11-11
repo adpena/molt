@@ -116,7 +116,10 @@ pub(crate) fn pickle_option_callable_bits(
     if obj_from_bits(maybe_bits).is_none() {
         return Ok(None);
     }
-    if !is_truthy(_py, obj_from_bits(molt_is_callable(maybe_bits))) {
+    if !is_truthy(
+        _py,
+        obj_from_bits(molt_is_callable_attached_body(_py, maybe_bits)),
+    ) {
         let message = format!("pickle {name} must be callable");
         return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &message));
     }

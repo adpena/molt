@@ -38,7 +38,8 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
-    fn molt_exception_clear() -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_exception_clear") ]
+    fn molt_exception_clear(context: u64) -> u64;
 }
 
 #[derive(Clone, Copy)]
@@ -71,13 +72,18 @@ impl Drop for PublishedList {
     }
 }
 
-fn initialize_runtime() {
+fn initialize_runtime() -> molt_runtime_core::CoreGilGuard {
     unsafe {
         molt_runtime_init();
-        molt_exception_clear();
     }
     molt_runtime::cpython_abi_hooks::register_cpython_hooks();
     assert!(hooks().is_some(), "runtime hooks were not registered");
+    let execution = molt_runtime_core::CoreGilGuard::new();
+    let py = unsafe { execution.__token_unchecked() };
+    unsafe {
+        molt_exception_clear(py.attached_context());
+    }
+    execution
 }
 
 fn assert_no_pending_exception() {
@@ -307,7 +313,11 @@ fn measure(
     })
 }
 
-fn append_pop_case(item_pointer: *mut PyObject, item_bits: u64) -> Value {
+fn append_pop_case(
+    py: &molt_runtime_core::PyToken,
+    item_pointer: *mut PyObject,
+    item_bits: u64,
+) -> Value {
     let list = published_list(&[item_pointer, item_pointer, item_pointer, item_pointer]);
     let list_pointer = list.pointer;
     let list_bits = list.bits;
@@ -330,7 +340,9 @@ fn append_pop_case(item_pointer: *mut PyObject, item_bits: u64) -> Value {
                 unsafe { (runtime_hooks.list_append)(list_bits, item_bits, std::ptr::null_mut()) };
             let append_identity = physical_len(list_pointer) == base_len + 1
                 && physical_item(list_pointer, base_len) == item_pointer;
-            let popped = molt_runtime::molt_list_pop(list_bits, last_index_bits);
+            let popped = unsafe {
+                molt_runtime::molt_list_pop(py.attached_context(), list_bits, last_index_bits)
+            };
             let valid = append_status == 0
                 && append_identity
                 && popped == item_bits
@@ -345,6 +357,7 @@ fn append_pop_case(item_pointer: *mut PyObject, item_bits: u64) -> Value {
 }
 
 fn indexed_replace_case(
+    py: &molt_runtime_core::PyToken,
     first_pointer: *mut PyObject,
     first_bits: u64,
     second_pointer: *mut PyObject,
@@ -375,7 +388,14 @@ fn indexed_replace_case(
             } else {
                 (first_pointer, first_bits)
             };
-            let result = molt_runtime::molt_store_index(list_bits, index_bits, expected_bits);
+            let result = unsafe {
+                molt_runtime::molt_store_index(
+                    py.attached_context(),
+                    list_bits,
+                    index_bits,
+                    expected_bits,
+                )
+            };
             let valid = result == list_bits
                 && runtime_item(list_bits, index) == Some(expected_bits)
                 && physical_item(list_pointer, index) == expected_pointer;
@@ -384,12 +404,24 @@ fn indexed_replace_case(
     )
 }
 
-fn indexed_removal_case(name: &str, len: usize, dense: bool, projected: bool) -> Value {
+fn indexed_removal_case(
+    py: &molt_runtime_core::PyToken,
+    name: &str,
+    len: usize,
+    dense: bool,
+    projected: bool,
+) -> Value {
     // Keep the ordinary-list case free of an ABI projection: bridge conversion
     // would select the transactional implementation we measure separately.
     let item = MoltObject::from_int(101).bits();
     let values = vec![item; len];
-    let list = unsafe { molt_runtime::molt_list_from_values(values.as_ptr() as u64, len as u64) };
+    let list = unsafe {
+        molt_runtime::molt_list_from_values(
+            py.attached_context(),
+            values.as_ptr() as u64,
+            len as u64,
+        )
+    };
     assert!(MoltObject::from_bits(list).as_ptr().is_some());
     let view = if projected {
         let pointer = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list) };
@@ -400,11 +432,14 @@ fn indexed_removal_case(name: &str, len: usize, dense: bool, projected: bool) ->
     };
     let start = if dense { 0 } else { len - 4 };
     let count = if dense { len / 2 } else { 2 };
-    let slice = molt_runtime::molt_slice_new(
-        MoltObject::from_int(start as i64).bits(),
-        MoltObject::from_int(len as i64).bits(),
-        MoltObject::from_int(2).bits(),
-    );
+    let slice = unsafe {
+        molt_runtime::molt_slice_new(
+            py.attached_context(),
+            MoltObject::from_int(start as i64).bits(),
+            MoltObject::from_int(len as i64).bits(),
+            MoltObject::from_int(2).bits(),
+        )
+    };
     assert!(MoltObject::from_bits(slice).as_ptr().is_some());
     let runtime_hooks = hooks().expect("runtime hooks");
     let result = measure(
@@ -421,7 +456,8 @@ fn indexed_removal_case(name: &str, len: usize, dense: bool, projected: bool) ->
         128,
         false,
         || {
-            let deleted = molt_runtime::molt_del_index(list, slice);
+            let deleted =
+                unsafe { molt_runtime::molt_del_index(py.attached_context(), list, slice) };
             let mut valid = deleted == list
                 && unsafe { (runtime_hooks.list_len)(list) } == len - count
                 && runtime_item(list, 0) == Some(item)
@@ -430,7 +466,7 @@ fn indexed_removal_case(name: &str, len: usize, dense: bool, projected: bool) ->
                 valid &= physical_len(pointer) == len - count;
             }
             for _ in 0..count {
-                molt_runtime::molt_list_append(list, item);
+                unsafe { molt_runtime::molt_list_append(py.attached_context(), list, item) };
             }
             valid &= unsafe { (runtime_hooks.list_len)(list) } == len
                 && runtime_item(list, len - 1) == Some(item);
@@ -449,6 +485,7 @@ fn indexed_removal_case(name: &str, len: usize, dense: bool, projected: bool) ->
 }
 
 fn reverse_case(
+    py: &molt_runtime_core::PyToken,
     first_pointer: *mut PyObject,
     first_bits: u64,
     second_pointer: *mut PyObject,
@@ -470,7 +507,8 @@ fn reverse_case(
         true,
         || {
             reversed = !reversed;
-            let result = molt_runtime::molt_list_reverse(list_bits);
+            let result =
+                unsafe { molt_runtime::molt_list_reverse(py.attached_context(), list_bits) };
             let (
                 expected_first_pointer,
                 expected_first_bits,
@@ -702,7 +740,8 @@ fn sequence_container_performance_attestation() {
         "sequence container performance attestation is release-only"
     );
     let affinity_mask = enforce_current_thread_affinity(&required_env("MOLT_L7_AFFINITY_MASK"));
-    initialize_runtime();
+    let fixture_execution = initialize_runtime();
+    let py = unsafe { fixture_execution.__token_unchecked() };
 
     let first_pointer = new_scalar(101);
     let second_pointer = new_scalar(202);
@@ -712,19 +751,19 @@ fn sequence_container_performance_attestation() {
     let tuple_bits = handle_bits(tuple_pointer).expect("tuple scalar has no runtime handle");
 
     let cases = vec![
-        append_pop_case(first_pointer, first_bits),
-        indexed_replace_case(first_pointer, first_bits, second_pointer, second_bits),
-        reverse_case(first_pointer, first_bits, second_pointer, second_bits),
+        append_pop_case(py, first_pointer, first_bits),
+        indexed_replace_case(py, first_pointer, first_bits, second_pointer, second_bits),
+        reverse_case(py, first_pointer, first_bits, second_pointer, second_bits),
         presized_construction_case(first_pointer, first_bits),
         empty_tuple_steady_state_case(),
         tuple_read_case(tuple_pointer, tuple_bits),
         tuple_identity_fast_paths_case(tuple_pointer),
         tuple_construction_case(tuple_pointer, tuple_bits),
-        indexed_removal_case("list.removal.tail_128", 128, false, false),
-        indexed_removal_case("list.removal.tail_1048576", 1_048_576, false, false),
-        indexed_removal_case("list.removal.dense_8192", 8192, true, false),
-        indexed_removal_case("list.removal.projected_tail_65536", 65_536, false, true),
-        indexed_removal_case("list.removal.projected_dense_8192", 8192, true, true),
+        indexed_removal_case(py, "list.removal.tail_128", 128, false, false),
+        indexed_removal_case(py, "list.removal.tail_1048576", 1_048_576, false, false),
+        indexed_removal_case(py, "list.removal.dense_8192", 8192, true, false),
+        indexed_removal_case(py, "list.removal.projected_tail_65536", 65_536, false, true),
+        indexed_removal_case(py, "list.removal.projected_dense_8192", 8192, true, true),
     ];
     unsafe {
         Py_DECREF(tuple_pointer);

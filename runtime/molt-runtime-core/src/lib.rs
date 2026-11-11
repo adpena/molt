@@ -4,6 +4,7 @@
 //! depend on this crate instead of the full molt-runtime.
 
 // Re-export the object model.
+pub use molt_codegen_abi::attached_symbol;
 pub use molt_obj_model::MoltObject;
 pub use molt_obj_model::{opaque_handle_bits, register_ptr, resolve_opaque_ptr, resolve_ptr};
 
@@ -75,23 +76,41 @@ pub use heap_kinds_generated::{
 // GIL custody proof
 // ---------------------------------------------------------------------------
 
-/// Zero-sized, thread-affine proof that the current thread holds the runtime GIL.
-pub struct PyToken(std::marker::PhantomData<std::rc::Rc<()>>);
+/// Thread-affine borrowed view of permanent attached-context storage.
+/// A token is never constructed by value or minted at a runtime operation.
+#[repr(transparent)]
+pub struct PyToken {
+    storage: molt_codegen_abi::AttachedExecutionContextStorage,
+    _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
+}
 
 impl PyToken {
-    /// Construct proof at an unsafe boundary that independently guarantees
-    /// current-thread GIL custody for the complete use of the returned token.
-    /// Normal callers enter through [`CoreGilGuard`] or a GIL-entry macro.
-    ///
     /// # Safety
-    ///
-    /// The current thread must hold the runtime GIL, and the token must not be
-    /// used after that custody is released.
+    /// `context` addresses initialized permanent context storage for this
+    /// thread, under live GIL/lifetime custody for the entire returned borrow.
     #[inline(always)]
-    pub unsafe fn assume_gil_held() -> Self {
-        Self(std::marker::PhantomData)
+    pub unsafe fn from_attached_context<'scope>(context: u64) -> &'scope Self {
+        assert_ne!(context, 0, "missing attached execution context");
+        unsafe { &*std::ptr::with_exposed_provenance::<Self>(context as usize) }
+    }
+
+    #[inline(always)]
+    pub fn attached_context(&self) -> u64 {
+        std::ptr::from_ref(self) as u64
+    }
+
+    #[inline(always)]
+    pub fn thread_record_address(&self) -> u64 {
+        self.storage.thread_record()
     }
 }
+const _: () = {
+    assert!(
+        std::mem::size_of::<PyToken>()
+            == std::mem::size_of::<molt_codegen_abi::AttachedExecutionContextStorage>()
+    );
+    assert!(std::mem::offset_of!(PyToken, storage) == 0);
+};
 
 /// RAII guard that releases the GIL on creation and re-acquires on drop.
 ///
@@ -225,8 +244,33 @@ macro_rules! with_gil_entry {
         let $py = &__py_token;
 
         $crate::with_gil_entry_body!(raise: |__msg| {
-            $crate::rt_raise_str($crate::BuiltinExc::RuntimeError, __msg);
+            $crate::rt_raise_str($py, $crate::BuiltinExc::RuntimeError, __msg);
         }, $body)
+    }};
+}
+
+/// Borrow permanent execution storage already admitted by the caller. Panic
+/// conversion uses that same token and never re-enters the GIL or TLS.
+#[macro_export]
+macro_rules! with_attached_entry {
+    ($context:expr, $py:ident, $body:expr) => {{
+        let $py: &$crate::PyToken = $context;
+        $crate::with_gil_entry_body!(raise: |__msg| {
+            $crate::rt_raise_str($py, $crate::BuiltinExc::RuntimeError, __msg);
+        }, $body)
+    }};
+}
+
+/// Non-catching attached body, retaining the owning export's panic policy.
+#[macro_export]
+macro_rules! with_attached_entry_nopanic {
+    ($context:expr, $py:ident, { $($body:tt)* }) => {{
+        let $py: &$crate::PyToken = $context;
+        $($body)*
+    }};
+    ($context:expr, $py:ident, $body:expr) => {{
+        let $py: &$crate::PyToken = $context;
+        $body
     }};
 }
 
@@ -253,6 +297,8 @@ pub struct GilVtable {
     pub release: unsafe extern "C" fn(u64),
     /// Check if the GIL is currently held by this thread.
     pub is_held: unsafe extern "C" fn() -> bool,
+    /// Borrow the context of the same-thread guard just acquired.
+    pub context: unsafe extern "C" fn() -> u64,
 }
 
 static GIL_VTABLE: AtomicPtr<GilVtable> = AtomicPtr::new(std::ptr::null_mut());
@@ -313,22 +359,27 @@ fn core_gil_release(guard: u64) {
 /// RAII guard for GIL acquisition, usable from any crate.
 pub struct CoreGilGuard {
     guard_token: u64,
+    context: u64,
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl CoreGilGuard {
     #[inline]
     pub fn new() -> Self {
+        let guard_token = core_gil_acquire();
+        let vtable = GIL_VTABLE.load(Ordering::Acquire);
+        let context = unsafe { ((*vtable).context)() };
         Self {
-            guard_token: core_gil_acquire(),
+            guard_token,
+            context,
             _not_send_sync: std::marker::PhantomData,
         }
     }
 
     #[inline]
     #[doc(hidden)]
-    pub unsafe fn __token_unchecked(&self) -> CoreGilToken {
-        unsafe { PyToken::assume_gil_held() }
+    pub unsafe fn __token_unchecked(&self) -> &CoreGilToken {
+        unsafe { PyToken::from_attached_context(self.context) }
     }
 }
 
@@ -378,11 +429,13 @@ mod gil_tests {
         acquire: acquire_one,
         release,
         is_held: held,
+        context: acquire_one,
     };
     static SECOND: GilVtable = GilVtable {
         acquire: acquire_two,
         release,
         is_held: held,
+        context: acquire_one,
     };
 
     #[test]
@@ -413,89 +466,110 @@ pub mod ffi {
     //! in the parent module for the most common operations.
 
     unsafe extern "C" {
-        pub fn molt_memoryview_new(bits: u64) -> u64;
-        pub fn molt_memoryview_tobytes(bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_memoryview_new")]
+        pub fn molt_memoryview_new(context: u64, bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_memoryview_tobytes")]
+        pub fn molt_memoryview_tobytes(context: u64, bits: u64) -> u64;
 
         /// Canonical owned iteration transport. Writes an owned value and
         /// returns false for an item, true for exhaustion, or None on error.
-        pub fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_iter_next_unboxed")]
+        pub fn molt_iter_next_unboxed(context: u64, iter_bits: u64, value_out_bits: u64) -> u64;
 
         // -- Object allocation (c_api.rs) ------------------------------------
 
         /// Allocate a new string object from raw UTF-8 bytes.
         /// Returns the NaN-boxed `u64` handle (0/None on OOM).
-        pub fn molt_string_from(data: *const u8, len: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_string_from")]
+        pub fn molt_string_from(context: u64, data: *const u8, len: u64) -> u64;
 
         /// Allocate a new bytes object from raw data.
         /// Returns the NaN-boxed `u64` handle.
-        pub fn molt_bytes_from(data: *const u8, len: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_bytes_from")]
+        pub fn molt_bytes_from(context: u64, data: *const u8, len: u64) -> u64;
 
         /// Read the raw data pointer from a string handle.
         /// Writes the byte length into `*out_len`.
-        pub fn molt_string_as_ptr(string_bits: u64, out_len: *mut u64) -> *const u8;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_string_as_ptr")]
+        pub fn molt_string_as_ptr(context: u64, string_bits: u64, out_len: *mut u64) -> *const u8;
 
         /// Read the raw data pointer from a bytes handle.
         /// Writes the byte length into `*out_len`.
-        pub fn molt_bytes_as_ptr(bytes_bits: u64, out_len: *mut u64) -> *const u8;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_bytes_as_ptr")]
+        pub fn molt_bytes_as_ptr(context: u64, bytes_bits: u64, out_len: *mut u64) -> *const u8;
 
         /// Allocate a generic object with `size` user-data bytes.
-        pub fn molt_alloc(size_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_alloc")]
+        pub fn molt_alloc(context: u64, size_bits: u64) -> u64;
 
         /// Allocate a tuple from a C array of NaN-boxed elements.
-        pub fn molt_tuple_from_array(items: *const u64, len: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_tuple_from_array")]
+        pub fn molt_tuple_from_array(context: u64, items: *const u64, len: u64) -> u64;
 
         /// Allocate a list from a C array of NaN-boxed elements.
-        pub fn molt_list_from_array(items: *const u64, len: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_list_from_array")]
+        pub fn molt_list_from_array(context: u64, items: *const u64, len: u64) -> u64;
 
         /// Allocate a dict from parallel key/value C arrays.
-        pub fn molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dict_from_pairs")]
+        pub fn molt_dict_from_pairs(
+            context: u64,
+            keys: *const u64,
+            values: *const u64,
+            len: u64,
+        ) -> u64;
 
         /// Allocate a new empty dict with the given capacity hint.
-        pub fn molt_dict_new(capacity_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dict_new")]
+        pub fn molt_dict_new(context: u64, capacity_bits: u64) -> u64;
 
         // -- Scalar constructors (c_api.rs) ----------------------------------
 
-        /// Return the singleton `None` handle.
-        pub fn molt_none() -> u64;
-
         /// Box an `i64` into a NaN-boxed int handle.
-        pub fn molt_int_from_i64(value: i64) -> u64;
-
-        /// Box an `f64` into a NaN-boxed float handle.
-        pub fn molt_float_from_f64(value: f64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_int_from_i64")]
+        pub fn molt_int_from_i64(context: u64, value: i64) -> u64;
 
         // -- Reference counting (object/ops.rs) ------------------------------
 
         /// Increment the reference count for a NaN-boxed object.
-        pub fn molt_inc_ref_obj(bits: u64);
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_inc_ref_obj")]
+        pub fn molt_inc_ref_obj(context: u64, bits: u64);
 
         /// Decrement the reference count for a NaN-boxed object.
-        pub fn molt_dec_ref_obj(bits: u64);
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dec_ref_obj")]
+        pub fn molt_dec_ref_obj(context: u64, bits: u64);
 
         /// Release a temporary without replacing either pending-error channel.
-        pub fn __molt_runtime_release_protected_value(bits: u64);
+        #[link_name = molt_codegen_abi::attached_symbol!("__molt_runtime_release_protected_value")]
+        pub fn __molt_runtime_release_protected_value(context: u64, bits: u64);
 
         /// Batched inc-ref: adds `count` to the refcount in one atomic op.
         /// Returns `bits` unchanged (for chaining).
-        pub fn molt_inc_ref_n(bits: u64, count: u32) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_inc_ref_n")]
+        pub fn molt_inc_ref_n(context: u64, bits: u64, count: u32) -> u64;
 
         /// Batched dec-ref: decrements `count` times (each may trigger dealloc).
-        pub fn molt_dec_ref_n(bits: u64, count: u32);
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dec_ref_n")]
+        pub fn molt_dec_ref_n(context: u64, bits: u64, count: u32);
 
         // -- Low-level pointer refcount (object/mod.rs) ----------------------
 
         /// Increment refcount given a raw object pointer.
-        pub fn molt_inc_ref(ptr: *mut u8);
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_inc_ref")]
+        pub fn molt_inc_ref(context: u64, ptr: *mut u8);
 
         /// Decrement refcount given a raw object pointer.
-        pub fn molt_dec_ref(ptr: *mut u8);
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dec_ref")]
+        pub fn molt_dec_ref(context: u64, ptr: *mut u8);
 
         // -- Exception machinery (builtins/exceptions.rs) --------------------
 
         /// Raise the canonical diagnostic exception of an `ExcKind` code.
         /// Empty messages carry no arguments; nonempty messages carry one
         /// string argument.
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_bridge_raise_exception")]
         pub fn molt_bridge_raise_exception(
+            context: u64,
             kind_code: u16,
             msg_ptr: *const u8,
             msg_len: usize,
@@ -503,142 +577,198 @@ pub mod ffi {
 
         /// The owned class of an `ExcKind` code; None with SystemError pending
         /// when the code is invalid or its module row is unavailable.
-        pub fn molt_bridge_exception_class(kind_code: u16) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_bridge_exception_class")]
+        pub fn molt_bridge_exception_class(context: u64, kind_code: u16) -> u64;
 
         /// Create a new exception object.
         /// `kind_bits`: NaN-boxed string for the exception class name.
         /// `args_bits`: NaN-boxed tuple of arguments.
-        pub fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_new")]
+        pub fn molt_exception_new(context: u64, kind_bits: u64, args_bits: u64) -> u64;
 
         /// Construct from an actual owning module exception class.
-        pub fn molt_exception_new_from_class(class_bits: u64, args_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_new_from_class")]
+        pub fn molt_exception_new_from_class(context: u64, class_bits: u64, args_bits: u64) -> u64;
 
         /// Create a new exception object from a canonical builtin exception tag.
         /// `tag`: frontend/runtime agreed builtin-exception constructor tag.
         /// `args_bits`: NaN-boxed tuple of arguments.
-        pub fn molt_exception_new_builtin(tag: u64, args_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_new_builtin")]
+        pub fn molt_exception_new_builtin(context: u64, tag: u64, args_bits: u64) -> u64;
 
         /// Match an exception object against a canonical builtin exception tag.
-        pub fn molt_exception_match_builtin(exc_bits: u64, tag: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_match_builtin")]
+        pub fn molt_exception_match_builtin(context: u64, exc_bits: u64, tag: u64) -> u64;
 
         /// Raise an already-constructed exception object.
         /// Records it into the current exception slot. Returns None bits.
-        pub fn molt_raise(exc_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_raise")]
+        pub fn molt_raise(context: u64, exc_bits: u64) -> u64;
 
         /// Returns 1 if an exception is pending, 0 otherwise.
-        pub fn molt_exception_pending() -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_pending")]
+        pub fn molt_exception_pending(context: u64) -> u64;
 
         /// Fast-path pending check (skips GIL entry when possible).
-        pub fn molt_exception_pending_fast() -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_pending_fast")]
+        pub fn molt_exception_pending_fast(context: u64) -> u64;
 
         /// Returns the currently active exception handle (or None).
-        pub fn molt_exception_active() -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_active")]
+        pub fn molt_exception_active(context: u64) -> u64;
 
         /// Clears the pending exception, returning None.
-        pub fn molt_exception_clear() -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_clear")]
+        pub fn molt_exception_clear(context: u64) -> u64;
 
         /// Returns the last recorded exception handle (for `sys.last_value`).
-        pub fn molt_exception_last() -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_last")]
+        pub fn molt_exception_last(context: u64) -> u64;
 
         /// Push an exception-handler frame onto the exception stack.
-        pub fn molt_exception_stack_enter() -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_stack_enter")]
+        pub fn molt_exception_stack_enter(context: u64) -> u64;
 
         /// Pop an exception-handler frame from the exception stack.
-        pub fn molt_exception_stack_exit(prev_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_stack_exit")]
+        pub fn molt_exception_stack_exit(context: u64, prev_bits: u64) -> u64;
 
         /// Get the exception kind string from an exception handle.
-        pub fn molt_exception_kind(exc_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_kind")]
+        pub fn molt_exception_kind(context: u64, exc_bits: u64) -> u64;
 
         /// Get the message string from an exception handle.
-        pub fn molt_exception_message(exc_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_message")]
+        pub fn molt_exception_message(context: u64, exc_bits: u64) -> u64;
 
         // -- Truthiness / type introspection (object/ops.rs) -----------------
 
         /// Returns 1 if the value is truthy, 0 otherwise, -1 on error.
-        pub fn molt_is_truthy(val: u64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_is_truthy")]
+        pub fn molt_is_truthy(context: u64, val: u64) -> i64;
 
         /// Fast truthy check for known-int values.  Zero is falsy.
         /// Falls back to `molt_is_truthy` for unexpected types.
-        pub fn molt_is_truthy_int(bits: u64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_is_truthy_int")]
+        pub fn molt_is_truthy_int(context: u64, bits: u64) -> i64;
 
         /// GIL-free truthy for known-int.  No GIL, no catch_unwind, no signal checks.
-        pub fn molt_is_truthy_int_nogil(bits: u64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_is_truthy_int_nogil")]
+        pub fn molt_is_truthy_int_nogil(context: u64, bits: u64) -> i64;
 
         /// Fast truthy check for known-bool values.  `False` is falsy.
         /// Falls back to `molt_is_truthy` for unexpected types.
-        pub fn molt_is_truthy_bool(bits: u64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_is_truthy_bool")]
+        pub fn molt_is_truthy_bool(context: u64, bits: u64) -> i64;
 
         /// GIL-free truthy for known-bool.  No GIL, no catch_unwind, no signal checks.
-        pub fn molt_is_truthy_bool_nogil(bits: u64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_is_truthy_bool_nogil")]
+        pub fn molt_is_truthy_bool_nogil(context: u64, bits: u64) -> i64;
 
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
-        pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_list_int_getitem_raw")]
+        pub fn molt_list_int_getitem_raw(context: u64, list_bits: u64, raw_index: i64) -> i64;
 
         /// Raw-register list[int] getitem with IndexError semantics.
-        pub fn molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_list_int_getitem_raw_checked")]
+        pub fn molt_list_int_getitem_raw_checked(
+            context: u64,
+            list_bits: u64,
+            raw_index: i64,
+        ) -> i64;
 
         /// Returns a NaN-boxed `type` object for the given value.
-        pub fn molt_type_of(val_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_type_of")]
+        pub fn molt_type_of(context: u64, val_bits: u64) -> u64;
 
         // -- Conversions (object/ops.rs) -------------------------------------
 
         /// Convert any value to its `str()` representation (NaN-boxed string).
-        pub fn molt_str_from_obj(val_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_str_from_obj")]
+        pub fn molt_str_from_obj(context: u64, val_bits: u64) -> u64;
 
         /// Convert any value to its `repr()` representation (NaN-boxed string).
-        pub fn molt_repr_from_obj(val_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_repr_from_obj")]
+        pub fn molt_repr_from_obj(context: u64, val_bits: u64) -> u64;
 
         /// Convert a value to int (like `int(x)`).
-        pub fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_int_from_obj")]
+        pub fn molt_int_from_obj(
+            context: u64,
+            val_bits: u64,
+            base_bits: u64,
+            has_base_bits: u64,
+        ) -> u64;
 
         /// Convert a value to float (like `float(x)`).
-        pub fn molt_float_from_obj(val_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_float_from_obj")]
+        pub fn molt_float_from_obj(context: u64, val_bits: u64) -> u64;
 
         // -- Fast-path bound-method dispatch ----------------------------------
 
         /// Fast-path `list.append(elem)` via bound method bits.
-        pub fn molt_fast_list_append(method_bits: u64, elem_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_fast_list_append")]
+        pub fn molt_fast_list_append(context: u64, method_bits: u64, elem_bits: u64) -> u64;
 
         /// Fast-path `str.join(iterable)` via bound method bits.
-        pub fn molt_fast_str_join(method_bits: u64, iterable_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_fast_str_join")]
+        pub fn molt_fast_str_join(context: u64, method_bits: u64, iterable_bits: u64) -> u64;
 
         /// Fast-path `dict.get(key, default)` via bound method bits.
-        pub fn molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_fast_dict_get")]
+        pub fn molt_fast_dict_get(
+            context: u64,
+            method_bits: u64,
+            key_bits: u64,
+            default_bits: u64,
+        ) -> u64;
 
         // -- Collection operations -------------------------------------------
 
         /// Append a value to a list. Returns None on success.
-        pub fn molt_list_append(list_bits: u64, val_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_list_append")]
+        pub fn molt_list_append(context: u64, list_bits: u64, val_bits: u64) -> u64;
 
         /// Pop an element from a list at the given index.
-        pub fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_list_pop")]
+        pub fn molt_list_pop(context: u64, list_bits: u64, index_bits: u64) -> u64;
 
         /// Extend a list with elements from another iterable.
-        pub fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_list_extend")]
+        pub fn molt_list_extend(context: u64, list_bits: u64, other_bits: u64) -> u64;
 
         /// Dict subscript get with default.
-        pub fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dict_get")]
+        pub fn molt_dict_get(context: u64, dict_bits: u64, key_bits: u64, default_bits: u64)
+        -> u64;
 
         /// Dict subscript set.
-        pub fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dict_set")]
+        pub fn molt_dict_set(context: u64, dict_bits: u64, key_bits: u64, val_bits: u64) -> u64;
 
         /// Check if a string contains a substring. Returns bool bits.
-        pub fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_str_contains")]
+        pub fn molt_str_contains(context: u64, container_bits: u64, item_bits: u64) -> u64;
 
         /// Check if a list contains a value. Returns bool bits.
-        pub fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_list_contains")]
+        pub fn molt_list_contains(context: u64, container_bits: u64, item_bits: u64) -> u64;
 
         /// Check if a dict contains a key. Returns bool bits.
-        pub fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_dict_contains")]
+        pub fn molt_dict_contains(context: u64, container_bits: u64, item_bits: u64) -> u64;
 
         /// String equality check. Returns bool bits.
-        pub fn molt_string_eq(a: u64, b: u64) -> u64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_string_eq")]
+        pub fn molt_string_eq(context: u64, a: u64, b: u64) -> u64;
 
         // -- Sequence unpacking (object/ops.rs) ------------------------------
 
         /// Unpack a sequence into `expected_count` elements written to `output_ptr`.
         /// Returns 0 on success, None bits on error.
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_unpack_sequence")]
         pub fn molt_unpack_sequence(
+            context: u64,
             seq_bits: u64,
             expected_count: u64,
             output_ptr: *mut u64,
@@ -658,7 +788,8 @@ pub mod ffi {
         /// `1` when the configured target Python is `>= major.minor`, else `0`.
         /// Lets satellite stdlib modules version-gate behavior identically to
         /// their in-tree twin (the host owns the target-version state).
-        pub fn molt_runtime_target_at_least(major: i64, minor: i64) -> i64;
+        #[link_name = molt_codegen_abi::attached_symbol!("molt_runtime_target_at_least")]
+        pub fn molt_runtime_target_at_least(context: u64, major: i64, minor: i64) -> i64;
     }
 }
 
@@ -672,68 +803,73 @@ pub mod ffi {
 /// Allocate a new Molt string from a Rust `&str`. Returns the NaN-boxed handle.
 /// Returns `MoltObject::none().bits()` on allocation failure.
 #[inline]
-pub fn rt_string_from(s: &str) -> u64 {
-    unsafe { ffi::molt_string_from(s.as_ptr(), s.len() as u64) }
+pub fn rt_string_from(py: &PyToken, s: &str) -> u64 {
+    unsafe { ffi::molt_string_from(py.attached_context(), s.as_ptr(), s.len() as u64) }
 }
 
 /// Allocate a new Molt string from raw bytes. Returns the NaN-boxed handle.
 #[inline]
-pub fn rt_string_from_bytes(bytes: &[u8]) -> u64 {
-    unsafe { ffi::molt_string_from(bytes.as_ptr(), bytes.len() as u64) }
+pub fn rt_string_from_bytes(py: &PyToken, bytes: &[u8]) -> u64 {
+    unsafe { ffi::molt_string_from(py.attached_context(), bytes.as_ptr(), bytes.len() as u64) }
 }
 
 /// Allocate a new Molt bytes object. Returns the NaN-boxed handle.
 #[inline]
-pub fn rt_bytes_from(bytes: &[u8]) -> u64 {
-    unsafe { ffi::molt_bytes_from(bytes.as_ptr(), bytes.len() as u64) }
+pub fn rt_bytes_from(py: &PyToken, bytes: &[u8]) -> u64 {
+    unsafe { ffi::molt_bytes_from(py.attached_context(), bytes.as_ptr(), bytes.len() as u64) }
 }
 
 /// Return the singleton `None` handle.
 #[inline]
 pub fn rt_none() -> u64 {
-    unsafe { ffi::molt_none() }
+    MoltObject::none().bits()
 }
 
 /// Box a Rust `i64` into a NaN-boxed int handle.
 #[inline]
-pub fn rt_int(value: i64) -> u64 {
-    unsafe { ffi::molt_int_from_i64(value) }
+pub fn rt_int(py: &PyToken, value: i64) -> u64 {
+    unsafe { ffi::molt_int_from_i64(py.attached_context(), value) }
 }
 
 /// Box a Rust `f64` into a NaN-boxed float handle.
 #[inline]
 pub fn rt_float(value: f64) -> u64 {
-    unsafe { ffi::molt_float_from_f64(value) }
+    MoltObject::from_float(value).bits()
 }
 
 /// Allocate a tuple from a slice of NaN-boxed elements.
 #[inline]
-pub fn rt_tuple(elems: &[u64]) -> u64 {
-    unsafe { ffi::molt_tuple_from_array(elems.as_ptr(), elems.len() as u64) }
+pub fn rt_tuple(py: &PyToken, elems: &[u64]) -> u64 {
+    unsafe { ffi::molt_tuple_from_array(py.attached_context(), elems.as_ptr(), elems.len() as u64) }
 }
 
 /// Allocate a list from a slice of NaN-boxed elements.
 #[inline]
-pub fn rt_list(elems: &[u64]) -> u64 {
-    unsafe { ffi::molt_list_from_array(elems.as_ptr(), elems.len() as u64) }
+pub fn rt_list(py: &PyToken, elems: &[u64]) -> u64 {
+    unsafe { ffi::molt_list_from_array(py.attached_context(), elems.as_ptr(), elems.len() as u64) }
 }
 
 /// Allocate a new empty dict with optional capacity hint.
 #[inline]
-pub fn rt_dict(capacity: usize) -> u64 {
-    unsafe { ffi::molt_dict_new(MoltObject::from_int(capacity as i64).bits()) }
+pub fn rt_dict(py: &PyToken, capacity: usize) -> u64 {
+    unsafe {
+        ffi::molt_dict_new(
+            py.attached_context(),
+            MoltObject::from_int(capacity as i64).bits(),
+        )
+    }
 }
 
 /// Increment the reference count for a NaN-boxed object handle.
 #[inline]
-pub fn rt_inc_ref(bits: u64) {
-    unsafe { ffi::molt_inc_ref_obj(bits) }
+pub fn rt_inc_ref(py: &PyToken, bits: u64) {
+    unsafe { ffi::molt_inc_ref_obj(py.attached_context(), bits) }
 }
 
 /// Decrement the reference count for a NaN-boxed object handle.
 #[inline]
-pub fn rt_dec_ref(bits: u64) {
-    unsafe { ffi::molt_dec_ref_obj(bits) }
+pub fn rt_dec_ref(py: &PyToken, bits: u64) {
+    unsafe { ffi::molt_dec_ref_obj(py.attached_context(), bits) }
 }
 
 /// Static retirement policy for one live owned runtime value.
@@ -747,15 +883,15 @@ pub unsafe trait RuntimeValueRelease {
     /// # Safety
     /// The caller must hold the runtime GIL and transfer exactly one live owned
     /// reference represented by `bits`. Immediate values require no release.
-    unsafe fn release(bits: u64);
+    unsafe fn release(py: &PyToken, bits: u64);
 }
 
 /// Ordinary semantic retirement preserves native deallocator error visibility.
 pub enum RuntimeReferenceRelease {}
 unsafe impl RuntimeValueRelease for RuntimeReferenceRelease {
     #[inline]
-    unsafe fn release(bits: u64) {
-        rt_dec_ref(bits);
+    unsafe fn release(py: &PyToken, bits: u64) {
+        rt_dec_ref(py, bits);
     }
 }
 
@@ -763,8 +899,8 @@ unsafe impl RuntimeValueRelease for RuntimeReferenceRelease {
 pub enum ProtectedRuntimeReferenceRelease {}
 unsafe impl RuntimeValueRelease for ProtectedRuntimeReferenceRelease {
     #[inline]
-    unsafe fn release(bits: u64) {
-        unsafe { ffi::__molt_runtime_release_protected_value(bits) };
+    unsafe fn release(py: &PyToken, bits: u64) {
+        unsafe { ffi::__molt_runtime_release_protected_value(py.attached_context(), bits) };
     }
 }
 
@@ -773,10 +909,10 @@ pub type ProtectedRuntimeValue<'py> = RuntimeValueOwner<'py, ProtectedRuntimeRef
 
 /// One runtime value owned under the caller's GIL custody. Immediate values,
 /// including positive zero (raw bits zero), follow the same ownership contract.
-#[repr(transparent)]
 pub struct RuntimeValueOwner<'py, P: RuntimeValueRelease> {
     bits: u64,
-    _py: std::marker::PhantomData<(&'py PyToken, P)>,
+    py: &'py PyToken,
+    policy: std::marker::PhantomData<P>,
 }
 
 impl<'py, P: RuntimeValueRelease> RuntimeValueOwner<'py, P> {
@@ -785,19 +921,21 @@ impl<'py, P: RuntimeValueRelease> RuntimeValueOwner<'py, P> {
     /// # Safety
     /// `bits` must be a live value whose reference is transferred to this guard.
     #[inline]
-    pub unsafe fn from_owned_bits(_py: &'py PyToken, bits: u64) -> Self {
+    pub unsafe fn from_owned_bits(py: &'py PyToken, bits: u64) -> Self {
         Self {
             bits,
-            _py: std::marker::PhantomData,
+            py,
+            policy: std::marker::PhantomData,
         }
     }
 
     #[inline]
-    pub fn retain(_py: &'py PyToken, bits: u64) -> Self {
-        rt_inc_ref(bits);
+    pub fn retain(py: &'py PyToken, bits: u64) -> Self {
+        rt_inc_ref(py, bits);
         Self {
             bits,
-            _py: std::marker::PhantomData,
+            py,
+            policy: std::marker::PhantomData,
         }
     }
 
@@ -816,10 +954,10 @@ impl<'py, P: RuntimeValueRelease> RuntimeValueOwner<'py, P> {
     /// }
     /// ```
     #[inline]
-    pub fn string_bytes<'view>(&'view self, _py: &'view PyToken) -> Option<&'view [u8]> {
+    pub fn string_bytes<'view>(&'view self, py: &'view PyToken) -> Option<&'view [u8]> {
         // SAFETY: self owns the immutable payload for the complete view and
         // _py borrows the caller's live execution custody for that same scope.
-        unsafe { rt_string_as_bytes(self.bits) }
+        unsafe { rt_string_as_bytes(py, self.bits) }
     }
 
     /// Borrow immutable bytes storage while both this owner and GIL custody live.
@@ -834,18 +972,10 @@ impl<'py, P: RuntimeValueRelease> RuntimeValueOwner<'py, P> {
     /// }
     /// ```
     #[inline]
-    pub fn bytes_slice<'view>(&'view self, _py: &'view PyToken) -> Option<&'view [u8]> {
+    pub fn bytes_slice<'view>(&'view self, py: &'view PyToken) -> Option<&'view [u8]> {
         // SAFETY: bytes objects are immutable and this borrow retains their
         // existing owner and the caller's execution custody through every use.
-        unsafe { rt_bytes_as_slice(self.bits) }
-    }
-
-    /// Borrow handles without allocating a second collection. The transparent
-    /// representation has only the u64 payload; the token remains a lifetime
-    /// and !Send/!Sync proof, including for empty collections.
-    #[inline]
-    pub fn as_bits_slice(values: &[Self]) -> &[u64] {
-        unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), values.len()) }
+        unsafe { rt_bytes_as_slice(py, self.bits) }
     }
 
     /// Transfer this reference to a result, field, or another owner.
@@ -860,16 +990,170 @@ impl<'py, P: RuntimeValueRelease> RuntimeValueOwner<'py, P> {
 impl<P: RuntimeValueRelease> Drop for RuntimeValueOwner<'_, P> {
     #[inline]
     fn drop(&mut self) {
-        unsafe { P::release(self.bits) };
+        unsafe { P::release(self.py, self.bits) };
     }
 }
 
-const _: () = {
-    assert!(std::mem::size_of::<OwnedRuntimeValue<'static>>() == std::mem::size_of::<u64>());
-    assert!(std::mem::align_of::<OwnedRuntimeValue<'static>>() == std::mem::align_of::<u64>());
-    assert!(std::mem::size_of::<ProtectedRuntimeValue<'static>>() == std::mem::size_of::<u64>());
-    assert!(std::mem::align_of::<ProtectedRuntimeValue<'static>>() == std::mem::align_of::<u64>());
-};
+/// Contiguous owned handles sharing one live execution token. This preserves
+/// zero-copy slice transport while individual owners carry their real token.
+pub struct RuntimeValueCollection<'py, P: RuntimeValueRelease = RuntimeReferenceRelease> {
+    bits: Vec<u64>,
+    py: &'py PyToken,
+    policy: std::marker::PhantomData<P>,
+}
+
+impl<'py, P: RuntimeValueRelease> RuntimeValueCollection<'py, P> {
+    pub fn new(py: &'py PyToken) -> Self {
+        Self::with_capacity(py, 0)
+    }
+    pub fn with_capacity(py: &'py PyToken, capacity: usize) -> Self {
+        Self {
+            bits: Vec::with_capacity(capacity),
+            py,
+            policy: std::marker::PhantomData,
+        }
+    }
+    pub fn push(&mut self, owner: RuntimeValueOwner<'py, P>) {
+        assert!(
+            std::ptr::eq(self.py, owner.py),
+            "owned collection requires one execution context"
+        );
+        self.bits.push(owner.into_bits());
+    }
+    pub fn pop(&mut self) -> Option<RuntimeValueOwner<'py, P>> {
+        self.bits
+            .pop()
+            .map(|bits| unsafe { RuntimeValueOwner::from_owned_bits(self.py, bits) })
+    }
+    pub fn len(&self) -> usize {
+        self.bits.len()
+    }
+    pub fn try_reserve(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.bits.try_reserve(additional)
+    }
+    pub fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.bits.try_reserve_exact(additional)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.bits.is_empty()
+    }
+    pub fn as_bits_slice(&self) -> &[u64] {
+        &self.bits
+    }
+    pub fn clear(&mut self) {
+        // Vec<RuntimeValueOwner> retires in source order. Keep observable
+        // finalizer ordering while retaining the contiguous allocation.
+        for bits in self.bits.drain(..) {
+            unsafe { P::release(self.py, bits) };
+        }
+    }
+}
+impl<P: RuntimeValueRelease> Drop for RuntimeValueCollection<'_, P> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+pub struct RuntimeValueCollectionIntoIter<'py, P: RuntimeValueRelease> {
+    bits: std::vec::IntoIter<u64>,
+    py: &'py PyToken,
+    policy: std::marker::PhantomData<P>,
+}
+impl<'py, P: RuntimeValueRelease> Iterator for RuntimeValueCollectionIntoIter<'py, P> {
+    type Item = RuntimeValueOwner<'py, P>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.bits
+            .next()
+            .map(|bits| unsafe { RuntimeValueOwner::from_owned_bits(self.py, bits) })
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.bits.size_hint()
+    }
+}
+impl<P: RuntimeValueRelease> ExactSizeIterator for RuntimeValueCollectionIntoIter<'_, P> {}
+impl<P: RuntimeValueRelease> Drop for RuntimeValueCollectionIntoIter<'_, P> {
+    fn drop(&mut self) {
+        for bits in self.bits.by_ref() {
+            unsafe { P::release(self.py, bits) };
+        }
+    }
+}
+impl<'py, P: RuntimeValueRelease> IntoIterator for RuntimeValueCollection<'py, P> {
+    type Item = RuntimeValueOwner<'py, P>;
+    type IntoIter = RuntimeValueCollectionIntoIter<'py, P>;
+    fn into_iter(mut self) -> Self::IntoIter {
+        RuntimeValueCollectionIntoIter {
+            bits: std::mem::take(&mut self.bits).into_iter(),
+            py: self.py,
+            policy: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+mod owned_collection_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static RELEASED: RefCell<Vec<(u64, u64)>> = const { RefCell::new(Vec::new()) };
+    }
+    enum ObserveRelease {}
+    unsafe impl RuntimeValueRelease for ObserveRelease {
+        unsafe fn release(py: &PyToken, bits: u64) {
+            RELEASED.with_borrow_mut(|released| released.push((py.attached_context(), bits)));
+        }
+    }
+
+    #[test]
+    fn contiguous_owners_forward_context_and_retire_once_in_source_order() {
+        // Independent release oracle: no runtime FFI, refcount implementation
+        // or GIL lookup supplies the observed owner ids or context address.
+        let storage = Box::leak(Box::new(
+            molt_codegen_abi::AttachedExecutionContextStorage::new(),
+        ));
+        static THREAD_RECORD: u64 = 0;
+        storage.bind_thread_record(std::ptr::addr_of!(THREAD_RECORD) as u64);
+        let context = std::ptr::from_ref(storage) as u64;
+        let py = unsafe { PyToken::from_attached_context(context) };
+        RELEASED.with_borrow_mut(Vec::clear);
+        let mut owners = RuntimeValueCollection::<ObserveRelease>::with_capacity(py, 3);
+        for bits in [11, 22, 33] {
+            owners.push(unsafe { RuntimeValueOwner::from_owned_bits(py, bits) });
+        }
+        assert_eq!(owners.as_bits_slice(), &[11, 22, 33]);
+        assert_eq!(owners.len(), 3);
+        let last = owners.pop().unwrap();
+        assert_eq!(last.into_bits(), 33);
+        assert!(RELEASED.with_borrow(Vec::is_empty));
+        let mut remaining = owners.into_iter();
+        let first = remaining.next().unwrap();
+        assert_eq!(first.bits(), 11);
+        drop(first);
+        drop(remaining);
+        RELEASED.with_borrow(|released| assert_eq!(released, &[(context, 11), (context, 22)]));
+
+        let mut owners = RuntimeValueCollection::<ObserveRelease>::new(py);
+        for bits in [44, 55] {
+            owners.push(unsafe { RuntimeValueOwner::from_owned_bits(py, bits) });
+        }
+        owners.clear();
+        assert!(owners.is_empty());
+        drop(owners);
+        RELEASED.with_borrow(|released| {
+            assert_eq!(
+                released,
+                &[(context, 11), (context, 22), (context, 44), (context, 55)]
+            );
+        });
+    }
+}
 
 /// A runtime operation failed with its Python error indicator set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -884,14 +1168,19 @@ pub fn iter_next_owned<'py>(
     py: &'py PyToken,
     iterator: &OwnedRuntimeValue<'_>,
 ) -> Result<Option<OwnedRuntimeValue<'py>>, ErrorIndicatorSet> {
-    if rt_exception_pending() {
+    if rt_exception_pending(py) {
         return Err(ErrorIndicatorSet);
     }
     let mut bits = MoltObject::none().bits();
-    let done =
-        unsafe { ffi::molt_iter_next_unboxed(iterator.bits(), (&raw mut bits) as usize as u64) };
+    let done = unsafe {
+        ffi::molt_iter_next_unboxed(
+            py.attached_context(),
+            iterator.bits(),
+            (&raw mut bits) as usize as u64,
+        )
+    };
     let value = unsafe { OwnedRuntimeValue::from_owned_bits(py, bits) };
-    if rt_exception_pending() {
+    if rt_exception_pending(py) {
         return Err(ErrorIndicatorSet);
     }
     match obj_from_bits(done).as_bool() {
@@ -899,6 +1188,7 @@ pub fn iter_next_owned<'py>(
         Some(true) => Ok(None),
         None => {
             rt_raise_str(
+                py,
                 BuiltinExc::SystemError,
                 "invalid iterator completion result",
             );
@@ -909,21 +1199,21 @@ pub fn iter_next_owned<'py>(
 
 /// Check whether an exception is currently pending.
 #[inline]
-pub fn rt_exception_pending() -> bool {
-    unsafe { ffi::molt_exception_pending() != 0 }
+pub fn rt_exception_pending(py: &PyToken) -> bool {
+    unsafe { ffi::molt_exception_pending(py.attached_context()) != 0 }
 }
 
 /// Fast-path exception check (avoids full GIL entry when possible).
 #[inline]
-pub fn rt_exception_pending_fast() -> bool {
-    unsafe { ffi::molt_exception_pending_fast() != 0 }
+pub fn rt_exception_pending_fast(py: &PyToken) -> bool {
+    unsafe { ffi::molt_exception_pending_fast(py.attached_context()) != 0 }
 }
 
 /// Borrow an already-constructed exception and publish a retained raised owner.
 /// Returns None bits; the caller still owns its input reference.
 #[inline]
-pub fn rt_raise(exc_bits: u64) -> u64 {
-    unsafe { ffi::molt_raise(exc_bits) }
+pub fn rt_raise(py: &PyToken, exc_bits: u64) -> u64 {
+    unsafe { ffi::molt_raise(py.attached_context(), exc_bits) }
 }
 
 /// Raise a diagnostic through the runtime's canonical exception constructor.
@@ -931,70 +1221,77 @@ pub fn rt_raise(exc_bits: u64) -> u64 {
 /// string argument. Explicit Python arguments use the exception constructors.
 /// Construction and raised-owner transfer remain in the runtime authority.
 #[inline]
-pub fn rt_raise_str(kind: impl Into<ExcKind>, message: &str) -> u64 {
-    unsafe { ffi::molt_bridge_raise_exception(kind.into().code(), message.as_ptr(), message.len()) }
+pub fn rt_raise_str(py: &PyToken, kind: impl Into<ExcKind>, message: &str) -> u64 {
+    unsafe {
+        ffi::molt_bridge_raise_exception(
+            py.attached_context(),
+            kind.into().code(),
+            message.as_ptr(),
+            message.len(),
+        )
+    }
 }
 
 /// The owned class of a typed exception kind, for satellites that construct a
 /// module exception with its own arguments. Check `rt_exception_pending`.
 #[inline]
-pub fn rt_exception_class(kind: impl Into<ExcKind>) -> u64 {
-    unsafe { ffi::molt_bridge_exception_class(kind.into().code()) }
+pub fn rt_exception_class(py: &PyToken, kind: impl Into<ExcKind>) -> u64 {
+    unsafe { ffi::molt_bridge_exception_class(py.attached_context(), kind.into().code()) }
 }
 
 /// Raise the owning module's actual exception class, retaining each temporary
 /// through construction and preserving failures from the existing authority.
 pub fn rt_raise_class(py: &PyToken, class: u64, message: &str) -> u64 {
-    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(message)) };
-    if rt_exception_pending() {
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(py, message)) };
+    if rt_exception_pending(py) {
         return MoltObject::none().bits();
     }
-    let args = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_tuple(&[text.bits()])) };
-    if rt_exception_pending() {
+    let args = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_tuple(py, &[text.bits()])) };
+    if rt_exception_pending(py) {
         return MoltObject::none().bits();
     }
     let error = unsafe {
         OwnedRuntimeValue::from_owned_bits(
             py,
-            ffi::molt_exception_new_from_class(class, args.bits()),
+            ffi::molt_exception_new_from_class(py.attached_context(), class, args.bits()),
         )
     };
-    if rt_exception_pending() {
+    if rt_exception_pending(py) {
         return MoltObject::none().bits();
     }
-    rt_raise(error.bits())
+    rt_raise(py, error.bits())
 }
 
 /// Clear the pending exception. Returns None bits.
 #[inline]
-pub fn rt_exception_clear() -> u64 {
-    unsafe { ffi::molt_exception_clear() }
+pub fn rt_exception_clear(py: &PyToken) -> u64 {
+    unsafe { ffi::molt_exception_clear(py.attached_context()) }
 }
 
 /// Check truthiness of a NaN-boxed value.
 #[inline]
-pub fn rt_is_truthy(bits: u64) -> bool {
-    unsafe { ffi::molt_is_truthy(bits) == 1 }
+pub fn rt_is_truthy(py: &PyToken, bits: u64) -> bool {
+    unsafe { ffi::molt_is_truthy(py.attached_context(), bits) == 1 }
 }
 
 /// `true` when the configured target Python is `>= major.minor`. Lets satellite
 /// stdlib modules version-gate behavior identically to their in-tree twin (the
 /// host owns the target-version state, queried via `molt_runtime_target_at_least`).
 #[inline]
-pub fn rt_target_at_least(major: i64, minor: i64) -> bool {
-    unsafe { ffi::molt_runtime_target_at_least(major, minor) != 0 }
+pub fn rt_target_at_least(py: &PyToken, major: i64, minor: i64) -> bool {
+    unsafe { ffi::molt_runtime_target_at_least(py.attached_context(), major, minor) != 0 }
 }
 
 /// Get the `str()` of a NaN-boxed value. Returns a NaN-boxed string handle.
 #[inline]
-pub fn rt_str(bits: u64) -> u64 {
-    unsafe { ffi::molt_str_from_obj(bits) }
+pub fn rt_str(py: &PyToken, bits: u64) -> u64 {
+    unsafe { ffi::molt_str_from_obj(py.attached_context(), bits) }
 }
 
 /// Get the `repr()` of a NaN-boxed value. Returns a NaN-boxed string handle.
 #[inline]
-pub fn rt_repr(bits: u64) -> u64 {
-    unsafe { ffi::molt_repr_from_obj(bits) }
+pub fn rt_repr(py: &PyToken, bits: u64) -> u64 {
+    unsafe { ffi::molt_repr_from_obj(py.attached_context(), bits) }
 }
 
 /// Borrow the encoded bytes of an externally owned Molt string.
@@ -1010,12 +1307,12 @@ pub fn rt_repr(bits: u64) -> u64 {
 ///
 /// ```compile_fail
 /// fn unowned(bits: u64) -> Option<&'static [u8]> {
-///     molt_runtime_core::rt_string_as_bytes(bits)
+///     molt_runtime_core::rt_string_as_bytes(py, bits)
 /// }
 /// ```
-pub unsafe fn rt_string_as_bytes<'borrow>(string_bits: u64) -> Option<&'borrow [u8]> {
+pub unsafe fn rt_string_as_bytes<'borrow>(py: &PyToken, string_bits: u64) -> Option<&'borrow [u8]> {
     let mut len: u64 = 0;
-    let ptr = unsafe { ffi::molt_string_as_ptr(string_bits, &mut len) };
+    let ptr = unsafe { ffi::molt_string_as_ptr(py.attached_context(), string_bits, &mut len) };
     if ptr.is_null() {
         return None;
     }
@@ -1036,12 +1333,12 @@ pub unsafe fn rt_string_as_bytes<'borrow>(string_bits: u64) -> Option<&'borrow [
 ///
 /// ```compile_fail
 /// fn unowned(bits: u64) -> Option<&'static [u8]> {
-///     molt_runtime_core::rt_bytes_as_slice(bits)
+///     molt_runtime_core::rt_bytes_as_slice(py, bits)
 /// }
 /// ```
-pub unsafe fn rt_bytes_as_slice<'borrow>(bytes_bits: u64) -> Option<&'borrow [u8]> {
+pub unsafe fn rt_bytes_as_slice<'borrow>(py: &PyToken, bytes_bits: u64) -> Option<&'borrow [u8]> {
     let mut len: u64 = 0;
-    let ptr = unsafe { ffi::molt_bytes_as_ptr(bytes_bits, &mut len) };
+    let ptr = unsafe { ffi::molt_bytes_as_ptr(py.attached_context(), bytes_bits, &mut len) };
     if ptr.is_null() {
         return None;
     }
@@ -1142,11 +1439,12 @@ pub unsafe fn bridge_owned_u64_buffer(ptr: *const u64, len: usize) -> OwnedBridg
 /// `Vec<u64>` across an FFI boundary. The producing runtime increments every
 /// handle before exporting the buffer; dropping the guard releases those
 /// handles before returning the buffer to the runtime allocator.
-pub struct OwnedBridgeHandleSnapshot {
+pub struct OwnedBridgeHandleSnapshot<'py> {
+    py: &'py PyToken,
     buffer: OwnedBridgeU64Buffer,
 }
 
-impl std::ops::Deref for OwnedBridgeHandleSnapshot {
+impl std::ops::Deref for OwnedBridgeHandleSnapshot<'_> {
     type Target = [u64];
 
     fn deref(&self) -> &Self::Target {
@@ -1154,16 +1452,16 @@ impl std::ops::Deref for OwnedBridgeHandleSnapshot {
     }
 }
 
-impl AsRef<[u64]> for OwnedBridgeHandleSnapshot {
+impl AsRef<[u64]> for OwnedBridgeHandleSnapshot<'_> {
     fn as_ref(&self) -> &[u64] {
         &self.buffer
     }
 }
 
-impl Drop for OwnedBridgeHandleSnapshot {
+impl Drop for OwnedBridgeHandleSnapshot<'_> {
     fn drop(&mut self) {
         for &bits in self.buffer.iter() {
-            rt_dec_ref(bits);
+            rt_dec_ref(self.py, bits);
         }
     }
 }
@@ -1173,11 +1471,13 @@ impl Drop for OwnedBridgeHandleSnapshot {
 /// # Safety
 /// `ptr`/`len` must come from a Molt owned-handle snapshot bridge function. Every
 /// handle in the buffer must carry one reference owned by the snapshot.
-pub unsafe fn bridge_owned_handle_snapshot(
+pub unsafe fn bridge_owned_handle_snapshot<'py>(
+    py: &'py PyToken,
     ptr: *const u64,
     len: usize,
-) -> OwnedBridgeHandleSnapshot {
+) -> OwnedBridgeHandleSnapshot<'py> {
     OwnedBridgeHandleSnapshot {
+        py,
         buffer: unsafe { bridge_owned_u64_buffer(ptr, len) },
     }
 }
@@ -1251,11 +1551,12 @@ pub mod prelude {
     pub use crate::{BuiltinExc, ExcKind, ModuleExc};
     pub use crate::{
         CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, OwnedBridgeHandleSnapshot,
-        OwnedRuntimeValue, ProtectedRuntimeValue, PyToken, bits_from_ptr,
+        OwnedRuntimeValue, ProtectedRuntimeValue, PyToken, RuntimeValueCollection, bits_from_ptr,
         bridge_owned_handle_snapshot, bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy,
         bridge_owned_u8_to_vec, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, iter_next_owned,
         obj_from_bits, opaque_handle_bits, opaque_handle_ptr_from_bits, ptr_from_bits,
     };
+    pub use crate::{with_attached_entry, with_attached_entry_nopanic};
 
     // Safe runtime wrappers
     pub use crate::{
@@ -1278,14 +1579,13 @@ pub mod prelude {
 /// `molt-runtime`.  Every pointer uses an FFI-safe `extern "C"` signature so
 /// the struct can be shared across dynamic-library boundaries.
 pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 11 passes typed `ExcKind` codes to the exception slots and retires
-// the binascii class slot; `BuiltinExc` owns those classes.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 11;
+// Version 12 carries the attached execution context on Python-dependent slots.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 12;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1301,6 +1601,7 @@ pub struct RuntimeVtable {
 
     // --- Runtime-scoped extension state ---
     pub runtime_state_get_or_init: unsafe extern "C" fn(
+        u64,
         *const u8,
         usize,
         RuntimeExtensionStateInit,
@@ -1309,35 +1610,35 @@ pub struct RuntimeVtable {
     ) -> *mut u8,
 
     // --- Exception handling ---
-    pub raise_exception: unsafe extern "C" fn(u16, *const u8, usize) -> u64,
-    pub replace_exception: unsafe extern "C" fn(u16, *const u8, usize) -> u64,
-    pub exception_pending: unsafe extern "C" fn() -> i32,
-    pub exception_new_from_class: unsafe extern "C" fn(u64, u64) -> u64,
+    pub raise_exception: unsafe extern "C" fn(u64, u16, *const u8, usize) -> u64,
+    pub replace_exception: unsafe extern "C" fn(u64, u16, *const u8, usize) -> u64,
+    pub exception_pending: unsafe extern "C" fn(u64) -> i32,
+    pub exception_new_from_class: unsafe extern "C" fn(u64, u64, u64) -> u64,
     /// Run the actual strict ASCII codec and translate its UnicodeEncodeError.
-    pub decode_ascii_input: unsafe extern "C" fn(u64) -> u64,
+    pub decode_ascii_input: unsafe extern "C" fn(u64, u64) -> u64,
 
     // --- Allocation ---
-    pub alloc_tuple: unsafe extern "C" fn(*const u64, usize) -> *mut u8,
-    pub alloc_list: unsafe extern "C" fn(*const u64, usize) -> *mut u8,
-    pub alloc_string: unsafe extern "C" fn(*const u8, usize) -> *mut u8,
-    pub alloc_bytes: unsafe extern "C" fn(*const u8, usize) -> *mut u8,
-    pub alloc_dict_with_pairs: unsafe extern "C" fn(*const u64, usize) -> *mut u8,
+    pub alloc_tuple: unsafe extern "C" fn(u64, *const u64, usize) -> *mut u8,
+    pub alloc_list: unsafe extern "C" fn(u64, *const u64, usize) -> *mut u8,
+    pub alloc_string: unsafe extern "C" fn(u64, *const u8, usize) -> *mut u8,
+    pub alloc_bytes: unsafe extern "C" fn(u64, *const u8, usize) -> *mut u8,
+    pub alloc_dict_with_pairs: unsafe extern "C" fn(u64, *const u64, usize) -> *mut u8,
 
     // --- Object inspection ---
     pub object_type_id: unsafe extern "C" fn(*mut u8) -> u32,
     pub string_obj_to_owned: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
-    pub type_name: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
-    pub is_truthy: unsafe extern "C" fn(u64) -> i32,
+    pub type_name: unsafe extern "C" fn(u64, u64, *mut *const u8, *mut usize) -> i32,
+    pub is_truthy: unsafe extern "C" fn(u64, u64) -> i32,
     pub bytes_like_slice: unsafe extern "C" fn(*mut u8, *mut *const u8, *mut usize) -> i32,
     pub string_bytes: unsafe extern "C" fn(*mut u8, *mut *const u8, *mut usize) -> i32,
     pub string_len: unsafe extern "C" fn(*mut u8) -> usize,
     pub bytes_like_slice_raw: unsafe extern "C" fn(*mut u8, *mut *const u8, *mut usize) -> i32,
-    pub format_obj: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
-    pub format_obj_str: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
+    pub format_obj: unsafe extern "C" fn(u64, u64, *mut *const u8, *mut usize) -> i32,
+    pub format_obj_str: unsafe extern "C" fn(u64, u64, *mut *const u8, *mut usize) -> i32,
     pub class_name_for_error: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
-    pub type_of_bits: unsafe extern "C" fn(u64) -> u64,
+    pub type_of_bits: unsafe extern "C" fn(u64, u64) -> u64,
     pub maybe_ptr_from_bits: unsafe extern "C" fn(u64) -> *mut u8,
-    pub molt_is_callable: unsafe extern "C" fn(u64) -> i32,
+    pub molt_is_callable: unsafe extern "C" fn(u64, u64) -> i32,
 
     // --- Memoryview ---
     pub memoryview_is_c_contiguous_view: unsafe extern "C" fn(*mut u8) -> i32,
@@ -1349,59 +1650,66 @@ pub struct RuntimeVtable {
 
     // --- Reference counting ---
     pub release_ptr: unsafe extern "C" fn(*mut u8),
-    pub dec_ref_bits: unsafe extern "C" fn(u64),
-    pub inc_ref_bits: unsafe extern "C" fn(u64),
+    pub dec_ref_bits: unsafe extern "C" fn(u64, u64),
+    pub inc_ref_bits: unsafe extern "C" fn(u64, u64),
 
     // --- Numerics ---
     pub to_i64: unsafe extern "C" fn(u64, *mut i64) -> i32,
     pub to_f64: unsafe extern "C" fn(u64, *mut f64) -> i32,
     pub to_bigint: unsafe extern "C" fn(u64, *mut i32, *mut *const u8, *mut usize) -> i32,
-    pub int_bits_from_i64: unsafe extern "C" fn(i64) -> u64,
-    pub int_bits_from_i128: unsafe extern "C" fn(u64, u64) -> u64,
-    pub int_bits_from_bigint: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
+    pub int_bits_from_i64: unsafe extern "C" fn(u64, i64) -> u64,
+    pub int_bits_from_i128: unsafe extern "C" fn(u64, u64, u64) -> u64,
+    pub int_bits_from_bigint: unsafe extern "C" fn(u64, i32, *const u8, usize) -> u64,
     pub bigint_ptr_from_bits: unsafe extern "C" fn(u64) -> *mut u8,
     pub bigint_ref: unsafe extern "C" fn(*mut u8, *mut i32, *mut *const u8, *mut usize) -> i32,
     pub bigint_from_f64_trunc:
         unsafe extern "C" fn(f64, *mut i32, *mut *const u8, *mut usize) -> i32,
-    pub bigint_bits: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
+    pub bigint_bits: unsafe extern "C" fn(u64, i32, *const u8, usize) -> u64,
     pub bigint_to_inline: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
-    pub index_i64_from_obj: unsafe extern "C" fn(u64, *const u8, usize) -> i64,
-    pub index_bigint_from_obj:
-        unsafe extern "C" fn(u64, *const u8, usize, *mut i32, *mut *const u8, *mut usize) -> i32,
+    pub index_i64_from_obj: unsafe extern "C" fn(u64, u64, *const u8, usize) -> i64,
+    pub index_bigint_from_obj: unsafe extern "C" fn(
+        u64,
+        u64,
+        *const u8,
+        usize,
+        *mut i32,
+        *mut *const u8,
+        *mut usize,
+    ) -> i32,
 
     // --- Callable / protocol ---
-    pub call_callable0: unsafe extern "C" fn(u64) -> u64,
-    pub call_callable2: unsafe extern "C" fn(u64, u64, u64) -> u64,
-    pub intern_static_name: unsafe extern "C" fn(*const u8, usize) -> u64,
+    pub call_callable0: unsafe extern "C" fn(u64, u64) -> u64,
+    pub call_callable2: unsafe extern "C" fn(u64, u64, u64, u64) -> u64,
+    pub intern_static_name: unsafe extern "C" fn(u64, *const u8, usize) -> u64,
 
     // --- Container helpers ---
     pub bytearray_vec: unsafe extern "C" fn(*mut u8) -> *mut Vec<u8>,
     /// Lookup: 1 writes a borrowed value, 0 is absent, -1 retains an error.
     /// Absent/error outcomes leave the output unchanged.
-    pub dict_get_in_place: unsafe extern "C" fn(*mut u8, u64, *mut u64) -> i32,
+    pub dict_get_in_place: unsafe extern "C" fn(u64, *mut u8, u64, *mut u64) -> i32,
     /// Mutation: 1 completed, 0 failed with the producer error retained.
-    pub dict_set_in_place: unsafe extern "C" fn(*mut u8, u64, u64) -> i32,
+    pub dict_set_in_place: unsafe extern "C" fn(u64, *mut u8, u64, u64) -> i32,
     pub list_len: unsafe extern "C" fn(*mut u8) -> usize,
-    pub seq_snapshot: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
-    pub dict_snapshot: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
+    pub seq_snapshot: unsafe extern "C" fn(u64, *mut u8, *mut *const u64, *mut usize) -> i32,
+    pub dict_snapshot: unsafe extern "C" fn(u64, *mut u8, *mut *const u64, *mut usize) -> i32,
 
     // --- Iteration ---
-    pub molt_iter: unsafe extern "C" fn(u64) -> u64,
-    pub raise_not_iterable: unsafe extern "C" fn(u64) -> u64,
-    pub molt_sorted_builtin: unsafe extern "C" fn(u64) -> u64,
-    pub molt_mul: unsafe extern "C" fn(u64, u64) -> u64,
+    pub molt_iter: unsafe extern "C" fn(u64, u64) -> u64,
+    pub raise_not_iterable: unsafe extern "C" fn(u64, u64) -> u64,
+    pub molt_sorted_builtin: unsafe extern "C" fn(u64, u64) -> u64,
+    pub molt_mul: unsafe extern "C" fn(u64, u64, u64) -> u64,
 
     // --- OS ---
     pub fill_os_random: unsafe extern "C" fn(*mut u8, usize) -> i32,
-    pub time_local_offset_host: unsafe extern "C" fn(i64) -> i64,
+    pub time_local_offset_host: unsafe extern "C" fn(u64, i64) -> i64,
 
     // --- Extended helpers (email / zipfile / decimal) ---
-    pub alloc_list_with_capacity: unsafe extern "C" fn(*const u64, usize, usize) -> *mut u8,
-    pub attr_name_bits_from_bytes: unsafe extern "C" fn(*const u8, usize, *mut u64) -> i32,
-    pub call_class_init_with_args: unsafe extern "C" fn(*mut u8, *const u64, usize) -> u64,
-    pub missing_bits: unsafe extern "C" fn() -> u64,
-    pub molt_getattr_builtin: unsafe extern "C" fn(u64, u64, u64) -> u64,
-    pub molt_module_import: unsafe extern "C" fn(u64) -> u64,
+    pub alloc_list_with_capacity: unsafe extern "C" fn(u64, *const u64, usize, usize) -> *mut u8,
+    pub attr_name_bits_from_bytes: unsafe extern "C" fn(u64, *const u8, usize, *mut u64) -> i32,
+    pub call_class_init_with_args: unsafe extern "C" fn(u64, *mut u8, *const u64, usize) -> u64,
+    pub missing_bits: unsafe extern "C" fn(u64) -> u64,
+    pub molt_getattr_builtin: unsafe extern "C" fn(u64, u64, u64, u64) -> u64,
+    pub molt_module_import: unsafe extern "C" fn(u64, u64) -> u64,
 
     // --- Hashability ---
     /// General unhashable-key check matching the in-tree `ensure_hashable`. The
@@ -1411,7 +1719,7 @@ pub struct RuntimeVtable {
     /// `TypeError` when it is not. This replaces per-satellite hardcoded
     /// type-list checks (list/dict/set), which missed bytearray and every other
     /// unhashable type and were not version-gated.
-    pub ensure_hashable: unsafe extern "C" fn(u64, i32) -> i32,
+    pub ensure_hashable: unsafe extern "C" fn(u64, u64, i32) -> i32,
 
     // --- Numeric hashing ---
     /// CPython's exact modular numeric hash over a rational
@@ -1459,10 +1767,16 @@ unsafe impl Sync for RuntimeVtable {}
 /// consume the raw Arc on both success and allocation failure.
 #[inline]
 pub unsafe fn transfer_native_arc<T>(
+    py: &PyToken,
     owner: std::sync::Arc<std::sync::Mutex<T>>,
-    new: unsafe extern "C" fn(*const std::ffi::c_void) -> u64,
+    new: unsafe extern "C" fn(u64, *const std::ffi::c_void) -> u64,
 ) -> u64 {
-    unsafe { new(std::sync::Arc::into_raw(owner).cast()) }
+    unsafe {
+        new(
+            py.attached_context(),
+            std::sync::Arc::into_raw(owner).cast(),
+        )
+    }
 }
 
 /// Reconstruct the one typed Arc reference returned by its root clone bridge.
@@ -1471,10 +1785,11 @@ pub unsafe fn transfer_native_arc<T>(
 /// `clone` must be the concrete root bridge declared for this exact `T`.
 #[inline]
 pub unsafe fn clone_native_arc<T>(
+    py: &PyToken,
     bits: u64,
-    clone: unsafe extern "C" fn(u64) -> *const std::ffi::c_void,
+    clone: unsafe extern "C" fn(u64, u64) -> *const std::ffi::c_void,
 ) -> Option<std::sync::Arc<std::sync::Mutex<T>>> {
-    let pointer = unsafe { clone(bits) };
+    let pointer = unsafe { clone(py.attached_context(), bits) };
     if pointer.is_null() {
         return None;
     }

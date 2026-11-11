@@ -46,7 +46,7 @@ pub(super) fn handle_generic_widget_path_command(
                 && args.len() > 3
             {
                 let insert_index = if widget.widget_command == "text" {
-                    let Some(index) = parse_text_index_bits(args[2], &widget.text_value) else {
+                    let Some(index) = parse_text_index_bits(py, args[2], &widget.text_value) else {
                         return Err(app_tcl_error_locked(
                             py,
                             app,
@@ -56,6 +56,7 @@ pub(super) fn handle_generic_widget_path_command(
                     index
                 } else {
                     let Some(index) = parse_entry_like_index_bits(
+                        py,
                         args[2],
                         text_char_count(&widget.text_value),
                         widget.insert_cursor,
@@ -91,7 +92,7 @@ pub(super) fn handle_generic_widget_path_command(
                     ));
                 }
                 let start = if widget.widget_command == "text" {
-                    let Some(start) = parse_text_index_bits(args[2], &widget.text_value) else {
+                    let Some(start) = parse_text_index_bits(py, args[2], &widget.text_value) else {
                         return Err(app_tcl_error_locked(
                             py,
                             app,
@@ -101,6 +102,7 @@ pub(super) fn handle_generic_widget_path_command(
                     start
                 } else {
                     let Some(start) = parse_entry_like_index_bits(
+                        py,
                         args[2],
                         text_char_count(&widget.text_value),
                         widget.insert_cursor,
@@ -116,7 +118,8 @@ pub(super) fn handle_generic_widget_path_command(
                 };
                 let end = if args.len() == 4 {
                     if widget.widget_command == "text" {
-                        let Some(end) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(end) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(app_tcl_error_locked(
                                 py,
                                 app,
@@ -126,6 +129,7 @@ pub(super) fn handle_generic_widget_path_command(
                         end
                     } else {
                         let Some(end) = parse_entry_like_index_bits(
+                            py,
                             args[3],
                             text_char_count(&widget.text_value),
                             widget.insert_cursor,
@@ -160,7 +164,7 @@ pub(super) fn handle_generic_widget_path_command(
         "get" => {
             if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox") {
                 if widget.widget_command == "text" && (args.len() == 3 || args.len() == 4) {
-                    let Some(start) = parse_text_index_bits(args[2], &widget.text_value) else {
+                    let Some(start) = parse_text_index_bits(py, args[2], &widget.text_value) else {
                         return Err(app_tcl_error_locked(
                             py,
                             app,
@@ -168,7 +172,8 @@ pub(super) fn handle_generic_widget_path_command(
                         ));
                     };
                     let end = if args.len() == 4 {
-                        let Some(end) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(end) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(app_tcl_error_locked(
                                 py,
                                 app,
@@ -209,14 +214,14 @@ pub(super) fn handle_generic_widget_path_command(
                         "text replace expects index1, index2, and replacement text",
                     ));
                 }
-                let Some(start) = parse_text_index_bits(args[2], &widget.text_value) else {
+                let Some(start) = parse_text_index_bits(py, args[2], &widget.text_value) else {
                     return Err(app_tcl_error_locked(
                         py,
                         app,
                         "text replace start index must be an integer, end, or line.column",
                     ));
                 };
-                let Some(end) = parse_text_index_bits(args[3], &widget.text_value) else {
+                let Some(end) = parse_text_index_bits(py, args[3], &widget.text_value) else {
                     return Err(app_tcl_error_locked(
                         py,
                         app,
@@ -347,7 +352,7 @@ pub(super) fn handle_generic_widget_path_command(
                         "text dump expects index1 and optional index2",
                     ));
                 }
-                let Some(start) = parse_text_index_bits(args[idx], &widget.text_value) else {
+                let Some(start) = parse_text_index_bits(py, args[idx], &widget.text_value) else {
                     return Err(app_tcl_error_locked(
                         py,
                         app,
@@ -356,7 +361,7 @@ pub(super) fn handle_generic_widget_path_command(
                 };
                 idx += 1;
                 let end = if idx < args.len() {
-                    let Some(end) = parse_text_index_bits(args[idx], &widget.text_value) else {
+                    let Some(end) = parse_text_index_bits(py, args[idx], &widget.text_value) else {
                         return Err(app_tcl_error_locked(
                             py,
                             app,
@@ -443,6 +448,7 @@ pub(super) fn handle_generic_widget_path_command(
             }
             if matches!(widget.widget_command.as_str(), "entry" | "spinbox") {
                 let Some(index) = parse_entry_like_index_bits(
+                    py,
                     args[2],
                     text_char_count(&widget.text_value),
                     widget.insert_cursor,
@@ -458,7 +464,7 @@ pub(super) fn handle_generic_widget_path_command(
                 return Ok(Some(MoltObject::from_int(index as i64).bits()));
             }
             if widget.widget_command == "text" {
-                let Some(index) = parse_text_index_bits(args[2], &widget.text_value) else {
+                let Some(index) = parse_text_index_bits(py, args[2], &widget.text_value) else {
                     return Err(app_tcl_error_locked(
                         py,
                         app,
@@ -492,14 +498,14 @@ pub(super) fn handle_generic_widget_path_command(
             }
             let op = get_string_arg(py, handle, args[3], "compare operator")?;
             let (left, right) = if widget.widget_command == "text" {
-                let Some(left) = parse_text_index_bits(args[2], &widget.text_value) else {
+                let Some(left) = parse_text_index_bits(py, args[2], &widget.text_value) else {
                     return Err(app_tcl_error_locked(
                         py,
                         app,
                         "text compare index1 must be an integer, end, or line.column",
                     ));
                 };
-                let Some(right) = parse_text_index_bits(args[4], &widget.text_value) else {
+                let Some(right) = parse_text_index_bits(py, args[4], &widget.text_value) else {
                     return Err(app_tcl_error_locked(
                         py,
                         app,
@@ -509,6 +515,7 @@ pub(super) fn handle_generic_widget_path_command(
                 (left, right)
             } else {
                 let Some(left) = parse_entry_like_index_bits(
+                    py,
                     args[2],
                     text_char_count(&widget.text_value),
                     widget.insert_cursor,
@@ -521,6 +528,7 @@ pub(super) fn handle_generic_widget_path_command(
                     ));
                 };
                 let Some(right) = parse_entry_like_index_bits(
+                    py,
                     args[4],
                     text_char_count(&widget.text_value),
                     widget.insert_cursor,
@@ -659,7 +667,7 @@ pub(super) fn handle_generic_widget_path_command(
                 ));
             }
             let index = if widget.widget_command == "text" {
-                let Some(index) = parse_text_index_bits(args[2], &widget.text_value) else {
+                let Some(index) = parse_text_index_bits(py, args[2], &widget.text_value) else {
                     return Err(app_tcl_error_locked(
                         py,
                         app,
@@ -669,6 +677,7 @@ pub(super) fn handle_generic_widget_path_command(
                 index
             } else if matches!(widget.widget_command.as_str(), "entry" | "spinbox") {
                 let Some(index) = parse_entry_like_index_bits(
+                    py,
                     args[2],
                     text_char_count(&widget.text_value),
                     widget.insert_cursor,

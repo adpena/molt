@@ -1,6 +1,7 @@
+use crate::wasm_binary::Function;
 use crate::wasm_binary::{const_expr_i32_const_padded, emit_i32_const};
 use std::collections::HashMap;
-use wasm_encoder::{ConstExpr, DataSection, Function, Instruction};
+use wasm_encoder::{ConstExpr, DataSection, Instruction};
 
 #[derive(Clone, Copy)]
 pub(crate) struct DataSegmentInfo {

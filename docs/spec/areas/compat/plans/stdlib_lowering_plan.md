@@ -35,7 +35,10 @@ Specialized long-tail plan:
   `docs/spec/areas/compat/plans/tkinter_lowering_plan.md`.
 
 ## Acceptance Template (Required For Each Module Conversion)
-1. Choose the semantic owner: compiled Python algorithm or runtime primitive.
+1. Choose the semantic owner: CPython's own Python source for that target version (compiled,
+   patched only where the verified subset excludes a construct, each patch naming its rule), or a
+   Rust runtime primitive for a C module or a measured hot path. Never a Molt rewrite of CPython's
+   Python (AGENTS.md; HF-820 measures the current rewrites and stubs).
 2. For a runtime primitive, update its manifest and generated bindings together.
 3. Keep one implementation owner; argument/error/capability handling follows its real API.
 4. Targeted differential tests prove supported semantics, including failure propagation.

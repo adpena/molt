@@ -85,12 +85,16 @@ fn blocking(py: &PyToken<'_>, errno: i32, written: usize) -> u64 {
     }
     let _args = owned(py, MoltObject::from_ptr(args).bits());
     let class = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::BlockingIOError);
-    let exception = crate::builtins::exceptions::molt_exception_new_from_class(class, _args.bits());
+    let exception = crate::builtins::exceptions::molt_exception_new_from_class_attached_body(
+        py,
+        class,
+        _args.bits(),
+    );
     let _exception = owned(py, exception);
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    crate::molt_raise(exception)
+    crate::molt_raise_attached_body(py, exception)
 }
 
 // The existing C-API portability shim owns the target's errno cell.
@@ -541,7 +545,7 @@ pub(super) unsafe fn seek(
         return MoltObject::none().bits();
     };
     let _key = owned(py, key);
-    let function = molt_getattr_builtin(raw.bits(), key, missing_bits(py));
+    let function = molt_getattr_builtin_attached_body(py, raw.bits(), key, missing_bits(py));
     let _function = owned(py, function);
     if exception_pending(py) {
         return MoltObject::none().bits();

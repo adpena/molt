@@ -39,6 +39,11 @@ _VARIABLE_RESULT_ARITY_OPCODES = {
     "CallMethod",
     "CallLoadedMethod",
     "CallBuiltin",
+    # A late-TIR runtime call has one result exactly when its RuntimeFn returns
+    # a word (RuntimeFn::returns_word); the verifier checks that count.
+    "CallRuntime",
+    # A direct call binds what the guarded call it replaces bound.
+    "DirectCall",
     # Exception checks can be pure control-transfer polls or produce an explicit
     # flag in older/diagnostic lanes.
     "CheckException",
@@ -170,6 +175,15 @@ _SCCP_CONSTANT_EVAL_RULES = {
     "bool": "Bool",
     "build_tuple": "BuildTuple",
 }
+# The ops the late lowering stage of TIR expands, by the fast arm they take
+# on two inline ints (HF-821).
+_FAST_PATH_EXPANSION_RULES = {
+    "int_add": "IntAdd",
+    "int_sub": "IntSub",
+    "int_compare": "IntCompare",
+    "guarded_call": "GuardedCall",
+    "truthiness": "Truthiness",
+}
 _VALUE_RANGE_TRANSFER_RULES = {
     "module_slot": "ModuleSlot",
     "add": "Add",
@@ -183,6 +197,7 @@ _VALUE_RANGE_TRANSFER_RULES = {
     "mod": "Mod",
     "shr": "Shr",
     "shl": "Shl",
+    "inline_int_payload": "InlineIntPayload",
 }
 _VALUE_RANGE_CONST_FOLD_RULES = {
     "add": "Add",
@@ -233,6 +248,7 @@ _LIR_VERIFY_RULES = {
 _REPR_RAW_I64_FULL_DEOPT_SEED_RULES = {
     "checked_result0": "CheckedResultZero",
     "const_int_not_inline_safe": "ConstIntNotInlineSafe",
+    "exact_sum_of_inline_payloads": "ExactSumOfInlinePayloads",
 }
 _REPR_PROJECTABLE_BOOL_RESULT_RULES = {
     "comparison_operands": "ComparisonOperands",
@@ -435,6 +451,7 @@ _PASS_DELTA_FACT_FIELDS = (
     ("pass_delta_heap_alloc_opcodes", "heap_alloc"),
 )
 _OPCODE_FACT_SETS = (
+    "final_tir_opcodes",
     "opcode_has_local_only_operands_opcodes",
     "alias_rc_barrier_opcodes",
     "alias_memory_inert_opcodes",
@@ -454,7 +471,6 @@ _OPCODE_FACT_SETS = (
     "refcount_balance_inc_opcodes",
     "refcount_balance_dec_opcodes",
     "lowered_state_machine_body_opcodes",
-    "boxed_runtime_inplace_dispatch_opcodes",
     "drop_insertion_return_deferral_barrier_opcodes",
     "generator_fusion_poll_required_yield_opcodes",
     "generator_fusion_poll_reject_opcodes",
@@ -568,6 +584,7 @@ __all__ = (
     "_VALUE_RANGE_CONST_FOLD_RULES",
     "_VALUE_RANGE_CONTAINER_LENGTH_RULES",
     "_VALUE_RANGE_TRANSFER_RULES",
+    "_FAST_PATH_EXPANSION_RULES",
     "_VARIABLE_RESULT_ARITY_OPCODES",
     "_VARIABLE_OPERAND_ARITIES",
     "_VECTORIZE_BODY_ACTIONS",

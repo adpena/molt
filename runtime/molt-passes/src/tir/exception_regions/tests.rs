@@ -17,6 +17,7 @@ use crate::tir::values::ValueId;
 fn op(opcode: OpCode) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],

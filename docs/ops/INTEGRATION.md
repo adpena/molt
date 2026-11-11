@@ -347,10 +347,9 @@ engine lane is active. Only `landing_repair` and `integrator_ledger` bypass thes
 capacity rules; other departure reasons cannot. Refusals name the active lanes.
 Start and re-admission serialize their claim check and record update under the
 existing slot/claim lock; the slug lock also excludes concurrent retirement.
-The plan shows the recorded primitive geometric mean against CPython when
-`bench/primitive_ratchet.json` exists (one per-op axis per primitive plus the empty
-startup axis), and says unavailable when absent. Engine ready rows show the axes
-owned by their family table entries.
+Engine ready rows show the instruction axes owned by their family table
+entries; the CPython ratio stays owned by `docs/design/foundation/call_anatomy.md`
+and the V1 ledger.
 
 While landing success over the last 24 hours is at least 80% and median landing
 latency is at most 1 hour, apparatus dispatch is limited to `landing_repair`.

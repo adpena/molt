@@ -648,4 +648,3 @@ __all__ = [
     "WindowsRegistryFinder",
     "all_suffixes",
 ]
-

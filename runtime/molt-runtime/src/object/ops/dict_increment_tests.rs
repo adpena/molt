@@ -8,8 +8,16 @@ static CALLBACK_KEY: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_MODE: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn mutate_dictionary_during_add(self_bits: u64, _other: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn mutate_dictionary_during_add(__context: u64, self_bits: u64, _other: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
         let dictionary = CALLBACK_DICT.load(Ordering::SeqCst);
         let key = CALLBACK_KEY.load(Ordering::SeqCst);
@@ -42,13 +50,13 @@ extern "C" fn mutate_dictionary_during_add(self_bits: u64, _other: u64) -> u64 {
             2 => raise_exception::<u64>(py, BuiltinExc::RuntimeError, "increment callback failure"),
             _ => MoltObject::from_int(42).bits(),
         }
-    })
+    }
 }
 
 fn arithmetic_value(py: &PyToken<'_>, method_name: &[u8]) -> (u64, u64, u64) {
     let name = dynamic_attr_name_bits(py, b"ReentrantIncrementValue").unwrap();
-    let class = crate::molt_class_new(name);
-    crate::molt_class_set_base(class, builtin_classes(py).object);
+    let class = crate::molt_class_new_attached_body(py, name);
+    crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
     let method = dynamic_attr_name_bits(py, method_name).unwrap();
     let function = alloc_runtime_function_obj(
         py,
@@ -60,7 +68,7 @@ fn arithmetic_value(py: &PyToken<'_>, method_name: &[u8]) -> (u64, u64, u64) {
     );
     assert!(!function.is_null());
     let function = MoltObject::from_ptr(function).bits();
-    crate::molt_set_attr_name(class, method, function);
+    crate::molt_set_attr_name_attached_body(py, class, method, function);
     let class_ptr = obj_from_bits(class).as_ptr().unwrap();
     unsafe {
         crate::object::class_finish_definition(py, class_ptr).unwrap();
@@ -101,11 +109,13 @@ fn split_increment(
     let result = match sep {
         Some(sep) => {
             let sep = MoltObject::from_ptr(alloc_string(py, sep.as_bytes())).bits();
-            let result = molt_string_split_sep_dict_inc(line, sep, dictionary, delta, target);
+            let result = molt_string_split_sep_dict_inc_attached_body(
+                py, line, sep, dictionary, delta, target,
+            );
             dec_ref_bits(py, sep);
             result
         }
-        None => molt_string_split_ws_dict_inc(line, dictionary, delta, target),
+        None => molt_string_split_ws_dict_inc_attached_body(py, line, dictionary, delta, target),
     };
     dec_ref_bits(py, line);
     assert!(!exception_pending(py), "a fused split never raises");
@@ -155,7 +165,7 @@ fn in_place_increment_arithmetic_reentry_reacquires_mapping() {
                 assert_eq!(exception_pending(py), mode == 2);
                 assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 1);
                 if mode == 2 {
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 }
                 let expected = match mode {
                     1 => MoltObject::none().bits(),
@@ -360,7 +370,13 @@ fn split_increment_declines_inputs_the_loop_would_dispatch_or_reject() {
         assert!(!split_increment(py, " \t ", None, dictionary, one, missing_target(py)).1);
         // A non-str line dispatches `split` on its own type.
         let number = MoltObject::from_int(5).bits();
-        let pair = molt_string_split_ws_dict_inc(number, dictionary, one, missing_target(py));
+        let pair = molt_string_split_ws_dict_inc_attached_body(
+            py,
+            number,
+            dictionary,
+            one,
+            missing_target(py),
+        );
         let ok = unsafe {
             crate::object::seq_access::with_immutable_tuple_slice(
                 obj_from_bits(pair).as_ptr().unwrap(),
@@ -551,7 +567,7 @@ fn increment_lanes_never_mutate_frozen_layout_maps() {
             if lane == 0 {
                 assert!(!unsafe { in_place_increment(py, dictionary, key, one) });
                 assert!(exception_pending(py));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
             } else if lane == 1 {
                 // The fused statement declines; the statement's own store raises.
                 assert_eq!(exact_statement(py, dictionary, key, one), Some(false));

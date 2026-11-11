@@ -304,17 +304,20 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
     let bytes = std::fs::read(&output).expect("read daemon application archive");
     let archive = object::read::archive::ArchiveFile::parse(bytes.as_slice())
         .expect("parse daemon native archive");
+    let logical = "demo__molt_module_chunk_1";
+    let physical = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(logical);
     let mut definitions = 0;
+    let mut legacy_definitions = 0;
     for member in archive.members() {
         let member = member.expect("read native archive member");
         let data = member
             .data(bytes.as_slice())
             .expect("read native member bytes");
         let object = object::File::parse(data).expect("parse native member object");
-        let expected = if object.format() == BinaryFormat::MachO {
-            "_demo__molt_module_chunk_1"
+        let (expected, legacy) = if object.format() == BinaryFormat::MachO {
+            (format!("_{physical}"), format!("_{logical}"))
         } else {
-            "demo__molt_module_chunk_1"
+            (physical.clone(), logical.to_owned())
         };
         definitions += object
             .symbols()
@@ -326,10 +329,20 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
                     && symbol.is_definition()
             })
             .count();
+        legacy_definitions += object
+            .symbols()
+            .filter(|symbol| {
+                symbol.name().expect("symbol name") == legacy && symbol.is_definition()
+            })
+            .count();
     }
     assert_eq!(
         definitions, 1,
         "ordinary archive members must retain exactly one strong chunk definition"
+    );
+    assert_eq!(
+        legacy_definitions, 0,
+        "no unsuffixed compatibility definition"
     );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);

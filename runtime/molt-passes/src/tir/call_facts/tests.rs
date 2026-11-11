@@ -27,6 +27,7 @@ fn func_calling(
         attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -38,6 +39,7 @@ fn func_calling(
     for v in filler {
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -59,6 +61,7 @@ fn leaf_callee(name: &str, ret: TirType) -> TirFunction {
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -83,6 +86,7 @@ fn callee_with_handlers(name: &str) -> TirFunction {
     for oc in [OpCode::TryStart, OpCode::TryEnd] {
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: oc,
             operands: vec![],
@@ -336,6 +340,7 @@ fn handlerless_raising_and_transitive_calls_never_mint_nothrow_facts() {
         .ops
         .push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Raise,
             operands: vec![value],
@@ -371,6 +376,7 @@ fn builtin_names_do_not_prove_argument_admission_or_effects() {
             for &operand in &operands {
                 block.ops.push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],
@@ -383,6 +389,7 @@ fn builtin_names_do_not_prove_argument_admission_or_effects() {
             attrs.insert("name".into(), AttrValue::Str(name.into()));
             block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CallBuiltin,
                 operands,
@@ -607,6 +614,7 @@ fn namespace_acquisition_callbacks_remain_opaque_and_prevent_leaf_proofs() {
         let block = caller.blocks.get_mut(&caller.entry_block).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

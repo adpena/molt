@@ -106,7 +106,7 @@ impl<'input> Source<'input> {
             Ok(bytes) => Ok(bytes[0]),
             Err(()) => {
                 if object {
-                    let exception = molt_exception_last_pending();
+                    let exception = molt_exception_last_pending_attached_body(py);
                     let matches = crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
@@ -254,7 +254,7 @@ impl<'a, 'py, 'input> Reader<'a, 'py, 'input> {
                     MoltObject::from_bool(tag == Tag::True).bits(),
                 )));
             }
-            Tag::Ellipsis => return owned(py, molt_ellipsis()).map(Record::Value),
+            Tag::Ellipsis => return owned(py, ellipsis_bits(py)).map(Record::Value),
             Tag::StopIteration => {
                 return Ok(Record::Value(retained(
                     py,
@@ -594,7 +594,11 @@ impl<'a, 'py, 'input> Reader<'a, 'py, 'input> {
             FrameKind::List { remaining } => {
                 let result = owned(
                     py,
-                    molt_list_append(frame.owner.as_ref().unwrap().bits(), value.bits()),
+                    molt_list_append_attached_body(
+                        py,
+                        frame.owner.as_ref().unwrap().bits(),
+                        value.bits(),
+                    ),
                 )?;
                 drop(result);
                 *remaining -= 1;

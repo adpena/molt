@@ -13,6 +13,7 @@ fn exception_pending_stays_lir_fast_with_bool_result_adapter() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ExceptionPending,
         operands: vec![],
@@ -270,6 +271,7 @@ fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
         let source = entry.ops[0].results[0];
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -279,6 +281,7 @@ fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
         });
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source, tag],
@@ -368,18 +371,24 @@ fn assert_linked_guard_call(module: &[u8], parameter_operands: bool) {
         matches!(operators.get(call + 1), Some(Operator::Drop)),
         "borrowed guard result is discarded"
     );
+    let operator_text = operators
+        .iter()
+        .map(|op| format!("{op:?}"))
+        .collect::<Vec<_>>();
+    let logical_end =
+        crate::wasm::test_execution::attached_call_operands_end(&operator_text, call, 2);
     if parameter_operands {
         assert!(
             matches!(
-                operators.get(call.wrapping_sub(2)),
-                Some(Operator::LocalGet { local_index: 0 })
+                operators.get(logical_end.wrapping_sub(2)),
+                Some(Operator::LocalGet { local_index: 1 })
             ),
             "guard reads the value parameter"
         );
         assert!(
             matches!(
-                operators.get(call.wrapping_sub(1)),
-                Some(Operator::LocalGet { local_index: 1 })
+                operators.get(logical_end.wrapping_sub(1)),
+                Some(Operator::LocalGet { local_index: 2 })
             ),
             "guard reads the tag parameter"
         );

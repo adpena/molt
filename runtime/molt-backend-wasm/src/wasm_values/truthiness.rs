@@ -1,6 +1,7 @@
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use molt_codegen_abi::{QNAN, QNAN_TAG_MASK_I64, TAG_BOOL};
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 /// Push an `i32` boolean (`1` = truthy, `0` = falsy) for `cond_local` to be
 /// consumed by a control-flow branch (`br_if` / `if` / `loop_break_if_*`).

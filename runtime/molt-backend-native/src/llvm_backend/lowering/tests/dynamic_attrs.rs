@@ -1,6 +1,13 @@
 use super::*;
 use molt_ir::OpKind;
 
+/// True iff `ir` holds the shared pointer-tag test (`generate_has_tag` with
+/// `BoxTag::Ptr`): the masked tag field compared with QNAN | TAG_PTR.
+fn has_pointer_tag_test(ir: &str) -> bool {
+    let pointer_tag = format!(", {}", nanbox::QNAN | nanbox::TAG_PTR);
+    ir.contains_execution("icmp eq i64 %word_and") && ir.contains_execution(&pointer_tag)
+}
+
 #[test]
 fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
     for kind in [OpKind::GuardedFieldGet, OpKind::GuardedFieldSet] {
@@ -22,6 +29,7 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: if read {
                 OpCode::LoadAttr
@@ -53,11 +61,11 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
             .expect("tagged guarded field ABI must verify");
         let ir = llvm_fn.print_to_string().to_string();
         assert!(
-            ir.contains(&format!("@molt_{kind}(i64 %0, i64 %program_slot, i64 %1")),
+            ir.contains_execution(&format!("@molt_{kind}(i64 %0, i64 %program_slot, i64 %1")),
             "{ir}"
         );
         assert!(
-            !ir.contains("inttoptr") && !ir.contains("ptr_unbox"),
+            !ir.contains_execution("inttoptr") && !ir.contains_execution("ptr_unbox"),
             "{ir}"
         );
     }
@@ -79,6 +87,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: if is_load {
                 OpCode::LoadAttr
@@ -113,11 +122,11 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
             entry_ir.push_str(&current.print_to_string().to_string());
             instruction = current.get_next_instruction();
         }
-        assert!(entry_ir.contains("field_is_ptr"), "{ir}");
+        assert!(has_pointer_tag_test(&entry_ir), "{ir}");
         assert!(
-            !entry_ir.contains("field_ptr = getelementptr")
-                && !entry_ir.contains("field_flags_ptr")
-                && !entry_ir.contains("load i32"),
+            !entry_ir.contains_execution("field_ptr = getelementptr")
+                && !entry_ir.contains_execution("field_flags_ptr")
+                && !entry_ir.contains_execution("load i32"),
             "receiver must be admitted first: {ir}"
         );
         let receiver_name = if is_load {
@@ -136,18 +145,24 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
             receiver_ir.push_str(&current.print_to_string().to_string());
             instruction = current.get_next_instruction();
         }
-        assert!(receiver_ir.contains("field_flags_ptr"), "{ir}");
-        assert!(receiver_ir.contains("load i32"), "{ir}");
-        assert!(receiver_ir.contains("field_needs_runtime"), "{ir}");
-        assert!(!receiver_ir.contains("field_ptr = getelementptr"), "{ir}");
-        assert!(!receiver_ir.contains("store i64"), "{ir}");
+        assert!(receiver_ir.contains_execution("field_flags_ptr"), "{ir}");
+        assert!(receiver_ir.contains_execution("load i32"), "{ir}");
+        assert!(
+            receiver_ir.contains_execution("field_needs_runtime"),
+            "{ir}"
+        );
+        assert!(
+            !receiver_ir.contains_execution("field_ptr = getelementptr"),
+            "{ir}"
+        );
+        assert!(!receiver_ir.contains_execution("store i64"), "{ir}");
         assert!(
             receiver
                 .get_terminator()
                 .unwrap()
                 .print_to_string()
                 .to_string()
-                .contains("br i1"),
+                .contains_execution("br i1"),
             "{ir}"
         );
         let branch = entry
@@ -157,19 +172,19 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
             .to_string();
         if is_load {
             assert!(
-                branch.contains("label %field_receiver, label %field_load_merge"),
+                branch.contains_execution("label %field_receiver, label %field_load_merge"),
                 "{ir}"
             );
             assert!(
-                ir.contains("field_load_value = phi i64"),
+                ir.contains_execution("field_load_value = phi i64"),
                 "invalid receiver returns None: {ir}"
             );
             assert!(
-                ir.contains("molt_object_field_get_ptr"),
+                ir.contains_execution("molt_object_field_get_ptr"),
                 "runtime resolves backing and returns one owner: {ir}"
             );
             assert!(
-                !ir.contains("call void @__molt_inline_retain"),
+                !ir.contains_execution("call void @__molt_inline_retain"),
                 "admitted immediate values need no retain: {ir}"
             );
             let payload = llvm_fn
@@ -183,9 +198,12 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
                 payload_ir.push_str(&current.print_to_string().to_string());
                 instruction = current.get_next_instruction();
             }
-            assert!(payload_ir.contains("field_val = load i64"), "{ir}");
             assert!(
-                payload_ir.contains("field_is_ptr"),
+                payload_ir.contains_execution("field_val = load i64"),
+                "{ir}"
+            );
+            assert!(
+                has_pointer_tag_test(&payload_ir),
                 "missing sentinel must not escape clear-header inline loads: {ir}"
             );
             let payload_branch = payload
@@ -194,25 +212,26 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
                 .print_to_string()
                 .to_string();
             assert!(
-                payload_branch.contains("br i1")
-                    && payload_branch.contains("label %field_runtime, label %field_load_merge"),
+                payload_branch.contains_execution("br i1")
+                    && payload_branch
+                        .contains_execution("label %field_runtime, label %field_load_merge"),
                 "{ir}"
             );
         } else {
             assert!(
-                branch.contains("label %field_store_receiver, label %field_store_slow"),
+                branch.contains_execution("label %field_store_receiver, label %field_store_slow"),
                 "{ir}"
             );
             assert!(
-                ir.contains("molt_object_field_set"),
+                ir.contains_execution("molt_object_field_set"),
                 "unproved pointer stores retain, publish and release: {ir}"
             );
             assert!(
-                !ir.contains("molt_object_field_init"),
+                !ir.contains_execution("molt_object_field_init"),
                 "operation spelling cannot mint initialization proof: {ir}"
             );
             assert!(
-                ir.contains("store i64"),
+                ir.contains_execution("store i64"),
                 "ordinary scalar assignment keeps the admitted inline fast path: {ir}"
             );
         }
@@ -233,6 +252,7 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: Some(OpKind::GetAttrName),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0), ValueId(1)],
@@ -246,8 +266,8 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_get_attr_name"), "{ir}");
-    assert!(ir.contains("i64 %0, i64 %1"), "{ir}");
+    assert!(ir.contains_execution("molt_get_attr_name"), "{ir}");
+    assert!(ir.contains_execution("i64 %0, i64 %1"), "{ir}");
 }
 
 #[test]
@@ -263,6 +283,7 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
     let result = func.fresh_value();
     let mut load = TirOp {
         origin: Some(OpKind::GetAttrGenericObj),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0)],
@@ -284,9 +305,12 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_get_attr_object_ic"), "{ir}");
-    assert!(!ir.contains("get_attr_object_ic_inc_ref"), "{ir}");
-    assert!(!ir.contains("call void @__molt_inline_retain"), "{ir}");
+    assert!(ir.contains_execution("molt_get_attr_object_ic"), "{ir}");
+    assert!(!ir.contains_execution("get_attr_object_ic_inc_ref"), "{ir}");
+    assert!(
+        !ir.contains_execution("call void @__molt_inline_retain"),
+        "{ir}"
+    );
 }
 
 #[test]
@@ -329,6 +353,7 @@ fn lower_generic_attribute_sites_carry_source_identity() {
         let result = func.fresh_value();
         let mut access = TirOp {
             origin: Some(kind),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
@@ -355,14 +380,17 @@ fn lower_generic_attribute_sites_carry_source_identity() {
             17,
             kind.as_str(),
         ));
-        assert!(ir.contains(&format!("@{runtime_name}(")), "{kind}: {ir}");
         assert!(
-            ir.contains(&format!("i64 {site_bits})")),
+            ir.contains_execution(&format!("@{runtime_name}(")),
+            "{kind}: {ir}"
+        );
+        assert!(
+            ir.contains_execution(&format!("i64 {site_bits})")),
             "{kind} must pass its source site id last: {ir}"
         );
         // A site call takes the literal name bytes; no per-call name string.
-        assert!(!ir.contains("molt_set_attr_name"), "{kind}: {ir}");
-        assert!(!ir.contains("molt_get_attr_name"), "{kind}: {ir}");
+        assert!(!ir.contains_execution("molt_set_attr_name"), "{kind}: {ir}");
+        assert!(!ir.contains_execution("molt_get_attr_name"), "{kind}: {ir}");
     }
 }
 
@@ -380,6 +408,7 @@ fn lower_dynamic_set_attr_name_uses_operand_name() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: Some(OpKind::SetAttrName),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::StoreAttr,
         operands: vec![ValueId(0), ValueId(1), ValueId(2)],
@@ -393,8 +422,8 @@ fn lower_dynamic_set_attr_name_uses_operand_name() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_set_attr_name"), "{ir}");
-    assert!(ir.contains("i64 %0, i64 %1, i64 %2"), "{ir}");
+    assert!(ir.contains_execution("molt_set_attr_name"), "{ir}");
+    assert!(ir.contains_execution("i64 %0, i64 %1, i64 %2"), "{ir}");
 }
 
 #[test]
@@ -411,6 +440,7 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: Some(OpKind::DelAttrName),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelAttr,
         operands: vec![ValueId(0), ValueId(1)],
@@ -424,8 +454,8 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_del_attr_name"), "{ir}");
-    assert!(ir.contains("i64 %0, i64 %1"), "{ir}");
+    assert!(ir.contains_execution("molt_del_attr_name"), "{ir}");
+    assert!(ir.contains_execution("i64 %0, i64 %1"), "{ir}");
 }
 
 #[test]
@@ -450,6 +480,7 @@ fn lower_preserved_has_attr_name_calls_runtime() {
         .extend([const_none_def(obj_bits), const_none_def(name_bits)]);
     entry.ops.push(TirOp {
         origin: Some(OpKind::HasAttrName),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj_bits, name_bits],
@@ -463,7 +494,7 @@ fn lower_preserved_has_attr_name_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_has_attr_name"), "{ir}");
+    assert!(ir.contains_execution("molt_has_attr_name"), "{ir}");
 }
 
 #[test]
@@ -485,6 +516,7 @@ fn lower_call_method_uses_call_bind_ic_abi() {
         .extend([const_none_def(callable), const_none_def(arg0)]);
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallMethod,
         operands: vec![callable, arg0],
@@ -498,8 +530,8 @@ fn lower_call_method_uses_call_bind_ic_abi() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_call_bind_ic"), "{ir}");
-    assert!(!ir.contains("molt_call_method"), "{ir}");
+    assert!(ir.contains_execution("molt_call_bind_ic"), "{ir}");
+    assert!(!ir.contains_execution("molt_call_method"), "{ir}");
 }
 
 #[test]
@@ -521,6 +553,7 @@ fn lower_call_bind_preserves_callargs_builder_abi() {
         .extend([const_none_def(callable), const_none_def(builder)]);
     entry.ops.push(TirOp {
         origin: Some(OpKind::CallBind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, builder],
@@ -534,7 +567,7 @@ fn lower_call_bind_preserves_callargs_builder_abi() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_call_bind_ic"), "{ir}");
+    assert!(ir.contains_execution("molt_call_bind_ic"), "{ir}");
 }
 
 #[test]
@@ -554,6 +587,7 @@ fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
     entry.ops.push(const_int_def(callable, i64::MAX));
     entry.ops.push(TirOp {
         origin: Some(OpKind::CallBind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, builder],
@@ -588,32 +622,33 @@ fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
         instruction = current.get_next_instruction();
     }
     assert!(
-        abort_ir.contains("store i64 %0, ptr %call_retired_0")
-            && abort_ir.contains(
+        abort_ir.contains_execution("store i64 %0, ptr %call_retired_0")
+            && abort_ir.contains_execution(
                 "call void @molt_call_inputs_release(i64 0, i64 %call_retired_ptr, i64 1)",
             )
-            && !abort_ir.contains("@molt_call_bind_ic("),
+            && !abort_ir.contains_execution("@molt_call_bind_ic("),
         "a call skipped by a failed callable box still consumes its builder: {ir}"
     );
     assert_eq!(
-        ir.matches("call void @molt_call_inputs_release(").count(),
+        ir.matches_execution("call void @molt_call_inputs_release(")
+            .count(),
         1,
         "the builder is released only where the consuming call is skipped: {ir}"
     );
     assert!(
-        !ir.contains("call void @__molt_inline_release(i64 %0, i64 %rc_admission)"),
+        !ir.contains_execution("call void @__molt_inline_release(i64 %0, i64 %rc_admission)"),
         "builder retirement must use the shared exception-preserving release: {ir}"
     );
     let call = ir
         .lines()
-        .find(|line| line.contains("call i64 @molt_call_bind_ic("))
+        .find(|line| line.contains_execution("call i64 @molt_call_bind_ic("))
         .unwrap_or_else(|| panic!("{ir}"));
     assert!(
         call.trim_end().ends_with("i64 %boxed_int, i64 %0)"),
         "the callable arrives boxed and the builder unchanged: {ir}"
     );
     assert!(
-        !ir.contains("@molt_exception_pending("),
+        !ir.contains_execution("@molt_exception_pending("),
         "the consuming call observes an exception already pending itself: {ir}"
     );
 }

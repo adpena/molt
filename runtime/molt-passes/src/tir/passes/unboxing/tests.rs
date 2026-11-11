@@ -203,6 +203,7 @@ fn box_unbox_elision_requires_matching_semantic_result_and_target() {
 fn box_op(operand: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BoxVal,
         operands: vec![operand],
@@ -215,6 +216,7 @@ fn box_op(operand: ValueId, result: ValueId) -> TirOp {
 fn unbox_op(operand: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnboxVal,
         operands: vec![operand],
@@ -229,6 +231,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -241,6 +244,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
 fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![lhs, rhs],

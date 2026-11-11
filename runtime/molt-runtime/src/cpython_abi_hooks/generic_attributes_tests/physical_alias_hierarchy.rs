@@ -10,7 +10,7 @@ fn native_alias_diamond_preserves_physical_mro_and_canonical_projection() {
             let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let seventeen = function(py, length_seventeen as *const (), 1);
             let twenty_three = function(py, length_twenty_three as *const (), 1);
-            crate::molt_set_attr_name(class, key, seventeen);
+            crate::molt_set_attr_name_attached_body(py, class, key, seventeen);
             let canonical =
                 OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));
             assert!(
@@ -111,7 +111,7 @@ fn native_alias_diamond_preserves_physical_mro_and_canonical_projection() {
                 OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));
             assert_eq!(projected.as_ptr(), canonical.as_ptr());
 
-            crate::molt_set_attr_name(class, key, twenty_three);
+            crate::molt_set_attr_name_attached_body(py, class, key, twenty_three);
             assert!(
                 !crate::exception_pending(py),
                 "{}",

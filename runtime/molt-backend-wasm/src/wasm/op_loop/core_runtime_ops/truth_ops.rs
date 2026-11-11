@@ -2,11 +2,12 @@ use super::super::result_sink::{store_borrowed_value, store_result_or_drop};
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
 use crate::wasm_values::emit_box_bool_from_i32;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 pub(super) fn emit_truth_runtime_op(
     func: &mut Function,

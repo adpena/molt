@@ -6287,8 +6287,8 @@ fn generated_runtime_call_agreement_executes_declared_luau_specializations() {
         .iter()
         .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
     {
-        let abi = call.function().boxed_abi();
-        let args = (0..abi.arity)
+        let abi = call.boxed_abi();
+        let args = (0..abi.arity())
             .map(|i| format!("arg{i}"))
             .collect::<Vec<_>>();
         let types = match call {

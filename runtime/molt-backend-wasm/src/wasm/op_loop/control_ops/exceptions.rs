@@ -1,8 +1,9 @@
 use super::{ControlKind, ControlOpContext};
 use crate::OpIR;
 use crate::wasm_abi::TAG_EXCEPTION_INDEX;
+use crate::wasm_binary::Function;
 use std::borrow::Cow;
-use wasm_encoder::{BlockType, Catch, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Catch, Instruction, ValType};
 
 pub(super) fn emit_exception_control_op(
     context: &mut ControlOpContext<'_>,
@@ -151,7 +152,7 @@ mod tests {
                 .into_function_and_frame();
         let mut locals = WasmFrameLocals::default();
         let mut local_types = Vec::new();
-        let mut local_count = 0;
+        let mut local_count = 1;
         for kind in [
             crate::wasm::WasmFrameSyntheticLocal::ThreadRecord,
             crate::wasm::WasmFrameSyntheticLocal::PendingWorkPtr,
@@ -186,10 +187,15 @@ mod tests {
             })
         };
         let mut body = Function::new_with_locals_types(local_types);
+        let mut abis = crate::wasm_binary::WasmExecutionCallAbis::default();
+        abis.register_attached(0, &[]);
+        abis.register_attached(1, &[ValType::I64]);
+        abis.register_attached(2, &[ValType::I64]);
+        body.attach_context(1, std::rc::Rc::new(abis));
         body.instruction(&Instruction::I32Const(256));
-        body.instruction(&Instruction::LocalSet(0));
-        body.instruction(&Instruction::I32Const(512));
         body.instruction(&Instruction::LocalSet(1));
+        body.instruction(&Instruction::I32Const(512));
+        body.instruction(&Instruction::LocalSet(2));
         body.instruction(&Instruction::Block(BlockType::Empty));
         if cleanup_inside_try {
             body.instruction(&Instruction::Block(BlockType::Empty));
@@ -238,13 +244,19 @@ mod tests {
 
         let mut module = Module::new();
         let mut types = TypeSection::new();
-        types.ty().function([], [ValType::I64]);
         types.ty().function([ValType::I64], [ValType::I64]);
+        types
+            .ty()
+            .function([ValType::I64, ValType::I64], [ValType::I64]);
         module.section(&types);
         let mut imports = ImportSection::new();
-        imports.import("molt_runtime", "pending", EntityType::Function(0));
-        imports.import("molt_runtime", "record", EntityType::Function(1));
-        imports.import("molt_runtime", "origin", EntityType::Function(1));
+        imports.import("molt_runtime", poll_import.name(), EntityType::Function(0));
+        imports.import("molt_runtime", trace_import.name(), EntityType::Function(1));
+        imports.import(
+            "molt_runtime",
+            origin_import.name(),
+            EntityType::Function(1),
+        );
         module.section(&imports);
         let mut functions = FunctionSection::new();
         functions.function(0);
@@ -294,7 +306,11 @@ mod tests {
                 .iter()
                 .position(|op| matches!(op, Operator::Call { function_index: 0 }))
                 .unwrap();
-            assert!(matches!(operators[call - 1], Operator::If { .. }));
+            assert!(matches!(
+                operators[call - 1],
+                Operator::LocalGet { local_index: 0 }
+            ));
+            assert!(matches!(operators[call - 2], Operator::If { .. }));
             assert!(matches!(operators[call + 1], Operator::Else));
             assert!(
                 operators
@@ -319,14 +335,14 @@ const fs=require('fs'), assert=require('assert/strict');
 const module=new WebAssembly.Module(fs.readFileSync(process.argv[1]));
 for(const [word,pending,coldError] of [[0,0,0],[8,0,0],[8,0,1],[0,1,0]]) {
   let calls=0, origins=0; const trace=[];
-  const app=new WebAssembly.Instance(module,{molt_runtime:{
-    pending:()=>{calls++;return BigInt(coldError);},
-    record:line=>{trace.push(Number(line));return 0n;},
-    origin:homes=>{assert.equal(homes,0n);origins++;return 0n;}
-  }}).exports;
+  const app=new WebAssembly.Instance(module,attachedImports({molt_runtime:{
+    async_work_poll_and_exception_pending:()=>{calls++;return BigInt(coldError);},
+    trace_set_line:line=>{trace.push(Number(line));return 0n;},
+    exception_frame_origin:homes=>{assert.equal(homes,0n);origins++;return 0n;}
+  }})).exports;
   const view=new DataView(app.memory.buffer);
   view.setUint8(256,pending); view.setUint32(512,word,true);
-  app.run();
+  app.run(executionContext);
   assert.equal(calls,word?1:0,'an empty poll must not enter the runtime');
   assert.deepEqual(trace,(pending||coldError)?[]:[4]);
   assert.equal(origins,(pending||coldError)?1:0,'Origin is cold and runs exactly once');
@@ -359,13 +375,13 @@ const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
 for (const [byte, pending] of [[0, false], [1, true], [1, false]]) {
   const events = [];
   let reads = 0, origins = 0;
-  const app = new WebAssembly.Instance(module, {molt_runtime: {
-    pending: () => { reads++; return pending ? 1n : 0n; },
-    record: line => { events.push(Number(line)); return 0n; },
-    origin: homes => { assert.equal(homes, 0n); origins++; return 0n; },
-  }}).exports;
+  const app = new WebAssembly.Instance(module, attachedImports({molt_runtime: {
+    exception_pending: () => { reads++; return pending ? 1n : 0n; },
+    trace_set_line: line => { events.push(Number(line)); return 0n; },
+    exception_frame_origin: homes => { assert.equal(homes, 0n); origins++; return 0n; },
+  }})).exports;
   new Uint8Array(app.memory.buffer)[256] = byte;
-  assert.equal(app.run(), 0n);
+  assert.equal(app.run(executionContext), 0n);
   assert.deepEqual(events, pending ? [2, 3] : [1, 3], 'explicit inner cleanup must precede the outer continuation');
   assert.equal(reads, byte, 'the reader runs only when the pending byte is set');
   assert.equal(origins,pending?1:0,'only the taken Origin edge calls capture');

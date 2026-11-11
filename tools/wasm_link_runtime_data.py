@@ -79,7 +79,7 @@ def _canonical_split_runtime_required_exports(
             "split deploy runtime is missing generated canonical function export(s): "
             + ", ".join(sorted(missing))
         )
-    return observed - _ESSENTIAL_EXPORTS - {"molt_exception_pending"}
+    return observed - _ESSENTIAL_EXPORTS
 
 
 def _iter_linking_data_symbols(

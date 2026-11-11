@@ -15,8 +15,12 @@ fn cold_type_doc_slot_borrows_creation_doc_without_an_additional_owner() {
                     b"ColdCreationDoc(value)\n--\n\nBirth documentation.\0discarded",
                 ))
                 .bits();
-                let class = crate::molt_class_new(name);
-                crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+                let class = crate::molt_class_new_attached_body(py, name);
+                crate::molt_class_set_base_attached_body(
+                    py,
+                    class,
+                    crate::builtin_classes(py).object,
+                );
                 if has_birth_doc {
                     member(py, class, b"__doc__", birth_doc);
                 }
@@ -31,7 +35,7 @@ fn cold_type_doc_slot_borrows_creation_doc_without_an_additional_owner() {
                     b"Changed before cold projection.",
                 ))
                 .bits();
-                crate::molt_set_attr_name(class, key, late_doc);
+                crate::molt_set_attr_name_attached_body(py, class, key, late_doc);
                 dec_ref_bits(py, birth_doc);
                 assert!(!GLOBAL_BRIDGE.type_has_projection(class));
                 let view =
@@ -58,7 +62,12 @@ fn cold_type_doc_slot_borrows_creation_doc_without_an_additional_owner() {
                         "captured None must not adopt a later __doc__"
                     );
                 }
-                crate::molt_set_attr_name(class, key, MoltObject::from_int(29).bits());
+                crate::molt_set_attr_name_attached_body(
+                    py,
+                    class,
+                    key,
+                    MoltObject::from_int(29).bits(),
+                );
                 assert_eq!(typeobj::PyType_Ready(tp), 0);
                 assert_eq!(typeobj::PyType_GetSlot(tp, slots::Py_tp_doc), doc.cast());
 
@@ -132,7 +141,7 @@ fn cold_managed_readiness_exposes_existing_slots_and_tracks_mutation() {
             let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let seventeen = function(py, length_seventeen as *const (), 1);
             let twenty_three = function(py, length_twenty_three as *const (), 1);
-            crate::molt_set_attr_name(class, key, seventeen);
+            crate::molt_set_attr_name_attached_body(py, class, key, seventeen);
             assert!(!GLOBAL_BRIDGE.type_has_projection(class));
             let namespace = crate::class_dict_bits(obj_from_bits(class).as_ptr().unwrap());
             let namespace_size = crate::dict_len(obj_from_bits(namespace).as_ptr().unwrap());
@@ -175,7 +184,7 @@ fn cold_managed_readiness_exposes_existing_slots_and_tracks_mutation() {
                 );
             }
 
-            crate::molt_set_attr_name(class, key, twenty_three);
+            crate::molt_set_attr_name_attached_body(py, class, key, twenty_three);
             for receiver in [managed.as_ptr(), native.as_ptr()] {
                 assert_eq!(sequence_length_slot(tp, receiver), 23);
                 assert_eq!(
@@ -189,7 +198,7 @@ fn cold_managed_readiness_exposes_existing_slots_and_tracks_mutation() {
                     native_error_description()
                 );
             }
-            crate::molt_del_attr_name(class, key);
+            crate::molt_del_attr_name_attached_body(py, class, key);
             assert!(typeobj::PyType_GetSlot(tp, slots::Py_sq_length).is_null());
             assert!(typeobj::PyType_GetSlot(child.as_ptr().cast(), slots::Py_sq_length).is_null());
             assert_eq!(
@@ -201,7 +210,7 @@ fn cold_managed_readiness_exposes_existing_slots_and_tracks_mutation() {
                 0
             );
             errors::PyErr_Clear();
-            crate::molt_set_attr_name(class, key, seventeen);
+            crate::molt_set_attr_name_attached_body(py, class, key, seventeen);
             assert_eq!(sequence_length_slot(tp, managed.as_ptr()), 17);
             assert_eq!(
                 molt_cpython_abi::api::abstract_sequence::PySequence_Size(native.as_ptr()),
@@ -267,7 +276,7 @@ fn mro_first_publication_returns_a_physically_ready_managed_class() {
             let class = snapshot_class(py, b"MroFirstPhysicalClass");
             let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let seventeen = function(py, length_seventeen as *const (), 1);
-            crate::molt_set_attr_name(class, key, seventeen);
+            crate::molt_set_attr_name_attached_body(py, class, key, seventeen);
             assert!(!GLOBAL_BRIDGE.type_has_projection(class));
             let result = (molt_cpython_abi::hooks::hooks_or_stubs().type_metadata)(
                 class,
@@ -398,9 +407,9 @@ fn managed_list_base_admits_native_storage_with_inherited_lifecycle() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = crate::dynamic_attr_name_bits(py, b"ManagedListStorage").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             dec_ref_bits(py, name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).list);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).list);
             crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
             let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));

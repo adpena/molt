@@ -86,7 +86,8 @@ pub(super) fn handle_mark_subcommand(
                                 })
                         }
                     } else {
-                        let Some(index) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -123,7 +124,7 @@ pub(super) fn handle_mark_subcommand(
                         ));
                     }
                     let mark_name = get_string_arg(py, handle, args[3], "mark name")?;
-                    let Some(index) = parse_text_index_bits(args[4], &widget.text_value) else {
+                    let Some(index) = parse_text_index_bits(py, args[4], &widget.text_value) else {
                         return Err(widget_tcl_error(
                             py,
                             last_error,
@@ -278,7 +279,8 @@ pub(super) fn handle_tag_subcommand(
                     names.extend(widget.tag_bindings.keys().cloned());
                     names.extend(widget.text_tag_options.keys().cloned());
                     if args.len() == 5 {
-                        let Some(index) = parse_text_index_bits(args[4], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[4], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -351,7 +353,7 @@ pub(super) fn handle_tag_subcommand(
                         ));
                     }
                     let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
-                    let Some(start_index) = parse_text_index_bits(args[4], &widget.text_value)
+                    let Some(start_index) = parse_text_index_bits(py, args[4], &widget.text_value)
                     else {
                         return Err(widget_tcl_error(
                             py,
@@ -360,7 +362,8 @@ pub(super) fn handle_tag_subcommand(
                         ));
                     };
                     let stop_index = if args.len() == 6 {
-                        let Some(stop) = parse_text_index_bits(args[5], &widget.text_value) else {
+                        let Some(stop) = parse_text_index_bits(py, args[5], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -438,7 +441,7 @@ pub(super) fn handle_tag_subcommand(
                     let ranges = widget.text_tag_ranges.entry(tag_name.clone()).or_default();
                     let mut idx = 4;
                     while idx + 1 < args.len() {
-                        let Some(start) = parse_text_index_bits(args[idx], &widget.text_value)
+                        let Some(start) = parse_text_index_bits(py, args[idx], &widget.text_value)
                         else {
                             return Err(widget_tcl_error(
                                 py,
@@ -446,7 +449,8 @@ pub(super) fn handle_tag_subcommand(
                                 "tag add start index must be an integer, end, or line.column",
                             ));
                         };
-                        let Some(end) = parse_text_index_bits(args[idx + 1], &widget.text_value)
+                        let Some(end) =
+                            parse_text_index_bits(py, args[idx + 1], &widget.text_value)
                         else {
                             return Err(widget_tcl_error(
                                 py,
@@ -479,7 +483,7 @@ pub(super) fn handle_tag_subcommand(
                         ));
                     }
                     let tag_name = get_string_arg(py, handle, args[3], "tag name")?;
-                    let Some(start) = parse_text_index_bits(args[4], &widget.text_value) else {
+                    let Some(start) = parse_text_index_bits(py, args[4], &widget.text_value) else {
                         return Err(widget_tcl_error(
                             py,
                             last_error,
@@ -487,7 +491,8 @@ pub(super) fn handle_tag_subcommand(
                         ));
                     };
                     let end = if args.len() == 6 {
-                        let Some(end) = parse_text_index_bits(args[5], &widget.text_value) else {
+                        let Some(end) = parse_text_index_bits(py, args[5], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,

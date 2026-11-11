@@ -19,6 +19,7 @@ impl WasmBackend {
             import_ids: &mut self.import_ids,
             import_idx: 0,
             profile: self.options.wasm_profile,
+            execution_call_abis: std::rc::Rc::make_mut(&mut self.execution_call_abis),
         };
 
         // Register the full profile-allowed surface upfront. Import-surface
@@ -43,6 +44,7 @@ impl WasmBackend {
 }
 
 struct RuntimeImportRegistrar<'a> {
+    execution_call_abis: &'a mut crate::wasm_binary::WasmExecutionCallAbis,
     imports: &'a mut ImportSection,
     types: &'a mut WasmFunctionTypes,
     import_ids: &'a mut TrackedImportIds,
@@ -62,7 +64,19 @@ impl RuntimeImportRegistrar<'_> {
             return;
         }
         let (params, results) = import.machine_signature();
-        let type_index = self.types.function(params, results);
+        let attached = import.execution_abi().context
+            == molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext::Attached;
+        let type_index = if attached {
+            self.execution_call_abis
+                .register_attached(self.import_idx, params);
+            let physical: Vec<_> = std::iter::once(wasm_encoder::ValType::I64)
+                .chain(params.iter().copied())
+                .collect();
+            self.types.function(&physical, results)
+        } else {
+            self.execution_call_abis.register_boundary(self.import_idx);
+            self.types.function(params, results)
+        };
         self.imports.import(
             RUNTIME_IMPORT_MODULE,
             name,

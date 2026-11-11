@@ -33,7 +33,7 @@ pub(super) unsafe fn buffer_runtime_view(
             &format!("{role} must be a Buffer instance"),
         ));
     };
-    let class_bits = unsafe { object_class_bits(buffer_ptr) };
+    let class_bits = unsafe { object_class_bits(_py, buffer_ptr) };
     if obj_from_bits(class_bits).is_none() {
         return Err(raise_exception::<_>(
             _py,
@@ -73,7 +73,7 @@ pub(super) unsafe fn tensor_runtime_view(
             &format!("{role} must be a Tensor instance"),
         ));
     };
-    let class_bits = unsafe { object_class_bits(tensor_ptr) };
+    let class_bits = unsafe { object_class_bits(_py, tensor_ptr) };
     if obj_from_bits(class_bits).is_none() {
         return Err(raise_exception::<_>(
             _py,
@@ -130,7 +130,7 @@ pub(super) fn parse_i64_sequence_arg(
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         return if allow_scalar_int {
-            to_i64(obj).map(|value| vec![value]).ok_or_else(|| {
+            to_i64(_py, obj).map(|value| vec![value]).ok_or_else(|| {
                 raise_exception::<_>(
                     _py,
                     BuiltinExc::TypeError,
@@ -145,10 +145,10 @@ pub(super) fn parse_i64_sequence_arg(
             ))
         };
     };
-    let ty = unsafe { object_type_id(ptr) };
+    let ty = unsafe { object_type_id(_py, ptr) };
     if ty != TYPE_ID_TUPLE && ty != TYPE_ID_LIST {
         return if allow_scalar_int {
-            to_i64(obj).map(|value| vec![value]).ok_or_else(|| {
+            to_i64(_py, obj).map(|value| vec![value]).ok_or_else(|| {
                 raise_exception::<_>(
                     _py,
                     BuiltinExc::TypeError,
@@ -167,7 +167,7 @@ pub(super) fn parse_i64_sequence_arg(
     let decode = |elems: &[u64]| {
         let mut out = Vec::with_capacity(elems.len());
         for &elem_bits in elems {
-            let value = to_i64(obj_from_bits(elem_bits))?;
+            let value = to_i64(_py, obj_from_bits(elem_bits))?;
             out.push(value);
         }
         Some(out)
@@ -176,7 +176,7 @@ pub(super) fn parse_i64_sequence_arg(
     // Preserve the accepted ``((dims...),)`` call shape without exporting a
     // borrowed edge from a mutable outer list. The pin keeps the sole item
     // alive while the inner sequence is inspected and decoded.
-    let nested_item = if unsafe { seq_access::len(ptr) } == 1 {
+    let nested_item = if unsafe { seq_access::len(_py, ptr) } == 1 {
         unsafe { seq_access::pin_item(_py, ptr, 0) }
     } else {
         None
@@ -184,17 +184,17 @@ pub(super) fn parse_i64_sequence_arg(
     let decoded = if let Some(item) = nested_item.as_ref() {
         let inner = obj_from_bits(item.bits());
         if let Some(inner_ptr) = inner.as_ptr() {
-            let inner_ty = unsafe { object_type_id(inner_ptr) };
+            let inner_ty = unsafe { object_type_id(_py, inner_ptr) };
             if inner_ty == TYPE_ID_TUPLE || inner_ty == TYPE_ID_LIST {
-                unsafe { seq_access::with_borrowed(inner_ptr, decode) }
+                unsafe { seq_access::with_borrowed(_py, inner_ptr, decode) }
             } else {
-                unsafe { seq_access::with_borrowed(ptr, decode) }
+                unsafe { seq_access::with_borrowed(_py, ptr, decode) }
             }
         } else {
-            unsafe { seq_access::with_borrowed(ptr, decode) }
+            unsafe { seq_access::with_borrowed(_py, ptr, decode) }
         }
     } else {
-        unsafe { seq_access::with_borrowed(ptr, decode) }
+        unsafe { seq_access::with_borrowed(_py, ptr, decode) }
     };
     decoded.ok_or_else(|| {
         raise_exception::<_>(
@@ -248,20 +248,20 @@ pub(super) unsafe fn module_global_bits(
     attr_label: &str,
 ) -> Result<u64, u64> {
     let module_name_bits = alloc_string_bits(_py, module_name)?;
-    let mut module_bits = molt_module_cache_get(module_name_bits);
+    let mut module_bits = molt_module_cache_get(_py, module_name_bits);
     if obj_from_bits(module_bits).is_none() {
-        module_bits = molt_module_import(module_name_bits);
+        module_bits = molt_module_import(_py, module_name_bits);
     }
     dec_ref_bits(_py, module_name_bits);
     if exception_pending(_py) && obj_from_bits(module_bits).as_ptr().is_some() {
-        let _ = molt_exception_clear();
+        let _ = molt_exception_clear(_py);
     }
     if exception_pending(_py) {
         return Err(module_bits);
     }
     let attr_bits =
         attr_name_bits_from_bytes(_py, attr_name).ok_or_else(|| MoltObject::none().bits())?;
-    let result = lookup_attribute(module_bits, attr_bits);
+    let result = lookup_attribute(_py, module_bits, attr_bits);
     dec_ref_bits(_py, attr_bits);
     dec_ref_bits(_py, module_bits);
     match result {
@@ -282,7 +282,7 @@ pub(super) unsafe fn module_global_bits(
 pub(super) unsafe fn ensure_tensor_object_bits(_py: &PyToken, value_bits: u64) -> Result<u64, u64> {
     let tensor_class_bits =
         unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") }?;
-    let is_tensor_bits = molt_isinstance(value_bits, tensor_class_bits);
+    let is_tensor_bits = molt_isinstance(_py, value_bits, tensor_class_bits);
     if exception_pending(_py) {
         dec_ref_bits(_py, tensor_class_bits);
         return Err(is_tensor_bits);

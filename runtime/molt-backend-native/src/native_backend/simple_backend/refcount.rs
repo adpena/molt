@@ -1,7 +1,8 @@
 use super::*;
 use molt_codegen_abi::inline_refcount::{
-    RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
+    RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
 };
+use molt_codegen_abi::word::{WordBuilder, WordComparison};
 
 /// Function-local imports and the admission belonging to this exact body.
 /// Keeping the invocation fact here makes helpers consume the entry's value
@@ -78,13 +79,9 @@ struct NativeRefcountBuilder<'a, 'b> {
     slow_block: Option<Block>,
 }
 
-impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
+impl WordBuilder for NativeRefcountBuilder<'_, '_> {
     type Word = Value;
     type Predicate = Value;
-
-    fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
-        molt_codegen_abi::PointerWidth::Bits64
-    }
 
     fn constant(&mut self, value: u64) -> Value {
         self.builder.ins().iconst(types::I64, value as i64)
@@ -92,20 +89,35 @@ impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
     fn and(&mut self, value: Value, mask: u64) -> Value {
         self.builder.ins().band_imm_s(value, mask as i64)
     }
-    fn add(&mut self, value: Value, delta: i64) -> Value {
+    fn or(&mut self, value: Value, bits: u64) -> Value {
+        self.builder.ins().bor_imm_s(value, bits as i64)
+    }
+    fn shift_left(&mut self, value: Value, amount: u32) -> Value {
+        self.builder.ins().ishl_imm_s(value, i64::from(amount))
+    }
+    fn shift_right_arithmetic(&mut self, value: Value, amount: u32) -> Value {
+        self.builder.ins().sshr_imm_s(value, i64::from(amount))
+    }
+    fn add_immediate(&mut self, value: Value, delta: i64) -> Value {
         self.builder.ins().iadd_imm_s(value, delta)
     }
-    fn compare(&mut self, comparison: RefcountComparison, left: Value, right: Value) -> Value {
+    fn compare(&mut self, comparison: WordComparison, left: Value, right: Value) -> Value {
         use cranelift_codegen::ir::condcodes::IntCC;
         let condition = match comparison {
-            RefcountComparison::Equal => IntCC::Equal,
-            RefcountComparison::NotEqual => IntCC::NotEqual,
-            RefcountComparison::UnsignedLessThan => IntCC::UnsignedLessThan,
+            WordComparison::Equal => IntCC::Equal,
+            WordComparison::NotEqual => IntCC::NotEqual,
+            WordComparison::UnsignedLessThan => IntCC::UnsignedLessThan,
         };
         self.builder.ins().icmp(condition, left, right)
     }
     fn both(&mut self, left: Value, right: Value) -> Value {
         self.builder.ins().band(left, right)
+    }
+}
+
+impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
+    fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
+        molt_codegen_abi::PointerWidth::Bits64
     }
     fn load_header_u32(&mut self, pointer: Value, offset: i32) -> Value {
         let value = self

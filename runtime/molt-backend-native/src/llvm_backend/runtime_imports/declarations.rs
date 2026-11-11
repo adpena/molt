@@ -3,6 +3,9 @@ use super::attributes::add_nounwind;
 #[cfg(feature = "llvm")]
 use super::fixed;
 #[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+use crate::llvm_backend::execution_abi::{execution_symbol, runtime_execution_type};
+#[cfg(feature = "llvm")]
 use inkwell::context::Context;
 #[cfg(feature = "llvm")]
 use inkwell::module::Module;
@@ -24,10 +27,15 @@ pub(crate) fn declare_conservative_runtime_function<'ctx>(
     name: &str,
     fn_ty: FunctionType<'ctx>,
 ) -> FunctionValue<'ctx> {
-    if let Some(func) = module.get_function(name) {
+    let physical_ty = runtime_execution_type(name, fn_ty);
+    if let Some(func) = module.get_execution_function(name) {
         return func;
     }
-    let func = module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
+    let func = module.add_function(
+        &execution_symbol(name),
+        physical_ty,
+        Some(inkwell::module::Linkage::External),
+    );
     add_nounwind(ctx, func);
     func
 }
