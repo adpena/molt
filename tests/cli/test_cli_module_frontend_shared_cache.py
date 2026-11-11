@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli import module_cache as MC
-from molt.frontend._types import _MIDEND_ENV_KEYS
+from molt.frontend import SimpleTIRGenerator
 from molt.cli.source_record_store import (
     SourceRecord,
     SourceRecordStore,
@@ -412,108 +412,12 @@ _LOWERING_CTX = dict(
     module_deps={"m": set()},
     module_chunking=False,
     module_chunk_max_ops=0,
-    optimization_profile="dev",
-    pgo_hot_function_names=(),
     module_dep_closures={"m": frozenset({"m"})},
 )
 
 
-def test_lowering_policy_identity_accounts_for_every_environment_read() -> None:
-    """Census the readers independently of the key's declared input list."""
-    import ast
-    import inspect
-
-    from molt.frontend._types import _MIDEND_ENV_KEYS
-    from molt.frontend.lowering import midend_pipeline, midend_policy
-
-    observed: set[str] = set()
-    helpers = {"_midend_float_env", "_midend_positive_int_env"}
-    for module in (midend_pipeline, midend_policy):
-        tree = ast.parse(inspect.getsource(module))
-        for function in ast.walk(tree):
-            if not isinstance(function, ast.FunctionDef):
-                continue
-            for node in ast.walk(function):
-                if not isinstance(node, ast.Call) or not isinstance(
-                    node.func, ast.Attribute
-                ):
-                    continue
-                reader = ast.unparse(node.func)
-                if (
-                    reader not in {"os.getenv", "os.environ.get"}
-                    and node.func.attr not in helpers
-                ):
-                    continue
-                argument = node.args[0]
-                if isinstance(argument, ast.Constant) and isinstance(
-                    argument.value, str
-                ):
-                    observed.add(argument.value)
-                else:
-                    # Only the two literal-name helpers and the canonical
-                    # tuple's snapshot loop may perform an indirect read.
-                    assert function.name in helpers | {"_capture_midend_env_snapshot"}
-                    assert isinstance(argument, ast.Name) and argument.id == "name"
-    assert observed - {"MOLT_MIDEND_STATS"} == set(_MIDEND_ENV_KEYS)
-
-
-@pytest.mark.parametrize("setting", _MIDEND_ENV_KEYS)
-def test_lowering_product_identity_separates_each_midend_setting(
-    tmp_path, monkeypatch, setting
-):
-    from molt.frontend._types import _MIDEND_ENV_KEYS
-
-    for name in _MIDEND_ENV_KEYS:
-        monkeypatch.delenv(name, raising=False)
-    path = _write_module(tmp_path, "m", "pass\n")
-    lease = _ModuleSourceLease.path_backed(path)
-
-    def context():
-        return MC._module_lowering_context_payload(
-            "m",
-            path,
-            source_lease=lease,
-            logical_source_path=str(path),
-            is_package=False,
-            **_LOWERING_CTX,
-            module_source_role="user",
-            namespace_premise=None,
-        )
-
-    absent = context()
-    assert absent is not None
-    old_digest = MC._module_lowering_context_digest(absent)
-    # Each selector is changed from absent to a valid non-default setting.
-    if setting.endswith("PROFILE"):
-        value = "release"
-    elif setting.endswith("TIER_FORCE"):
-        value = "A"
-    elif setting.endswith("FUNCTIONS"):
-        value = "m__g"
-    elif setting.endswith("MODULE_PREFIXES"):
-        value = "m"
-    elif setting == "MOLT_MIDEND_HOT_TIER_PROMOTION":
-        value = "0"
-    else:
-        value = "9"
-    monkeypatch.setenv(setting, value)
-    changed = context()
-    assert changed is not None
-    assert MC._module_lowering_context_digest(changed) != old_digest
-    monkeypatch.delenv(setting)
-    restored = context()
-    assert restored is not None
-    assert MC._module_lowering_context_digest(restored) == old_digest
-    monkeypatch.setenv("MOLT_MIDEND_STATS", "1")
-    diagnostic_only = context()
-    assert diagnostic_only is not None
-    assert MC._module_lowering_context_digest(diagnostic_only) == old_digest
-
-
 @pytest.mark.parametrize("stdlib", [False, True])
-def test_lowering_product_restores_metadata_and_coverage(
-    tmp_path, monkeypatch, stdlib: bool
-):
+def test_lowering_product_restores_metadata(tmp_path: Path, stdlib: bool) -> None:
     import ast
     from molt.cli.frontend_worker import _module_frontend_payload
     from molt.logical_source_paths import toolchain_logical_path
@@ -526,7 +430,7 @@ def test_lowering_product_restores_metadata_and_coverage(
     )
     path = _write_module(tmp_path, module_name, "def g():\n    return 41 + 1\n")
     lease = _ModuleSourceLease.path_backed(path)
-    gen = MC.SimpleTIRGenerator(
+    gen = SimpleTIRGenerator(
         module_name=module_name,
         known_modules={module_name},
         module_source_role="stdlib" if stdlib else "user",
@@ -543,15 +447,6 @@ def test_lowering_product_restores_metadata_and_coverage(
         total_s=0.0,
     )
     assert product["functions"] and product["function_metadata"]
-    assert product["midend_policy_outcomes_by_function"]
-    if stdlib:
-        assert product["midend_pass_stats_by_function"] == {}
-        for outcome in product["midend_policy_outcomes_by_function"].values():
-            assert outcome["coverage"]["status"] == "skipped"
-            assert outcome["coverage"]["reasons"] == ["stdlib_cost_policy"]
-            assert outcome["coverage"]["input_ops"] == outcome["coverage"]["output_ops"]
-    else:
-        assert product["midend_pass_stats_by_function"]
     context = MC._module_lowering_context_payload(
         module_name,
         path,
@@ -583,18 +478,15 @@ def test_lowering_product_restores_metadata_and_coverage(
     for key in (
         "functions",
         "function_metadata",
-        "midend_policy_outcomes_by_function",
-        "midend_pass_stats_by_function",
     ):
         assert restored[key] == product[key], key
-    monkeypatch.setenv("MOLT_SCCP_MAX_ITERS", "1")
     changed = MC._module_lowering_context_payload(
         module_name,
         path,
         source_lease=lease,
         logical_source_path=logical_source_path,
         is_package=False,
-        **_LOWERING_CTX,
+        **{**_LOWERING_CTX, "type_hint_policy": "ignore"},
         module_source_role="stdlib" if stdlib else "user",
         namespace_premise=None,
     )

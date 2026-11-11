@@ -389,7 +389,7 @@ def _serialized_frontend_kinds(kind: FrontendOpKind) -> list[str]:
         kind=kind, args=[MoltValue("v0"), MoltValue("v1")], result=MoltValue("v2")
     )
     emitted = SimpleTIRGenerator().map_ops_to_json(
-        [op], function_name="molt_debug_verify", run_midend=False
+        [op], function_name="molt_debug_verify"
     )
     return [str(item["kind"]) for item in emitted if item["kind"] != "ret_void"]
 

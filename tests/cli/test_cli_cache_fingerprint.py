@@ -832,9 +832,9 @@ def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
     cli_source = _cli_init(root)
     frontend_init = root / "src" / "molt" / "frontend" / "__init__.py"
     cfg_analysis = root / "src" / "molt" / "frontend" / "cfg_analysis.py"
-    tv_hooks = root / "src" / "molt" / "frontend" / "tv_hooks.py"
+    serialization = root / "src" / "molt" / "frontend" / "lowering" / "serialization.py"
     type_facts = root / "src" / "molt" / "type_facts.py"
-    for source in (cli_source, frontend_init, cfg_analysis, tv_hooks, type_facts):
+    for source in (cli_source, frontend_init, cfg_analysis, serialization, type_facts):
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text(f"{source.stem.upper()}_MARKER = 1\n", encoding="utf-8")
 
@@ -843,7 +843,7 @@ def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
     first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     cfg_analysis.write_text("CFG_ANALYSIS_MARKER = 2\n", encoding="utf-8")
-    tv_hooks.write_text("TV_HOOKS_MARKER = 2\n", encoding="utf-8")
+    serialization.write_text("SERIALIZATION_MARKER = 2\n", encoding="utf-8")
     type_facts.write_text("TYPE_FACTS_MARKER = 2\n", encoding="utf-8")
 
     second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
@@ -891,7 +891,7 @@ def _write_frontend_tree(root: Path) -> dict[str, Path]:
         "cli_init": molt_root / "cli" / "__init__.py",
         "frontend_init": molt_root / "frontend" / "__init__.py",
         "cfg_analysis": molt_root / "frontend" / "cfg_analysis.py",
-        "tv_hooks": molt_root / "frontend" / "tv_hooks.py",
+        "serialization": molt_root / "frontend" / "lowering" / "serialization.py",
         "nested_helper": molt_root / "frontend" / "lowering" / "reducer.py",
         "type_facts": molt_root / "type_facts.py",
         "capabilities": molt_root / "capabilities.py",
@@ -926,7 +926,7 @@ def _rewrite_same_length_content(path: Path) -> None:
     [
         "frontend_init",
         "cfg_analysis",
-        "tv_hooks",
+        "serialization",
         "nested_helper",
         "type_facts",
         "capabilities",
@@ -1527,7 +1527,7 @@ def test_cargo_document_capture_bounds_actual_growth_before_parse(
     assert sum(consumed) <= len(raw) + 1
 
 
-def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_cache_transport() -> (
+def test_huge_hex_literals_and_runtime_powers_preserve_binary_backend_and_cache_transport() -> (
     None
 ):
     import ast
@@ -1538,10 +1538,12 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
     from molt.opcode_literal_payloads import integer_literal_value
 
     huge_hex = "0x1" + "0" * 5000
+    other_hex = "0x1" + "0" * 736
     source = (
         f"def default(value={huge_hex}):\n    return value\n"
-        f"a = {huge_hex}\nb = (2 ** 46) ** 64\nc = -{huge_hex}\n"
-        "print(a, b, c, default())\n"
+        f"a = {huge_hex}\nb = {other_hex}\nc = -{huge_hex}\n"
+        "power = (2 ** 46) ** 64\n"
+        "print(a, b, c, power, default())\n"
     )
     previous = sys.get_int_max_str_digits()
     try:
@@ -1559,9 +1561,14 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
             }
             expected = 1 << 20000
             assert expected in literal_values
-            # This bounded power is folded by the existing arithmetic pass.
-            # Unary negation of the huge source literal remains a runtime op.
+            # Literal payload transport is independent of the host's decimal
+            # digit limit. Arithmetic remains visible at this boundary for TIR.
             assert 1 << 2944 in literal_values
+            assert any(
+                op["kind"] == "pow"
+                for function in ir["functions"]
+                for op in function["ops"]
+            )
             assert any(
                 op["kind"] == "neg"
                 for function in ir["functions"]

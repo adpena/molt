@@ -62,6 +62,24 @@ def _compile_for_python_314(source: str) -> dict[str, object]:
     return generator.to_json()
 
 
+def _class_namespace_values(ops: list[dict[str, object]]) -> dict[str, object]:
+    """Read the namespace actually passed to the authored class constructor."""
+    (constructor,) = [
+        op
+        for op in ops
+        if op.get("kind") == "call" and op.get("s_value") == "molt_class_def_namespace"
+    ]
+    namespace = constructor["args"][2]
+    strings = {op["out"]: op["s_value"] for op in ops if op.get("kind") == "const_str"}
+    return {
+        strings[op["args"][1]]: op["args"][2]
+        for op in ops
+        if op.get("kind") == "store_index"
+        and op["args"][0] == namespace
+        and op["args"][1] in strings
+    }
+
+
 @pytest.mark.parametrize(
     ("target", "eager_annotations"),
     [((3, 12), True), ((3, 13), True), ((3, 14), False)],
@@ -161,15 +179,8 @@ class C:
     )
     assert not any(op.get("s_value") == "marker" for op in main_ops)
 
-    class_def = next(op for op in main_ops if op.get("kind") == "class_def")
-    class_arg_values = {
-        op["out"]: op.get("s_value")
-        for op in main_ops
-        if op.get("kind") == "const_str" and "out" in op
-    }
-    class_attr_names = {
-        class_arg_values[arg] for arg in class_def["args"] if arg in class_arg_values
-    }
+    class_values = _class_namespace_values(main_ops)
+    class_attr_names = set(class_values)
     assert "__annotate_func__" in class_attr_names
     assert "__annotate__" not in class_attr_names
     assert "__annotations__" not in class_attr_names
@@ -184,11 +195,7 @@ class C:
         if op.get("kind") == "func_new_closure" and op.get("s_value") == annotate_name
     )
     captures = definitions[constructor["args"][0]]["args"]
-    assert any(
-        class_arg_values.get(value) == "__annotate_func__"
-        and class_def["args"][index + 1] == constructor["out"]
-        for index, value in enumerate(class_def["args"][:-1])
-    )
+    assert class_values["__annotate_func__"] == constructor["out"]
     reads = [op for op in annotate_ops if op.get("kind") == "dict_get"]
     assert len(reads) == 2
     assert len({read["args"][0] for read in reads}) == 1
@@ -274,7 +281,7 @@ def test_python_314_generated_class_evaluator_preserves_explicit_metadata(
 ) -> None:
     ir = _compile_for_python_314(f"class C:\n    {explicit} = 42\n    item: int\n")
     main = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
-    definition = next(op for op in main if op.get("kind") == "class_def")
-    strings = {op["out"]: op["s_value"] for op in main if op.get("kind") == "const_str"}
-    names = {strings[arg] for arg in definition["args"] if arg in strings}
-    assert {explicit, "__annotate_func__"} <= names
+    values = _class_namespace_values(main)
+    assert {explicit, "__annotate_func__"} <= values.keys()
+    definitions = {op["out"]: op for op in main if "out" in op}
+    assert definitions[values[explicit]]["value"] == 42

@@ -509,6 +509,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 needs_return_slot=False,
                 has_exception_handlers=self._body_has_exception_handlers(item.body),
                 code_slots=code_slots,
+                source_node=item,
             )
             self.parameter_bindings = parameter_bindings
             if has_closure:

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
 
-from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+from molt.frontend import MoltOp, MoltValue
 from molt.frontend.cfg_analysis import CFGEdgeKind, build_cfg
 
 
@@ -46,106 +45,3 @@ def test_cfg_records_complete_edge_modes_at_the_edge_authority() -> None:
     assert (entry, cfg.op_blocks[3]) not in cfg.edge_kinds
     assert cfg.edge_kinds[entry, cfg.op_blocks[4]] == CFGEdgeKind.EXCEPTION
     assert cfg.edge_kinds[cfg.op_blocks[5], cfg.op_blocks[6]] == CFGEdgeKind.RESUME
-
-
-def rewrite_branches(
-    then: list[MoltOp], otherwise: list[MoltOp], *, exact_condition: bool = True
-) -> list[MoltOp]:
-    condition = (
-        op("IS", MoltValue("left"), MoltValue("right"), result="cond")
-        if exact_condition
-        else op("MISSING", result="cond")
-    )
-    ops = [
-        condition,
-        op("IF", MoltValue("cond")),
-        *then,
-        op("ELSE"),
-        *otherwise,
-        op("END_IF"),
-    ]
-    result, _ = SimpleTIRGenerator()._rewrite_structured_if_regions(
-        ops, control=build_cfg(ops).control, branch_choice_by_if_index={}
-    )
-    assert result[0] is condition
-    return result[1:]
-
-
-def test_common_entry_guard_hoists_without_erasing_later_callback_guards() -> None:
-    result = rewrite_branches(
-        [guard(), op("CALL", MoltValue("left")), guard(), op("CONST", 1, result="a")],
-        [guard(), op("CALL", MoltValue("right")), guard(), op("CONST", 2, result="b")],
-    )
-    assert result[0].kind == "GUARD_TAG"
-    assert sum(item.kind == "GUARD_TAG" for item in result) == 3
-
-
-def test_guard_after_callback_is_not_hoisted() -> None:
-    result = rewrite_branches(
-        [op("CALL", MoltValue("left")), guard(), op("CONST", 1, result="a")],
-        [op("CALL", MoltValue("right")), guard(), op("CONST", 2, result="b")],
-    )
-    assert result[0].kind == "IF"
-
-
-def test_guard_cannot_hoist_across_dynamic_branch_truth_callback() -> None:
-    result = rewrite_branches(
-        [guard(), op("CONST", 1, result="a")],
-        [guard(), op("CONST", 2, result="b")],
-        exact_condition=False,
-    )
-    assert result[0].kind == "IF"
-
-
-def test_callback_control_preserves_control_class_but_invalidates_heap_reads() -> None:
-    gen = SimpleTIRGenerator()
-    args = [MoltValue("task"), MoltValue("slot"), MoltValue("pending"), 1]
-    control = op("STATE_TRANSITION", *args)
-    assert gen._op_effect_class(control) == "control"
-    assert gen._op_may_access_arbitrary_heap(control)
-    state = gen._empty_canonicalization_state()
-    first = op("TYPE_OF", MoltValue("obj"), result="before")
-    second = op("TYPE_OF", MoltValue("obj"), result="after")
-    rewritten, _ = gen._canonicalize_block_with_state(
-        [first, control, second], state, induction_steps={}
-    )
-    assert [item.result.name for item in rewritten if item.kind == "TYPE_OF"] == [
-        "before",
-        "after",
-    ]
-
-
-def test_guard_failure_order_is_not_sorted_across_branches() -> None:
-    result = rewrite_branches(
-        [guard("a"), guard("b"), op("CONST", 1, result="left")],
-        [guard("b"), guard("a"), op("CONST", 2, result="right")],
-    )
-    assert result[0].kind == "IF"
-    assert sum(item.kind == "GUARD_TAG" for item in result) == 4
-
-
-@pytest.mark.parametrize("body", [[], [op("LINE", 1)]])
-def test_identical_branch_rewrites_preserve_dynamic_condition(
-    body: list[MoltOp],
-) -> None:
-    ops = [
-        op("MISSING", result="cond"),
-        op("IF", MoltValue("cond")),
-        *body,
-        op("ELSE"),
-        *body,
-        op("END_IF"),
-    ]
-    gen = SimpleTIRGenerator()
-    direct, _ = gen._canonicalize_structured_regions_pre_sccp(ops)
-    assert any(item.kind == "IF" for item in direct)
-    rewritten = rewrite_branches(body, body, exact_condition=False)
-    assert any(item.kind == "IF" for item in rewritten)
-
-
-def test_empty_loop_retains_its_backedge() -> None:
-    ops = [op("LOOP_START"), op("LOOP_END")]
-    assert SimpleTIRGenerator()._canonicalize_structured_regions_pre_sccp(ops) == (
-        ops,
-        0,
-    )

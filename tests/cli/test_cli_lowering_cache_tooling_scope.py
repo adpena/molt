@@ -553,8 +553,6 @@ def _lowering_context(module_path: Path, **changes: object) -> str | None:
         "module_deps": {"main": {"alpha"}, "alpha": set()},
         "module_chunking": False,
         "module_chunk_max_ops": 0,
-        "optimization_profile": "dev",
-        "pgo_hot_function_names": (),
     }
     options.update(changes)
     return MC._module_lowering_context_digest_for_module("main", module_path, **options)
@@ -570,7 +568,6 @@ def _lowering_context(module_path: Path, **changes: object) -> str | None:
         ("stdlib_allowlist", {"json"}),
         # cli/build_request.py request fields.
         ("type_hint_policy", "trust"),
-        ("optimization_profile", "release"),
     ],
 )
 def test_build_environment_values_reach_lowering_only_through_its_key(

@@ -64,8 +64,6 @@ PUBLIC_SURFACE = [
     "MoltOp",
     "SimpleTIRGenerator",
     "compile_to_tir",
-    "SCCPResult",
-    "LoopBoundFact",
     "ClassInfo",
     "FuncInfo",
     "MethodInfo",
@@ -84,12 +82,6 @@ EXPECTED_MIXINS = [
     "GeneratorStateMixin",
     "AppBindingAuthorityMixin",
     "LocalBindingMixin",
-    "MidendOptimizationMixin",
-    "MidendPipelineMixin",
-    "MidendPolicyMixin",
-    "MidendCanonicalizationMixin",
-    "MidendDataflowMixin",
-    "MidendCFGMixin",
     "SerializationMixin",
     "SerializationBasicOpsMixin",
     "SerializationFunctionOpsMixin",
@@ -196,14 +188,6 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_load_local_value")
     assert hasattr(SimpleTIRGenerator, "_store_local_value")
     assert hasattr(SimpleTIRGenerator, "_emit_frame_home_store")
-    # midend optimization
-    assert hasattr(SimpleTIRGenerator, "_run_ir_midend_passes")
-    assert hasattr(SimpleTIRGenerator, "_init_midend_state")
-    assert hasattr(SimpleTIRGenerator, "_resolve_midend_function_policy")
-    assert hasattr(SimpleTIRGenerator, "_canonicalize_block_with_state")
-    assert hasattr(SimpleTIRGenerator, "_compute_sccp")
-    assert hasattr(SimpleTIRGenerator, "_ensure_structural_cfg_validity")
-    assert hasattr(SimpleTIRGenerator, "_canonicalize_control_aware_ops")
     # serialization
     assert hasattr(SimpleTIRGenerator, "map_ops_to_json")
     assert hasattr(SimpleTIRGenerator, "_serialize_basic_op")
@@ -427,12 +411,6 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.import_lowering",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.loop_lowering",
-        "molt.frontend.lowering.midend_canonicalization",
-        "molt.frontend.lowering.midend_cfg",
-        "molt.frontend.lowering.midend_dataflow",
-        "molt.frontend.lowering.midend_optimization",
-        "molt.frontend.lowering.midend_pipeline",
-        "molt.frontend.lowering.midend_policy",
         "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.ownership_lowering",
         "molt.frontend.lowering.serialization",

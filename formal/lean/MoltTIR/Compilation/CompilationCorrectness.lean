@@ -103,8 +103,8 @@ def MoltProgram.entryFunc (prog : MoltProgram) : Option MoltTIR.Func :=
 
 /-- Compile a single function through the full midend pipeline.
 
-    This is the formalization of the real compiler's
-    `SimpleTIRGenerator._run_ir_midend_passes`:
+    This composes the abstract models below; it does not mirror the production
+    Rust build_default_pipeline or establish implementation correspondence:
       constFold -> SCCP -> DCE -> CSE -> guardHoist -> joinCanon
 
     (LICM and edgeThread require auxiliary analysis state and are

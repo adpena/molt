@@ -76,9 +76,6 @@ def terminal_build(
     monkeypatch.setattr(
         build_diagnostics, "_runtime_wasm_build_timings_snapshot", lambda: None
     )
-    monkeypatch.setattr(
-        build_diagnostics, "_build_midend_diagnostics_payload", lambda **_: None
-    )
     phases = {"resolve_entry": 0.0, "runtime_setup": 8.0}
     parallel: dict[str, object] = {}
     diagnostics_file = tmp_path / "build-diagnostics.json"
@@ -96,8 +93,6 @@ def terminal_build(
         allocation_diagnostics_enabled=False,
         frontend_parallel_details=parallel,
         profile="dev",
-        midend_policy_outcomes_by_function={},
-        midend_pass_stats_by_function={},
         backend_daemon_health=None,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -200,7 +195,6 @@ def terminal_build(
     )
     preamble = SimpleNamespace(
         diagnostics_enabled=True,
-        midend_policy_outcomes_by_function={},
         phase_starts=phases,
         resolved_diagnostics_verbosity="summary",
         warnings=[],
@@ -691,7 +685,7 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
         == expected
     )
     captured = capsys.readouterr()
-    assert captured.err.startswith("molt midend coverage: functions=0 input_ops=0 ")
+    assert "molt midend coverage:" not in captured.err
     message = json.loads(captured.out)
     assert message["status"] == ("error" if failure else "ok")
     assert "compile_diagnostics" not in message["data"]
@@ -851,9 +845,6 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
     terminal_build, monkeypatch, capsys
 ):
     case = terminal_build
-    preamble = case.args["prepared_build_preamble"]
-    preamble.midend_policy_outcomes_by_function = {}
-    preamble.midend_pass_stats_by_function = {}
 
     stage_bundle = (
         # The plan names a module the (empty) schedule does not compile.

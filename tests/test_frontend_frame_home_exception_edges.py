@@ -12,33 +12,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
 )
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend._types import MoltOp, MoltValue
-
-
-@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
-@pytest.mark.parametrize("inside_try", [False, True])
-@pytest.mark.parametrize(
-    "kind", ["FRAME_HOME_STORE", "FRAME_HOME_CELL", "FRAME_HOME_PRIVATE_CELL"]
-)
-def test_home_store_effect_selects_the_current_exception_edge(target, inside_try, kind):
-    gen = SimpleTIRGenerator(module_name="home_edges", target_python=target)
-    gen.function_exception_label = 100
-    gen.try_end_labels = [200] if inside_try else []
-    gen._expr_col = (4, 19)
-    value = MoltValue("input", type_hint="int" if kind == "FRAME_HOME_STORE" else "Any")
-    before = len(gen.current_ops)
-    view = gen._emit_frame_home_store("value", value, kind=kind, slot=0)
-    gen.emit(MoltOp(kind="TRY_END", args=[200], result=MoltValue("none")))
-    emitted = gen.current_ops[before:]
-    assert emitted[0].result is view and view.borrows_binding
-    assert gen._op_instance_cannot_raise(emitted[0], {}) is (kind != "FRAME_HOME_STORE")
-    if kind == "FRAME_HOME_STORE":
-        assert gen._op_may_raise_for_sccp(kind) is True
-        assert [op.kind for op in emitted] == [kind, "CHECK_EXCEPTION", "TRY_END"]
-        assert emitted[1].args == [200 if inside_try else 100]
-        assert (emitted[0].col_offset, emitted[0].end_col_offset) == (4, 19)
-    else:
-        # Existing cell objects are transferred; there is no raw view to box.
-        assert [op.kind for op in emitted] == [kind, "TRY_END"]
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
@@ -217,3 +191,32 @@ def test_failed_store_raises_from_the_state_before_it():
     )
     (fact,) = _bound_read_facts(source)
     assert fact is not None and fact.identities == UNBOUND_IDENTITY
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("inside_try", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["FRAME_HOME_STORE", "FRAME_HOME_CELL", "FRAME_HOME_PRIVATE_CELL"]
+)
+def test_home_store_effect_selects_the_current_exception_edge(
+    target: tuple[int, int],
+    inside_try: bool,
+    kind: FrontendOpKind,
+) -> None:
+    gen = SimpleTIRGenerator(module_name="home_edges", target_python=target)
+    gen.function_exception_label = 100
+    gen.try_end_labels = [200] if inside_try else []
+    gen._expr_col = (4, 19)
+    value = MoltValue("input", type_hint="int" if kind == "FRAME_HOME_STORE" else "Any")
+    before = len(gen.current_ops)
+    view = gen._emit_frame_home_store("value", value, kind=kind, slot=0)
+    gen.emit(MoltOp(kind="TRY_END", args=[200], result=MoltValue("none")))
+    emitted = gen.current_ops[before:]
+    assert emitted[0].result is view and view.borrows_binding
+    if kind == "FRAME_HOME_STORE":
+        assert [op.kind for op in emitted] == [kind, "CHECK_EXCEPTION", "TRY_END"]
+        assert emitted[1].args == [200 if inside_try else 100]
+        assert (emitted[0].col_offset, emitted[0].end_col_offset) == (4, 19)
+    else:
+        # Existing cell objects are transferred; there is no raw view to box.
+        assert [op.kind for op in emitted] == [kind, "TRY_END"]

@@ -11,6 +11,7 @@ from molt.frontend import (
     SimpleTIRGenerator,
     compile_to_tir,
 )
+from molt.frontend._types import BUILTIN_TYPE_TAGS
 
 
 def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
@@ -1298,9 +1299,16 @@ def test_type_hint_check_lowering():
     assert any(op["kind"] == "guard_tag" for op in ops)
 
 
-def test_type_hint_check_eliminates_proven_constant_guard():
-    ir = compile_to_tir("x: int = 1", type_hint_policy="check")
-    assert "guard_tag" not in _op_kinds(ir)
+def test_type_hint_check_publishes_constant_guard_for_tir() -> None:
+    ir = compile_to_tir("x: int = 42", type_hint_policy="check")
+    (guard,) = _ops_by_kind(ir, "guard_tag")
+    definitions = {op["out"]: op for op in _all_ops(ir) if "out" in op}
+    value, tag = (definitions[arg] for arg in guard["args"])
+    assert value["kind"] == tag["kind"] == "const"
+    assert value["value"] == 42
+    assert tag["value"] == BUILTIN_TYPE_TAGS["int"]
+    # Rust owns proving this authored check redundant. The frontend publishes
+    # the real initializer and annotation instead of performing SCCP itself.
 
 
 def test_type_hint_integer_lowering_preserves_semantic_op_shapes():

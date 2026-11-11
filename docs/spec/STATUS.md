@@ -96,7 +96,6 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   Runtime constructor policy covers default-object argument rejection,
   custom-`__new__` plus object-`__init__` skip behavior, and custom-init
   forwarding. Focused evidence lives in
-  `tests/test_frontend_midend_passes.py`,
   `runtime/molt-runtime/src/call/type_policy.rs`, and
   `tests/differential/basic/type_call_constructor_policy.py`.
 - Build target semantics are explicit for Python `3.12`, `3.13`, and `3.14`:

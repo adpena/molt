@@ -1107,6 +1107,22 @@ def test_callback_effect_validation_requires_independent_explicit_fact(
         gen.load_table(table)
 
 
+@pytest.mark.parametrize("kinds", ['["unknown_marker"]', '["line", "line"]', '["add"]'])
+def test_nothrow_copy_effect_rejects_unknown_duplicate_or_typed_opcode(
+    tmp_path: Path,
+    kinds: str,
+) -> None:
+    table = tmp_path / "nothrow_copy.toml"
+    table.write_text(
+        TABLE.read_text(encoding="utf-8").replace(
+            'nothrow_copy_kinds = ["line"]', f"nothrow_copy_kinds = {kinds}"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(_gen().OpKindTableError, match="nothrow_copy_kinds"):
+        _gen().load_table(table)
+
+
 def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     """SSA attr transport owns live values; op_kinds.toml owns membership."""
     gen = _gen()
@@ -4594,20 +4610,15 @@ def _load_generated_py():
     return importlib.import_module(str(molt_module_name(OUT_PY)))
 
 
-def test_frontend_raising_kinds_match_table() -> None:
-    """RAISING_KIND_NAMES in the generated Python equals the table's
-    [[frontend_raising_kind]] rows, and every opcode-mapped row maps to a
-    may_throw OpCode (the frontend⇄backend dual-oracle drift kill)."""
+def test_frontend_observer_rows_match_opcode_raising_facts() -> None:
+    """Frontend observer rows inherit real may-throw opcode facts.
+
+    These rows still feed callback effects used by traceback placement; their
+    former optimizer-only RAISING_KIND_NAMES projection has no live reader.
+    """
     gen = _gen()
     data = gen.load_table()
-    py = _load_generated_py()
-
-    table_kinds = {row["kind"] for row in data["frontend_raising_kind"]}
-    assert py.RAISING_KIND_NAMES == table_kinds, (
-        "RAISING_KIND_NAMES drifted from [[frontend_raising_kind]]: "
-        f"gen-only={sorted(py.RAISING_KIND_NAMES - table_kinds)} "
-        f"table-only={sorted(table_kinds - py.RAISING_KIND_NAMES)}"
-    )
+    assert data["frontend_raising_kind"]
 
     may_throw_ops = {r["name"] for r in data["opcode"] if r["may_throw"]}
     for row in data["frontend_raising_kind"]:
@@ -4652,23 +4663,15 @@ def test_frontend_check_exception_skip_kinds_match_table() -> None:
                 )
 
 
-def test_frontend_effect_classes_match_generated_authority() -> None:
-    """The frontend optimizer effect map is generated from op_kinds.toml, not
-    from a hand-kept Python set in the optimizer."""
+def test_frame_location_effects_match_generated_authority() -> None:
+    """Traceback placement effect sets share the opcode authority."""
     gen = _gen()
     data = gen.load_table()
     py = _load_generated_py()
 
     expected = gen._frontend_effect_class_map(data)
-    assert py.FRONTEND_EFFECT_CLASS == expected
     assert py.FRONTEND_EFFECT_PURE_KINDS == {
         kind for kind, effect in expected.items() if effect == "pure"
-    }
-    assert py.FRONTEND_EFFECT_READS_HEAP_KINDS == {
-        kind for kind, effect in expected.items() if effect == "reads_heap"
-    }
-    assert py.FRONTEND_EFFECT_WRITES_HEAP_KINDS == {
-        kind for kind, effect in expected.items() if effect == "writes_heap"
     }
     assert py.FRONTEND_EFFECT_CONTROL_KINDS == {
         kind for kind, effect in expected.items() if effect == "control"
@@ -4676,19 +4679,16 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
     assert py.FRONTEND_ARBITRARY_HEAP_EFFECT == (gen._frontend_arbitrary_heap_map(data))
     assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["LOAD_VAR"] is False
     assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["BINDING_ALIAS"] is False
-    assert py.FRONTEND_EFFECT_CLASS["BINDING_ALIAS"] == "writes_heap"
+    assert "BINDING_ALIAS" not in py.FRONTEND_EFFECT_PURE_KINDS
     assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["STORE_VAR"] is True
-    assert py.FRONTEND_TRUTHINESS_CONTROL_KINDS == (
-        gen._frontend_truthiness_control_kinds(data)
-    )
     assert all(
         py.FRONTEND_ARBITRARY_HEAP_EFFECT[kind]
-        for kind in py.FRONTEND_TRUTHINESS_CONTROL_KINDS
+        for kind in gen._frontend_truthiness_control_kinds(data)
     )
     for callback_control in {
         "STATE_TRANSITION",
     }:
-        assert py.FRONTEND_EFFECT_CLASS[callback_control] == "control"
+        assert callback_control in py.FRONTEND_EFFECT_CONTROL_KINDS
         assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[callback_control]
     # Public module mappings can invoke user equality/hash callbacks.
     assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["MODULE_CACHE_GET"]
@@ -4727,89 +4727,6 @@ def test_predicate_aliases_require_exception_observers(
         gen.load_table(table)
 
 
-def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
-    py = _load_generated_py()
-
-    for kind in py.FRONTEND_OPERATOR_OPCODE:
-        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
-        assert kind not in py.FRONTEND_EFFECT_PURE_KINDS
-    # Wire aliases such as BIT_NOT are not frontend emission spellings.
-    emitted_operators = set(py.BINOP_OP_KIND.values()) | set(
-        py.AUGASSIGN_OP_KIND.values()
-    )
-    emitted_operators.update({"ABS", "NEG", "POS", "INVERT"})
-    assert emitted_operators <= py.RAISING_KIND_NAMES
-    assert not (emitted_operators & py.CHECK_EXCEPTION_SKIP_KINDS)
-
-    for kind, category in py.FRONTEND_PREDICATE_SEMANTICS.items():
-        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
-        assert kind not in py.FRONTEND_EFFECT_PURE_KINDS
-        assert kind in py.RAISING_KIND_NAMES
-        assert kind not in py.CHECK_EXCEPTION_SKIP_KINDS
-        if category == "truth":
-            assert py.frontend_predicate_facts(kind, "int") == (True, True)
-            assert py.frontend_predicate_facts(kind, None) == (False, False)
-        elif category == "containment":
-            assert py.frontend_predicate_facts(kind, "str", "str") == (False, False)
-        else:
-            assert py.frontend_predicate_facts(kind, "int", "float") == (True, True)
-            assert py.frontend_predicate_facts(kind, None, "int") == (False, False)
-            assert py.frontend_predicate_facts(kind, "None", "int") == (
-                True,
-                category == "equality",
-            )
-        assert py.frontend_predicate_facts(kind) == (False, False)
-    assert (
-        py.FRONTEND_INTRINSIC_SCALAR_RESULTS.keys()
-        == py.FRONTEND_INTRINSIC_SCALAR_ARITIES.keys()
-    )
-
-    callback_reads = {
-        "INDEX",
-        "GETATTR",
-        "HASATTR_NAME",
-        "ISINSTANCE",
-        "LEN",
-        "MODULE_GET_ATTR",
-        "GETATTR_GENERIC_OBJ",
-        "GETATTR_GENERIC_PTR",
-        "GETATTR_NAME_DEFAULT",
-        "GETATTR_SPECIAL_OBJ",
-        "GUARDED_GETATTR",
-    }
-    for kind in callback_reads:
-        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
-        assert kind in py.FRONTEND_EFFECT_WRITES_HEAP_KINDS
-        assert kind not in py.FRONTEND_EFFECT_READS_HEAP_KINDS
-        assert kind not in py.FRONTEND_EFFECT_PURE_KINDS
-        assert kind in py.RAISING_KIND_NAMES
-
-    for kind in {"STORE_VAR", "SETATTR_GENERIC_OBJ"}:
-        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
-        assert kind in py.FRONTEND_EFFECT_WRITES_HEAP_KINDS
-
-    assert py.FRONTEND_EFFECT_CLASS["LOAD_VAR"] == "reads_heap"
-    assert py.FRONTEND_EFFECT_CLASS["PHI"] == "pure"
-    assert py.FRONTEND_EFFECT_CLASS["EXCEPTION_MATCH_BUILTIN"] == "reads_heap"
-    assert py.FRONTEND_EFFECT_CLASS["STATE_TRANSITION"] == "control"
-    assert py.FRONTEND_EFFECT_CLASS["GUARD_TAG"] == "control"
-    assert py.FRONTEND_EFFECT_CLASS["CONST_STR"] == "pure"
-    for kind in ("CONST_STR", "CONST_BYTES", "CONST_BIGINT"):
-        assert kind in py.RAISING_KIND_NAMES
-        assert kind not in py.CHECK_EXCEPTION_SKIP_KINDS
-
-    for kind in ("ADD", "SUB", "MUL"):
-        assert py.frontend_operator_facts(kind, "int", "int") == ("pure", True)
-        assert py.frontend_operator_facts(kind, "int", "float") == ("pure", False)
-        assert py.frontend_operator_facts(kind, None, "int") == ("writes_heap", False)
-    for kind in ("NEG", "ABS", "INVERT"):
-        assert py.frontend_operator_facts(kind, "int") == ("pure", True)
-    assert py.frontend_operator_facts("INVERT", "bool") == ("writes_heap", False)
-    for kind in ("DIV", "FLOORDIV", "MOD", "POW", "LSHIFT", "RSHIFT"):
-        assert py.frontend_operator_facts(kind, "int", "int") == ("pure", False)
-    assert not hasattr(py, "FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS")
-
-
 @pytest.mark.parametrize(
     "kind", ["MATMUL", "INPLACE_BIT_AND", "INPLACE_BIT_OR", "INPLACE_BIT_XOR"]
 )
@@ -4824,14 +4741,6 @@ def test_binary_callback_observer_cannot_be_omitted(kind: str, tmp_path: Path) -
     path.write_text(mutated, encoding="utf-8")
     with pytest.raises(gen.OpKindTableError, match="binary operator frontend kind"):
         gen.load_table(path)
-
-
-def test_frontend_commutativity_is_independent_of_purity() -> None:
-    py = _load_generated_py()
-    assert py.frontend_can_reorder_commutative("ADD", "int", "float")
-    assert py.frontend_can_reorder_commutative("MUL", "int", "int")
-    for operands in [("str", "str"), ("bytes", "bytes"), (None, "int")]:
-        assert not py.frontend_can_reorder_commutative("ADD", *operands)
 
 
 @pytest.mark.parametrize(
@@ -4863,18 +4772,11 @@ def test_primitive_operator_effect_matrix_rejects_ambiguous_authority(
         primitive_effect_cases(data)
 
 
-def test_primitive_operator_projections_cover_every_exact_case() -> None:
-    from itertools import product
-    from tools.op_kinds.primitive_effects import (
-        PRIMITIVE_FRONTEND_TYPES,
-        frontend_operator_map,
-        primitive_effect_cases,
-    )
+def test_primitive_operator_cases_cover_rust_projection() -> None:
+    from tools.op_kinds.primitive_effects import primitive_effect_cases
 
     gen = _gen()
     data = gen.load_table()
-    py = _load_generated_py()
-    mapping = frontend_operator_map(data)
     cases = primitive_effect_cases(data)
     governed = {opcode for case in cases for opcode in case.opcodes}
     assert governed == {
@@ -4899,37 +4801,10 @@ def test_primitive_operator_projections_cover_every_exact_case() -> None:
         "Shr",
         "BitNot",
     }
-    for case in cases:
-        for opcode in case.opcodes:
-            aliases = [kind for kind, mapped in mapping.items() if mapped == opcode]
-            assert aliases, opcode
-            for operands in product(*case.operands):
-                projected = tuple(PRIMITIVE_FRONTEND_TYPES[ty] for ty in operands)
-                for alias in aliases:
-                    assert py.frontend_operator_facts(alias, *projected) == (
-                        "pure",
-                        case.purity == "pure",
-                    ), (alias, operands)
-    for kind in ("ADD", "INPLACE_ADD"):
-        for ty in ("str", "bytes"):
-            assert py.frontend_operator_facts(kind, ty, ty) == ("pure", False)
     rust = gen.render_rs(data)
     assert "fn scalar_type(" not in rust
     assert "ty.semantic_type()" in rust
     assert "(left.semantic_type(), right.semantic_type())" in rust
-
-
-def test_midend_effect_oracle_consumes_generated_authority_only() -> None:
-    source = (ROOT / "src/molt/frontend/lowering/midend_canonicalization.py").read_text(
-        encoding="utf-8"
-    )
-    method = source.split("def _op_effect_class", 1)[1].split(
-        "def _is_pure_op_for_global_cse", 1
-    )[0]
-
-    assert 'FRONTEND_EFFECT_CLASS.get(op_kind, "unknown")' in method
-    assert "op_kind in {" not in method
-    assert ".startswith(" not in method
 
 
 def test_generated_python_canonicalizes_rc_aliases_for_analysis() -> None:
@@ -5002,8 +4877,8 @@ def test_binary_op_maps_match_table_and_are_exhaustive() -> None:
     assert set(py.AUGASSIGN_OP_KIND) == ast_operator_names
 
 
-def test_frontend_raising_kinds_match_frontend_consumer() -> None:
-    """The generated RAISING_KIND_NAMES / CHECK_EXCEPTION_SKIP_KINDS /
+def test_frontend_generated_tables_have_live_consumers() -> None:
+    """The generated CHECK_EXCEPTION_SKIP_KINDS /
     *_OP_KIND constants the frontend imports are the SAME objects the generator
     renders — the frontend emit()/visit_BinOp/visit_AugAssign now have no private
     copy. Importing the frontend lowering module must expose them identically."""
@@ -5011,8 +4886,6 @@ def test_frontend_raising_kinds_match_frontend_consumer() -> None:
     import molt.frontend  # noqa: F401  (binds every lowering mixin)
 
     names = (
-        "RAISING_KIND_NAMES",
-        "FRONTEND_OPERATOR_OPCODE",
         "CHECK_EXCEPTION_SKIP_KINDS",
         "BINOP_OP_KIND",
         "AUGASSIGN_OP_KIND",
@@ -5064,18 +4937,19 @@ def test_render_detects_frontend_table_mutation() -> None:
 
     mutated_nothrow = json.loads(json.dumps(data))
     mutated_nothrow["primitive_operator_effect_cases"][0]["purity"] = "pure_may_throw"
-    assert gen.render_py(mutated_nothrow) != rendered, (
-        "mutating primitive operator effects did not change the Python render"
+    assert gen.render_py(mutated_nothrow) == rendered, (
+        "primitive optimizer effects must have no duplicate Python projection"
     )
     assert gen.render_rs(mutated_nothrow) != gen.render_rs(data)
 
     mutated_effect = json.loads(json.dumps(data))
     for row in mutated_effect["frontend_effect_kind"]:
         if row["kind"] == "LOAD_VAR":
-            row["effect"] = "writes_heap"
+            assert row["effect"] != "pure"
+            row["effect"] = "pure"
             break
     assert gen.render_py(mutated_effect) != rendered, (
-        "mutating a frontend_effect_kind row did not change the Python render"
+        "mutating the retained pure/control projection did not change Python"
     )
 
     mutated_heap = json.loads(json.dumps(data))
@@ -7285,28 +7159,6 @@ def test_retired_iterator_fusion_leaves_no_generated_authority() -> None:
     assert not tir_path("passes/deforestation/fusion.rs").exists()
 
 
-def test_frontend_only_exact_result_has_one_validated_authority() -> None:
-    gen = _gen()
-    data = gen.load_table()
-    generated = _load_generated_py()
-    assert generated.FRONTEND_INTRINSIC_SCALAR_RESULTS["TYPE_OF"] == "int"
-    assert generated.FRONTEND_INTRINSIC_SCALAR_ARITIES["TYPE_OF"] == 1
-    assert generated.FRONTEND_EFFECT_CLASS["TYPE_OF"] == "reads_heap"
-    row = next(row for row in data["frontend_effect_kind"] if row["kind"] == "TYPE_OF")
-    for changes in (
-        {"frontend_intrinsic_scalar_arity": -1},
-        {"frontend_intrinsic_scalar_arity": True},
-        {"exact_scalar_result_type": "DynBox"},
-        {"kind": "CONST"},
-    ):
-        original = dict(row)
-        row.update(changes)
-        with pytest.raises(gen.OpKindTableError, match="exact scalar"):
-            gen._validate_frontend_tables(data, data["opcode"])
-        row.clear()
-        row.update(original)
-
-
 def test_semantic_operand_shapes_are_canonical_and_generated() -> None:
     gen = _gen()
     data = gen.load_table()
@@ -7329,9 +7181,7 @@ def test_semantic_operand_shapes_are_canonical_and_generated() -> None:
     assert opcodes["CheckedAdd"]["operand_arity"] == 2
     assert opcodes["CheckedMul"]["operand_arity"] == 2
     assert opcodes["TypeGuard"]["operand_arity"] == 1
-    # Literal payloads are frontend arguments but TIR attrs. Both facts must
-    # survive validation and projection without a false cross-domain equality.
-    assert opcodes["ConstInt"]["frontend_intrinsic_scalar_arity"] == 1
+    # Literal payloads are TIR attributes, not SSA operands.
     assert opcodes["ConstInt"]["operand_arity"] == 0
     for name in ("BuildList", "BuildTuple", "BuildSet", "Copy"):
         assert opcodes[name]["operand_arity"] == "variable"
@@ -7724,7 +7574,7 @@ def test_explicit_frontend_lowerings_replace_manufactured_spellings():
         namespace["validate_serialized_kind"](wire)
         with pytest.raises(ValueError, match="unregistered frontend op kind"):
             namespace["validate_frontend_kind"](wire.upper(), "producer")
-        assert wire.upper() not in namespace["FRONTEND_EFFECT_CLASS"]
+        assert wire.upper() not in namespace["FRONTEND_REGISTERED_KINDS"]
         assert wire.upper() not in namespace["FRONTEND_ARBITRARY_HEAP_EFFECT"]
     for kind, effect in {
         "DELATTR_GENERIC_OBJ": "writes_heap",
@@ -7734,7 +7584,11 @@ def test_explicit_frontend_lowerings_replace_manufactured_spellings():
         "ret": "control",
         "ret_void": "control",
     }.items():
-        assert namespace["FRONTEND_EFFECT_CLASS"][kind] == effect
+        assert kind in namespace["FRONTEND_REGISTERED_KINDS"]
+        if effect == "control":
+            assert kind in namespace["FRONTEND_EFFECT_CONTROL_KINDS"]
+        else:
+            assert kind not in namespace["FRONTEND_EFFECT_PURE_KINDS"]
     for kind in ("ret", "ret_void"):
         assert kind in namespace["FRONTEND_EFFECT_CONTROL_KINDS"]
         assert namespace["FRONTEND_ARBITRARY_HEAP_EFFECT"][kind] is False
@@ -7744,7 +7598,7 @@ def test_explicit_frontend_lowerings_replace_manufactured_spellings():
     namespace["validate_serialized_kind"]("string_eq")
     with pytest.raises(ValueError, match="unregistered frontend op kind"):
         namespace["validate_frontend_kind"]("STRING_EQ", "producer")
-    assert "STRING_EQ" not in namespace["FRONTEND_EFFECT_CLASS"]
+    assert "STRING_EQ" not in namespace["FRONTEND_REGISTERED_KINDS"]
     for kind in ("RETURN", "RET", "RET_VOID", "ASYNC_BLOCK_ON", "block_on"):
         with pytest.raises(ValueError, match="unregistered frontend op kind"):
             namespace["validate_frontend_kind"](kind, "producer")
@@ -7786,32 +7640,6 @@ def test_frontend_lowering_projection_preserves_declared_alternatives():
         "ITER_NEW",
         "ALTERNATIVE_ITER",
     )
-
-
-@pytest.mark.parametrize("run_midend", [False, True])
-@pytest.mark.parametrize("kind", ["ret", "ret_void"])
-def test_frontend_return_spelling_reaches_real_serializer(kind, run_midend):
-    from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
-
-    generator = SimpleTIRGenerator()
-    value = MoltValue("answer", "int")
-    ops = [MoltOp(kind="CONST", args=[37], result=value)] if kind == "ret" else []
-    ops.append(
-        MoltOp(
-            kind=kind,
-            args=[value] if kind == "ret" else [],
-            result=MoltValue("none"),
-        )
-    )
-    assert generator._op_effect_class(kind) == "control"
-    wire = generator.map_ops_to_json(ops, run_midend=run_midend)
-    if kind == "ret":
-        assert len(wire) == 2
-        assert wire[0]["kind"] == "const"
-        assert wire[0]["value"] == 37
-        assert wire[1] == {"kind": "ret", "args": [wire[0]["out"]]}
-    else:
-        assert wire == [{"kind": "ret_void"}]
 
 
 @pytest.mark.parametrize("kind", ["RETURN", "RET", "RET_VOID"])

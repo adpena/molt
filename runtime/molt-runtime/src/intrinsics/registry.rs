@@ -1043,7 +1043,7 @@ fn is_runtime_materialization(
     };
     unsafe {
         object_type_id(ptr) == TYPE_ID_FUNCTION
-            && crate::object_class_bits(ptr)
+            && crate::builtins::type_ops::type_of_bits(py, bits)
                 == crate::builtin_classes(py).builtin_function_or_method
             && crate::function_fn_ptr(ptr)
                 == crate::builtins::functions::canonicalize_runtime_callable_key(fn_ptr)
@@ -1115,13 +1115,17 @@ pub(crate) fn is_named_python_builtin_materialization(
         return false;
     };
     // Only default-free positional dependencies are needed by the admitted
-    // bodies. All other shapes retain their ordinary Python call path.
+    // bodies. All other shapes retain their ordinary Python call path. A
+    // positional-range policy binds the exact declared arity without a custom
+    // binder; the raw-call check below proves that for this object.
     if !spec.defaults.is_empty()
         || !spec.kw_defaults.is_empty()
         || !spec.kwonly_params.is_empty()
         || spec.vararg.is_some()
         || spec.varkw.is_some()
-        || spec.bind_kind.is_some()
+        || spec
+            .bind_kind
+            .is_some_and(|policy| policy.requires_custom_binding())
     {
         return false;
     }
@@ -1133,7 +1137,7 @@ pub(crate) fn is_named_python_builtin_materialization(
     };
     unsafe {
         object_type_id(function) == TYPE_ID_FUNCTION
-            && crate::object_class_bits(function)
+            && crate::builtins::type_ops::type_of_bits(py, bits)
                 == crate::builtin_classes(py).builtin_function_or_method
             && crate::function_fn_ptr(function)
                 == crate::builtins::functions::canonicalize_runtime_callable_key(target)
@@ -1169,8 +1173,11 @@ pub(crate) fn is_compiled_body_materialization(
         return false;
     };
     unsafe {
+        // Ordinary compiled construction (`molt_func_new`) leaves the class
+        // edge zero; `type_of_bits` owns the meaning of that shape.
         if object_type_id(function) != TYPE_ID_FUNCTION
-            || crate::object_class_bits(function) != crate::builtin_classes(py).function
+            || crate::builtins::type_ops::type_of_bits(py, bits)
+                != crate::builtin_classes(py).function
             || crate::function_mutation_version(function) != 0
             || crate::function_fn_ptr(function) != target
             || crate::function_arity(function) != arity
@@ -3123,14 +3130,10 @@ mod tests {
                 Ordering::SeqCst,
             ));
             unsafe {
+                // Production shape: `molt_func_new` publishes no class edge.
                 let function = crate::alloc_function_obj(py, 0xDEAD_BEEF, 0);
                 assert!(!function.is_null());
-                assert!(crate::object::object_init_class_edge_unpublished(
-                    py,
-                    function,
-                    function_class,
-                    crate::object::ClassEdgeOwnership::Owned,
-                ));
+                assert_eq!(crate::object_class_bits(function), 0);
                 let _owner = crate::PtrDropGuard::preserving(py, function);
                 let bits = MoltObject::from_ptr(function).bits();
                 let code = obj_from_bits(crate::ensure_function_code_bits(py, function))
@@ -3188,6 +3191,27 @@ mod tests {
                 assert!(!is_compiled_body_materialization(
                     py,
                     MoltObject::from_ptr(other).bits(),
+                    "molt_known_intrinsic",
+                    0,
+                    &[],
+                ));
+                // An explicit edge naming another class refuses admission.
+                let foreign = crate::alloc_function_obj(py, 0xDEAD_BEEF, 0);
+                assert!(!foreign.is_null());
+                assert!(crate::object::object_init_class_edge_unpublished(
+                    py,
+                    foreign,
+                    crate::builtin_classes(py).builtin_function_or_method,
+                    crate::object::ClassEdgeOwnership::Owned,
+                ));
+                let _foreign_owner = crate::PtrDropGuard::preserving(py, foreign);
+                let foreign_code = obj_from_bits(crate::ensure_function_code_bits(py, foreign))
+                    .as_ptr()
+                    .expect("foreign code");
+                crate::object::layout::code_set_frame_slot_id(foreign_code, 733);
+                assert!(!is_compiled_body_materialization(
+                    py,
+                    MoltObject::from_ptr(foreign).bits(),
                     "molt_known_intrinsic",
                     0,
                     &[],

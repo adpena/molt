@@ -6,6 +6,7 @@
 //! The flow-insensitive SSA lattice carries immutable values only. Heap object
 //! contents require memory-state and alias custody; they are not SSA constants.
 
+mod census;
 mod eval;
 
 #[cfg(test)]
@@ -653,11 +654,21 @@ impl<'f> Solver<'f> {
     }
 
     fn solve(&mut self) {
+        self.solve_with_parameter_fact(None);
+    }
+
+    /// A diagnostic counterfactual may seed ONE entry value. Production SCCP
+    /// always calls `solve`, which supplies no interprocedural/annotation fact.
+    fn solve_with_parameter_fact(&mut self, seed: Option<(ValueId, Lattice)>) {
         let func = self.func;
         let entry = func.entry_block;
         // Function parameters: no edge binds them.
         for arg in &func.blocks[&entry].args {
-            self.lower(arg.id, Lattice::Overdefined);
+            let state = seed
+                .as_ref()
+                .filter(|(value, _)| *value == arg.id)
+                .map_or(Lattice::Overdefined, |(_, state)| state.clone());
+            self.lower(arg.id, state);
         }
         self.executable_blocks.insert(entry);
         self.visit_block(entry);
@@ -969,6 +980,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let lattice = {
         let mut solver = Solver::new(func);
         solver.solve();
+        census::emit(&solver);
         solver.lattice
     };
 

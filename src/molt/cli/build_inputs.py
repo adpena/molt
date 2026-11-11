@@ -627,7 +627,6 @@ def _prepare_build_config(
     pgo_profile_path: Path | None = None
     runtime_feedback_summary: RuntimeFeedbackSummary | None = None
     runtime_feedback_path: Path | None = None
-    pgo_hot_function_names: set[str] = set()
     if pgo_profile:
         summary, resolved, err = _load_pgo_profile(
             project_root,
@@ -640,12 +639,6 @@ def _prepare_build_config(
             return None, err
         pgo_profile_summary = summary
         pgo_profile_path = resolved
-    if pgo_profile_summary is not None:
-        pgo_hot_function_names = {
-            symbol.strip()
-            for symbol in pgo_profile_summary.hot_functions
-            if isinstance(symbol, str) and symbol.strip()
-        }
     if runtime_feedback:
         summary, resolved, err = _load_runtime_feedback(
             project_root,
@@ -658,13 +651,6 @@ def _prepare_build_config(
             return None, err
         runtime_feedback_summary = summary
         runtime_feedback_path = resolved
-    if runtime_feedback_summary is not None:
-        pgo_hot_function_names.update(
-            symbol.strip()
-            for symbol in runtime_feedback_summary.hot_functions
-            if isinstance(symbol, str) and symbol.strip()
-        )
-    pgo_hot_function_names_sorted = tuple(sorted(pgo_hot_function_names))
     pgo_profile_payload: dict[str, Any] | None = None
     if pgo_profile_summary is not None and pgo_profile_path is not None:
         pgo_profile_payload = {
@@ -789,8 +775,6 @@ def _prepare_build_config(
         pgo_profile_path=pgo_profile_path,
         runtime_feedback_summary=runtime_feedback_summary,
         runtime_feedback_path=runtime_feedback_path,
-        pgo_hot_function_names=pgo_hot_function_names,
-        pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         pgo_profile_payload=pgo_profile_payload,
         runtime_feedback_payload=runtime_feedback_payload,
         cargo_timeout=cargo_timeout,
@@ -854,8 +838,6 @@ def _prepare_build_preamble(
         except ValueError:
             frontend_timing_threshold = 0.0
     frontend_module_timings: list[dict[str, Any]] = []
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]] = {}
     frontend_parallel_details: dict[str, Any] = {
         "enabled": False,
         "workers": 0,
@@ -900,8 +882,6 @@ def _prepare_build_preamble(
         frontend_timing_enabled=frontend_timing_enabled,
         frontend_timing_threshold=frontend_timing_threshold,
         frontend_module_timings=frontend_module_timings,
-        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
-        midend_pass_stats_by_function=midend_pass_stats_by_function,
         frontend_parallel_details=frontend_parallel_details,
         diagnostics_start=diagnostics_start,
         phase_starts=phase_starts,

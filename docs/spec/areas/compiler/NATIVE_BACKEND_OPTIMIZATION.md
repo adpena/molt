@@ -13,7 +13,7 @@ current evidence.
 | Concern | Owning source |
 | --- | --- |
 | Build stages and frontend invocation | `src/molt/cli/build_pipeline.py`, `src/molt/cli/frontend_pipeline.py` |
-| Frontend assembly and Python midend | `src/molt/frontend/__init__.py`, `src/molt/frontend/lowering/midend_pipeline.py` |
+| Frontend assembly and serialization | `src/molt/frontend/__init__.py`, `src/molt/frontend/lowering/serialization.py` |
 | Exact scalar producer provenance | `runtime/molt-passes/src/tir/type_refine/exact.rs` |
 | Value-keyed representation and non-heap proofs | `runtime/molt-passes/src/representation_facts.rs` |
 | Native name projection and LLVM representation view | `runtime/molt-tir/src/representation_plan.rs` |
@@ -123,6 +123,12 @@ storage and never snapshots mutable lists or dictionaries. Frontend joins,
 convergence comparisons, static truth, and constant CSE use typed literal keys:
 `1`, `True`, `1.0`, signed zero, and distinct NaN payloads cannot be conflated by
 host Python equality. Equal literal values do not prove Python object identity.
+For generated heap **code-literal** producers, GVN's Rust payload keys and
+scoped dominance permit reuse of the first materialization; this is a literal
+admission rule, not an equality proof for arbitrary runtime objects.
+`ownership_lattice_min::Replacements` preserves an independent reference when
+either literal binds a Python local; two unbound literals share the terminal
+drop root. The first constructor and its exception edge remain.
 
 Unary lowering must honor both operand and result carriers. Negating
 `i64::MIN`, including the negative arm of `abs`, needs a BigInt; deferred boxing

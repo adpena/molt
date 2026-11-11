@@ -39,33 +39,23 @@ from molt.frontend._types import (
     AsyncFrameSlot,
     AsyncFrameSlotRole,
     BoundMethodHint,
-    CFGGraph,
     CallableId,
-    CanonicalizationState,
     ClassId,
     ClassInfo,
     ClassRef,
     CodeSlotDeclaration,
     CompilerLocalHome,
     ComprehensionBinding,
-    ControlMaps,
     DeclaredClass,
     ExactClassFact,
     FrontendOpKind,
     FunctionDefinitionValues,
-    LoopBoundFact,
     LoopScope,
     MethodDescriptor,
     MethodInfo,
-    MidendEnvConfig,
-    MidendFunctionPolicy,
-    MidendProfile,
-    MidendTier,
-    MidendTierClassification,
     MoltOp,
     MoltValue,
     PythonIdentity,
-    SCCPResult,
     ScratchCell,
     SimpleIROp,
     SyncContextExit,
@@ -74,7 +64,6 @@ from molt.frontend._types import (
     TypeParameterBinding,
     WireOpKind,
     _ClassNsScope,
-    _TrackedOpsList,
 )
 
 if TYPE_CHECKING:
@@ -91,7 +80,6 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArmExpr
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
     from molt.frontend.lowering.exception_lowering import MoltSyntaxError
-    from molt.frontend.lowering.midend_telemetry import PassMemorySample
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonCellStoragePlan
     from molt.compiler_analysis.python_lexical_scope import PythonCodeNameLayout
@@ -134,12 +122,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     loop_guard_assumptions: list[dict[str, tuple[ClassId, bool, int]]]
     loop_layout_guards: list[dict[str, tuple[ClassId, MoltValue, int]]]
     loop_scopes: list[LoopScope]
-    midend_env: Any
-    midend_hot_functions: set[str]
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]]
-    midend_stats: dict[str, int]
-    midend_stats_by_function: dict[str, dict[str, int]]
     module_annotation_emitted: Any
     module_annotation_exec_counter: Any
     module_annotation_exec_map: MoltValue | None
@@ -181,7 +163,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     native_callable_exports: dict[str, dict[str, Any]]
     native_python_exports: set[str]
     nonlocal_decls: set[str]
-    optimization_profile: MidendProfile
     parameter_bindings: dict[str, str]
     python_binding_index: PythonBindingIndex | None
     python_class_frame_owner: ClassId | None
@@ -239,39 +220,17 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         target_sys_platform: str | None = ...,
         module_chunking: bool = ...,
         module_chunk_max_ops: int = ...,
-        optimization_profile: MidendProfile = ...,
-        pgo_hot_functions: set[str] | None = ...,
     ) -> None: ...
 
     def _active_class_ns_scope(self, name: str) -> "_ClassNsScope | None": ...
 
     def _active_exception_value(self, exc: ActiveException) -> MoltValue: ...
 
-    def _adjust_module_pressure_counts(
-        self, *, function_delta: int = ..., ops_delta: int = ...
-    ) -> None: ...
-
     def _advance_exact_class_token(self) -> int: ...
-
-    def _align_phi_args_to_cfg_predecessors(
-        self, ops: list[MoltOp], cfg: CFGGraph
-    ) -> tuple[list[MoltOp], int]: ...
 
     def _allocate_async_frame_slot(
         self, role: AsyncFrameSlotRole, *, public_name: str | None = ...
     ) -> AsyncFrameSlot: ...
-
-    def _analyze_affine_loop_compare_truth(
-        self, ops: list[MoltOp], cfg: CFGGraph
-    ) -> dict[int, bool]: ...
-
-    def _analyze_loop_bound_facts(
-        self, ops: list[MoltOp], cfg: CFGGraph
-    ) -> dict[int, LoopBoundFact]: ...
-
-    def _analyze_loop_induction_steps(
-        self, ops: list[MoltOp], cfg: CFGGraph
-    ) -> dict[str, int]: ...
 
     def _annotate_qualname(self) -> str: ...
 
@@ -410,35 +369,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.GeneratorExp | ast.ListComp
     ) -> bool: ...
 
-    def _can_tail_merge_op(self, op: MoltOp) -> bool: ...
-
-    @staticmethod
-    def _canonicalization_states_equal(
-        left: CanonicalizationState, right: CanonicalizationState
-    ) -> bool: ...
-
-    def _canonicalize_block_with_state(
-        self,
-        ops: list[MoltOp],
-        in_state: CanonicalizationState,
-        *,
-        induction_steps: dict[str, int],
-    ) -> tuple[list[MoltOp], CanonicalizationState]: ...
-
-    def _canonicalize_cfg_before_optimization(
-        self, ops: list[MoltOp]
-    ) -> tuple[list[MoltOp], int]: ...
-
-    def _canonicalize_control_aware_ops(self, ops: list[MoltOp]) -> list[MoltOp]: ...
-
-    def _canonicalize_control_aware_ops_impl(
-        self, ops: list[MoltOp], *, allow_cross_block_const_dedupe: bool
-    ) -> list[MoltOp]: ...
-
-    def _canonicalize_structured_regions_pre_sccp(
-        self, ops: list[MoltOp]
-    ) -> tuple[list[MoltOp], int]: ...
-
     def _capture_class_import_state(self) -> dict[str, object]: ...
 
     def _capture_condition_bindings(
@@ -459,9 +389,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         class_scope: _ClassNsScope | None = ...,
     ) -> tuple[list[str], dict[str, TypeHint], MoltValue | None, bool]: ...
 
-    @staticmethod
-    def _capture_midend_env_snapshot() -> tuple[str | None, ...]: ...
-
     def _capture_split_target(
         self,
         attribute: ast.Attribute,
@@ -471,10 +398,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[MoltValue, MoltValue]: ...
 
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]: ...
-
-    def _check_is_transparent_label_forwarder(
-        self, op: MoltOp, protected_labels: set[str]
-    ) -> bool: ...
 
     def _claim_function_symbol(
         self, symbol: str, name: str, *, kind: FunctionKind = ...
@@ -552,10 +475,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, class_id: ClassId, class_info: ClassInfo
     ) -> bool: ...
 
-    def _classify_midend_tier(
-        self, function_name: str, ops: list[MoltOp]
-    ) -> MidendTierClassification: ...
-
     def _clear_exact_bindings(self, names: set[str]) -> None: ...
 
     def _clear_import_binding_origin(self, name: str) -> None: ...
@@ -564,15 +483,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _clear_scratch_cell(self, cell: ScratchCell) -> None: ...
 
-    def _clone_canonicalization_state(
-        self, state: CanonicalizationState
-    ) -> CanonicalizationState: ...
-
     def _closure_cells_for(self, names: Sequence[str]) -> list[MoltValue]: ...
-
-    def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]: ...
-
-    def _coerce_control_label_like(self, exemplar: Any, key: str) -> Any: ...
 
     def _collect_arg_value_names(self, value: Any, out: set[str]) -> None: ...
 
@@ -684,10 +595,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _collect_target_names(self, target: ast.AST) -> list[str]: ...
 
-    def _compare_int_truth(
-        self, op_kind: FrontendOpKind, lhs: int, rhs: int
-    ) -> bool | None: ...
-
     def _compile_class_async_method(
         self,
         class_node: ast.ClassDef,
@@ -722,33 +629,17 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.ListComp | ast.SetComp | ast.DictComp
     ) -> Generator[None]: ...
 
-    def _compute_block_use_def(
-        self, ops: list[MoltOp]
-    ) -> tuple[set[str], set[str]]: ...
-
-    def _compute_sccp(
-        self, ops: list[MoltOp], cfg: CFGGraph, *, max_iters_override: int | None = ...
-    ) -> SCCPResult: ...
-
     def _condition_else(self, merge: _ConditionMerge) -> None: ...
 
     def _condition_result(
         self, value: MoltValue, mode: _ConditionMode, *, known_truth: bool | None = ...
     ) -> tuple[MoltValue, ...]: ...
 
-    def _const_cache_key_for_op(self, op: MoltOp) -> tuple[Any, ...] | None: ...
-
     def _const_int_from_expr(self, node: ast.expr) -> int | None: ...
-
-    def _const_type_tag(self, op: MoltOp) -> int | None: ...
-
-    def _const_type_tag_for_lattice_value(self, value: Any) -> int | None: ...
 
     def _consume_scratch_cell(self, cell: ScratchCell) -> MoltValue: ...
 
     def _container_elem_hint(self, value: MoltValue) -> TypeHint | None: ...
-
-    def _control_label_key(self, value: Any) -> str | None: ...
 
     def _copy_container_hints_for_name_load(
         self, var_name: str, ssa_name: str
@@ -760,15 +651,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _create_class_annotation_namespace(self, scope: _ClassNsScope) -> None: ...
 
-    def _current_module_pressure_snapshot(self) -> tuple[int, int, int]: ...
-
     def _current_module_static_class_ref(
         self, class_id: ClassId
     ) -> MoltValue | None: ...
-
-    def _dead_op_lattice_class(
-        self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = ...
-    ) -> str: ...
 
     @staticmethod
     def _declared_class(value: MoltValue | None) -> DeclaredClass | None: ...
@@ -784,10 +669,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _definition_qualname(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
     ) -> str: ...
-
-    def _detect_induction_step_from_recurrence(
-        self, phi_name: str, recurrence: MoltOp, definitions: dict[str, MoltOp]
-    ) -> int | None: ...
 
     def _dict_increment_key_is_single_eval_safe(self, key: ast.expr) -> bool: ...
 
@@ -811,8 +692,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _dotted_imported_module_target(
         self, receiver_parts: tuple[str, ...]
     ) -> str | None: ...
-
-    def _eliminate_dead_trivial_consts(self, ops: list[MoltOp]) -> list[MoltOp]: ...
 
     def _emit_active_handler_name_deletes(
         self, handlers: list["ActiveException"]
@@ -1746,17 +1625,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_widen(self, value: MoltValue, *, hint: str | None = ...) -> MoltValue: ...
 
-    def _empty_canonicalization_state(self) -> CanonicalizationState: ...
-
     def _ends_with_return_jump(self) -> bool: ...
 
     def _ensure_code_slots_init(self) -> None: ...
 
     def _ensure_module_annotation_exec_map(self) -> MoltValue: ...
-
-    def _ensure_structural_cfg_validity(
-        self, ops: list[MoltOp], *, stage: str
-    ) -> tuple[list[MoltOp], int]: ...
 
     def _enter_frame_restore_scope(
         self, restore: Callable[[], object]
@@ -1773,12 +1646,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _exact_class_for_value(
         self, value: MoltValue | None, source_name: str | None = ...
     ) -> ClassId | None: ...
-
-    def _exact_primitive_operand_types(
-        self, op: MoltOp, const_by_name: dict[str, Any] | None = ...
-    ) -> tuple[str | None, ...]: ...
-
-    def _exception_routing_labels(self, ops: list[MoltOp]) -> set[str]: ...
 
     def _exit_frame_restore_scope(self, scope: FrameRestoreScope) -> None: ...
 
@@ -1803,10 +1670,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _extract_inline_return(
         self, item: ast.FunctionDef, params: list[str]
     ) -> ast.expr | None: ...
-
-    def _find_unbound_value_uses(
-        self, ops: list[MoltOp], *, params: Sequence[str] = ...
-    ) -> list[tuple[int, str, str]]: ...
 
     def _finish_condition_merge(
         self,
@@ -1895,24 +1758,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _genexpr_symbol(self) -> str: ...
 
-    def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None: ...
-
     def _guard_tag_for_hint(self, hint: str) -> int | None: ...
 
     def _has_gpu_kernel_decorator(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> bool: ...
-
-    def _heap_alias_class_for_read_op(
-        self,
-        op: MoltOp,
-        value_type_tags: dict[str, int],
-        const_by_name: dict[str, Any] | None = ...,
-    ) -> str | None: ...
-
-    def _heap_alias_classes_for_write_op(self, op: MoltOp) -> set[str]: ...
-
-    def _heap_read_key_class(self, key: tuple[Any, ...]) -> str | None: ...
 
     def _hints_enabled(self) -> bool: ...
 
@@ -1932,14 +1782,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _in_coroutine_body(self) -> bool: ...
 
-    def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]: ...
-
     def _inherit_free_var_import_resolution(
         self, free_vars: list[str], enclosing_state: dict[str, Any]
-    ) -> None: ...
-
-    def _init_midend_state(
-        self, optimization_profile: MidendProfile, pgo_hot_functions: set[str] | None
     ) -> None: ...
 
     def _init_module_lifecycle_state(
@@ -1971,18 +1815,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _instance_attr_mutated(self, class_id: ClassId, attr: str) -> bool: ...
 
-    def _int_const_from_definition(
-        self, name: str, definitions: dict[str, MoltOp]
-    ) -> int | None: ...
-
-    def _intersect_canonicalization_state(
-        self, left: CanonicalizationState, right: CanonicalizationState
-    ) -> CanonicalizationState: ...
-
-    def _intersect_canonicalization_states(
-        self, states: list[CanonicalizationState]
-    ) -> CanonicalizationState: ...
-
     def _invalidate_bytearray_len_hint(
         self, name: str | None, value: MoltValue | None = ...
     ) -> None: ...
@@ -1991,18 +1823,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _invalidate_loop_guards_for_class(self, class_id: ClassId) -> None: ...
 
-    def _is_canonicalization_barrier_op(self, op_kind: FrontendOpKind) -> bool: ...
-
     @staticmethod
     def _is_class_body_managed_name(name: str) -> bool: ...
-
-    def _is_cse_eligible_op(self, op: MoltOp | str) -> bool: ...
 
     def _is_entry_app_binding_scope(self) -> bool: ...
 
     def _is_gpu_kernel_decorator(self, deco: ast.expr) -> bool: ...
-
-    def _is_heap_read_key(self, key: tuple[Any, ...]) -> bool: ...
 
     @staticmethod
     def _is_internal_module(module_name: str | None) -> bool: ...
@@ -2016,12 +1842,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _is_module_entry(self, name: str | None = ...) -> bool: ...
 
     def _is_native_python_export(self, target_module: str, attr_name: str) -> bool: ...
-
-    def _is_pure_op_for_global_cse(self, op: MoltOp | str) -> bool: ...
-
-    def _is_read_key_invalidated_by_alias_classes(
-        self, key: tuple[Any, ...], alias_classes: set[str]
-    ) -> bool: ...
 
     @staticmethod
     def _is_safe_intrinsic_namespace_expr(expr: ast.expr) -> bool: ...
@@ -2048,10 +1868,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _join_imported_module_provenance(
         *states: dict[str, frozenset[str]],
     ) -> dict[str, frozenset[str]]: ...
-
-    def _kill_value_in_canonicalization_state(
-        self, state: CanonicalizationState, name: str
-    ) -> None: ...
 
     def _known_function_kind(
         self, module_name: str, func_id: str
@@ -2171,25 +1987,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None: ...
 
-    def _maybe_report_midend_stats(self) -> None: ...
-
-    @staticmethod
-    def _midend_csv_tokens(value: str) -> set[str]: ...
-
-    @staticmethod
-    def _midend_float_env(name: str, default: float) -> float: ...
-
-    def _midend_function_stats(self) -> dict[str, int]: ...
-
-    def _midend_hot_function_match(self, function_name: str) -> str | None: ...
-
-    def _midend_pass_stats(self, pass_name: str) -> dict[str, Any]: ...
-
-    @staticmethod
-    def _midend_positive_int_env(
-        name: str, default: int, *, minimum: int = ...
-    ) -> int: ...
-
     def _module_can_defer_attrs(self, node: ast.Module) -> bool: ...
 
     def _module_chunk_param_value(self) -> MoltValue: ...
@@ -2244,50 +2041,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, initial: MoltValue | None = ..., *, type_hint: TypeHint = ...
     ) -> ScratchCell: ...
 
-    def _new_tracked_ops(
-        self, initial: list[MoltOp] | None = ..., *, count_function: bool = ...
-    ) -> _TrackedOpsList: ...
-
-    def _normalize_compare_for_induction(
-        self, compare_op: FrontendOpKind, lhs_is_iv: bool
-    ) -> FrontendOpKind | None: ...
-
     @staticmethod
     def _normalize_func_kind(kind: object) -> FunctionKind | None: ...
 
-    def _normalize_operand_key_for_value_numbering(
-        self, value: Any, const_int_values: dict[str, int]
-    ) -> tuple[str, Any] | None: ...
-
-    def _normalize_try_except_join_labels(
-        self, ops: list[MoltOp], *, cfg: CFGGraph
-    ) -> tuple[list[MoltOp], int]: ...
-
-    def _normalize_value_operand_key(
-        self, value: Any, const_int_values: dict[str, int]
-    ) -> tuple[str, Any] | None: ...
-
     def _normalized_return_hint(self, returns: ast.expr | None) -> str | None: ...
-
-    def _op_effect_class(
-        self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = ...
-    ) -> str: ...
-
-    def _op_equal_for_tail_merge(self, left: MoltOp, right: MoltOp) -> bool: ...
-
-    def _op_instance_cannot_raise(
-        self, op: MoltOp, const_by_name: dict[str, Any]
-    ) -> bool: ...
-
-    def _op_may_access_arbitrary_heap(
-        self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = ...
-    ) -> bool: ...
-
-    def _op_may_raise_for_sccp(self, op_kind: FrontendOpKind) -> bool: ...
-
-    def _op_primitive_facts(
-        self, op: MoltOp, const_by_name: dict[str, Any] | None = ...
-    ) -> tuple[str, bool] | None: ...
 
     def _parameter_value(
         self, public_name: str, *, type_hint: TypeHint
@@ -2300,9 +2057,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _parse_range_call(
         self, node: ast.AST
     ) -> tuple[MoltValue, MoltValue, MoltValue] | None: ...
-
-    @staticmethod
-    def _pass_stat_p95(samples: list[float]) -> float: ...
 
     def _pop_loop_guard_assumptions(self) -> None: ...
 
@@ -2328,12 +2082,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _prescan_compile_warnings(self, module_node: ast.Module) -> None: ...
 
-    @staticmethod
-    def _primitive_const_value_map(ops: list[MoltOp]) -> dict[str, Any]: ...
-
-    @staticmethod
-    def _promote_midend_tier_one_step(tier: MidendTier) -> MidendTier: ...
-
     def _propagate_container_hints(self, dest: str, src: MoltValue) -> None: ...
 
     def _propagate_func_type_hint(
@@ -2342,25 +2090,15 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None: ...
 
-    def _prove_monotonic_loop_compare(self, fact: LoopBoundFact) -> bool | None: ...
-
     def _proven_builtin_identity(self, node: ast.AST) -> PythonIdentity | None: ...
 
     def _proven_builtin_name(self, node: ast.AST) -> str | None: ...
 
     def _proven_shape_builtin_call(self, node: ast.Call) -> str | None: ...
 
-    def _prune_dead_labels_and_noop_jumps(
-        self, ops: list[MoltOp]
-    ) -> tuple[list[MoltOp], int, int]: ...
-
     def _prune_native_support_module_functions(
         self, node: ast.Module
     ) -> ast.Module: ...
-
-    def _prune_unreachable_cfg_regions(
-        self, ops: list[MoltOp], *, cfg: CFGGraph, executable_blocks: set[int]
-    ) -> tuple[list[MoltOp], int, int]: ...
 
     def _publish_annotation_exec_map(self, name: str, exec_map: MoltValue) -> None: ...
 
@@ -2392,15 +2130,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _qualname_prefix(self) -> str: ...
 
     def _raise_syntax_error(self, msg: str, node: ast.AST) -> None: ...
-
-    def _range_overlaps_executable_blocks(
-        self,
-        cfg: CFGGraph,
-        *,
-        start: int,
-        end_inclusive: int,
-        executable_blocks: set[int],
-    ) -> bool: ...
 
     def _record_app_module_store(self, name: str, value: MoltValue) -> None: ...
 
@@ -2436,32 +2165,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target: MoltValue, target_name: str | None, elem_hint: TypeHint | None
     ) -> None: ...
 
-    def _record_midend_coverage(
-        self, *, input_ops: int, output_ops: int, counter_baseline: dict[str, int]
-    ) -> None: ...
-
-    def _record_midend_pass_sample(
-        self,
-        pass_name: str,
-        *,
-        elapsed_ms: float,
-        accepted: bool | None,
-        degraded: bool = ...,
-        executed: bool = ...,
-        memory: PassMemorySample | None = ...,
-    ) -> None: ...
-
-    def _record_midend_policy_outcome(
-        self,
-        *,
-        policy: MidendFunctionPolicy,
-        spent_ms: float,
-        work_units_spent: float,
-        degraded: bool,
-        degrade_events: list[dict[str, Any]],
-        round_snapshots: list[dict[str, Any]] | None = ...,
-    ) -> None: ...
-
     def _record_module_provenance_flow_state(self) -> None: ...
 
     def _record_source_app_callable(
@@ -2474,8 +2177,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         has_closure: bool,
     ) -> None: ...
 
-    def _refresh_midend_env_config_if_needed(self) -> None: ...
-
     def _register_code_symbol(self, symbol: str) -> int: ...
 
     def _register_source_callable(
@@ -2483,6 +2184,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def _reload_async_value(self, offset: int, hint: TypeHint) -> MoltValue: ...
+
+    @staticmethod
+    def _reload_frame_argument(
+        value: object, reloads: Mapping[str, MoltValue]
+    ) -> object: ...
 
     def _remember_bytearray_len_hint(
         self, value: MoltValue, length: int | None
@@ -2525,23 +2231,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _reset_type_hint_scope_state(self, *, reset_bytearray_len: bool) -> None: ...
 
-    def _resolve_alias_value(
-        self, value: MoltValue, aliases: dict[str, MoltValue]
-    ) -> MoltValue: ...
-
     def _resolve_method_info(
         self, class_id: ClassId, method: str
     ) -> tuple[MethodInfo | None, ClassId | None]: ...
-
-    def _resolve_midend_env_config(self) -> MidendEnvConfig: ...
-
-    def _resolve_midend_function_policy(
-        self,
-        ops: list[MoltOp],
-        *,
-        function_name: str | None = ...,
-        block_count: int = ...,
-    ) -> MidendFunctionPolicy: ...
 
     def _restore_class_import_state(
         self,
@@ -2563,39 +2255,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _restore_state_attrs(
         self, attrs: tuple[str, ...], state: dict[str, Any]
     ) -> None: ...
-
-    def _rewrite_aliases_in_arg(
-        self, value: Any, aliases: dict[str, MoltValue]
-    ) -> Any: ...
-
-    def _rewrite_loop_edge_threading(
-        self,
-        ops: list[MoltOp],
-        *,
-        cfg: CFGGraph,
-        control: ControlMaps,
-        executable_edges: set[tuple[int, int]],
-        loop_break_choice_by_index: dict[int, bool],
-    ) -> tuple[list[MoltOp], int, int, int]: ...
-
-    def _rewrite_structured_if_regions(
-        self,
-        ops: list[MoltOp],
-        *,
-        control: ControlMaps,
-        branch_choice_by_if_index: dict[int, bool],
-    ) -> tuple[list[MoltOp], int]: ...
-
-    def _run_cse_canonicalization_round(
-        self,
-        ops: list[MoltOp],
-        *,
-        allow_cross_block_const_dedupe: bool,
-        max_cse_iterations_override: int | None = ...,
-        sccp_iter_cap_override: int | None = ...,
-    ) -> tuple[list[MoltOp], int]: ...
-
-    def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]: ...
 
     def _runtime_protected_attribute_requirement_bits(
         self,
@@ -2633,10 +2292,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _scalarize_string_split_fields_json(
         json_ops: list[SimpleIROp],
     ) -> list[SimpleIROp]: ...
-
-    def _sccp_in_const_int_values(
-        self, sccp: SCCPResult
-    ) -> dict[int, dict[str, int]]: ...
 
     def _scope_cell_storage_plan(
         self,
@@ -2723,8 +2378,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _stamp_exact_class(self, value: MoltValue, class_id: ClassId) -> MoltValue: ...
 
-    def _start_midend_pass_memory(self) -> PassMemorySample | None: ...
-
     def _stateful_locals_layout(
         self,
         frame_plan: StatefulFunctionFramePlan,
@@ -2767,15 +2420,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @contextmanager
     def _suppress_check_exception(self, *, emit_on_exit: bool = ...) -> Any: ...
 
-    def _sync_module_pressure_counts_from_funcs_map(self) -> None: ...
-
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool
     ) -> int: ...
-
-    def _trim_phi_args_by_executable_edges(
-        self, ops: list[MoltOp], cfg: CFGGraph, executable_edges: set[tuple[int, int]]
-    ) -> tuple[list[MoltOp], int]: ...
 
     def _try_emit_attribute_receiver_call(self, node: ast.Call) -> Any: ...
 
@@ -2901,14 +2548,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _validate_match_pattern(self, pattern: ast.pattern) -> None: ...
 
-    def _value_number_key_for_op(
-        self,
-        op: MoltOp,
-        const_int_values: dict[str, int],
-        value_type_tags: dict[str, int],
-        induction_steps: dict[str, int],
-    ) -> tuple[Any, ...] | None: ...
-
     def _varnames_from_params(
         self,
         *,
@@ -2922,10 +2561,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _verify_classcell_result(
         self, class_name: str, cell: MoltValue, result: MoltValue
     ) -> None: ...
-
-    def _verify_definite_assignment_in_ops(
-        self, ops: list[MoltOp], *, predefined_value_names: set[str] | None = ...
-    ) -> list[tuple[int, str, str]]: ...
 
     def _visit_async_for(
         self, node: ast.AsyncFor, *, iterator: MoltValue | None = ...
@@ -2964,7 +2599,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         ops: list[MoltOp],
         *,
         function_name: str | None = ...,
-        run_midend: bool = ...,
         module_init_symbol: str | None = ...,
     ) -> list[SimpleIROp]: ...
 
@@ -2989,13 +2623,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         python_first_arg: str | MoltValue | None = ...,
         stateful_frame_plan: StatefulFunctionFramePlan | None = ...,
         code_slots: CodeSlotDeclaration | None = ...,
+        source_node: ast.FunctionDef | None = ...,
     ) -> None: ...
 
     def to_json(
-        self,
-        *,
-        midend_stage: Literal["pre-midend", "post-midend"] = ...,
-        scope: Literal["program", "module"] = ...,
+        self, *, scope: Literal["program", "module"] = ...
     ) -> dict[str, Any]: ...
 
     def visit(self, node: ast.AST) -> Any: ...

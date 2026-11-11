@@ -241,8 +241,8 @@ parallel lanes; stages 2 and 3 follow stage 1; stage 7 follows stage 3.
   function and loop), `objdump` with resolved callees (`disasm_sym.py`), and a sampler
   (`profile_calls.py`) that charges each `sample` call-graph node whose parent is compiled code to
   that runtime entry point (inclusive time of each runtime call that compiled code makes).
-- IR: `molt debug ir --stage post-midend --format json --profile release` (SimpleIR after the
-  mid-end; the native backend consumes this form).
+- IR: `molt debug ir <source.py> --format json` (the frontend serialization boundary;
+  backends lift this wire form into typed SSA before optimization).
 
 Dynamic per-call-site counts with `lldb` were blocked: a launched process did not progress within
 120 s (likely a debugger authorization prompt on this host), so runtime calls per unit come from reading the hot

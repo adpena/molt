@@ -9,7 +9,6 @@ Bridges formal verification (Quint models) with empirical testing by:
 Supported models (under ``formal/quint/``):
   - molt_build_determinism.qnt
   - molt_runtime_determinism.qnt
-  - molt_midend_pipeline.qnt
   - molt_calling_convention.qnt
   - molt_cross_version.qnt
   - molt_luau_transpiler.qnt
@@ -207,7 +206,6 @@ def _trace_fingerprint(trace: list[dict[str, str]]) -> str:
 _MODEL_INVARIANTS: dict[str, str] = {
     "molt_build_determinism": "Inv",
     "molt_runtime_determinism": "Inv",
-    "molt_midend_pipeline": "inv",
     "molt_calling_convention": "Inv",
     "molt_cross_version": "Inv",
     "molt_luau_transpiler": "Inv",
@@ -348,121 +346,6 @@ def _gen_runtime_determinism(
     lines.append(f"mapped = {{k: k * 7 + 3 for k in range({n_tasks})}}")
     lines.append("for k in sorted(mapped):")
     lines.append("    print(f'mapped_{k}={mapped[k]}')")
-
-    return "\n".join(lines) + "\n"
-
-
-def _gen_midend_pipeline(
-    trace: list[dict[str, str]],
-    trace_id: int,
-    fp: str,
-) -> str:
-    """Generate a program with optimization opportunities.
-
-    The midend_pipeline model verifies that the optimization pass pipeline
-    (ConstFold, DCE, SCCP, CSE, LICM, etc.) produces correct output
-    regardless of pass ordering.  The test creates code with dead branches,
-    constant expressions, and common subexpressions.
-    """
-    # Extract pass history from trace
-    pass_history: list[str] = []
-    final_size = 100
-    for state in trace:
-        if "ir" in state:
-            ir_val = state["ir"]
-            history_match = re.search(r"history:\s*\[([^\]]*)\]", ir_val)
-            if history_match:
-                items = [
-                    x.strip() for x in history_match.group(1).split(",") if x.strip()
-                ]
-                if items:
-                    pass_history = items
-            size_match = re.search(r"size:\s*(\d+)", ir_val)
-            if size_match:
-                final_size = int(size_match.group(1))
-
-    lines = [
-        f'"""Purpose: model-based midend pipeline test (trace {trace_id}, fp {fp}).',
-        "",
-        "Exercises optimization opportunities: constant folding, dead code",
-        "elimination, common subexpression elimination, and loop-invariant",
-        f"code motion.  Trace pass history: {pass_history}.",
-        f'Final IR size proxy: {final_size}."""',
-        "",
-    ]
-
-    # Constant folding opportunities
-    if "ConstFold" in pass_history or not pass_history:
-        lines.extend(
-            [
-                "# Constant folding",
-                "x = 2 + 3 * 4",
-                "y = 100 // 7",
-                "z = (x + y) * 2",
-                "print(f'const_fold: x={x} y={y} z={z}')",
-                "",
-            ]
-        )
-
-    # Dead code elimination
-    if "DCE" in pass_history or not pass_history:
-        lines.extend(
-            [
-                "# Dead code paths (should be eliminated but not affect output)",
-                "def compute(n):",
-                "    result = 0",
-                "    for i in range(n):",
-                "        result += i",
-                "        unused = i * 999  # dead store",
-                "    return result",
-                "",
-                "print(f'dce: {compute(10)}')",
-                "",
-            ]
-        )
-
-    # Common subexpression elimination
-    if "CSE" in pass_history or not pass_history:
-        lines.extend(
-            [
-                "# Common subexpressions",
-                "a = 17",
-                "b = 23",
-                "c1 = a * b + a",
-                "c2 = a * b + a  # same expression",
-                "print(f'cse: c1={c1} c2={c2} same={c1 == c2}')",
-                "",
-            ]
-        )
-
-    # Loop-invariant code motion
-    if "LICM" in pass_history or not pass_history:
-        lines.extend(
-            [
-                "# Loop-invariant computation",
-                "total = 0",
-                "base = 42",
-                "for i in range(5):",
-                "    invariant = base * 3  # loop-invariant",
-                "    total += i + invariant",
-                "print(f'licm: total={total}')",
-                "",
-            ]
-        )
-
-    # SCCP (sparse conditional constant propagation)
-    if "SCCP" in pass_history or not pass_history:
-        lines.extend(
-            [
-                "# Conditional constant propagation",
-                "flag = True",
-                "if flag:",
-                "    val = 42",
-                "else:",
-                "    val = 0",
-                "print(f'sccp: val={val}')",
-            ]
-        )
 
     return "\n".join(lines) + "\n"
 
@@ -800,7 +683,6 @@ _GENERATORS: dict[str, type] = {}  # unused, dispatch via dict below
 _GEN_DISPATCH = {
     "molt_build_determinism": _gen_build_determinism,
     "molt_runtime_determinism": _gen_runtime_determinism,
-    "molt_midend_pipeline": _gen_midend_pipeline,
     "molt_calling_convention": _gen_calling_convention,
     "molt_cross_version": _gen_cross_version,
     "molt_luau_transpiler": _gen_luau_transpiler,

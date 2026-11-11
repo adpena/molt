@@ -3,7 +3,7 @@
 
 Reports how much of the real Molt compiler is covered by formal proofs:
   - Opcode coverage: Lean Expr/BinOp/UnOp vs real MoltOp kinds
-  - Pass coverage: which midend passes have correctness proofs
+  - Pass coverage: which abstract pass models have correctness proofs
   - CFG pattern coverage: which control-flow constructs are modeled
 
 Usage:
@@ -124,8 +124,8 @@ REAL_CONTROL_FLOW = {
     "await",
 }
 
-# Midend passes in real compiler
-REAL_PASSES = {
+# Abstract pass models; this is not a production pipeline inventory.
+MODELED_PASSES = {
     "const_fold": "Constant folding",
     "dce": "Dead code elimination",
     "sccp": "Sparse conditional constant propagation",
@@ -192,7 +192,7 @@ def scan_passes() -> dict[str, dict]:
     """Scan which passes have formal proofs."""
     passes_dir = LEAN_DIR / "Passes"
     results = {}
-    for pass_name, desc in REAL_PASSES.items():
+    for pass_name, desc in MODELED_PASSES.items():
         lean_name = {
             "const_fold": "ConstFold",
             "dce": "DCE",
@@ -333,8 +333,8 @@ def main() -> int:
             "passes": pass_results,
             "formalized_count": passes_formalized,
             "proven_count": passes_proven,
-            "total_count": len(REAL_PASSES),
-            "coverage_pct": round(passes_proven / max(len(REAL_PASSES), 1) * 100, 1),
+            "total_count": len(MODELED_PASSES),
+            "coverage_pct": round(passes_proven / max(len(MODELED_PASSES), 1) * 100, 1),
         },
         "proof_metrics": {
             "lean_files": len(lean_files),

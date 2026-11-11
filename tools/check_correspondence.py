@@ -92,7 +92,7 @@ FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 SRC = ROOT / "src"
 
 
-from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
+from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS  # noqa: E402
 
 # Terminal colors
 IS_TTY = sys.stdout.isatty()
@@ -284,7 +284,7 @@ def check_operator_enums() -> CategoryResult:
 
     lean_binops = _parse_lean_inductive_variants(lean_text, "BinOp")
     lean_unops = _parse_lean_inductive_variants(lean_text, "UnOp")
-    python_ops = set(FRONTEND_EFFECT_CLASS)
+    python_ops = set(FRONTEND_REGISTERED_KINDS)
 
     result.items.append(
         CheckItem(
@@ -300,9 +300,9 @@ def check_operator_enums() -> CategoryResult:
             CheckItem(
                 f"BinOp.{v}",
                 py_name in python_ops,
-                "present in generated Python frontend effects"
+                "present in generated Python frontend registry"
                 if py_name in python_ops
-                else "NOT found in generated Python frontend effects",
+                else "NOT found in generated Python frontend registry",
             )
         )
 
@@ -321,7 +321,7 @@ def check_operator_enums() -> CategoryResult:
             CheckItem(
                 f"UnOp.{v}",
                 py_name in python_ops or acceptable_gap,
-                "present in generated Python frontend effects"
+                "present in generated Python frontend registry"
                 if py_name in python_ops
                 else "compositionally lowered in Python frontend",
             )

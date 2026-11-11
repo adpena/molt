@@ -192,10 +192,15 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
         return super()._format_action(action)
 
 
-def _add_debug_shared_selector_args(parser: argparse.ArgumentParser) -> None:
+def _add_debug_shared_selector_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_pass: bool = True,
+) -> None:
     parser.add_argument("--function", help="Function selector for focused debug runs.")
     parser.add_argument("--module", help="Module selector for focused debug runs.")
-    parser.add_argument("--pass", dest="pass_name", help="Compiler pass selector.")
+    if include_pass:
+        parser.add_argument("--pass", dest="pass_name", help="Compiler pass selector.")
     parser.add_argument("--backend", help="Backend selector for debug runs.")
     parser.add_argument("--profile", help="Build/debug profile selector.")
     parser.add_argument(

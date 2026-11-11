@@ -92,6 +92,12 @@ Equal values are not equal owners. A pass that rewrites an operation into a
 `Copy` of an equal value (value numbering, load forwarding, an algebraic
 identity, tuple scalarization, generator frame promotion) keeps the owner the
 result had, through one authority, `ownership_lattice_min::Replacements`. A
+GVN replacement of two unbound heap code literals is the narrow exception:
+the generated literal payload key and dominance proof permit one immutable
+literal root, and the terminal drop pass releases its alias class at last use.
+Either producer's `bound_local` provenance preserves the ordinary independent
+owner rule. The existing string-keyed provenance remains debt; this rule adds
+no new attribute or second lifetime oracle. A
 replaced result keeps an owner only where its operation's result contract gave
 it one, by the eligibility DropInsertion reads: the result was its own alias
 root, and not the result of a `Copy` whose lowering mints no reference (a
@@ -226,8 +232,12 @@ Fallible construction is part of that contract: every valid outparam has a defin
 The generated opcode authority classifies heap literals as `pure_may_throw`:
 their immutable values do not mutate user-visible state, but construction can
 raise. Frontend emission supplies the current exception edge; DCE cannot erase
-an unused fallible constructor. GVN may number equal successful values without
-deleting either materialization or its exception edge. Check elision requires
+an unused fallible constructor. GVN may reuse a dominated equal heap code
+literal through its generated payload key and existing ownership replacements;
+the first constructor and its exception edge remain. Independent Python
+bindings keep their own references. This does not authorize DCE of arbitrary
+fallible operations or moving the first constructor across an observer.
+Check elision requires
 a proven-clean fallthrough across non-throwing operations, not merely one
 non-throwing immediate predecessor; joins, unknown operations and polling remain
 barriers. Backend-synthesized names have temporary ownership: guard construction,

@@ -25,8 +25,8 @@ ONE table into every consumer so the tables can never drift:
     spellings, closed ``FrontendOpKind``/``WireOpKind`` Literal types, named
     comparison constants and typed lowering map the frontend emitter
     (``map_ops_to_json``) uses, plus the
-    frontend pre-serialization raising/skip/binop/effect tables consumed by the
-    emitter and midend optimizer.
+    frontend raising/skip tables and traceback location effect sets consumed by
+    language lowering.
 
 ``tests/test_gen_op_kinds.py`` re-renders both files in memory and asserts byte
 equality with the checked-in copies, turning any forgotten regeneration into a

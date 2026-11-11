@@ -10,7 +10,7 @@ from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 
 def _map_single(op: MoltOp) -> dict:
     gen = SimpleTIRGenerator()
-    return gen.map_ops_to_json([op], run_midend=False)[0]
+    return gen.map_ops_to_json([op])[0]
 
 
 def test_call_indirect_lowers_to_call_indirect_lane() -> None:
@@ -1260,7 +1260,7 @@ def test_frontend_semantic_token_cannot_escape_after_serializer_rewrites(monkeyp
         lambda ops: [{"kind": "CONST_NOT_IMPLEMENTED", "out": "sentinel"}],
     )
     with pytest.raises(ValueError, match="escaped serialization"):
-        generator.map_ops_to_json([], run_midend=False)
+        generator.map_ops_to_json([])
 
 
 @pytest.mark.parametrize("kind", ["guard_tag", "guard_type"])

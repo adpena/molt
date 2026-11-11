@@ -6,10 +6,9 @@
   join block. This reduces phi-node complexity and exposes more
   optimization opportunities for subsequent passes.
 
-  In Molt's midend pipeline, this corresponds to
-  `_normalize_try_except_join_labels`: it identifies blocks that branch
-  to the same join point with identical argument lists and rewires them
-  to a single canonical copy.
+  This is an abstract join-label model. Production Rust canonicalization and
+  block-argument pruning have distinct contracts; their correspondence to
+  this model is unproved.
 
   Model: for each block's terminator, if it jumps to a target that has
   already been seen with the same arguments, rewrite the jump to use

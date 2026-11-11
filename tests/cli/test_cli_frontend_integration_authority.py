@@ -16,7 +16,6 @@ frontend_integration = importlib.import_module("molt.cli.frontend_integration")
 frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 
 _FRONTEND_INTEGRATION_NAMES = (
-    "_accumulate_midend_diagnostics_with_state",
     "_integrate_module_frontend_result_with_state",
     "_register_global_code_id_with_state",
     "_plan_module_code_slots",
