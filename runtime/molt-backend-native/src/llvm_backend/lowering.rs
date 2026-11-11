@@ -101,6 +101,8 @@ mod constant_ops;
 #[cfg(feature = "llvm")]
 mod container_ops;
 #[cfg(feature = "llvm")]
+mod global_slot;
+#[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
 mod object_ops;

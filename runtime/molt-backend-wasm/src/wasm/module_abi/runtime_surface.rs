@@ -202,6 +202,11 @@ impl WasmRuntimeSurfacePlan {
             self.required_imports
                 .extend(call.required_imports.iter().copied());
         }
+        // A slot read's generated body falls back to the by-name read.
+        if kind == molt_ir::OpKind::GlobalSlotGet {
+            self.required_imports
+                .insert(WasmRuntimeImport::ModuleGetGlobal);
+        }
         if kind == molt_ir::OpKind::CallargsPushMethodReceiver {
             self.required_imports.extend([
                 WasmRuntimeImport::CallargsPushPos,

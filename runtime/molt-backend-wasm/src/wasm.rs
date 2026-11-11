@@ -13,6 +13,7 @@ mod final_functions;
 mod frame_locals;
 mod function_emitter;
 mod function_frame;
+pub(crate) mod global_slot;
 pub(crate) mod lir_fast;
 mod local_analysis;
 mod module_abi;

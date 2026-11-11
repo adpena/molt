@@ -28,6 +28,7 @@ const BCE_SAFE_KINDS: &[crate::OpKind] = &[crate::OpKind::Index, crate::OpKind::
 /// module's own namespace and stores into the frame's globals.
 const GLOBAL_SLOT_KINDS: &[crate::OpKind] = &[
     crate::OpKind::ModuleGetGlobal,
+    crate::OpKind::GlobalSlotGet,
     crate::OpKind::ModuleSetAttr,
     crate::OpKind::DictSet,
 ];

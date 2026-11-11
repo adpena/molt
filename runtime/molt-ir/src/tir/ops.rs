@@ -363,6 +363,18 @@ pub enum OpCode {
     /// Result: dynamic Molt value. This may fall back through builtins or
     /// raise `NameError`, so it is observable even when the result is dead.
     ModuleGetGlobal,
+    /// The slot words compiled reads of one module's globals use in this
+    /// activation (call_anatomy.md 4.5). Operand: the module's `ModuleSlot`
+    /// id. Result: an inline int of the words' address shifted right by
+    /// `GLOBAL_SLOT_BASE_SHIFT`. Pure within an activation, so GVN merges
+    /// and LICM hoists it; it never raises.
+    GlobalSlotBase,
+    /// A read of a module global through its slot (call_anatomy.md 4.5).
+    /// Operands: `[base, module_value, global_name_value]`; the op carries
+    /// its `global_slot`. A bound slot is the value; an unbound one takes
+    /// `ModuleGetGlobal`'s by-name path on the last two operands, with the
+    /// same results, exceptions and effects.
+    GlobalSlotGet,
     /// Read a named module attribute through the `module_get_name` runtime
     /// entrypoint used by the current native/WASM import surface.
     ///

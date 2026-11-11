@@ -28,6 +28,13 @@ pub(super) fn emit_code_metadata_call_op(
                 .expect("admitted module_slot result");
             func.instruction(&Instruction::LocalSet(out));
         }
+        molt_ir::OpKind::GlobalSlotGet => crate::wasm::global_slot::emit_global_slot_get(
+            func,
+            op,
+            call_ctx.locals,
+            call_ctx.import_ids,
+            call_ctx.reloc_enabled,
+        ),
         molt_ir::OpKind::CodeNew => emit_code_new(call_ctx, func, op),
         molt_ir::OpKind::CodeSlotSet => {
             emit_value_then_two_locals_drop_call(call_ctx, func, op, WasmRuntimeImport::CodeSlotSet)

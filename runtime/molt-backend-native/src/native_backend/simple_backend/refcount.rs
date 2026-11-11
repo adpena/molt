@@ -73,6 +73,68 @@ pub(crate) fn emit_refcount(builder: &mut FunctionBuilder, value: Value, site: N
     }
 }
 
+/// A compiled read of module global slot `index` (call_anatomy.md 4.5): the
+/// shared generator decides; this file only selects instructions. `base` is
+/// the activation's boxed base word; an unbound slot calls `cold` with
+/// `cold_args` (the site's by-name `molt_module_get_global`).
+#[cfg(feature = "native-backend")]
+pub(crate) fn emit_global_slot_read(
+    builder: &mut FunctionBuilder,
+    base: Value,
+    index: u32,
+    retain: NativeRefcountSite,
+    cold: FuncRef,
+    cold_args: &[Value],
+) -> Value {
+    let mut emitter = NativeRefcountBuilder {
+        builder,
+        site: retain,
+        slow_block: None,
+    };
+    molt_codegen_abi::global_slot::generate_global_slot_read(&mut emitter, base, index, |b| {
+        let call = b.builder.ins().call(cold, cold_args);
+        b.builder.inst_results(call)[0]
+    })
+}
+
+#[cfg(feature = "native-backend")]
+impl molt_codegen_abi::global_slot::SlotBuilder for NativeRefcountBuilder<'_, '_> {
+    fn load_word(&mut self, address: Value, offset: i32) -> Value {
+        self.builder
+            .ins()
+            .load(types::I64, MemFlagsData::new(), address, offset)
+    }
+    fn choose(
+        &mut self,
+        condition: Value,
+        yes: impl FnOnce(&mut Self) -> Value,
+        no: impl FnOnce(&mut Self) -> Value,
+    ) -> Value {
+        let yes_block = self.builder.create_block();
+        let no_block = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.append_block_param(join, types::I64);
+        self.builder
+            .ins()
+            .brif(condition, yes_block, &[], no_block, &[]);
+        self.builder.seal_block(yes_block);
+        self.builder.seal_block(no_block);
+        self.builder.set_cold_block(no_block);
+        self.builder.switch_to_block(yes_block);
+        let taken = yes(self);
+        self.builder.ins().jump(join, &[taken.into()]);
+        self.builder.switch_to_block(no_block);
+        let fallback = no(self);
+        self.builder.ins().jump(join, &[fallback.into()]);
+        self.builder.seal_block(join);
+        self.builder.switch_to_block(join);
+        self.builder.block_params(join)[0]
+    }
+    fn retain(&mut self, word: Value) {
+        emit_refcount(self.builder, word, self.site);
+    }
+}
+
 struct NativeRefcountBuilder<'a, 'b> {
     builder: &'a mut FunctionBuilder<'b>,
     site: NativeRefcountSite,

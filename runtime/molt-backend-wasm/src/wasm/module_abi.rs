@@ -67,6 +67,11 @@ impl WasmBackend {
         // Every function body calls these, and the table layout below derives
         // user function indices from `func_count`, so they are emitted here.
         super::refcount::emit_refcount_bodies(&mut self, reloc_enabled);
+        super::global_slot::emit_global_slot_bodies(
+            &mut self,
+            reloc_enabled,
+            &super::global_slot::read_indices(ir),
+        );
 
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.

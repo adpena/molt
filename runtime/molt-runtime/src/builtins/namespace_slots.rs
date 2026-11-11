@@ -38,6 +38,9 @@ const NO_SLOT: u32 = u32::MAX;
 /// (`DictStorage::slots`) and freed with it; never resized or moved, so
 /// `values` keeps one address for the dictionary's life.
 pub(crate) struct NamespaceSlots {
+    /// The registry ModuleId whose layout the table uses; compiled code
+    /// trusts slot k only when its own module's id matches.
+    layout: u32,
     degraded: bool,
     /// Interned immortal name objects, in layout order.
     names: Box<[u64]>,
@@ -57,10 +60,12 @@ impl NamespaceSlots {
         self.values.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn degraded(&self) -> bool {
         self.degraded
     }
 
+    #[cfg(test)]
     pub(crate) fn value(&self, k: usize) -> u64 {
         self.values[k]
     }
@@ -135,6 +140,7 @@ unsafe fn table_of(dict: *mut u8) -> Option<&'static mut NamespaceSlots> {
 }
 
 /// The live, non-degraded table of an exact dictionary.
+#[cfg(test)]
 pub(crate) unsafe fn namespace_slots(dict: *mut u8) -> Option<&'static NamespaceSlots> {
     unsafe { table_of(dict).map(|table| &*table) }
 }
@@ -278,6 +284,7 @@ unsafe fn rebuild_slotted(py: &PyToken<'_>, dict: *mut u8) {
 pub(crate) unsafe fn bind<'n>(
     py: &PyToken<'_>,
     dict: *mut u8,
+    layout: u32,
     names: impl ExactSizeIterator<Item = &'n [u8]>,
 ) {
     unsafe {
@@ -314,6 +321,7 @@ pub(crate) unsafe fn bind<'n>(
             probe[index] = k as u32 + 1;
         }
         let table = Box::new(NamespaceSlots {
+            layout,
             degraded: false,
             names: name_bits.into_boxed_slice(),
             probe,
@@ -344,7 +352,7 @@ pub(crate) fn bind_module_namespace(py: &PyToken<'_>, dict: *mut u8, module_name
         return;
     };
     let names: Vec<&[u8]> = registry.globals_of(id).iter().collect();
-    unsafe { bind(py, dict, names.into_iter()) };
+    unsafe { bind(py, dict, id, names.into_iter()) };
 }
 
 /// Free a dictionary's table. Its names are immortal and its values borrowed.
@@ -357,6 +365,108 @@ pub(crate) unsafe fn release(dict: *mut u8) {
     }
 }
 
+/// The all-unbound slot words a foreign-globals activation reads: every
+/// compiled read of it takes the by-name path. Sized to the longest layout
+/// of the installed registry, so any slot index of any module is in bounds.
+fn unbound_slots() -> &'static [u64] {
+    static UNBOUND_SLOTS: std::sync::OnceLock<Box<[u64]>> = std::sync::OnceLock::new();
+    UNBOUND_SLOTS.get_or_init(|| {
+        let longest = crate::builtins::module_table::module_registry().map_or(0, |registry| {
+            (0..registry.count())
+                .map(|id| registry.globals_of(id).iter().count())
+                .max()
+                .unwrap_or(0)
+        });
+        vec![UNBOUND; longest.max(1)].into_boxed_slice()
+    })
+}
+
+/// The slot table of the executing frame's globals when it uses `layout`.
+fn active_table(py: &PyToken<'_>, layout: u32) -> Option<(*mut u8, &'static mut NamespaceSlots)> {
+    let globals = crate::builtins::frames::frame_stack_active_globals_bits();
+    let dict = crate::builtins::frames::globals_namespace_storage_ptr(py, globals)
+        .ok()
+        .flatten()?;
+    let table = unsafe { table_of(dict)? };
+    (table.layout == layout).then_some((dict, table))
+}
+
+fn module_id(bits: u64) -> Option<u32> {
+    obj_from_bits(bits)
+        .as_int()
+        .and_then(|id| u32::try_from(id).ok())
+}
+
+/// `GlobalSlotBase`: the slot words compiled reads of `module_id`'s globals
+/// use in this activation, as an inline int of the address shifted right by
+/// `GLOBAL_SLOT_BASE_SHIFT`. The executing frame's globals table when it uses
+/// that module's layout; else the all-unbound words. Neither raises nor
+/// allocates. Pure within one activation: the frame's globals never change,
+/// and a table never moves while its dictionary lives.
+pub(crate) fn molt_global_slot_base_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_id_bits: u64,
+) -> u64 {
+    // Free-threaded execution has no safe unlocked slot read yet (a reader
+    // could retain a value a concurrent store just released): every site
+    // takes its by-name path there.
+    let words = module_id(module_id_bits)
+        .filter(|_| !molt_codegen_abi::MOLT_REFCOUNT_ATOMIC)
+        .and_then(|layout| active_table(_py, layout))
+        .map_or(unbound_slots().as_ptr(), |(_, table)| table.values.as_ptr());
+    let shifted = (words as usize as u64) >> molt_codegen_abi::global_slot::GLOBAL_SLOT_BASE_SHIFT;
+    MoltObject::from_int(shifted as i64).bits()
+}
+
+/// `GlobalSlotSet`: store `value` into slot `index` of `module_id`'s globals.
+/// A bound slot replaces its dictionary row through the dictionary's own
+/// replacement commit: no name is hashed. Otherwise the store takes the
+/// by-name path the site had: the module object's namespace when `module`
+/// is a module (module-level code), else the frame's globals. Returns None.
+pub(crate) fn molt_global_slot_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_id_bits: u64,
+    index_bits: u64,
+    module_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let none = MoltObject::none().bits();
+        if let (Some(layout), Some(index)) = (
+            module_id(module_id_bits),
+            obj_from_bits(index_bits)
+                .as_int()
+                .and_then(|index| usize::try_from(index).ok()),
+        ) && let Some((dict, table)) = active_table(py, layout)
+            && index < table.len()
+            && let Some(row) = table.row(index)
+            && unsafe { crate::object::ops::dict_require_writable(py, dict) }
+        {
+            drop(unsafe { crate::object::ops::dict_replace_row(py, dict, row, value_bits) });
+            return none;
+        }
+        if exception_pending(py) {
+            return none;
+        }
+        if obj_from_bits(module_bits).is_none() {
+            // The site's own op: DICT_SET(globals(), name, value).
+            let globals = crate::builtins::frames::molt_globals_builtin_attached_body(py);
+            if !exception_pending(py) {
+                let _ = crate::object::ops_dict::molt_dict_set_attached_body(
+                    py, globals, name_bits, value_bits,
+                );
+            }
+            dec_ref_bits(py, globals);
+            return none;
+        }
+        let _ = crate::builtins::modules::module_set_attr(py, module_bits, name_bits, value_bits);
+        none
+    })
+}
+
 #[cfg(test)]
 #[path = "namespace_slots_tests.rs"]
 mod tests;
+
+include!("../attached_exports_generated/builtins/namespace_slots.rs");

@@ -1177,6 +1177,18 @@ runtime_name = "molt_guard_builtin_bindings"
 callable_arity = 1
 
 [[import]]
+name = "global_slot_base"
+type = 2
+runtime_name = "molt_global_slot_base"
+callable_arity = 1
+
+[[import]]
+name = "global_slot_set"
+type = 10
+runtime_name = "molt_global_slot_set"
+callable_arity = 5
+
+[[import]]
 name = "build_class_builtin"
 type = 3
 runtime_name = "molt_build_class_builtin"

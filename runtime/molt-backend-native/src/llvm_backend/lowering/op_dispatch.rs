@@ -778,6 +778,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ModuleGetGlobal => {
                 self.emit_module_runtime_call(op, "molt_module_get_global", 2)
             }
+            // -- Module global slot sites (call_anatomy.md 4.5) --
+            OpCode::GlobalSlotBase => self.emit_global_slot_base(op),
+            OpCode::GlobalSlotGet => self.emit_global_slot_get(op),
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]

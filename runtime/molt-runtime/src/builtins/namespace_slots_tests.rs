@@ -15,7 +15,7 @@ fn name(py: &PyToken<'_>, bytes: &[u8]) -> u64 {
 fn slotted(py: &PyToken<'_>) -> *mut u8 {
     let dict = crate::builtins::binding_guards::alloc_namespace_dict(py);
     assert!(!dict.is_null());
-    unsafe { bind(py, dict, LAYOUT.iter().copied()) };
+    unsafe { bind(py, dict, 7, LAYOUT.iter().copied()) };
     assert!(unsafe { namespace_slots(dict) }.is_some());
     dict
 }

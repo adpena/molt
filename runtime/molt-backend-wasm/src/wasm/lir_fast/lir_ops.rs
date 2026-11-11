@@ -134,6 +134,11 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             "{:?} is a final-TIR op; the WASM target does not run the late lowering stage",
             tir_op.opcode
         ),
+        // Global slot sites are made after the main pipeline and reach WASM
+        // through the op loop, never the LIR lane.
+        OpCode::GlobalSlotBase | OpCode::GlobalSlotGet => {
+            unreachable!("{:?} reaches WASM through the op loop", tir_op.opcode)
+        }
         OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
             emit_lir_comparison(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
         }

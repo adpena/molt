@@ -183,6 +183,21 @@ impl<'a, 'py>
     }
 }
 
+/// Replace the value of live row `row`: a compiled store that already knows
+/// its dictionary entry (a module global slot) commits without a probe.
+/// The caller has admitted the dictionary as writable.
+pub(crate) unsafe fn dict_replace_row<'a, 'py>(
+    py: &'a PyToken<'py>,
+    dict: *mut u8,
+    row: usize,
+    value: u64,
+) -> DetachedDictReferences<'a, 'py> {
+    unsafe {
+        debug_assert!(dict_entries(dict)[row].hash.is_some());
+        dict_commit_value_replacement(py, dict, row, value)
+    }
+}
+
 /// Retain, publish and promote tracking; transfer the displaced reference to the
 /// caller so destructor re-entry cannot observe a partially committed owner.
 #[inline]

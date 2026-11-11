@@ -1434,6 +1434,8 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "UnboxBoolWord": "bool",
         "BoxInlineInt": "dynbox",
         "CodeIs": "bool",
+        "GlobalSlotBase": "i64",
+        "GlobalSlotGet": "dynbox",
         "ModuleSlot": "i64",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",

@@ -345,6 +345,8 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::ModuleGetAttr => "module_get_attr",
         OpCode::ModuleImportFrom => "module_import_from",
         OpCode::ModuleGetGlobal => "module_get_global",
+        OpCode::GlobalSlotBase => "global_slot_base",
+        OpCode::GlobalSlotGet => "global_slot_get",
         OpCode::ModuleGetName => "module_get_name",
         OpCode::ModuleSetAttr => "module_set_attr",
         OpCode::ModuleDelGlobal => "module_del_global",

@@ -14,6 +14,8 @@ pub(crate) struct TrackedImportIds {
     /// The module's generated RC transition bodies: the callees that replace
     /// direct inc/dec imports at every dynamic site.
     refcount_bodies: Option<WasmRefcountBodies>,
+    /// The module's generated global slot read bodies, by slot index.
+    global_slot_bodies: Option<BTreeMap<u32, u32>>,
 }
 
 impl TrackedImportIds {
@@ -27,6 +29,7 @@ impl TrackedImportIds {
             by_index,
             used: Rc::new(RefCell::new(BTreeSet::new())),
             refcount_bodies: None,
+            global_slot_bodies: None,
         }
     }
 
@@ -60,6 +63,22 @@ impl TrackedImportIds {
         self.refcount_bodies
             .expect("RC transition bodies must be emitted before any function body")
             .index(operation)
+    }
+
+    pub(crate) fn set_global_slot_bodies(&mut self, bodies: BTreeMap<u32, u32>) {
+        assert!(
+            self.global_slot_bodies.replace(bodies).is_none(),
+            "a WASM module emits its global slot read bodies once"
+        );
+    }
+
+    /// The function index of the read body for slot `index`.
+    pub(crate) fn global_slot_body(&self, index: u32) -> u32 {
+        *self
+            .global_slot_bodies
+            .as_ref()
+            .and_then(|bodies| bodies.get(&index))
+            .expect("global slot read bodies must be emitted before any function body")
     }
 
     pub(crate) fn len(&self) -> usize {
