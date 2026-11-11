@@ -413,7 +413,6 @@ def _prepare_frontend_lowering_config(
     native_python_exports: Collection[str] | None = None,
     native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     is_luau_transpile: bool,
-    pgo_hot_function_names: set[str],
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
     namespace_portions_by_module: Mapping[str, tuple[str, ...]],
@@ -469,7 +468,6 @@ def _prepare_frontend_lowering_config(
         native_support_function_roots_by_module=(
             native_support_function_roots_by_module
         ),
-        pgo_hot_function_names=pgo_hot_function_names,
         type_facts=type_facts,
     )
     module_graph_metadata = _build_module_graph_metadata(
@@ -570,8 +568,6 @@ def _prepare_build_callbacks(
     allocation_diagnostics_enabled: bool,
     frontend_parallel_details: dict[str, Any],
     profile: BuildProfile,
-    midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
-    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
     backend_daemon_health: dict[str, Any] | None,
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
@@ -645,8 +641,6 @@ def _prepare_build_callbacks(
                 allocation_diagnostics_enabled=allocation_diagnostics_enabled,
                 frontend_parallel_details=frontend_parallel_details,
                 profile=profile,
-                midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
-                midend_pass_stats_by_function=midend_pass_stats_by_function,
                 backend_daemon_health=backend_daemon_health,
                 backend_daemon_cached=backend_daemon_cached,
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
@@ -722,19 +716,12 @@ def _prepare_frontend_stage_state(
         prepared_build_preamble.allocation_diagnostics_enabled
     )
     frontend_parallel_details = prepared_build_preamble.frontend_parallel_details
-    midend_policy_outcomes_by_function = (
-        prepared_build_preamble.midend_policy_outcomes_by_function
-    )
-    midend_pass_stats_by_function = (
-        prepared_build_preamble.midend_pass_stats_by_function
-    )
     backend_daemon_health = prepared_build_preamble.backend_daemon_health
     backend_daemon_cached = prepared_build_preamble.backend_daemon_cached
     backend_daemon_cache_tier = prepared_build_preamble.backend_daemon_cache_tier
     backend_daemon_config_digest = prepared_build_preamble.backend_daemon_config_digest
     diagnostics_path_spec = prepared_build_preamble.diagnostics_path_spec
     warnings = prepared_build_preamble.warnings
-    pgo_hot_function_names = prepared_build_config.pgo_hot_function_names
     frontend_phase_timeout = prepared_build_config.frontend_phase_timeout
     import_admission_policy, import_admission_policy_error = (
         _resolve_import_admission_policy(
@@ -896,8 +883,6 @@ def _prepare_frontend_stage_state(
         allocation_diagnostics_enabled=allocation_diagnostics_enabled,
         frontend_parallel_details=frontend_parallel_details,
         profile=profile,
-        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
-        midend_pass_stats_by_function=midend_pass_stats_by_function,
         backend_daemon_health=backend_daemon_health,
         backend_daemon_cached=backend_daemon_cached,
         backend_daemon_cache_tier=backend_daemon_cache_tier,
@@ -972,7 +957,6 @@ def _prepare_frontend_stage_state(
             native_support_function_roots_by_module=(
                 import_plan.native_support_function_roots_by_module
             ),
-            pgo_hot_function_names=pgo_hot_function_names,
             entry_module=entry_module,
             entry_execution_kind=(
                 import_plan.module_graph_metadata.module_execution_kind_by_module[
@@ -1092,12 +1076,6 @@ def _prepare_frontend_pipeline(
         record_binary_image_analysis,
         artifacts_root,
     ) = prepared_frontend_stage_bundle
-    midend_policy_outcomes_by_function = (
-        prepared_build_preamble.midend_policy_outcomes_by_function
-    )
-    midend_pass_stats_by_function = (
-        prepared_build_preamble.midend_pass_stats_by_function
-    )
     frontend_parallel_worker_timings = (
         prepared_frontend_lowering_config.frontend_parallel_worker_timings
     )
@@ -1223,13 +1201,8 @@ def _prepare_frontend_pipeline(
         ),
         module_deps=prepared_frontend_analysis.module_deps,
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
-        optimization_profile=profile,
-        pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
         known_modules_sorted=import_plan.known_modules_sorted,
         stdlib_allowlist_sorted=import_plan.stdlib_allowlist_sorted,
-        pgo_hot_function_names_sorted=(
-            prepared_build_config.pgo_hot_function_names_sorted
-        ),
         module_dep_closures=prepared_frontend_analysis.module_dep_closures,
         module_graph_metadata=prepared_frontend_lowering_config.module_graph_metadata,
         module_chunking=prepared_frontend_lowering_config.module_chunking,
@@ -1244,8 +1217,6 @@ def _prepare_frontend_pipeline(
         warnings=prepared_build_preamble.warnings,
         frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         record_frontend_parallel_worker_timing=_record_frontend_parallel_worker_timing,
-        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
-        midend_pass_stats_by_function=midend_pass_stats_by_function,
         target_python=prepared_build_config.target_python,
         target_sys_platform=prepared_build_config.target_sys_platform,
         scc_serial_modules=prepared_frontend_analysis.scc_serial_modules,

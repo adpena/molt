@@ -1965,26 +1965,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "3",
-      "kind": "int",
-      "name": "MOLT_CSE_FP_MAX_ITERS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Maximum CSE-plus-DCE fixpoint iterations per midend round; non-integer values and values below 1 fall back to 3.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_CSE_MAX_ITERS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Caps the CSE iteration count per midend round and the block-local CSE loop; non-integer values and values below 1 fall back to 1, and unset means the policy's cse_iter_cap (20 for the block-local loop).",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "1000",
       "kind": "int",
       "name": "MOLT_DB_MAX_ROWS",
@@ -3490,8 +3470,8 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_DIFF_TMPDIR",
       "output_neutral": false,
-      "owner": "src/molt/frontend/tv_hooks.py",
-      "summary": "Temporary-file root for harness runs; src/molt/frontend/tv_hooks.py uses it for TV snapshots (then TMPDIR, then molt.dx.scratch_root), tests/molt_diff.py uses it as the diff tmp root, and src/molt/dx.py installs the lane-owned scratch root as its default. Admitted Python Cargo proofs bind it to their canonical proof scratch root; receipt custody remains separate.",
+      "owner": "tests/molt_diff.py",
+      "summary": "Temporary-file root for harness runs; tests/molt_diff.py uses it as the diff tmp root, and src/molt/dx.py installs the lane-owned scratch root as its default. Admitted Python Cargo proofs bind it to their canonical proof scratch root; receipt custody remains separate.",
       "values": []
     },
     {
@@ -4648,193 +4628,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "0.03",
-      "kind": "float",
-      "name": "MOLT_MIDEND_BUDGET_ALPHA",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Per-op coefficient in the mid-end time budget formula (base + alpha * ops + beta * blocks) * scale in milliseconds; an empty or non-numeric value falls back to 0.03.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0.75",
-      "kind": "float",
-      "name": "MOLT_MIDEND_BUDGET_BETA",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Per-block coefficient in the mid-end time budget formula (base + alpha * ops + beta * blocks) * scale in milliseconds; an empty or non-numeric value falls back to 0.75.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "float",
-      "name": "MOLT_MIDEND_BUDGET_MS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Fixed per-function mid-end time budget in milliseconds that replaces the computed (base + alpha * ops + beta * blocks) * scale value; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "1",
-      "kind": "float",
-      "name": "MOLT_MIDEND_BUDGET_SCALE",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Multiplier applied to the computed mid-end time budget; negative values clamp to 0, and an empty or non-numeric value falls back to 1.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "1",
-      "kind": "bool",
-      "name": "MOLT_MIDEND_HOT_TIER_PROMOTION",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Allows the mid-end to promote hot functions to a higher optimization tier; 0, false, no, or off disable promotion, and every other value, including unset, enables it.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_MIDEND_MAX_ROUNDS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Explicit diagnostic limit for outer mid-end fixed-point rounds, at least 2 (invalid values use 2). Unset drains required passes to convergence; tier/profile round counts calibrate only the optional CSE work budget.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "48",
-      "kind": "int",
-      "name": "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Function count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 8 raise to 8, and empty or non-integer values fall back to 48.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "4000",
-      "kind": "int",
-      "name": "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Total op count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 256 raise to 256, and empty or non-integer values fall back to 4000.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "enum",
-      "name": "MOLT_MIDEND_PROFILE",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Overrides the mid-end optimization profile for every function; dev or release (case-insensitive) replace the build's profile, and any other value, including unset, keeps the build's profile.",
-      "values": [
-        "dev",
-        "release"
-      ]
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_MIDEND_STATS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Prints mid-end statistics to stderr at the end of lowering and logs each function's degrade level; any set value, even 0 or empty, enables those two logs, while the cross-block CSE fallback log needs a non-empty value.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_MIDEND_TIER_A_FUNCTIONS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Comma-separated function names the mid-end classifies as tier A with hot promotion disabled; it takes precedence over the tier C and tier B function lists and over the module-prefix lists, and unset names no function.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_MIDEND_TIER_A_MODULE_PREFIXES",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Comma-separated module names or dotted prefixes whose functions the mid-end classifies as tier A when no function-level list matches; a module matches when its name equals the prefix or starts with the prefix plus a dot, and unset names no module.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_MIDEND_TIER_B_FUNCTIONS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Comma-separated function names the mid-end classifies as tier B with hot promotion disabled; a name that also appears in the tier A or tier C list takes that tier instead, and unset names no function.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_MIDEND_TIER_B_MODULE_PREFIXES",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Comma-separated module names or dotted prefixes whose functions the mid-end classifies as tier B when no function-level list matches; a module matches when its name equals the prefix or starts with the prefix plus a dot, and unset names no module.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_MIDEND_TIER_C_FUNCTIONS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Comma-separated function names the mid-end classifies as tier C with hot promotion disabled; a name that also appears in the tier A list takes tier A, the tier C list wins over the tier B list, and unset names no function.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_MIDEND_TIER_C_MODULE_PREFIXES",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Comma-separated module names or dotted prefixes whose functions the mid-end classifies as tier C when no function-level list matches; a module matches when its name equals the prefix or starts with the prefix plus a dot, and unset names no module.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "enum",
-      "name": "MOLT_MIDEND_TIER_FORCE",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Forces every function to one mid-end tier (A, B, or C, case-insensitive) with hot promotion disabled; any other value, including unset, lets the function and module-prefix lists and the size heuristics classify each function.",
-      "values": [
-        "A",
-        "B",
-        "C"
-      ]
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "float",
-      "name": "MOLT_MIDEND_WORK_BUDGET",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Fixed deterministic work-unit budget for optional cross-block CSE; required CFG, SCCP and DCE passes still complete. The override replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "",
       "kind": "path",
       "name": "MOLT_MLIR_DUMP_DIR",
@@ -5767,16 +5560,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/cli/runtime_wasm_build_policy.py",
       "summary": "Requests runtime-WASM iteration reuse: 1, true, yes, or on opt into stable family placement; 0, false, no, or off prevent automatic family placement and force incrementality off (case-insensitive). Unset follows a valid MOLT_RUNTIME_BUILD_PROFILE opt-in; otherwise dev and release keep their nonincremental default unless Cargo incrementality is explicitly controlled. Exact Cargo targets take precedence, followed by deliberately pinned sessions; generated labels do not isolate. Proof scratch and SOURCE_DATE_EPOCH force incrementality off and prevent automatic family placement. Actual incrementality binds from the captured Cargo plan after sccache normalization; only bound nonincremental emissions are eligible for shared publication, regardless of placement.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_SCCP_MAX_ITERS",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Diagnostic cap on SCCP block transfers per invocation; exhaustion reports degraded coverage and returns no facts with all edges executable; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset drains the worklists to a fixed point.",
       "values": []
     },
     {
@@ -7418,26 +7201,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "tools/bench.py",
       "summary": "Set to exactly 1 to run tools/bench.py, tools/bench_wasm.py and tools/dev.py in TTY mode with live terminal output (same as --tty); any other value or unset keeps non-TTY output.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_TV_DIR",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/tv_hooks.py",
-      "summary": "Directory where the translation-validation hooks write per-pass before/after IR snapshots when MOLT_TV_EMIT=1; it is created if missing; unset means a fresh molt_tv_ directory under MOLT_DIFF_TMPDIR, TMPDIR or the lane-owned molt.dx.scratch_root, printed to stderr on first use.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_TV_EMIT",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/tv_hooks.py",
-      "summary": "Set to exactly 1 to make the mid-end write before/after IR snapshots for every pass into the MOLT_TV_DIR dump directory; the value is read once per process; any other value or unset disables emission.",
       "values": []
     },
     {

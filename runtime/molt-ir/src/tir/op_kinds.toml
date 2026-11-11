@@ -22,10 +22,10 @@ simpleir_backend_private_kinds = [
 # ordering is nothrow only within an ordering-enabled domain. This policy is
 # projected into both frontend Python and shared native/WASM Rust consumers.
 comparison_scalar_domains = [
-    { name = "number", ordering = true, tir_types = ["I64", "F64", "Bool", "BigInt"], frontend_types = ["int", "float", "bool"] },
-    { name = "text", ordering = true, tir_types = ["Str"], frontend_types = ["str"] },
-    { name = "bytes", ordering = true, tir_types = ["Bytes"], frontend_types = ["bytes"] },
-    { name = "none", ordering = false, tir_types = ["None"], frontend_types = ["None"] },
+    { name = "number", ordering = true, tir_types = ["I64", "F64", "Bool", "BigInt"] },
+    { name = "text", ordering = true, tir_types = ["Str"] },
+    { name = "bytes", ordering = true, tir_types = ["Bytes"] },
+    { name = "none", ordering = false, tir_types = ["None"] },
 ]
 
 # Equality/inequality may warn or raise under CPython -b/-bb. Without a proven
@@ -130,8 +130,6 @@ primitive_operator_effect_cases = [
 #                  a fixed nonnegative integer, "variable" for audited builders
 #                  and Copy transport, or "variable_pairs" for dict key/value
 #                  builders. Fuzz SSA operand counts must agree with it.
-#                  frontend_intrinsic_scalar_arity owns the distinct frontend
-#                  argument domain, whose payloads may lower into TIR attrs.
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
@@ -3172,7 +3170,6 @@ result_absorbs_operands = false
 name = "Is"
 may_call_python = false
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3185,7 +3182,6 @@ result_absorbs_operands = false
 name = "IsNot"
 may_call_python = false
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3198,7 +3194,6 @@ result_absorbs_operands = false
 name = "In"
 may_call_python = true
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3212,7 +3207,6 @@ result_absorbs_operands = false
 name = "NotIn"
 may_call_python = true
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3322,7 +3316,6 @@ result_mints_owned_selected_operand = true
 name = "Not"
 may_call_python = true
 operand_arity = 1
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3336,7 +3329,6 @@ result_absorbs_operands = false
 name = "Bool"
 may_call_python = true
 operand_arity = 1
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3567,7 +3559,6 @@ result_absorbs_operands = false
 name = "OrdAt"
 may_call_python = true
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = false
 purity = "impure"
@@ -3818,7 +3809,6 @@ result_absorbs_operands = false
 [[opcode]]
 name = "IsPending"
 may_call_python = false
-frontend_intrinsic_scalar_arity = 1
 operand_independent_result_types = ["bool"]
 operand_arity = 1
 may_throw = false
@@ -3926,7 +3916,6 @@ name = "ExceptionPending"
 may_call_python = false
 operand_arity = 0
 operand_independent_result_types = ["bool"]
-frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = true
 purity = "impure"
@@ -3997,7 +3986,6 @@ result_absorbs_operands = false
 name = "ModuleSlot"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4010,7 +3998,6 @@ result_absorbs_operands = false
 name = "ConstInt"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4023,7 +4010,6 @@ result_absorbs_operands = false
 name = "ConstBigInt"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 exact_scalar_result_type = "BigInt"
 may_throw = true
 side_effecting = false
@@ -4040,7 +4026,6 @@ result_absorbs_operands = false
 name = "ConstFloat"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4053,7 +4038,6 @@ result_absorbs_operands = false
 name = "ConstStr"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
@@ -4066,7 +4050,6 @@ result_absorbs_operands = false
 name = "ConstBool"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4079,7 +4062,6 @@ result_absorbs_operands = false
 name = "ConstNone"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4092,7 +4074,6 @@ result_absorbs_operands = false
 name = "ConstBytes"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
@@ -5157,15 +5138,16 @@ branch_arg = "none"
 # DISTINCT vocabulary from the wire kinds: e.g. the frontend emits
 # `GETATTR_GENERIC_OBJ` which serialization rewrites to the wire kind
 # `get_attr_generic_obj`. tools/gen_op_kinds.py renders these into
-# src/molt/frontend/lowering/op_kinds_generated.py as RAISING_KIND_NAMES,
+# src/molt/frontend/lowering/op_kinds_generated.py as callback effects,
 # CHECK_EXCEPTION_SKIP_KINDS, AUGASSIGN_OP_KIND and BINOP_OP_KIND, killing the
 # frontend⇄backend dual raising-oracle (the residual task-#42 drift vector).
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# RAISING_KIND_NAMES — frontend `op.kind`s that can raise at runtime, so emit()
-# attaches the expression-level col_offset for traceback caret annotations.
-# Replaces the hand-kept `_RAISING_OP_KINDS` frozenset.
+# Frontend observer rows map raising `op.kind`s to their opcode facts. Their
+# opcode-backed rows feed callback effects used by traceback placement. The
+# optimizer-only RAISING_KIND_NAMES projection is retired with HF-773 slice E;
+# source positions are published by lowering/frame_locations.py.
 #
 # Each row is one frontend UPPERCASE `op.kind`, in exactly ONE of two forms:
 #
@@ -5648,8 +5630,6 @@ reason = "structural: SSA phi merge node, not a runtime operation"
 [[frontend_effect_kind]]
 kind = "TYPE_OF"
 effect = "reads_heap"
-exact_scalar_result_type = "I64"
-frontend_intrinsic_scalar_arity = 1
 reason = "observe the runtime class; only exact immutable builtin-class provenance permits pure instance effects"
 
 [[frontend_effect_kind]]
@@ -5736,49 +5716,41 @@ reason = "locals() reads the frame's bindings and, before PEP 667, refreshes the
 
 [[frontend_effect_kind]]
 kind = "ABS"
-effects_like_opcode = "Neg"
 effect = "writes_heap"
 reason = "dynamic unary dispatch may invoke observable __abs__; exact primitive recovery is instance-specific"
 
 [[frontend_effect_kind]]
 kind = "INVERT"
-effects_like_opcode = "BitNot"
 effect = "writes_heap"
 reason = "dynamic unary dispatch may invoke observable __invert__; ~bool also emits a warning"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_DIV"
-effects_like_opcode = "Div"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __itruediv__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_FLOORDIV"
-effects_like_opcode = "FloorDiv"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __ifloordiv__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_MOD"
-effects_like_opcode = "Mod"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __imod__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_POW"
-effects_like_opcode = "Pow"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __ipow__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_LSHIFT"
-effects_like_opcode = "Shl"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __ilshift__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_RSHIFT"
-effects_like_opcode = "Shr"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __irshift__ or fallback callbacks"
 
@@ -5794,19 +5766,16 @@ reason = "operator callbacks can mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_BIT_AND"
-effects_like_opcode = "BitAnd"
 effect = "writes_heap"
 reason = "operator callbacks can mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_BIT_OR"
-effects_like_opcode = "BitOr"
 effect = "writes_heap"
 reason = "operator callbacks can mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_BIT_XOR"
-effects_like_opcode = "BitXor"
 effect = "writes_heap"
 reason = "operator callbacks can mutate arbitrary captured objects"
 

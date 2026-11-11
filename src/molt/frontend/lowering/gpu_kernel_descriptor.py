@@ -239,6 +239,7 @@ def _project(params: list[str], ops: Sequence[Mapping[str, Any]]) -> dict[str, A
     none: set[str] = set()
     constants: dict[str, int] = {}
     bindings: dict[str, list[str]] = {}
+    method_receivers: dict[str, str] = {}
     binding_uses: set[str] = set()
     # Only direct scalar/constant/query coordinates enter dynamic bounds. No
     # runtime expression evaluator or duplicate range lattice is introduced.
@@ -308,8 +309,8 @@ def _project(params: list[str], ops: Sequence[Mapping[str, Any]]) -> dict[str, A
                 "unsupported global lookup context",
             )
             bindings[out] = [strings[args[1]]]
-        elif kind == WireKinds.GET_ATTR_GENERIC_OBJ:
-            out = _required_name(out)
+        elif kind in {WireKinds.GET_ATTR_GENERIC_OBJ, WireKinds.LOAD_METHOD}:
+            target = _required_name(op["var"] if kind == WireKinds.LOAD_METHOD else out)
             require(
                 len(args) == 1
                 and args[0] in bindings
@@ -317,11 +318,26 @@ def _project(params: list[str], ops: Sequence[Mapping[str, Any]]) -> dict[str, A
                 "attribute lookup is not an exact module binding",
             )
             binding_uses.add(args[0])
-            bindings[out] = [*bindings[args[0]], op["s_value"]]
-        elif kind == WireKinds.CALL_FUNC:
+            bindings[target] = [*bindings[args[0]], op["s_value"]]
+            if kind == WireKinds.LOAD_METHOD:
+                method_receivers[target] = _required_name(out)
+        elif kind in {WireKinds.CALL_FUNC, WireKinds.CALL_LOADED_METHOD}:
             out = _required_name(out)
             require(
-                len(args) == 1 and args[0] in bindings,
+                (
+                    kind == WireKinds.CALL_FUNC
+                    and len(args) == 1
+                    and args[0] not in method_receivers
+                )
+                or (
+                    kind == WireKinds.CALL_LOADED_METHOD
+                    and len(args) == 2
+                    and method_receivers.get(args[0]) == args[1]
+                ),
+                "hardware query must preserve its nullary callable/receiver pair",
+            )
+            require(
+                args[0] in bindings,
                 "hardware query requires an admitted nullary binding",
             )
             binding_uses.add(args[0])

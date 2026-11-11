@@ -238,7 +238,6 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         rust_cpu=RustCpuPolicy.BASELINE,
     )
     config = SimpleNamespace(
-        pgo_hot_function_names=set(),
         frontend_phase_timeout=None,
         pgo_profile_summary=None,
         runtime_feedback_summary=None,

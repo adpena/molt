@@ -300,8 +300,6 @@ def test_a2_worker_applies_phase_timeout_per_module(tmp_path, monkeypatch) -> No
             "known_func_kinds": {},
             "module_chunking": False,
             "module_chunk_max_ops": 0,
-            "optimization_profile": "dev",
-            "pgo_hot_functions": ["slow_module::molt_main"],
             "frontend_phase_timeout": frontend_phase_timeout,
             "module_source_role": "user",
         }
@@ -385,11 +383,8 @@ def _make_execution_context(
         module_deps={name: set() for name in names},
         source_modules=names,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         known_modules_sorted=tuple(names),
         stdlib_allowlist_sorted=(),
-        pgo_hot_function_names_sorted=(),
         module_dep_closures={name: frozenset({name}) for name in names},
         module_graph_metadata=cli_module_graph._build_module_graph_metadata(
             module_graph,
@@ -632,7 +627,6 @@ def _make_runtime_hooks(warnings: list[str], details: dict[str, Any]):
         record_frontend_parallel_worker_timing=_record_timing,
         record_frontend_timing=lambda *a, **k: None,
         integrate_module_frontend_result=_integrate,
-        accumulate_midend_diagnostics=_accumulate,
         fail=_fail,
         json_output=False,
         run_serial_frontend_lower=_run_serial,

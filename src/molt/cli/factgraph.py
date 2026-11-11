@@ -66,7 +66,7 @@ def add_factgraph_parser(
         "--profile",
         choices=build_profile_choices,
         default="release",
-        help="Build profile for frontend/midend optimization (default: release).",
+        help="Build profile for TIR optimization (default: release).",
     )
     parser.add_argument(
         "--type-hints",

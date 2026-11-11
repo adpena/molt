@@ -23,14 +23,10 @@ from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Iterable,
     Literal,
     NotRequired,
     Required,
-    SupportsIndex,
     TypedDict,
-    cast,
-    overload,
 )
 
 from molt import builtin_callables
@@ -59,9 +55,6 @@ _LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_binding_facts import PythonBindingFacts
 
-    # _TrackedOpsList's `owner` is the assembled generator. Imported under
-    # TYPE_CHECKING only: there is no runtime import cycle back into __init__.
-    from molt.frontend import SimpleTIRGenerator
     from molt.frontend.sema.funcmeta import (
         StatefulFunctionFramePlan,
         StatefulLocalsLayout,
@@ -463,151 +456,9 @@ class _ClassNsScope:
     methods: dict[str, MethodInfo] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class SCCPResult:
-    in_values: dict[int, dict[str, Any]]
-    out_values: dict[int, dict[str, Any]]
-    executable_blocks: set[int]
-    executable_edges: set[tuple[int, int]]
-    branch_choice_by_if_index: dict[int, bool]
-    loop_break_choice_by_index: dict[int, bool]
-
-
-@dataclass(frozen=True)
-class LoopBoundFact:
-    iv_name: str
-    start: int
-    step: int
-    bound: int
-    compare_op: FrontendOpKind
-    compare_index: int
-    compare_result: str
-
-
 # 47-bit signed inline integer range for NaN-boxing.
 _INLINE_INT_MIN = -(1 << 46)
 _INLINE_INT_MAX = (1 << 46) - 1
-
-_SCCP_OVERDEFINED = object()
-_SCCP_UNKNOWN = object()
-_SCCP_MISSING = object()  # Sentinel for MISSING values — must never propagate or fold
-MidendProfile = Literal["dev", "release"]
-MidendTier = Literal["A", "B", "C"]
-
-
-class MidendCoverage(TypedDict):
-    """Coverage of one serialized body, measured before optimization."""
-
-    status: Literal["full", "degraded", "skipped", "fallback"]
-    input_ops: int | None
-    output_ops: int
-    reasons: list[str]
-
-
-_MIDEND_ENV_KEYS = (
-    "MOLT_MIDEND_PROFILE",
-    "MOLT_MIDEND_TIER_FORCE",
-    "MOLT_MIDEND_TIER_A_FUNCTIONS",
-    "MOLT_MIDEND_TIER_B_FUNCTIONS",
-    "MOLT_MIDEND_TIER_C_FUNCTIONS",
-    "MOLT_MIDEND_TIER_A_MODULE_PREFIXES",
-    "MOLT_MIDEND_TIER_B_MODULE_PREFIXES",
-    "MOLT_MIDEND_TIER_C_MODULE_PREFIXES",
-    "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
-    "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
-    "MOLT_MIDEND_HOT_TIER_PROMOTION",
-    "MOLT_MIDEND_WORK_BUDGET",
-    "MOLT_MIDEND_BUDGET_MS",
-    "MOLT_MIDEND_BUDGET_ALPHA",
-    "MOLT_MIDEND_BUDGET_BETA",
-    "MOLT_MIDEND_BUDGET_SCALE",
-    "MOLT_MIDEND_MAX_ROUNDS",
-    "MOLT_SCCP_MAX_ITERS",
-    "MOLT_CSE_MAX_ITERS",
-    "MOLT_CSE_FP_MAX_ITERS",
-)
-
-
-@dataclass(frozen=True)
-class MidendTierClassification:
-    tier: MidendTier
-    source: str
-    allow_hot_promotion: bool
-
-
-# --- Deterministic mid-end degrade-ladder work model (#73) ------------------
-# The mid-end's pass-degrade ladder used to gate on wall-clock elapsed time,
-# which made the compiled IR depend on machine speed (a determinism-contract
-# violation: identical source could emit different IR across processes).  The
-# ladder now charges a DETERMINISTIC work cost — the live op count — at each
-# inter-pass checkpoint and degrades when the running total exceeds a
-# deterministic per-function work budget.  These constants calibrate that
-# budget so non-pathological functions never degrade (preserving optimisation
-# quality) while a pass that pathologically grows the op count still trips the
-# ladder and bounds compile time.
-#
-# Number of degrade checkpoints reached per optimisation round on the
-# non-degraded path (the count of `maybe_apply_budget_degrade(...)` calls
-# inside the per-round body of `_canonicalize_control_aware_ops_impl`).  Used
-# only to size the budget headroom; an exact match is not required (the growth
-# headroom multiplier absorbs drift), but keep it in the right ballpark.
-_MIDEND_DEGRADE_CHECKPOINTS = 8
-# Multiplier applied to the nominal per-round work so a function whose op count
-# stays roughly stable across its permitted rounds never degrades.  Pathological
-# op-count explosion (a pass that balloons the IR) still exceeds the budget.
-_MIDEND_WORK_GROWTH_HEADROOM = 4.0
-# Conversion from the per-tier `budget_base_ms` constant into work-units of
-# base headroom, so the deterministic budget keeps the same relative ordering
-# across tiers that the old millisecond base provided.
-_MIDEND_WORK_BASE_UNITS_PER_MS = 50.0
-
-
-@dataclass(frozen=True)
-class MidendFunctionPolicy:
-    profile: MidendProfile
-    tier: MidendTier
-    tier_base: MidendTier
-    tier_source: str
-    promoted: bool
-    promotion_source: str
-    promotion_signal: str
-    budget_rounds: int
-    sccp_iter_cap: int | None
-    cse_iter_cap: int
-    enable_deep_edge_thread: bool
-    enable_cse: bool
-    budget_ms: float
-    # Deterministic work-unit budget for the mid-end pass-degrade ladder.
-    # The degrade ladder MUST gate on this (a pure function of the IR — op and
-    # block counts), never on wall-clock elapsed time: a time-gated optimiser
-    # makes the compiled IR depend on machine speed / scheduling, which silently
-    # violated the determinism contract (#73 — identical source + seed produced
-    # divergent IR across processes whenever a compile happened to run slow
-    # enough to trip the old `time.perf_counter()` budget and disable CSE).
-    # `budget_ms` is retained for telemetry/logging only.
-    work_budget: float
-    allow_hot_promotion: bool
-    module_function_count: int
-    module_total_ops: int
-    monolith_pressure_level: int
-
-
-@dataclass(frozen=True)
-class MidendEnvConfig:
-    monolith_function_threshold: int
-    monolith_total_ops_threshold: int
-    hot_tier_promotion_enabled: bool
-    # Deterministic work-unit budget override (env: MOLT_MIDEND_WORK_BUDGET).
-    # When set, replaces the computed per-function work budget the degrade
-    # ladder gates on.  This is the only supported mid-end budget override.
-    work_budget_override: float | None
-    budget_alpha: float
-    budget_beta: float
-    budget_scale: float
-    max_rounds_override: int | None
-    sccp_iter_cap_override: int | None
-    cse_iter_cap_override: int | None
-    cse_fp_max_iters: int
 
 
 @dataclass
@@ -969,103 +820,11 @@ class FuncInfo(TypedDict):
     gpu_body_origin: NotRequired[dict[str, Any]]
 
 
-class _TrackedOpsList(list[MoltOp]):
-    def __init__(
-        self,
-        owner: "SimpleTIRGenerator",
-        initial: list[MoltOp] | None = None,
-    ) -> None:
-        super().__init__(initial or [])
-        self._owner = owner
-
-    def append(self, item: MoltOp) -> None:
-        super().append(item)
-        self._owner._adjust_module_pressure_counts(ops_delta=1)
-
-    def extend(self, items: Iterable[MoltOp]) -> None:
-        items_list = list(items)
-        super().extend(items_list)
-        self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
-
-    def insert(self, index: SupportsIndex, item: MoltOp) -> None:
-        super().insert(index, item)
-        self._owner._adjust_module_pressure_counts(ops_delta=1)
-
-    def pop(self, index: SupportsIndex = -1) -> MoltOp:
-        item = super().pop(index)
-        self._owner._adjust_module_pressure_counts(ops_delta=-1)
-        return item
-
-    def remove(self, item: MoltOp) -> None:
-        super().remove(item)
-        self._owner._adjust_module_pressure_counts(ops_delta=-1)
-
-    def clear(self) -> None:
-        old_len = len(self)
-        super().clear()
-        self._owner._adjust_module_pressure_counts(ops_delta=-old_len)
-
-    @overload
-    def __setitem__(self, index: SupportsIndex, value: MoltOp) -> None: ...
-
-    @overload
-    def __setitem__(self, index: slice, value: Iterable[MoltOp]) -> None: ...
-
-    def __setitem__(
-        self,
-        index: SupportsIndex | slice,
-        value: MoltOp | Iterable[MoltOp],
-    ) -> None:
-        if isinstance(index, slice):
-            replacement = list(cast(Iterable[MoltOp], value))
-            current = list(self[index])
-            super().__setitem__(index, replacement)
-            self._owner._adjust_module_pressure_counts(
-                ops_delta=len(replacement) - len(current)
-            )
-            return
-        super().__setitem__(index, cast(MoltOp, value))
-
-    def __delitem__(self, index: SupportsIndex | slice) -> None:
-        if isinstance(index, slice):
-            removed = list(self[index])
-        else:
-            removed = None
-        super().__delitem__(index)
-        self._owner._adjust_module_pressure_counts(
-            ops_delta=-len(removed) if removed is not None else -1
-        )
-
-    def __iadd__(self, items: Iterable[MoltOp]) -> "_TrackedOpsList":
-        items_list = list(items)
-        result = cast("_TrackedOpsList", super().__iadd__(items_list))
-        self._owner._adjust_module_pressure_counts(ops_delta=len(items_list))
-        return result
-
-
-class CanonicalizationState(TypedDict):
-    aliases: dict[str, MoltValue]
-    const_int_values: dict[str, int]
-    value_type_tags: dict[str, int]
-    available_values: dict[tuple[Any, ...], MoltValue]
-
-
 __all__ = [
     "MoltValue",
     "MoltOp",
-    "SCCPResult",
-    "LoopBoundFact",
     "_INLINE_INT_MIN",
     "_INLINE_INT_MAX",
-    "_SCCP_OVERDEFINED",
-    "_SCCP_UNKNOWN",
-    "_SCCP_MISSING",
-    "MidendProfile",
-    "MidendTier",
-    "_MIDEND_ENV_KEYS",
-    "MidendTierClassification",
-    "MidendFunctionPolicy",
-    "MidendEnvConfig",
     "ActiveException",
     "GEN_SEND_OFFSET",
     "GEN_THROW_OFFSET",
@@ -1092,8 +851,6 @@ __all__ = [
     "layout_definition_symbol",
     "class_namespace_closed",
     "FuncInfo",
-    "_TrackedOpsList",
-    "CanonicalizationState",
     "CompatibilityError",
     "CompatibilityReporter",
     "CFGGraph",

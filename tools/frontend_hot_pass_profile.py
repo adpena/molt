@@ -257,90 +257,6 @@ def _p95(values: Sequence[float]) -> float:
     return float(ordered[idx])
 
 
-def _record_pass_aggregates(
-    aggregate: dict[str, dict[str, Any]],
-    *,
-    source: str,
-    pass_stats_by_function: Mapping[str, Mapping[str, Mapping[str, Any]]],
-) -> None:
-    for function_name, pass_stats in pass_stats_by_function.items():
-        for pass_name, stats in pass_stats.items():
-            bucket = aggregate.setdefault(
-                pass_name,
-                {
-                    "pass": pass_name,
-                    "total_ms": 0.0,
-                    "max_ms": 0.0,
-                    "attempted": 0,
-                    "accepted": 0,
-                    "degraded": 0,
-                    "samples_ms": [],
-                    "functions": set(),
-                    "sources": set(),
-                },
-            )
-            total_ms = float(stats.get("ms_total", 0.0) or 0.0)
-            bucket["total_ms"] = float(bucket["total_ms"]) + total_ms
-            bucket["max_ms"] = max(
-                float(bucket["max_ms"]), float(stats.get("ms_max", 0.0) or 0.0)
-            )
-            bucket["attempted"] = int(bucket["attempted"]) + int(
-                stats.get("attempted", 0) or 0
-            )
-            bucket["accepted"] = int(bucket["accepted"]) + int(
-                stats.get("accepted", 0) or 0
-            )
-            bucket["degraded"] = int(bucket["degraded"]) + int(
-                stats.get("degraded", 0) or 0
-            )
-            samples = bucket["samples_ms"]
-            if isinstance(samples, list):
-                samples.extend(
-                    float(sample)
-                    for sample in stats.get("samples_ms", [])
-                    if isinstance(sample, int | float)
-                )
-            bucket["functions"].add(str(function_name))
-            bucket["sources"].add(source)
-
-
-def _rank_passes(
-    aggregate: Mapping[str, Mapping[str, Any]], *, limit: int
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for pass_name, bucket in aggregate.items():
-        samples = [
-            float(sample)
-            for sample in bucket.get("samples_ms", [])
-            if isinstance(sample, int | float)
-        ]
-        functions = bucket.get("functions", set())
-        sources = bucket.get("sources", set())
-        rows.append(
-            {
-                "pass": pass_name,
-                "total_ms": round(float(bucket.get("total_ms", 0.0)), 6),
-                "p95_ms": round(_p95(samples), 6),
-                "max_ms": round(float(bucket.get("max_ms", 0.0)), 6),
-                "samples": len(samples),
-                "attempted": int(bucket.get("attempted", 0)),
-                "accepted": int(bucket.get("accepted", 0)),
-                "degraded": int(bucket.get("degraded", 0)),
-                "function_count": len(functions) if isinstance(functions, set) else 0,
-                "source_count": len(sources) if isinstance(sources, set) else 0,
-            }
-        )
-    rows.sort(
-        key=lambda item: (
-            float(item["total_ms"]),
-            float(item["p95_ms"]),
-            str(item["pass"]),
-        ),
-        reverse=True,
-    )
-    return rows[:limit]
-
-
 def _rank_cprofile(
     aggregate: Mapping[tuple[str, int, str], Mapping[str, Any]],
     *,
@@ -373,7 +289,6 @@ def _rank_cprofile(
 def profile_one(
     path: Path,
     *,
-    optimization_profile: str,
     top_functions: int,
     target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -397,15 +312,12 @@ def profile_one(
                 "parse_ms": 0.0,
                 "visit_ms": 0.0,
                 "serialize_ms": 0.0,
-                "midend_pass_stats_by_function": {},
-                "midend_policy_outcomes_by_function": {},
             }, []
         profiler.enable()
         parse_start = time.perf_counter()
         tree = ast.parse(source, filename=str(path))
         parse_ms = (time.perf_counter() - parse_start) * 1000.0
         gen = SimpleTIRGenerator(
-            optimization_profile=optimization_profile,
             module_name=_module_name_for_path(path),
             # The path a build emits, so a stdlib module gets its build policy.
             source_path=_toolchain_package_root().logical_source_path(path.resolve()),
@@ -437,8 +349,6 @@ def profile_one(
             "serialize_ms": round(serialize_ms, 6),
             "function_count": function_count,
             "op_count": op_count,
-            "midend_pass_stats_by_function": gen.midend_pass_stats_by_function,
-            "midend_policy_outcomes_by_function": gen.midend_policy_outcomes_by_function,
         }
     except Exception as exc:  # noqa: BLE001 - this is a profiling census.
         profiler.disable()
@@ -453,8 +363,6 @@ def profile_one(
             "serialize_ms": round(serialize_ms, 6),
             "error_type": type(exc).__name__,
             "error": str(exc),
-            "midend_pass_stats_by_function": {},
-            "midend_policy_outcomes_by_function": {},
         }
     return result, _frontend_cprofile_rows(profiler, limit=top_functions)
 
@@ -462,27 +370,19 @@ def profile_one(
 def profile_sources(
     sources: Sequence[Path],
     *,
-    optimization_profile: str,
     top: int,
     profile_inputs: Mapping[str, Any] | None = None,
     target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version,
 ) -> dict[str, Any]:
-    pass_aggregate: dict[str, dict[str, Any]] = {}
     cprofile_aggregate: dict[tuple[str, int, str], dict[str, Any]] = {}
     source_results: list[dict[str, Any]] = []
     for path in sources:
         result, cprofile_rows = profile_one(
             path,
-            optimization_profile=optimization_profile,
             top_functions=max(1, top),
             target_python=target_python,
         )
         source_results.append(result)
-        _record_pass_aggregates(
-            pass_aggregate,
-            source=str(result["path"]),
-            pass_stats_by_function=result["midend_pass_stats_by_function"],
-        )
         _aggregate_cprofile(cprofile_aggregate, cprofile_rows)
     status_counts = Counter(
         str(result.get("status", "unknown")) for result in source_results
@@ -494,11 +394,10 @@ def profile_sources(
     inputs.setdefault("limit", None)
     inputs["resolved_sources"] = resolved_sources
     return {
-        "schema_version": "1.2",
+        "schema_version": "2.0",
         "tool": "frontend_hot_pass_profile",
         "generated_at_utc": _utc_stamp(),
         "git_rev": _git_rev(),
-        "optimization_profile": optimization_profile,
         "target_python": f"{target_python[0]}.{target_python[1]}",
         "parser_python": f"{sys.version_info.major}.{sys.version_info.minor}",
         "profile_inputs": inputs,
@@ -509,7 +408,6 @@ def profile_sources(
         ),
         "corpus_digest": _corpus_digest(source_results),
         "sources": source_results,
-        "ranked_midend_passes": _rank_passes(pass_aggregate, limit=max(1, top)),
         "ranked_frontend_functions": _rank_cprofile(
             cprofile_aggregate,
             limit=max(1, top),
@@ -539,30 +437,12 @@ def format_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"- Generated: {report.get('generated_at_utc')}",
         f"- Git revision: {report.get('git_rev')}",
-        f"- Optimization profile: {report.get('optimization_profile')}",
         f"- Target Python: {report.get('target_python')} (parser {report.get('parser_python')})",
         f"- Corpus digest: {report.get('corpus_digest')}",
         f"- Sources: {report.get('source_count')} ({report.get('status_counts')})",
         f"- Total frontend elapsed: {report.get('total_elapsed_ms')} ms",
         "",
-        "## Ranked Midend Passes",
-        "",
     ]
-    lines.extend(
-        _markdown_table(
-            report.get("ranked_midend_passes", []),
-            (
-                "rank",
-                "pass",
-                "total_ms",
-                "p95_ms",
-                "attempted",
-                "accepted",
-                "degraded",
-                "source_count",
-            ),
-        )
-    )
     lines.extend(["", "## Ranked Frontend Functions", ""])
     lines.extend(
         _markdown_table(
@@ -627,11 +507,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Canonical target Python version; use a parser that supports its syntax.",
     )
     parser.add_argument(
-        "--optimization-profile",
-        choices=("dev", "release"),
-        default="release",
-    )
-    parser.add_argument(
         "--out-dir",
         type=Path,
         default=None,
@@ -663,7 +538,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     report = profile_sources(
         sources,
-        optimization_profile=args.optimization_profile,
         top=args.top,
         target_python=target.feature_version,
         profile_inputs={

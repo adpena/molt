@@ -288,9 +288,6 @@ def _write_build_timeout_diag(
                 "MOLT_BUILD_STATE_DIR",
                 "MOLT_BUILD_LOCK_TIMEOUT",
                 "MOLT_FRONTEND_PHASE_TIMEOUT",
-                "MOLT_MIDEND_MAX_ROUNDS",
-                "MOLT_SCCP_MAX_ITERS",
-                "MOLT_CSE_MAX_ITERS",
             )
         },
         "timed_out": result.timed_out,

@@ -379,7 +379,7 @@ def _add_build_parser(
         default=None,
         help=(
             "Enable compile diagnostics payloads (phase timings, module reasons, "
-            "frontend/midend summaries)."
+            "frontend lowering summaries)."
         ),
     )
     build_parser.add_argument(
@@ -1009,15 +1009,11 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             debug_subcommand.value,
             help=f"Run canonical `{debug_subcommand.value}` debug flow.",
         )
-        _add_debug_shared_selector_args(subparser)
+        _add_debug_shared_selector_args(
+            subparser, include_pass=debug_subcommand != DebugSubcommand.IR
+        )
         if debug_subcommand == DebugSubcommand.IR:
             subparser.add_argument("source", help="Python source file to compile.")
-            subparser.add_argument(
-                "--stage",
-                choices=["pre-midend", "post-midend", "all"],
-                default="all",
-                help="Which compilation stage(s) to dump.",
-            )
         if debug_subcommand == DebugSubcommand.REPRO:
             subparser.add_argument(
                 "source", help="Python source file to execute as a repro."

@@ -123,7 +123,7 @@ Layer 1 is for the shallow-diver who wants *a little* control: "make it fast," "
 
 ### Layer 2 — The power-user contract: THE EXTENSION ALGEBRA
 
-This is molt's **largest current gap** and its largest 100-year opportunity. The audit verdict is unambiguous and source-verified: **power-user *operational tunability* is rich (env vars, PGO/BOLT/snapshot/split-runtime, capability manifests, type-facts feedback), but genuine *extensibility* is absent.** Backends are a hard-coded enum (`choices=["cranelift","llvm","auto"]`, verified at `entrypoint_parser.py:256,833`); passes are internal with only coarse env dials (`MOLT_MIDEND_PROFILE`); custom types/Reprs have no Python API; and a grep for *any* `register_*`/`entry_point`/`plugin` mechanism in the CLI returns **nothing**. The only pluggable boundary is the ad-hoc C-extension ABI (`molt extension`, C headers + toml manifest). **Power users can tune molt deeply; they cannot extend it without forking.**
+This is molt's **largest current gap** and its largest 100-year opportunity. The audit verdict is unambiguous and source-verified: **power-user *operational tunability* is rich (env vars, PGO/BOLT/snapshot/split-runtime, capability manifests, type-facts feedback), but genuine *extensibility* is absent.** Backends are a hard-coded enum (`choices=["cranelift","llvm","auto"]`, verified at `entrypoint_parser.py:256,833`); Rust TIR passes are internal; custom types/Reprs have no Python API; and a grep for *any* `register_*`/`entry_point`/`plugin` mechanism in the CLI returns **nothing**. The only pluggable boundary is the ad-hoc C-extension ABI (`molt extension`, C headers + toml manifest). **Power users can tune molt deeply; they cannot extend it without forking.**
 
 The doctrine's answer is an **algebra**, not a flag set: a small number of typed, composable extension points that combine. The design is anchored on the SOTA gold standard (SwiftPM plugins: typed, capability-scoped, sandboxed, intent-discoverable — Report B, P7–P9) and molt's *existing* security primitive (`trust_policy.toml`/`--capabilities` — extend it, don't reinvent it).
 
@@ -131,7 +131,7 @@ The doctrine's answer is an **algebra**, not a flag set: a small number of typed
 
 | Extension point | What it is | Composition law | Replaces today's |
 |---|---|---|---|
-| **Pass** | a typed IR→IR transform with declared {reads, writes, invariants-preserved} | passes compose into a **pipeline**; the scheduler orders by declared dependencies, not registration order | internal-only midend, `MOLT_MIDEND_*` dials |
+| **Pass** | a typed IR→IR transform with declared {reads, writes, invariants-preserved} | passes compose into a **pipeline**; the scheduler orders by declared dependencies, not registration order | internal Rust TIR pipeline |
 | **Backend** | a typed `(TIR, Target) → Artifact` lowering with declared capabilities | backends are *selected*, and a custom backend registers a new `--backend`/`--target` value | hard-coded `cranelift/llvm/auto` enum |
 | **Type / Repr** | a typed mapping from a Python type to a runtime representation + its ops | Reprs compose via the type lattice; a custom Repr declares which ops it provides and falls back to the boxed default for the rest | C-ABI only, no Python API |
 | **Repr-of (display/serialization)** | a typed `value → bytes/str` for a user type, deterministic by contract | composes with the determinism contract — a custom Repr that is nondeterministic is rejected in strict builds | nothing |

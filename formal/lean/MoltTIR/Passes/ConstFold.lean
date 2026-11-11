@@ -4,8 +4,8 @@
   Folds constant sub-expressions at compile time. This is the first
   compiler pass with a machine-checked correctness proof.
 
-  Corresponds to the SCCP pass in Molt's midend pipeline
-  (SimpleTIRGenerator._run_ir_midend_passes).
+  Models an abstract TIR transform. Rust owns production optimization in
+  runtime/molt-passes/src/tir/passes; source correspondence remains unproved.
 -/
 import MoltTIR.Semantics.EvalExpr
 

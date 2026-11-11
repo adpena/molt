@@ -28,7 +28,6 @@ from molt.frontend._types import (
     ExactClassFact,
     FuncInfo,
     LoopScope,
-    MidendProfile,
     MoltOp,
     MoltValue,
     TypeHint,
@@ -333,8 +332,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         target_sys_platform: str | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
-        optimization_profile: MidendProfile = "release",
-        pgo_hot_functions: set[str] | None = None,
     ) -> None:
         from molt.host_python import require_frontend_python
         from molt.target_python import (
@@ -344,18 +341,15 @@ class GeneratorStateMixin(GeneratorMixinBase):
 
         require_frontend_python()
         require_supported_target_python(TargetPythonVersion(*target_python, micro=0))
-        self._module_pressure_function_count = 0
-        self._module_pressure_total_ops = 0
         self.funcs_map: dict[str, FuncInfo] = {
             "molt_main": {
                 "params": [],
                 "param_types": [],
                 "return_abi": "void",
                 "return_hint": None,
-                "ops": self._new_tracked_ops(),
+                "ops": [],
             }
         }
-        self._module_pressure_funcs_map_ref = self.funcs_map
         self.current_func_name: str = "molt_main"
         self.current_ops: list[MoltOp] = self.funcs_map["molt_main"]["ops"]
         self.func_code_ids: dict[str, int] = {}
@@ -506,7 +500,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.module_annotation_exec_counter = 0
         self.module_annotation_emitted = False
         self.module_annotations_conditional = False
-        self._init_midend_state(optimization_profile, pgo_hot_functions)
         self.class_annotation_items: list[tuple[str, ast.expr, int]] = []
         self.class_annotation_exec_map: MoltValue | None = None
         self.class_annotation_exec_counter = 0

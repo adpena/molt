@@ -4,16 +4,16 @@ Status: live R5c profiling contract, added 2026-07-03.
 
 This document pins the frontend profiling authority for the R5c iteration-loop
 lane. The source of truth is `tools/frontend_hot_pass_profile.py`; it runs the
-existing `SimpleTIRGenerator` telemetry over a deterministic source corpus and
-writes both JSON and Markdown artifacts. Do not hand-rank profiler snippets or
-copy stderr from `MOLT_MIDEND_STATS` as evidence.
+existing `SimpleTIRGenerator` lowering and serialization under cProfile over a
+deterministic source corpus and writes JSON and Markdown artifacts. Python
+optimizer pass telemetry was retired by HF-773 slice E.
 
 ## Command Contract
 
 Default core-corpus profile:
 
 ```powershell
-uv run --active --project . python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --optimization-profile release --top 12 --fail-on-error
+uv run --active --project . python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --top 12 --fail-on-error
 ```
 
 The tool fails closed for missing manifests, missing source entries, empty
@@ -24,19 +24,17 @@ verdict with the JSON and Markdown artifact paths:
 frontend-hot-pass-profile rc=0 sources=17 statuses={'pass': 17} json=... md=...
 ```
 
-Artifact schema:
+Artifact schema (version 2.0; retired Python pass-stat fields are absent):
 
 - `profile_inputs`: manifest path/hash, explicit source arguments, limit, and
   resolved source list. The artifact must prove the corpus it measured.
 - `corpus_digest`: ordered digest of each measured source path and source hash;
   use it to compare profile artifacts before claiming a speedup.
-- `ranked_midend_passes`: aggregate pass table from the frontend's existing
-  `midend_pass_stats_by_function` authority.
 - `ranked_frontend_functions`: cProfile attribution filtered to
   `src/molt/frontend/**`, used to identify the shared primitive beneath hot
   passes.
 - `sources`: per-source status, elapsed time, source hash, function count, op
-  count, pass stats, and policy outcomes.
+  count.
 
 ## Attribution integrity and measurement scope
 
@@ -107,12 +105,16 @@ late taint-domain projection, mutation and changed-field-copy controls live in
 `tests/test_python_binding_join_frontier.py` and the existing mutation suite.
 These costs belong to compilation and development checks, not emitted guests.
 
+Historical note: the following measurements and optimization proposals describe
+the Python optimizer retired by HF-773 slice E. They do not describe the current
+frontend or authorize a second optimizer.
+
 ## Historical Evidence
 
 Command:
 
 ```powershell
-uv run --active --project . python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --optimization-profile release --top 12 --fail-on-error
+uv run --active --project . python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --top 12 --fail-on-error
 ```
 
 Artifact:
@@ -175,7 +177,7 @@ Differential gate design:
    irreducible, loop, try/except/finally, async, and empty-function MoltOp
    fixtures; compare blocks, predecessors, successors, control maps, dominators,
    and reachability byte-for-byte.
-2. Frontend IR equivalence: serialize post-midend JSON for
+2. Frontend IR equivalence: serialize frontend wire JSON for
    `tests/differential/basic/CORE_TESTS.txt` with Python CFG and Rust CFG, then
    compare canonical JSON exactly.
 3. Product differential: queue a native differential shard for the same manifest

@@ -21,6 +21,12 @@ runtime name cache now own sites. See the canonical
 [lookup contract](../../spec/areas/compiler/0190_LOWERING_RULES.md#builtin-shape-and-lifetime-authority);
 this closes the allocator finding, not the remaining F2 decomposition.
 
+**Optimizer retirement (2026-11-10, HF-773 slice E):** the Python optimizer and
+its `RAISING_KIND_NAMES` projection are retired. The historical F2a proposal
+below records their former ownership. Observer rows still feed the callback
+effect projection consumed by `lowering/frame_locations.py`; the generated
+pure/control and exception-skip facts remain language-lowering inputs.
+
 **Date:** 2026-06-06. Every file:line anchor verified against HEAD `e7b65349d`. Current-code note, 2026-06-26: F1 plus the first F2 authority cuts have reduced `src/molt/frontend/__init__.py` to a 302-line facade shell, not the final F2d facade. Function-shape spelling and suspension classifiers now have one semantic home in `frontend.sema.funcmeta`; static class graph, local class-member facts with fail-closed opacity, C3/static-MRO/reachability, class-body block-exec facts now live in `frontend.sema.classgraph`, and call/class lowering consume those facts through explicit sema inputs. The generator is still one shared-state lowering shell, so the F2 target below remains the required end-state: data contracts and phase separation, not permanent mixins over the god object.
 
 **The verdict this engineers against** (supervisor, "engineered like Chris Lattner would?"): **NO, today.** At the original audit, `src/molt/frontend/__init__.py` was 27,071 lines, one class `SimpleTIRGenerator` with 538 `def`s (`__init__.py:211`), assembled from four MRO-mixins (`SerializationMixin, PatternMatchMixin, CallVisitorMixin, ClassDefVisitorMixin, ast.NodeVisitor` — `__init__.py:211-217`) that shared its ~150 mutable instance fields. Current F1 has moved more families out of the file, including `LocalBindingMixin` and `MidendOptimizationMixin`, and the first F2 sema cuts have removed the duplicate function-shape and static-class-graph authorities. The architectural defect remains: scope binding, IC index allocation, exception-edge insertion, const handling, augassign-kind selection, and emitted class metadata are still partly recomputed or supplied during the lowering walk behind one shared generator state. The cost is measured below in §6.
@@ -356,7 +362,7 @@ their terminal transition clears it. `locals()`, `vars()` and `dir()` of a
 function are `frame_locals`, which the runtime answers from the executing
 frame. `_function_binds_homes` is the one predicate for a frame's homes, its
 FunctionIR `parameter_custody` and a direct call's custody.
-`test_frontend_midend_passes.py`, `test_python_execution_frame.py`,
+`test_frontend_lowering_contracts.py`, `test_python_execution_frame.py`,
 `bindings_tests.rs` and the `frame_binding_lifetime.py` and
 `locals_mutation_semantics.py` differential capsules cover the storage and its
 exits.
@@ -471,13 +477,10 @@ and nonlocal publication invalidates stale enclosing import provenance.
 `tests/test_frontend_class_imports.py` checks the emitted store and subsequent
 consumer, including boxed and loop-bound module slots.
 
-Frontend SCCP scheduling is owned by executable CFG edges and predecessor-state
-changes. The redundant global value-notification queue is removed. Newly
-executable edges still schedule PHI reevaluation even for equal predecessor
-states. The unchanged growth stress consumer measured 47.74855s before and
-0.89006s after this change; this is a profiled stress-case result, not a
-whole-frontend speed claim. Deterministic diamond scheduling budgets and the
-equal-state late-edge regression live in `tests/test_frontend_midend_passes.py`.
+The historical Python SCCP scheduling implementation and its stress fixtures
+were retired with HF-773 slice E. Rust typed SSA owns executable-edge facts.
+Namespace/static truth analysis remains language lowering and keeps its
+independent semantic tests.
 
 `static_comparison_result` also owns each comparison's result facts, so binding
 flow applies comparison, truth and release effects before later chain operands
@@ -763,12 +766,12 @@ A construct lowered by `if scope == module: ... else: ...` inside one function i
 
 3. **`_augassign_op_kind`** (`__init__.py:13924-13959`, a 13-arm `isinstance(op, ast.X)` → `"INPLACE_X"` chain). This is the AST-operator → kind map that doc 25 §1 flagged as drift-prone (the historical `floordiv`/`floor_div` schism, bug #5; and the augassign-inplace-dunder gap that was a live correctness bug fixed days ago in `4606b4225`). The map `{ast.Add: "INPLACE_ADD", ...}` is pure registry data. **Add an `augassign_kind` column** (or a `binop_ast → kind` mapping section) to `op_kinds.toml` and generate the dict; `visit_AugAssign` imports it. The sibling `visit_BinOp` op-selection chain (`__init__.py:10723-10736`, `ast.LShift → "LSHIFT"` etc.) is the same shape and folds into the same generated map.
 
-4. **The midend optimizer effect oracle** (`frontend/lowering/midend_canonicalization.py::_op_effect_class`, composed through `midend_optimization.py`). This is the pre-serialization sibling of backend `OpEffects`: it decides CSE/LICM/DCE barriers over UPPERCASE `MoltOp.kind` names before JSON serialization. It must be generated from `[[kind]]`, opcode `may_throw`/`side_effecting`/`purity`, `[[simpleir_control_kind]]`, `[[frontend_raising_kind]]`, and explicit `[[frontend_effect_kind]]` overrides so a frontend optimizer barrier cannot drift from the TIR registry.
+4. **The midend optimizer effect oracle** (`frontend/lowering/midend_canonicalization.py::_op_effect_class`, composed through `midend_optimization.py`). This is the pre-serialization sibling of backend `OpEffects`: it decides CSE/LICM/DCE barriers over UPPERCASE `MoltOp.kind` names before JSON serialization. It must be generated from `[[kind]]`, opcode `may_throw`/`side_effecting`/`purity`, `[[simpleir_control_kind]]`, `[[frontend_raising_kind]]`, and explicit `[[frontend_effect_kind]]` overrides so a frontend optimizer barrier cannot drift from the TIR registry. HF-773 slice E retired this oracle with the Python mid-end; the Rust TIR `OpEffects` is the one effect authority.
 
 ### 3.2 Mechanism (extends doc 25 §5, does not replace it)
 
 - **One table:** `op_kinds.toml` gains two columns on the relevant rows — `ast_binop` (the `ast.operator` subclass name this kind is the binary form of) and `ast_augassign` (the inplace form). The `may_throw` column already exists.
-- **One generator:** `tools/gen_op_kinds.py` (already renders `op_kinds_generated.py`) additionally emits, into that same file: `RAISING_KIND_NAMES: frozenset[str]`, `CHECK_EXCEPTION_SKIP_KINDS: frozenset[str]`, `FRONTEND_EFFECT_CLASS: dict[str, str]` plus effect-class sets, `AUGASSIGN_OP_KIND: dict[str, str]` (keyed by `ast.operator.__name__`), and `BINOP_OP_KIND: dict[str, str]`.
+- **One generator:** `tools/gen_op_kinds.py` (already renders `op_kinds_generated.py`) additionally emits, into that same file: `RAISING_KIND_NAMES: frozenset[str]`, `CHECK_EXCEPTION_SKIP_KINDS: frozenset[str]`, pure/control effect sets for traceback location placement, `AUGASSIGN_OP_KIND: dict[str, str]` (keyed by `ast.operator.__name__`), and `BINOP_OP_KIND: dict[str, str]`.
 - **One sync test:** `tests/test_gen_op_kinds.py` (already exists per doc 25 §5/§6) re-renders in memory and asserts byte-identity → drift becomes a test failure.
 - **Three deletions:** `__init__.py:1169-1229`, `:1258-1338`, `:13924-13959` are replaced by imports from `op_kinds_generated`. The `visit_BinOp` chain (`:10723-10736`) keeps its *type-hint* logic but reads the kind string from `BINOP_OP_KIND`.
 
@@ -786,7 +789,7 @@ The unit of work is the complete structural change (CLAUDE.md). F2 is a multi-we
 
 ### F2a — Registry absorption of hand-kept frontend tables (THIS WEEK; collision-free)
 
-**Scope.** §3: add the `ast_binop`/`ast_augassign` columns and frontend effect rows to `op_kinds.toml`; extend `gen_op_kinds.py` to emit `RAISING_KIND_NAMES`/`CHECK_EXCEPTION_SKIP_KINDS`/`FRONTEND_EFFECT_CLASS`/`AUGASSIGN_OP_KIND`/`BINOP_OP_KIND` into `op_kinds_generated.py`; delete the hand lists (`__init__.py:1169`, `:1258`, `:13924`, and `midend_canonicalization.py::_op_effect_class`'s local sets) and the `visit_BinOp` kind-literals (`:10723`), replacing with imports.
+**Scope.** §3: add the `ast_binop`/`ast_augassign` columns and frontend effect rows to `op_kinds.toml`; extend `gen_op_kinds.py` to emit `RAISING_KIND_NAMES`/`CHECK_EXCEPTION_SKIP_KINDS`/the retired Python optimizer effect map/`AUGASSIGN_OP_KIND`/`BINOP_OP_KIND` into `op_kinds_generated.py`; delete the hand lists (`__init__.py:1169`, `:1258`, `:13924`, and `midend_canonicalization.py::_op_effect_class`'s local sets) and the `visit_BinOp` kind-literals (`:10723`), replacing with imports.
 **Why it lands this week without colliding with in-flight arcs.** The in-flight frontend work is **`prepfix`** (metaclass `__prepare__`, live-uncommitted in `visitors/calls.py` per `git status`, and `visitors/classes.py`) and **`cfoldfix`** (const-fold paths). F2a touches *neither*: it edits `op_kinds.toml`, `gen_op_kinds.py`, `op_kinds_generated.py`, and three *disjoint* line ranges of `__init__.py` (the table definitions at 1169/1258/13924/10723 — none of which `prepfix` or `cfoldfix` touch, since those live in `classes.py`/`calls.py` and the SCCP/fold paths respectively). It is the M1 move "lift a hand table into the generator" — the exact, low-risk shape of `81f3016e5`/`fbf035c61`.
 **LoC/risk.** Generated-table expansion plus local-table deletion. **Risk: LOW** (byte-identical generated output is mechanically verifiable; the sync test is the gate). **Deletes:** the hand frontend registry/effect tables — concrete dead-code removal of F2.
 **Gate.** `tests/test_gen_op_kinds.py` byte-identity + full differential corpus byte-identical (the generated sets must be supersets-equal to the hand sets; a diff *is* a latent drift the move surfaces).

@@ -13,63 +13,17 @@ from molt.cli import wasm_final_link_cache
 from molt.link_outputs import wasm_link_output_paths
 
 
-def test_midend_pass_summary_adds_calls_but_takes_maximum_resident_peak() -> None:
-    payload = build_diagnostics._build_midend_diagnostics_payload(
-        requested_profile="release",
-        policy_outcomes_by_function={},
-        pass_stats_by_function={
-            "m::first": {
-                "cse": {
-                    "ms_total": 10,
-                    "call_count": 3,
-                    "peak_rss_bytes": 400,
-                    "peak_rss_growth_bytes": 250,
-                    "memory_samples": 2,
-                }
-            },
-            "m::second": {
-                "cse": {
-                    "ms_total": 15,
-                    "call_count": 2,
-                    "peak_rss_bytes": 700,
-                    "peak_rss_growth_bytes": 100,
-                    "memory_samples": 3,
-                }
-            },
-        },
-    )
-    assert payload is not None
-    assert payload["pass_wall_time_ranked"] == [
-        {
-            "pass": "cse",
-            "ms_total": 25.0,
-            "call_count": 5,
-            "peak_rss_bytes": 700,
-            "peak_rss_growth_bytes": 250,
-            "memory_samples": 5,
-        }
-    ]
-    assert payload["pass_memory_metric"]["scope"] == "inclusive_nested_passes"
-    unknown = build_diagnostics._normalize_midend_pass_stat({"ms_total": 1})
-    assert unknown["call_count"] is None and unknown["peak_rss_bytes"] is None
-
-
 _BUILD_DIAGNOSTICS_NAMES = (
     "_build_allocation_diagnostics_enabled",
     "_build_phase_attribution",
     "_build_build_diagnostics_payload",
     "_build_diagnostics_enabled",
-    "_build_midend_diagnostics_payload",
     "_build_reason_summary",
     "_capture_build_allocation_diagnostics",
     "_duration_ms_from_ns",
     "_emit_build_diagnostics",
     "_emit_build_diagnostics_if_present",
     "_frontend_lowering_cache_summary",
-    "_midend_policy_config_snapshot",
-    "_midend_sample_p95",
-    "_midend_sample_percentile",
-    "_normalize_midend_pass_stat",
     "_phase_duration_map",
     "_record_frontend_timing_item",
     "_resolve_build_diagnostics_path",
@@ -78,68 +32,17 @@ _BUILD_DIAGNOSTICS_NAMES = (
 )
 
 
-def test_midend_coverage_weights_original_ops_and_keeps_losses() -> None:
-    outcomes = {
-        "small": {
-            "coverage": {
-                "status": "full",
-                "input_ops": 10,
-                "output_ops": 1,
-                "reasons": [],
-            }
-        },
-        "large": {
-            "coverage": {
-                "status": "degraded",
-                "input_ops": 90,
-                "output_ops": 2,
-                "reasons": ["work_budget_exceeded"],
-            }
-        },
-    }
-    report = build_diagnostics._build_midend_coverage_payload(outcomes)
-    assert report["functions"] == 2
-    assert report["input_ops"] == 100
-    assert report["categories"]["full"]["function_share"] == 0.5
-    assert report["categories"]["full"]["op_share"] == 0.1
-    assert report["reasons"]["work_budget_exceeded"] == {
-        "functions": 1,
-        "input_ops": 90,
-    }
-    assert report["complete"]
-
-
-def test_midend_coverage_cannot_hide_missing_or_empty_denominators() -> None:
-    missing = build_diagnostics._build_midend_coverage_payload({"cached": {}})
-    assert missing["functions"] == 1
-    assert missing["categories"]["skipped"]["functions"] == 1
-    assert missing["categories"]["skipped"]["op_share"] is None
-    assert missing["functions_with_unknown_input_ops"] == 1
-    assert not missing["complete"]
-    empty = build_diagnostics._build_midend_coverage_payload({})
-    assert empty["functions"] == 0
-    assert all(
-        row["function_share"] is None and row["op_share"] is None
-        for row in empty["categories"].values()
-    )
-
-
 _BUILD_DIAGNOSTICS_DEFINITIONS = (
     "def _build_allocation_diagnostics_enabled(",
     "def _build_phase_attribution(",
     "def _build_build_diagnostics_payload(",
     "def _build_diagnostics_enabled(",
-    "def _build_midend_diagnostics_payload(",
     "def _build_reason_summary(",
     "def _capture_build_allocation_diagnostics(",
     "def _duration_ms_from_ns(",
     "def _emit_build_diagnostics(",
     "def _emit_build_diagnostics_if_present(",
     "def _frontend_lowering_cache_summary(",
-    "def _midend_policy_config_snapshot(",
-    "def _midend_sample_p95(",
-    "def _midend_sample_percentile(",
-    "def _normalize_midend_pass_stat(",
     "def _phase_duration_map(",
     "def _record_frontend_timing_item(",
     "def _resolve_build_diagnostics_path(",
@@ -269,8 +172,6 @@ def test_optimizer_cost_reaches_cli_json_without_entering_operation_wall_counts(
             }
         },
         profile="dev",
-        midend_policy_outcomes_by_function={},
-        midend_pass_stats_by_function={},
         backend_daemon_health=None,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,

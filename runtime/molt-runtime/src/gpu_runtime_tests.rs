@@ -1085,3 +1085,52 @@ fn gpu_query_identity_reuses_exact_registry_materialization() {
         );
     });
 }
+
+#[test]
+fn gpu_builtin_identity_admits_positional_range_publication() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = MoltObject::from_ptr(alloc_string(py, b"gpu_builtin_fixture")).bits();
+            let module = crate::molt_module_new(name);
+            let publish = |public_name: &str| {
+                let spec = crate::builtins::functions::python_builtin_function_info(public_name)
+                    .expect("generated builtin");
+                crate::builtins::functions::alloc_python_builtin_function_bits(py, spec, module)
+                    .expect("published builtin")
+            };
+            // `isinstance` carries the positional-range policy: exact-arity raw
+            // calls bind without a custom binder, so the published object is
+            // the admitted dependency.
+            let isinstance = publish("isinstance");
+            let issubclass = publish("issubclass");
+            assert!(
+                crate::intrinsics::registry::is_named_python_builtin_materialization(
+                    py,
+                    isinstance,
+                    "isinstance",
+                )
+            );
+            assert!(
+                !crate::intrinsics::registry::is_named_python_builtin_materialization(
+                    py,
+                    issubclass,
+                    "isinstance",
+                )
+            );
+            let ptr = obj_from_bits(isinstance).as_ptr().expect("isinstance");
+            crate::bump_function_mutation_version(ptr);
+            assert!(
+                !crate::intrinsics::registry::is_named_python_builtin_materialization(
+                    py,
+                    isinstance,
+                    "isinstance",
+                )
+            );
+            assert!(!crate::exception_pending(py));
+            for bits in [isinstance, issubclass, module, name] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}

@@ -210,12 +210,10 @@ def test_shared_native_dispatch_is_total_before_import_refusal(
     assert result is not None, (
         "native object dispatch must consume the call before later policy fallthrough"
     )
-    # The probe emits after the module's return, which the mid-end prunes as
-    # unreachable; the dispatch contract is a lowering fact.
+    # The probe emits after the module's return; the dispatch contract is a
+    # lowering fact, read from the serialized frontend IR.
     operations = [
-        op
-        for function in generator.to_json(midend_stage="pre-midend")["functions"]
-        for op in function["ops"]
+        op for function in generator.to_json()["functions"] for op in function["ops"]
     ]
     assert not any(op["kind"] == "invoke_ffi" for op in operations)
     actual = [op for op in operations if op.get("out") == result.name]

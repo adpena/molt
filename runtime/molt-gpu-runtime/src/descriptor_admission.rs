@@ -246,10 +246,8 @@ fn refresh_buffer_fields<'py>(
     let itemsize = owned_lookup(py, default_field(object, "_itemsize"))?;
     let element = owned_lookup(py, default_field(object, "_element_type"))?;
     let fail = |message: &str| raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
-    let format_ptr = obj_from_bits(format.bits())
-        .as_ptr()
-        .ok_or_else(|| fail("GPU buffer format must be an exact string"))?;
-    if !builtin_matches(unsafe { object_class_bits(format_ptr) }, "str") {
+    let format_class = owned_lookup(py, type_of_owned(format.bits()))?;
+    if !builtin_matches(format_class.bits(), "str") {
         return Err(fail("GPU buffer format must be an exact string"));
     }
     let format_text = format
@@ -258,13 +256,8 @@ fn refresh_buffer_fields<'py>(
         .ok_or_else(|| fail("GPU buffer format must be an exact string"))?;
     let scalar = scalar_format_from_text(&format_text)
         .ok_or_else(|| fail("GPU buffer format is outside the hardware numeric capability"))?;
-    let size_object = obj_from_bits(size.bits());
-    if size_object.as_int().is_none()
-        && !size_object.is_bool()
-        && !size_object
-            .as_ptr()
-            .is_some_and(|ptr| builtin_matches(unsafe { object_class_bits(ptr) }, "int"))
-    {
+    let size_class = owned_lookup(py, type_of_owned(size.bits()))?;
+    if !obj_from_bits(size.bits()).is_bool() && !builtin_matches(size_class.bits(), "int") {
         return Err(fail(
             "GPU buffer size needs exact integer comparison semantics",
         ));
@@ -275,11 +268,10 @@ fn refresh_buffer_fields<'py>(
             "GPU buffer item size disagrees with its actual format",
         ));
     }
-    let data_ptr = obj_from_bits(data.bits())
-        .as_ptr()
-        .ok_or_else(|| fail("GPU buffer storage must be exact bytes or bytearray"))?;
-    let data_class = unsafe { object_class_bits(data_ptr) };
-    if !builtin_matches(data_class, "bytes") && !builtin_matches(data_class, "bytearray") {
+    let data_class = owned_lookup(py, type_of_owned(data.bits()))?;
+    if !builtin_matches(data_class.bits(), "bytes")
+        && !builtin_matches(data_class.bits(), "bytearray")
+    {
         return Err(fail("GPU buffer storage must be exact bytes or bytearray"));
     }
     // Retain the public setter conversion branch. The strict numeric admission

@@ -525,22 +525,6 @@ def test_guard_source_admission_does_not_fallback_to_loaded_checkout(
     assert not missing.exists()
 
 
-def test_source_selection_does_not_redirect_translation_validation_outputs(
-    tmp_path, monkeypatch
-):
-    from molt.frontend import tv_hooks
-
-    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path / "read-only-source"))
-    output = tmp_path / "artifacts"
-    selected = tv_hooks._temp_root({"MOLT_EXT_ROOT": str(output)})
-    # The checkout's owned scratch root under the artifact root (HF-435).
-    assert selected.parent == output / "tmp"
-    assert selected.name.startswith("scratch-")
-    monkeypatch.delenv("MOLT_SOURCE_ROOT")
-    assert tv_hooks._temp_root({"MOLT_EXT_ROOT": str(output)}) == selected
-    assert tv_hooks._temp_root({"MOLT_DIFF_TMPDIR": str(output)}) == output
-
-
 def test_dynamic_wasm_source_cache_is_root_bound(tmp_path, monkeypatch):
     from molt import _wasm_runtime_exports as exports
 

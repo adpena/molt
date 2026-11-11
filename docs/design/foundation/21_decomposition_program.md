@@ -149,8 +149,9 @@ cache). The runtime wants the *completion* of crate splits it half-did.
 | `frontend/cfg_analysis.py` | 416 | leaf helper | already fine |
 | `capability_manifest.py` | 1,217 | cohesive | fine |
 
-Sibling frontend files are tiny (`cfg_analysis.py` 416, `tv_hooks.py` 260) — the package is
-*de facto* one file.
+At this historical base, sibling frontend files were tiny (`cfg_analysis.py` 416,
+`tv_hooks.py` 260) and the package was *de facto* one file. HF-773 slice E later
+retired `tv_hooks.py` with the Python optimizer; it is absent from the current package.
 
 **Rust backend (`runtime/molt-backend/src/`, 185,928 LOC, ONE crate):**
 
@@ -393,11 +394,12 @@ Domain grouping is derived from the verified method-prefix census
 (`_emit_` ×178, `_collect_` ×42, `_match_` ×20, predicates `_is_/_can_/_should_`, `_static_/_midend_`):
 
 ```
-src/molt/frontend/
+src/molt/frontend/       # Historical decomposition proposal; optimizer surfaces below
+                         # were subsequently retired by HF-773 slice E.
   __init__.py            # PUBLIC API ONLY: re-exports SimpleTIRGenerator + compile_to_tir
                          #   (L44604) + the small dataclasses (MoltValue, MoltOp, SCCPResult,
                          #   LoopBoundFact, ClassInfo, FuncInfo, …). Stays the import anchor
-                         #   for cli.py / debug/ir.py / tv_hooks.py (verified importers).
+                         #   for cli.py / debug/ir.py (verified importers).
                          #   Target: <800 lines.
   generator.py           # class SimpleTIRGenerator(<mixins>, ast.NodeVisitor): the assembly
                          #   point + shared __init__/state + dispatch. <1500 lines.
@@ -418,7 +420,6 @@ src/molt/frontend/
                          #   binding collection, loop-bound facts, tier classification)
     intrinsics.py        # _intrinsic_* arity/symbol caches + IntrinsicHandle* specs
   cfg_analysis.py        # (exists, 416 LOC — unchanged)
-  tv_hooks.py            # (exists, 260 LOC — unchanged)
 ```
 
 **Import-cycle strategy** (verified safe): the frontend's only inbound molt imports are

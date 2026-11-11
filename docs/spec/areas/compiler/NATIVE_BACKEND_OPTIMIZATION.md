@@ -13,7 +13,7 @@ current evidence.
 | Concern | Owning source |
 | --- | --- |
 | Build stages and frontend invocation | `src/molt/cli/build_pipeline.py`, `src/molt/cli/frontend_pipeline.py` |
-| Frontend assembly and Python midend | `src/molt/frontend/__init__.py`, `src/molt/frontend/lowering/midend_pipeline.py` |
+| Frontend assembly and serialization | `src/molt/frontend/__init__.py`, `src/molt/frontend/lowering/serialization.py` |
 | Exact scalar producer provenance | `runtime/molt-passes/src/tir/type_refine/exact.rs` |
 | Value-keyed representation and non-heap proofs | `runtime/molt-passes/src/representation_facts.rs` |
 | Native name projection and LLVM representation view | `runtime/molt-tir/src/representation_plan.rs` |

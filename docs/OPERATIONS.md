@@ -209,7 +209,7 @@ machine-readable summaries.
 Currently wired commands:
 
 - `molt debug repro <source.py> [--compare]`
-- `molt debug ir <source.py> --stage pre-midend|post-midend|all`
+- `molt debug ir <source.py> [--function NAME]`
 - `molt debug verify`
 - `molt debug trace <source.py> [--family callargs|call_bind_ic|function_bind_meta|backend_timing|compile_func] [--assert-no-pending-on-success]`
 - `molt debug reduce <source.py|manifest.json> --oracle-json <oracle> [--eval-command <cmd>] [--eval-timeout <sec>]`
@@ -1035,11 +1035,6 @@ claims; exhaustive typing rejects classes without placement/retention policy.
     resolved under the build artifacts directory).
   - Example:
     `uv run python -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
-  - Midend diagnostics now carry tier-promotion telemetry (`tier_base_summary`,
-    `promoted_functions`, `promotion_source_summary`,
-    `promotion_hotspots_top`) to verify PGO-guided promotion decisions.
-  - For deterministic control experiments, set
-    `MOLT_MIDEND_HOT_TIER_PROMOTION=0` to disable hot-function tier promotion.
 
 ## Weekly Stdlib Scoreboard
 Update this table at least weekly during lowering burn-down.

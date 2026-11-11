@@ -170,8 +170,6 @@ def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
         module_deps={"app": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=(),
         module_dep_closures={"app": frozenset({"app"})},
         module_source_role="user",
         namespace_premise=None,
@@ -207,7 +205,6 @@ def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
         known_modules={"app"},
         known_func_defaults={},
         known_func_kinds={},
-        pgo_hot_function_names=(),
         type_facts=None,
         native_support_function_roots_by_module={"app": roots},
     )
@@ -229,11 +226,8 @@ def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
         source_modules={"app"},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=(),
         known_modules_sorted=("app",),
         stdlib_allowlist_sorted=(),
-        pgo_hot_function_names_sorted=(),
         module_dep_closures=closures,
         scoped_lowering_inputs=scoped,
         module_graph_metadata=_build_module_graph_metadata(

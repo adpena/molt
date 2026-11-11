@@ -8,14 +8,13 @@ from .runtime_requirements import (
     registered_runtime_kinds as _simpleir_registered_runtime_kinds,
 )
 from .schema import _FRONTEND_EFFECT_VALUES
-from .primitive_effects import PRIMITIVE_FRONTEND_TYPES, frontend_operator_map
 
 
 def _frontend_effect_from_opcode(row: dict) -> str:
-    """Return the frontend optimizer's memory-effect class for an OpCode row.
+    """Return the traceback placement memory-effect class for an OpCode row.
 
-    This is the alias/CSE axis only. Raising capability is a separate DCE
-    barrier rendered from [[frontend_raising_kind]] as RAISING_KIND_NAMES.
+    The pure/control projection governs traceback publication. Raising
+    capability remains independently generated for language lowering.
     """
 
     if row["side_effecting"]:
@@ -26,7 +25,7 @@ def _frontend_effect_from_opcode(row: dict) -> str:
 
 
 def _frontend_effect_class_map(data: dict) -> dict[str, str]:
-    """Build the generated frontend pre-serialization effect oracle."""
+    """Build the canonical frontend effects for traceback placement."""
 
     opcodes_by_name = {row["name"]: row for row in data.get("opcode", [])}
     effects: dict[str, str] = {}
@@ -251,13 +250,6 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     if not isinstance(frontend_effect_rows, list) or not frontend_effect_rows:
         raise OpKindTableError("table has no [[frontend_effect_kind]] rows")
     seen_effect: set[str] = set()
-    mapped_kinds = {
-        kind
-        for row in data.get("kind", [])
-        if row.get("mapper_opcode")
-        for spelling in (row["canonical"], *row.get("aliases", []))
-        for kind in frontend_kinds_for_wire_kind(data, spelling)
-    }
     for row in frontend_effect_rows:
         kind = row.get("kind")
         if not isinstance(kind, str) or not kind:
@@ -267,24 +259,6 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         if kind in seen_effect:
             raise OpKindTableError(f"duplicate frontend_effect_kind: {kind}")
         seen_effect.add(kind)
-        exact = row.get("exact_scalar_result_type")
-        arity = row.get("frontend_intrinsic_scalar_arity")
-        if exact is not None or arity is not None:
-            if (
-                not isinstance(exact, str)
-                or exact not in PRIMITIVE_FRONTEND_TYPES
-                or type(arity) is not int
-                or arity < 0
-            ):
-                raise OpKindTableError(
-                    f"frontend_effect_kind {kind}: exact scalar requires a known "
-                    "scalar type and nonnegative frontend_intrinsic_scalar_arity"
-                )
-            if kind in mapped_kinds:
-                raise OpKindTableError(
-                    f"frontend_effect_kind {kind}: mapped exact scalar facts "
-                    "must be declared on the opcode"
-                )
         effect = row.get("effect")
         if effect not in _FRONTEND_EFFECT_VALUES:
             raise OpKindTableError(
@@ -337,8 +311,6 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         "STATE_TRANSITION": "control",
         "EXCEPTION_MATCH_BUILTIN": "reads_heap",
     }
-    operators = frontend_operator_map(data)
-    required_effects.update({kind: "writes_heap" for kind in operators})
     for kind, expected in required_effects.items():
         actual = effect_map.get(kind)
         if actual != expected:

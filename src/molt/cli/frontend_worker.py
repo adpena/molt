@@ -22,7 +22,7 @@ from molt.frontend.lowering.exception_lowering import MoltSyntaxError
 from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
-from molt.cli.build_request import BuildProfile, TypeHintPolicy
+from molt.cli.build_request import TypeHintPolicy
 from molt.cli.models import (
     ModuleExecutionKind,
     ModuleSourceRole,
@@ -133,7 +133,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     )
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
-    optimization_profile = cast(BuildProfile, payload["optimization_profile"])
     target_sys_platform = cast(str | None, payload.get("target_sys_platform"))
     target_python = _parse_target_python_version(
         cast(str | None, payload.get("target_python"))
@@ -144,11 +143,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         if frontend_phase_timeout_raw is not None
         else None
     )
-    pgo_hot_functions = {
-        symbol.strip()
-        for symbol in cast(list[str], payload.get("pgo_hot_functions", []))
-        if isinstance(symbol, str) and symbol.strip()
-    }
     module_frontend_start = time.perf_counter()
     visit_s = 0.0
     lower_s = 0.0
@@ -195,8 +189,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=optimization_profile,
-        pgo_hot_functions=pgo_hot_functions,
     )
     try:
         visit_start = time.perf_counter()
@@ -261,10 +253,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids
         },
-        "midend_policy_outcomes_by_function": dict(
-            gen.midend_policy_outcomes_by_function
-        ),
-        "midend_pass_stats_by_function": dict(gen.midend_pass_stats_by_function),
         "timings": {
             "visit_s": visit_s,
             "lower_s": lower_s,
@@ -297,10 +285,6 @@ def _module_frontend_payload(
         "local_classes": {
             class_id: gen.classes[class_id] for class_id in gen.local_class_ids
         },
-        "midend_policy_outcomes_by_function": dict(
-            gen.midend_policy_outcomes_by_function
-        ),
-        "midend_pass_stats_by_function": dict(gen.midend_pass_stats_by_function),
         "timings": {
             "visit_s": visit_s,
             "lower_s": lower_s,
@@ -321,7 +305,6 @@ def _module_frontend_generator(
     stdlib_allowlist: Collection[str],
     module_chunking: bool,
     module_chunk_max_ops: int,
-    optimization_profile: str,
     target_python: TargetPythonVersion,
     target_sys_platform: str | None,
     scoped_inputs: _ScopedLoweringInputView,
@@ -349,8 +332,6 @@ def _module_frontend_generator(
         target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
-        optimization_profile=cast(BuildProfile, optimization_profile),
-        pgo_hot_functions=set(scoped_inputs.pgo_hot_function_names_set),
     )
 
 
@@ -414,13 +395,11 @@ def _lower_module_serial_with_context(
         known_func_kinds=lowering_context.known_func_kinds,
         native_callable_exports=lowering_context.native_callable_exports,
         native_python_exports=lowering_context.native_python_exports,
-        pgo_hot_function_names=lowering_context.pgo_hot_function_names,
         type_facts=lowering_context.type_facts,
         known_classes_snapshot=lowering_context.known_classes,
         module_dep_closures=lowering_context.module_dep_closures,
         scoped_lowering_inputs=lowering_context.scoped_lowering_inputs,
         known_modules_sorted=lowering_context.known_modules_sorted,
-        pgo_hot_function_names_sorted=lowering_context.pgo_hot_function_names_sorted,
         source_modules=lowering_context.source_modules,
     )
     metadata_view = execution_view.metadata
@@ -455,11 +434,8 @@ def _lower_module_serial_with_context(
             module_deps=lowering_context.module_deps,
             module_chunking=lowering_context.module_chunking,
             module_chunk_max_ops=lowering_context.module_chunk_max_ops,
-            optimization_profile=lowering_context.optimization_profile,
-            pgo_hot_function_names=lowering_context.pgo_hot_function_names,
             known_modules_sorted=lowering_context.known_modules_sorted,
             stdlib_allowlist_sorted=lowering_context.stdlib_allowlist_sorted,
-            pgo_hot_function_names_sorted=lowering_context.pgo_hot_function_names_sorted,
             module_dep_closures=lowering_context.module_dep_closures,
             scoped_lowering_inputs=lowering_context.scoped_lowering_inputs,
             scoped_inputs=scoped_inputs,
@@ -503,7 +479,6 @@ def _lower_module_serial_with_context(
         stdlib_allowlist=lowering_context.stdlib_allowlist,
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
-        optimization_profile=lowering_context.optimization_profile,
         target_python=lowering_context.target_python,
         target_sys_platform=lowering_context.target_sys_platform,
         scoped_inputs=scoped_inputs,
@@ -653,11 +628,8 @@ def _prepare_frontend_parallel_batch(
     native_python_exports: Collection[str] = (),
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
     known_modules_sorted: tuple[str, ...],
     stdlib_allowlist_sorted: tuple[str, ...],
-    pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
     module_graph_metadata: _ModuleGraphMetadata,
     module_chunking: bool,
@@ -697,13 +669,11 @@ def _prepare_frontend_parallel_batch(
             known_func_kinds=known_func_kinds,
             native_callable_exports=native_callable_exports,
             native_python_exports=native_python_exports,
-            pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             known_classes_snapshot=known_classes_snapshot,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=known_modules_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             scoped_known_classes_by_module=scoped_known_classes_by_module,
             source_modules=module_graph,
         )
@@ -738,11 +708,8 @@ def _prepare_frontend_parallel_batch(
                 module_deps=module_deps,
                 module_chunking=module_chunking,
                 module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
                 known_modules_sorted=known_modules_sorted,
                 stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
                 module_dep_closures=module_dep_closures,
                 scoped_lowering_inputs=scoped_lowering_inputs,
                 scoped_inputs=scoped_inputs,
@@ -779,11 +746,8 @@ def _prepare_frontend_parallel_batch(
             module_deps=module_deps,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=optimization_profile,
-            pgo_hot_function_names=pgo_hot_function_names,
             known_modules_sorted=known_modules_sorted,
             stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             scoped_inputs=scoped_inputs,
@@ -824,8 +788,6 @@ def _prepare_frontend_parallel_batch(
                     module_deps=module_deps,
                     module_chunking=module_chunking,
                     module_chunk_max_ops=module_chunk_max_ops,
-                    optimization_profile=optimization_profile,
-                    pgo_hot_function_names=pgo_hot_function_names_sorted,
                     module_dep_closures=module_dep_closures,
                     scoped_lowering_inputs=scoped_lowering_inputs,
                     scoped_inputs=scoped_inputs,

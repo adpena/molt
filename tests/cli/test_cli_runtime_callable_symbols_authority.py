@@ -967,8 +967,6 @@ def test_native_object_output_rejects_runtime_generation_drift(
         pgo_profile_path=None,
         runtime_feedback_summary=None,
         runtime_feedback_path=None,
-        pgo_hot_function_names=set(),
-        pgo_hot_function_names_sorted=(),
         pgo_profile_payload=None,
         runtime_feedback_payload=None,
         cargo_timeout=None,
@@ -991,7 +989,6 @@ def test_native_object_output_rejects_runtime_generation_drift(
         prepared_build_preamble=NS(
             diagnostics_enabled=False,
             phase_starts={},
-            midend_policy_outcomes_by_function={},
             resolved_diagnostics_verbosity="quiet",
         ),
         prepared_build_roots=NS(molt_root=tmp_path),

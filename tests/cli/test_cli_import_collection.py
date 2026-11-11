@@ -10459,7 +10459,6 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         native_support_function_roots_by_module=(
             import_plan.native_support_function_roots_by_module
         ),
-        pgo_hot_function_names=set(),
         entry_module="field_solve",
         entry_execution_kind="script",
         namespace_portions_by_module=import_plan.namespace_portions_by_module,
@@ -17023,8 +17022,6 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
         "functions": [],
         "func_code_ids": {},
         "local_classes": {},
-        "midend_policy_outcomes_by_function": {},
-        "midend_pass_stats_by_function": {},
         "timings": {"visit_s": 1.0, "lower_s": 2.0, "total_s": 3.0},
         "default_marker": Ellipsis,
     }
@@ -17083,8 +17080,6 @@ def test_module_lowering_reuses_inline_source_across_output_paths(tmp_path):
             module_deps={"pkg": set()},
             module_chunking=False,
             module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=(),
             module_source_role="user",
             namespace_premise=None,
         )
@@ -17142,8 +17137,6 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
         ],
         "func_code_ids": {},
         "local_classes": {},
-        "midend_policy_outcomes_by_function": {},
-        "midend_pass_stats_by_function": {},
         "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
     }
 
@@ -17288,8 +17281,6 @@ def test_persisted_module_lowering_tracks_source_content(
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
-            "midend_policy_outcomes_by_function": {},
-            "midend_pass_stats_by_function": {},
             "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
         },
     )
@@ -17328,8 +17319,6 @@ def test_persisted_module_lowering_decodes_once_per_hit(
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
-            "midend_policy_outcomes_by_function": {},
-            "midend_pass_stats_by_function": {},
             "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
         },
     )
@@ -17397,8 +17386,6 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
             ],
             "func_code_ids": {"molt_init_pkg": 0},
             "local_classes": {},
-            "midend_policy_outcomes_by_function": {},
-            "midend_pass_stats_by_function": {},
             "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
         },
     )
@@ -17480,8 +17467,6 @@ def test_persisted_module_lowering_rejects_incomplete_parameter_declarations(
             ],
             "func_code_ids": {},
             "local_classes": {},
-            "midend_policy_outcomes_by_function": {},
-            "midend_pass_stats_by_function": {},
             "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
         },
     )
@@ -17584,11 +17569,8 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             known_func_kinds={},
             module_deps={"alpha": set()},
             module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=set(),
             known_modules_sorted=("alpha",),
             stdlib_allowlist_sorted=(),
-            pgo_hot_function_names_sorted=(),
             module_dep_closures={"alpha": frozenset({"alpha"})},
             module_graph_metadata=module_graph_metadata,
             module_chunking=False,
@@ -17687,11 +17669,8 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
             known_func_kinds={},
             module_deps={"alpha": set()},
             module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=set(),
             known_modules_sorted=("alpha",),
             stdlib_allowlist_sorted=(),
-            pgo_hot_function_names_sorted=(),
             module_dep_closures={"alpha": frozenset({"alpha"})},
             module_graph_metadata=module_graph_metadata,
             module_chunking=False,
@@ -17778,8 +17757,6 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
-            "midend_policy_outcomes_by_function": {},
-            "midend_pass_stats_by_function": {},
             "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
         },
     )
@@ -17813,11 +17790,8 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
         module_deps={"alpha": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         known_modules_sorted=("alpha",),
         stdlib_allowlist_sorted=(),
-        pgo_hot_function_names_sorted=(),
         context_digest=context_digest,
         module_source_role="user",
         namespace_premise=None,
@@ -17995,11 +17969,8 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults(
         module_deps={"main": {"alpha"}, "alpha": set(), "beta": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         known_modules_sorted=("alpha", "beta", "main"),
         stdlib_allowlist_sorted=(),
-        pgo_hot_function_names_sorted=(),
         module_source_role="user",
         namespace_premise=None,
     )
@@ -18034,8 +18005,6 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         module_deps={"main": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
     )
 
     monkeypatch.setattr(
@@ -18089,21 +18058,8 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
         module_deps={"main": {"alpha", "beta"}, "alpha": set(), "beta": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names={
-            "main::hot_func",
-            "main.hot_attr",
-            "beta::irrelevant",
-            "unrelated::nope",
-        },
         known_modules_sorted=("alpha", "beta", "main", "unrelated"),
         stdlib_allowlist_sorted=(),
-        pgo_hot_function_names_sorted=(
-            "beta::irrelevant",
-            "main.hot_attr",
-            "main::hot_func",
-            "unrelated::nope",
-        ),
         module_dep_closures={"main": frozenset({"main", "alpha", "beta"})},
         module_source_role="user",
         namespace_premise=None,
@@ -18111,7 +18067,6 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
 
     assert payload is not None
     assert tuple(payload["known_modules"]) == ("alpha", "beta", "main")
-    assert tuple(payload["pgo_hot_functions"]) == ("main.hot_attr", "main::hot_func")
 
 
 def test_module_lowering_context_payload_scopes_known_classes(tmp_path: Path) -> None:
@@ -18139,11 +18094,8 @@ def test_module_lowering_context_payload_scopes_known_classes(tmp_path: Path) ->
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         known_modules_sorted=("alpha", "main", "unrelated"),
         stdlib_allowlist_sorted=(),
-        pgo_hot_function_names_sorted=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         module_source_role="user",
         namespace_premise=None,
@@ -18189,8 +18141,6 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=("main::hot", "unrelated::cold"),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         module_source_role="user",
         namespace_premise=None,
@@ -18203,7 +18153,6 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     }
     assert set(payload["known_func_defaults"]) == {"main", "alpha"}
     assert set(payload["known_func_kinds"]) == {"main", "alpha"}
-    assert payload["pgo_hot_functions"] == ["main::hot"]
     assert payload["module_source_role"] == "user"
     assert "source" not in payload
     assert payload["source_lease"]["kind"] == "inline"
@@ -18231,8 +18180,6 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
         module_deps={"main": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=(),
         module_dep_closures={"main": frozenset({"main"})},
         module_source_role="user",
         namespace_premise=None,
@@ -18351,11 +18298,8 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             known_func_kinds={},
             module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
             module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=set(),
             known_modules_sorted=("alpha", "main"),
             stdlib_allowlist_sorted=(),
-            pgo_hot_function_names_sorted=(),
             module_dep_closures={
                 "main": frozenset({"main", "alpha"}),
                 "alpha": frozenset({"alpha"}),
@@ -18413,11 +18357,8 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
             known_func_kinds={},
             module_deps={"main": {"alpha"}, "alpha": set()},
             module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=set(),
             known_modules_sorted=("alpha", "main"),
             stdlib_allowlist_sorted=(),
-            pgo_hot_function_names_sorted=(),
             module_dep_closures={
                 "main": frozenset({"main", "alpha"}),
                 "alpha": frozenset({"alpha"}),
@@ -18465,8 +18406,6 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
             module_deps={"main": set()},
             module_chunking=False,
             module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=(),
             module_dep_closures={"main": frozenset({"main"})},
             module_source_role="user",
             namespace_premise=None,
@@ -18517,11 +18456,8 @@ def test_module_lowering_context_payload_scopes_type_facts(tmp_path: Path) -> No
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         known_modules_sorted=("alpha", "main", "unrelated"),
         stdlib_allowlist_sorted=(),
-        pgo_hot_function_names_sorted=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         module_source_role="user",
         namespace_premise=None,
@@ -18563,8 +18499,6 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         module_source_role="user",
         namespace_premise=None,
@@ -18605,7 +18539,6 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
             "alpha": {"helper": "gen"},
             "unrelated": {"unused": "sync"},
         },
-        pgo_hot_function_names={"main::hot", "unrelated::cold"},
         type_facts=type_facts,
     )
 
@@ -18626,9 +18559,6 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
         "main",
         "alpha",
     }
-    assert scoped_lowering_inputs.pgo_hot_function_names_by_module["main"] == (
-        "main::hot",
-    )
     scoped_main_facts = scoped_lowering_inputs.type_facts_by_module["main"]
     assert isinstance(scoped_main_facts, TypeFacts)
     assert set(scoped_main_facts.modules) == {
@@ -18660,7 +18590,6 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
             "main": {"run": "sync"},
             "alpha": {"helper": "gen"},
         },
-        pgo_hot_function_names={"main::hot"},
         type_facts=type_facts,
     )
 
@@ -18676,7 +18605,6 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
             "main": {"run": "sync"},
             "alpha": {"helper": "gen"},
         },
-        pgo_hot_function_names={"main::hot"},
         type_facts=type_facts,
         module_dep_closures={
             "main": frozenset({"main", "alpha"}),
@@ -18684,7 +18612,6 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
         },
         scoped_lowering_inputs=scoped_lowering_inputs,
         known_modules_sorted=("alpha", "main", "nativepkg._native"),
-        pgo_hot_function_names_sorted=("main::hot",),
     )
 
     assert (
@@ -18699,10 +18626,6 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
         scoped_view.known_func_kinds
         is scoped_lowering_inputs.known_func_kinds_by_module["main"]
     )
-    assert (
-        scoped_view.pgo_hot_function_names
-        is scoped_lowering_inputs.pgo_hot_function_names_by_module["main"]
-    )
     assert scoped_view.type_facts is scoped_lowering_inputs.type_facts_by_module["main"]
     assert scoped_view.known_modules_payload == [
         "alpha",
@@ -18712,8 +18635,6 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
     assert scoped_view.known_modules_set == frozenset(
         {"alpha", "main", "nativepkg._native"}
     )
-    assert scoped_view.pgo_hot_function_names_payload == ["main::hot"]
-    assert scoped_view.pgo_hot_function_names_set == frozenset({"main::hot"})
 
 
 def test_scoped_lowering_input_view_keeps_native_artifact_modules_without_bundle() -> (
@@ -18725,7 +18646,6 @@ def test_scoped_lowering_input_view_keeps_native_artifact_modules_without_bundle
         known_modules={"main", "alpha", "nativepkg._native"},
         known_func_defaults={},
         known_func_kinds={},
-        pgo_hot_function_names=(),
         type_facts=None,
         module_dep_closures={
             "main": frozenset({"main", "alpha"}),
@@ -18767,7 +18687,6 @@ def test_scoped_lowering_input_view_carries_native_callable_exports() -> None:
         known_func_defaults={},
         known_func_kinds={},
         native_callable_exports=native_callable_exports,
-        pgo_hot_function_names=(),
         type_facts=None,
         module_dep_closures={
             "main": frozenset({"main", "nativepkg.ndimage"}),
@@ -18805,7 +18724,6 @@ def test_scoped_lowering_input_view_carries_native_python_exports() -> None:
             "nativepkg.ndimage.distance_transform_edt",
             "unrelatedpkg.run",
         },
-        pgo_hot_function_names=(),
         type_facts=None,
         module_dep_closures={
             "main": frozenset({"main", "nativepkg.ndimage"}),
@@ -18839,7 +18757,6 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
         known_func_kinds={"main": {"run": "sync"}},
         native_python_exports=("alpha.native_call",),
-        pgo_hot_function_names=("main::hot",),
         type_facts=None,
     )
     monkeypatch.setattr(
@@ -18867,8 +18784,6 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         module_deps={"main": {"alpha"}, "alpha": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_inputs=scoped_inputs,
         module_source_role="user",
@@ -18877,7 +18792,6 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
 
     assert payload is not None
     assert tuple(payload["known_modules"]) == ("alpha", "main")
-    assert tuple(payload["pgo_hot_functions"]) == ("main::hot",)
     assert set(payload["known_func_defaults"]) == {"main"}
     assert set(payload["known_func_kinds"]) == {"main"}
     assert tuple(payload["native_python_exports"]) == ("alpha.native_call",)
@@ -18892,7 +18806,6 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
         known_func_kinds={"main": {"run": "sync"}},
         native_python_exports=("alpha.native_call",),
-        pgo_hot_function_names=("main::hot",),
         type_facts=None,
     )
     monkeypatch.setattr(
@@ -18922,8 +18835,6 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         module_deps={"main": {"alpha"}, "alpha": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_inputs=scoped_inputs,
         module_source_role="user",
@@ -18931,7 +18842,6 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
     )
 
     assert payload["known_modules"] == ["alpha", "main"]
-    assert payload["pgo_hot_functions"] == ["main::hot"]
     assert set(payload["known_func_defaults"]) == {"main"}
     assert set(payload["known_func_kinds"]) == {"main"}
     assert payload["native_python_exports"] == ["alpha.native_call"]
@@ -18958,8 +18868,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
             "functions": [],
             "func_code_ids": {},
             "local_classes": {},
-            "midend_policy_outcomes_by_function": {},
-            "midend_pass_stats_by_function": {},
             "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
         },
     )
@@ -18991,15 +18899,12 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         module_deps={"alpha": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         context_digest=context_digest,
         scoped_inputs=cli_models._ScopedLoweringInputView(
             body_selection=ModuleBodySelection("complete_source"),
             known_modules=("alpha",),
             known_func_defaults={},
             known_func_kinds={},
-            pgo_hot_function_names=(),
             type_facts=None,
         ),
         scoped_known_classes={},
@@ -19009,46 +18914,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
 
     assert result is not None
     assert result["functions"] == []
-
-
-def test_module_frontend_generator_uses_scoped_inputs() -> None:
-    gen = cli_frontend_worker._module_frontend_generator(
-        module_name="main",
-        logical_source_path="/tmp/main.py",
-        module_execution_kind="script",
-        type_hint_policy="ignore",
-        enable_phi=True,
-        stdlib_allowlist=("json",),
-        module_chunking=False,
-        module_chunk_max_ops=0,
-        optimization_profile="dev",
-        target_python=TARGET_PYTHON._parse_target_python_version("3.14"),
-        scoped_inputs=cli_models._ScopedLoweringInputView(
-            body_selection=ModuleBodySelection("complete_source"),
-            known_modules=("alpha", "main"),
-            known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
-            known_func_kinds={"main": {"run": "sync"}},
-            native_python_exports=("alpha.native_call",),
-            pgo_hot_function_names=("main::hot",),
-            type_facts=None,
-        ),
-        scoped_known_classes={ClassId("main", "MainClass"): {"fields": {}}},
-        target_sys_platform=None,
-        module_source_role="user",
-        namespace_premise=None,
-    )
-
-    assert gen.module_name == "main"
-    assert gen.module_execution_kind == "script"
-    assert gen.module_source_role == "user"
-    assert gen.target_python == (3, 14)
-    assert gen.eager_annotations is False
-    assert gen.known_modules == {"alpha", "main"}
-    assert gen.known_func_defaults == {"main": {"run": {"params": 0, "defaults": []}}}
-    assert gen.known_func_kinds == {"main": {"run": "sync"}}
-    assert gen.native_python_exports == {"alpha.native_call"}
-    assert gen.midend_hot_functions == {"main::hot"}
-    assert gen.classes == {ClassId("main", "MainClass"): {"fields": {}}}
 
 
 def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
@@ -19074,15 +18939,12 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
         module_deps={"main": {"alpha"}, "alpha": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_inputs=cli_models._ScopedLoweringInputView(
             body_selection=ModuleBodySelection("complete_source"),
             known_modules=("alpha", "main"),
             known_func_defaults={},
             known_func_kinds={},
-            pgo_hot_function_names=(),
             type_facts=None,
         ),
         scoped_known_classes={},
@@ -19115,8 +18977,6 @@ def test_module_lowering_context_digest_includes_native_callable_exports(
         "module_deps": {"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
         "module_chunking": False,
         "module_chunk_max_ops": 0,
-        "optimization_profile": "dev",
-        "pgo_hot_function_names": set(),
         "module_dep_closures": {
             "main": frozenset({"main", "nativepkg.ndimage"}),
             "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
@@ -19203,8 +19063,6 @@ def test_module_lowering_context_digest_includes_native_python_exports(
         "module_deps": {"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
         "module_chunking": False,
         "module_chunk_max_ops": 0,
-        "optimization_profile": "dev",
-        "pgo_hot_function_names": set(),
         "module_dep_closures": {
             "main": frozenset({"main", "nativepkg.ndimage"}),
             "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
@@ -19256,8 +19114,6 @@ def test_module_lowering_context_digest_includes_target_sys_platform(
         "module_deps": {"main": {"sys"}, "sys": set()},
         "module_chunking": False,
         "module_chunk_max_ops": 0,
-        "optimization_profile": "dev",
-        "pgo_hot_function_names": set(),
         "module_dep_closures": {
             "main": frozenset({"main", "sys"}),
             "sys": frozenset({"sys"}),
@@ -19311,8 +19167,6 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
         "module_deps": {"main": {"helpers"}, "helpers": set()},
         "module_chunking": False,
         "module_chunk_max_ops": 0,
-        "optimization_profile": "dev",
-        "pgo_hot_function_names": set(),
         "module_dep_closures": {"main": frozenset({"main", "helpers"})},
     }
 
@@ -19384,15 +19238,12 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         module_deps={"main": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main"})},
         scoped_inputs=cli_models._ScopedLoweringInputView(
             body_selection=ModuleBodySelection("complete_source"),
             known_modules=("main",),
             known_func_defaults={},
             known_func_kinds={},
-            pgo_hot_function_names=(),
             type_facts=facts_a,
         ),
         scoped_known_classes={},
@@ -19416,15 +19267,12 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         module_deps={"main": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
-        optimization_profile="dev",
-        pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main"})},
         scoped_inputs=cli_models._ScopedLoweringInputView(
             body_selection=ModuleBodySelection("complete_source"),
             known_modules=("main",),
             known_func_defaults={},
             known_func_kinds={},
-            pgo_hot_function_names=(),
             type_facts=facts_b,
         ),
         scoped_known_classes={},
@@ -20690,108 +20538,6 @@ def test_resolve_build_diagnostics_path_relative_and_absolute(tmp_path: Path) ->
     assert resolved_abs == abs_path
 
 
-def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None:
-    payload = cli_build_diagnostics._build_midend_diagnostics_payload(
-        requested_profile="release",
-        policy_outcomes_by_function={
-            "pkg.mod::fn_a": {
-                "profile": "release",
-                "tier": "A",
-                "tier_base": "B",
-                "tier_effective": "A",
-                "tier_source": "default",
-                "promoted": True,
-                "promotion_source": "pgo_hot_functions",
-                "promotion_signal": "pkg.mod::fn_a",
-                "budget_ms": 120.0,
-                "spent_ms": 140.0,
-                "work_budget": 100.0,
-                "work_units_spent": 140.0,
-                "degraded": True,
-                "degrade_events": [
-                    {
-                        "reason": "work_budget_exceeded",
-                        "stage": "round_2_post_dce",
-                        "action": "disable_cse",
-                        "spent_ms": 140.0,
-                        "value": {
-                            "work_budget": 100.0,
-                            "work_units": 140.0,
-                        },
-                    }
-                ],
-            }
-        },
-        pass_stats_by_function={
-            "pkg.mod::fn_a": {
-                "sccp_edge_thread": {
-                    "attempted": 2,
-                    "accepted": 1,
-                    "rejected": 1,
-                    "degraded": 0,
-                    "ms_total": 9.5,
-                    "ms_max": 6.0,
-                    "samples_ms": [3.5, 6.0],
-                },
-                "cse": {
-                    "attempted": 1,
-                    "accepted": 0,
-                    "rejected": 1,
-                    "degraded": 1,
-                    "ms_total": 4.25,
-                    "ms_max": 4.25,
-                    "samples_ms": [4.25],
-                },
-            }
-        },
-    )
-    assert payload is not None
-    assert payload["requested_profile"] == "release"
-    assert payload["degraded_functions"] == 1
-    assert payload["tier_summary"] == {"A": 1}
-    assert payload["tier_base_summary"] == {"B": 1}
-    assert payload["promoted_functions"] == 1
-    assert payload["promotion_source_summary"] == {"pgo_hot_functions": 1}
-    assert payload["degrade_reason_summary"] == {"work_budget_exceeded": 1}
-    assert payload["policy_config"]["hot_tier_promotion_enabled"] is True
-    assert payload["policy_config"]["work_budget_override"] is None
-    assert payload["policy_config"]["budget_alpha"] == 0.03
-    assert payload["policy_config"]["budget_beta"] == 0.75
-    assert payload["policy_config"]["budget_scale"] == 1.0
-    assert payload["telemetry_budget_utilization_avg"] == pytest.approx(140.0 / 120.0)
-    assert payload["telemetry_budget_utilization_p95"] == pytest.approx(140.0 / 120.0)
-    assert payload["functions_over_telemetry_budget"] == 1
-    assert payload["functions_under_50pct_telemetry_budget"] == 0
-    assert payload["work_budget_utilization_avg"] == 1.4
-    assert payload["work_budget_utilization_p95"] == 1.4
-    assert payload["functions_over_work_budget"] == 1
-    assert payload["functions_under_50pct_work_budget"] == 0
-    assert payload["function_count"] == 1
-    hotspots = payload["pass_hotspots_top"]
-    assert hotspots
-    assert hotspots[0]["module"] == "pkg.mod"
-    assert hotspots[0]["function"] == "fn_a"
-    assert hotspots[0]["pass"] == "sccp_edge_thread"
-    fn_hotspots = payload["function_hotspots_top"]
-    assert fn_hotspots
-    assert fn_hotspots[0]["module"] == "pkg.mod"
-    assert fn_hotspots[0]["function"] == "fn_a"
-    assert fn_hotspots[0]["work_budget"] == 100.0
-    assert fn_hotspots[0]["work_units_spent"] == 140.0
-    normalized = payload["policy_outcomes_by_function"]["pkg.mod::fn_a"]
-    assert normalized["work_budget"] == 100.0
-    assert normalized["work_units_spent"] == 140.0
-    degrade_hotspots = payload["degrade_event_hotspots_top"]
-    assert degrade_hotspots
-    assert degrade_hotspots[0]["reason"] == "work_budget_exceeded"
-    promotion_hotspots = payload["promotion_hotspots_top"]
-    assert promotion_hotspots
-    assert promotion_hotspots[0]["module"] == "pkg.mod"
-    assert promotion_hotspots[0]["function"] == "fn_a"
-    assert promotion_hotspots[0]["tier_base"] == "B"
-    assert promotion_hotspots[0]["tier_effective"] == "A"
-
-
 def test_resolve_frontend_parallel_module_workers_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -21329,18 +21075,15 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
         known_modules={"main", "alpha"},
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
         known_func_kinds={"main": {"run": "sync"}},
-        pgo_hot_function_names={"main::hot"},
         type_facts=None,
         known_classes_snapshot={ClassId("main", "MainClass"): {"fields": {}}},
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         known_modules_sorted=("alpha", "main"),
-        pgo_hot_function_names_sorted=("main::hot",),
     )
 
     assert execution_view.metadata.logical_source_path == str(module_path)
     assert execution_view.scoped_inputs.known_modules == ("alpha", "main")
     assert execution_view.scoped_inputs.known_func_kinds == {"main": {"run": "sync"}}
-    assert execution_view.scoped_inputs.pgo_hot_function_names == ("main::hot",)
     assert set(execution_view.scoped_known_classes) == {ClassId("main", "MainClass")}
 
 
@@ -21456,8 +21199,6 @@ def test_frontend_lower_module_worker_smoke(
         "known_func_kinds": {},
         "module_chunking": False,
         "module_chunk_max_ops": 0,
-        "optimization_profile": "dev",
-        "pgo_hot_functions": ["worker_module::molt_main"],
         "target_python": "3.14",
         "module_source_role": "user",
     }
@@ -21497,7 +21238,6 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         known_func_defaults={},
         known_func_kinds={},
         native_callable_exports={},
-        pgo_hot_function_names=set(),
         entry_module="entry",
         entry_execution_kind="script",
         namespace_portions_by_module={},
@@ -21553,7 +21293,6 @@ def test_prepare_frontend_lowering_config_keeps_guarded_policy_for_external_impo
         known_func_defaults={},
         known_func_kinds={},
         native_callable_exports={},
-        pgo_hot_function_names=set(),
         entry_module="entry",
         entry_execution_kind="script",
         namespace_portions_by_module={},
@@ -21622,48 +21361,6 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
                     "exec_ms_max": 4.0,
                 },
             },
-            "midend": {
-                "policy_config": {
-                    "profile_override": None,
-                    "hot_tier_promotion_enabled": True,
-                    "work_budget_override": 512.0,
-                    "budget_alpha": 0.03,
-                    "budget_beta": 0.75,
-                    "budget_scale": 1.0,
-                },
-                "work_budget_utilization_avg": 0.75,
-                "work_budget_utilization_p95": 0.8,
-                "functions_over_work_budget": 1,
-                "functions_under_50pct_work_budget": 2,
-                "telemetry_budget_utilization_avg": 1.25,
-                "telemetry_budget_utilization_p95": 1.5,
-                "functions_over_telemetry_budget": 3,
-                "functions_under_50pct_telemetry_budget": 4,
-                "function_hotspots_top": [
-                    {
-                        "module": "pkg.mod",
-                        "function": "cold_fn",
-                        "spent_ms": 18.0,
-                        "budget_ms": 12.0,
-                        "work_units_spent": 900.0,
-                        "work_budget": 600.0,
-                        "degraded": True,
-                    }
-                ],
-                "promoted_functions": 2,
-                "promotion_source_summary": {"pgo_hot_functions": 2},
-                "promotion_hotspots_top": [
-                    {
-                        "module": "pkg.mod",
-                        "function": "hot_fn",
-                        "tier_base": "B",
-                        "tier_effective": "A",
-                        "source": "pgo_hot_functions",
-                        "signal": "pkg.mod::hot_fn",
-                        "spent_ms": 12.5,
-                    }
-                ],
-            },
         },
         diagnostics_path=None,
         json_output=False,
@@ -21673,36 +21370,6 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "- frontend_parallel.layers: 1" in stderr
     assert "frontend_parallel.layer.1: mode=parallel" in stderr
     assert "frontend_parallel.worker_ms: count=3" in stderr
-    assert "- midend.policy.hot_tier_promotion_enabled: True" in stderr
-    assert "- midend.policy.work_budget_override: 512.0000" in stderr
-    assert (
-        "- midend.policy.budget_formula: alpha=0.0300 beta=0.7500 scale=1.0000"
-        in stderr
-    )
-    assert "- midend.work_budget_utilization_avg: 0.7500" in stderr
-    assert "- midend.work_budget_utilization_p95: 0.8000" in stderr
-    assert "- midend.functions_over_work_budget: 1" in stderr
-    assert "- midend.functions_under_50pct_work_budget: 2" in stderr
-    assert "- midend.telemetry_budget_utilization_avg: 1.2500" in stderr
-    assert "- midend.telemetry_budget_utilization_p95: 1.5000" in stderr
-    assert "- midend.functions_over_telemetry_budget: 3" in stderr
-    assert "- midend.functions_under_50pct_telemetry_budget: 4" in stderr
-    assert (
-        "midend.function_hotspot.1: pkg.mod::cold_fn spent_ms=18.000 "
-        "budget_ms=12.000 work_units=900.000 work_budget=600.000 degraded=True"
-        in stderr
-    )
-    assert (
-        "midend.work_budget_top.1: pkg.mod::cold_fn ratio=1.5000 "
-        "work_units=900.000 work_budget=600.000" in stderr
-    )
-    assert (
-        "midend.telemetry_budget_top.1: pkg.mod::cold_fn ratio=1.5000 "
-        "spent_ms=18.000 budget_ms=12.000" in stderr
-    )
-    assert "- midend.promoted_functions: 2" in stderr
-    assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
-    assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
 
 
 def test_emit_build_diagnostics_includes_runtime_wasm_cache_summary(
@@ -21779,27 +21446,6 @@ def test_emit_build_diagnostics_prints_allocation_summary(
     assert "alloc.top.1: src/molt/cli/__init__.py:123 size_bytes=2048 count=7" in stderr
 
 
-def test_midend_policy_config_snapshot_honors_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("MOLT_MIDEND_PROFILE", "release")
-    monkeypatch.setenv("MOLT_MIDEND_HOT_TIER_PROMOTION", "0")
-    monkeypatch.setenv("MOLT_MIDEND_BUDGET_MS", "42")
-    monkeypatch.setenv("MOLT_MIDEND_WORK_BUDGET", "2048")
-    monkeypatch.setenv("MOLT_MIDEND_BUDGET_ALPHA", "0.5")
-    monkeypatch.setenv("MOLT_MIDEND_BUDGET_BETA", "2.0")
-    monkeypatch.setenv("MOLT_MIDEND_BUDGET_SCALE", "1.5")
-
-    assert cli_build_diagnostics._midend_policy_config_snapshot() == {
-        "profile_override": "release",
-        "hot_tier_promotion_enabled": False,
-        "work_budget_override": 2048.0,
-        "budget_alpha": 0.5,
-        "budget_beta": 2.0,
-        "budget_scale": 1.5,
-    }
-
-
 def test_emit_build_diagnostics_summary_omits_hotspot_details(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -21838,21 +21484,6 @@ def test_emit_build_diagnostics_summary_omits_hotspot_details(
                     "exec_ms_max": 4.0,
                 },
             },
-            "midend": {
-                "promoted_functions": 2,
-                "promotion_source_summary": {"pgo_hot_functions": 2},
-                "promotion_hotspots_top": [
-                    {
-                        "module": "pkg.mod",
-                        "function": "hot_fn",
-                        "tier_base": "B",
-                        "tier_effective": "A",
-                        "source": "pgo_hot_functions",
-                        "signal": "pkg.mod::hot_fn",
-                        "spent_ms": 12.5,
-                    }
-                ],
-            },
         },
         diagnostics_path=None,
         json_output=False,
@@ -21861,10 +21492,8 @@ def test_emit_build_diagnostics_summary_omits_hotspot_details(
     stderr = capsys.readouterr().err
     assert "Build diagnostics:" in stderr
     assert "- frontend_parallel: enabled=True workers=4 mode=process_pool" in stderr
-    assert "- midend.promoted_functions: 2" in stderr
     assert "frontend_parallel.layer.1:" not in stderr
     assert "frontend_parallel.worker_ms:" not in stderr
-    assert "midend.promotion_hotspot.1:" not in stderr
 
 
 def test_emit_build_diagnostics_full_prints_extended_hotspots(
@@ -25852,8 +25481,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         frontend_timing_enabled=False,
         frontend_timing_threshold=0.0,
         frontend_module_timings=[],
-        midend_policy_outcomes_by_function={},
-        midend_pass_stats_by_function={},
         frontend_parallel_details={},
         diagnostics_start=0.0,
         phase_starts={},
@@ -25877,8 +25504,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         pgo_profile_path=None,
         runtime_feedback_summary=None,
         runtime_feedback_path=None,
-        pgo_hot_function_names=set(),
-        pgo_hot_function_names_sorted=(),
         pgo_profile_payload=None,
         runtime_feedback_payload=None,
         cargo_timeout=1.0,
@@ -25970,11 +25595,8 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             module_deps={},
             source_modules=(),
             module_chunk_max_ops=0,
-            optimization_profile="dev",
-            pgo_hot_function_names=set(),
             known_modules_sorted=(),
             stdlib_allowlist_sorted=(),
-            pgo_hot_function_names_sorted=(),
             module_dep_closures={},
             module_graph_metadata=empty_module_graph_metadata,
             module_chunking=False,
@@ -25992,7 +25614,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             record_frontend_parallel_worker_timing=lambda **kwargs: {},
             record_frontend_timing=lambda *args, **kwargs: None,
             integrate_module_frontend_result=lambda *args, **kwargs: None,
-            accumulate_midend_diagnostics=lambda *args, **kwargs: None,
             fail=lambda *args, **kwargs: None,
             json_output=True,
             run_serial_frontend_lower=lambda *args, **kwargs: (None, None, None),
@@ -35793,14 +35414,10 @@ def test_programs_share_the_lowered_form_of_every_imported_module(
 @pytest.mark.slow
 @pytest.mark.long_pole
 @pytest.mark.parametrize("workers", [0, 2])
-def test_warm_module_products_reuse_optimized_ir_without_entering_midend(
+def test_warm_module_products_reuse_serialized_ir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: int
 ) -> None:
-    from molt.frontend import SimpleTIRGenerator
-    from molt.frontend._types import _MIDEND_ENV_KEYS
 
-    for name in _MIDEND_ENV_KEYS:
-        monkeypatch.delenv(name, raising=False)
     project = tmp_path / "project"
     project.mkdir()
     (project / "main.py").write_text(
@@ -35809,17 +35426,10 @@ def test_warm_module_products_reuse_optimized_ir_without_entering_midend(
     )
     records: list[dict[str, object]] = []
     with _real_frontend_fake_backend(project, tmp_path / "cache", workers, records):
-        cold = _cli_build_diagnostics(project, "main.py", "program.o")
+        _cli_build_diagnostics(project, "main.py", "program.o")
 
-        def unexpected_midend(*args, **kwargs):
-            pytest.fail("a warm module product entered the midend")
-
-        monkeypatch.setattr(
-            SimpleTIRGenerator, "_run_ir_midend_passes", unexpected_midend
-        )
         warm = _cli_build_diagnostics(project, "main.py", "program.o")
     assert len(records) == 2 and records[0] == records[1]
-    assert cold["midend"] == warm["midend"]
     cache = warm["frontend_lowering_cache"]
     assert cache["observed"] > 2 and cache["hits"] == cache["observed"]
     modes = {row["mode"] for row in warm["frontend_parallel"]["worker_timings"]}
@@ -35975,3 +35585,40 @@ def test_new_source_hash_namespace_starts_cold(tmp_path, renumbered, legacy_vers
     assert legacy.read_bytes() == before
     current = list((cache / "source_hash_cache" / "v3").rglob("*.json"))
     assert current == []
+
+
+def test_module_frontend_generator_uses_scoped_inputs() -> None:
+    gen = cli_frontend_worker._module_frontend_generator(
+        module_name="main",
+        logical_source_path="/tmp/main.py",
+        module_execution_kind="script",
+        type_hint_policy="ignore",
+        enable_phi=True,
+        stdlib_allowlist=("json",),
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        target_python=TARGET_PYTHON._parse_target_python_version("3.14"),
+        scoped_inputs=cli_models._ScopedLoweringInputView(
+            body_selection=ModuleBodySelection("complete_source"),
+            known_modules=("alpha", "main"),
+            known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+            known_func_kinds={"main": {"run": "sync"}},
+            native_python_exports=("alpha.native_call",),
+            type_facts=None,
+        ),
+        scoped_known_classes={ClassId("main", "MainClass"): {"fields": {}}},
+        target_sys_platform=None,
+        module_source_role="user",
+        namespace_premise=None,
+    )
+
+    assert gen.module_name == "main"
+    assert gen.module_execution_kind == "script"
+    assert gen.module_source_role == "user"
+    assert gen.target_python == (3, 14)
+    assert gen.eager_annotations is False
+    assert gen.known_modules == {"alpha", "main"}
+    assert gen.known_func_defaults == {"main": {"run": {"params": 0, "defaults": []}}}
+    assert gen.known_func_kinds == {"main": {"run": "sync"}}
+    assert gen.native_python_exports == {"alpha.native_call"}
+    assert gen.classes == {ClassId("main", "MainClass"): {"fields": {}}}

@@ -7,9 +7,9 @@
   a known constant, then A's jump to B can be rewritten to jump directly
   to the appropriate successor, bypassing the branch.
 
-  In Molt's midend pipeline, this corresponds to the SCCP + edge
-  threading phase: after SCCP computes abstract values, edges where
-  the branch condition is a known constant are threaded through.
+  Rust SCCP owns production constant branch folding. Its SimpleIR egress
+  refuses a fold if either edge targets a loop header (HF-821); this abstract
+  model does not establish that egress correspondence.
 
   Model: given a known-constants map (from SCCP), rewrite branch
   terminators whose condition is known to a direct jump.

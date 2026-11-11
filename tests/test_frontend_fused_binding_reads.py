@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-from typing import Literal
 
 import pytest
 
@@ -39,12 +38,10 @@ _ALIASES = {"binding_alias", "copy", "copy_var", "identity_alias"}
 def _module_ops(
     source: str,
     target_python: tuple[int, int],
-    *,
-    midend_stage: Literal["pre-midend", "post-midend"] = "post-midend",
 ) -> dict[str, list[dict]]:
     gen = SimpleTIRGenerator(module_name="__main__", target_python=target_python)
     gen.visit(ast.parse(source))
-    functions = gen.to_json(midend_stage=midend_stage)["functions"]
+    functions = gen.to_json()["functions"]
     return {func["name"]: func["ops"] for func in functions}
 
 
@@ -52,10 +49,8 @@ def _function_ops(
     source: str,
     name: str,
     target_python: tuple[int, int],
-    *,
-    midend_stage: Literal["pre-midend", "post-midend"] = "post-midend",
 ) -> list[dict]:
-    ops = _module_ops(source, target_python, midend_stage=midend_stage)
+    ops = _module_ops(source, target_python)
     return ops[f"__main____{name}"]
 
 
@@ -186,9 +181,7 @@ def test_sequence_reduction_selects_its_fused_op(
 def test_sequence_reduction_fuses_on_the_current_value_of_a_dirty_sequence(
     target_python: tuple[int, int],
 ) -> None:
-    ops = _function_ops(
-        REDUCTIONS, "reduce_list_after_call", target_python, midend_stage="pre-midend"
-    )
+    ops = _function_ops(REDUCTIONS, "reduce_list_after_call", target_python)
     (fused,) = [op for op in ops if op["kind"] == "vec_sum"]
     iterator = _source(ops, fused["args"][0])
     assert iterator["kind"] == "iter"
@@ -224,9 +217,7 @@ def test_reduction_over_a_known_non_sequence_does_not_fuse(
 def test_fused_reduction_starts_from_the_accumulator_binding_itself(
     target_python: tuple[int, int],
 ) -> None:
-    ops = _function_ops(
-        REDUCTIONS, "total_after_call", target_python, midend_stage="pre-midend"
-    )
+    ops = _function_ops(REDUCTIONS, "total_after_call", target_python)
     (fused,) = [op for op in ops if op["kind"] == "vec_sum"]
     accumulator = _source_kind(ops, fused["args"][1])
     # From 3.13 a callback may have rebound ``total`` (to an int, say): the
@@ -241,9 +232,7 @@ def test_fused_reduction_starts_from_the_accumulator_binding_itself(
 def test_fused_reduction_publishes_each_chunk_and_rereads_its_bindings(
     target_python: tuple[int, int],
 ) -> None:
-    ops = _function_ops(
-        REDUCTIONS, "reduce_list", target_python, midend_stage="pre-midend"
-    )
+    ops = _function_ops(REDUCTIONS, "reduce_list", target_python)
     kinds = [op["kind"] for op in ops]
     (fused,) = [index for index, kind in enumerate(kinds) if kind == "vec_sum"]
     chunk_start = max(index for index in range(fused) if kinds[index] == "loop_start")
@@ -367,7 +356,7 @@ def test_counted_while_never_fuses_an_index_a_body_callback_may_rebind(
 
 
 def test_counted_while_counts_only_from_an_exact_int_start() -> None:
-    ops = _function_ops(COUNTED, "counted_from", (3, 12), midend_stage="pre-midend")
+    ops = _function_ops(COUNTED, "counted_from", (3, 12))
     (type_check,) = [op for op in ops if op["kind"] == "type_of"]
     (exact,) = [
         op["out"]

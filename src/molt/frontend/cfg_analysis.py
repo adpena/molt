@@ -594,8 +594,8 @@ def _control_projection(ops: Sequence[OpLike]) -> _ControlProjection:
 def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
     """The CFG of ``ops``.
 
-    Midend pass rounds rebuild the CFG of an op list most of whose rounds
-    change no control flow, so graphs are shared by control projection.
+    Language-lowering consumers can query the same control flow with different
+    value payloads, so graphs are shared by control projection.
     """
     return _cfg_for_projection(_control_projection(ops))
 

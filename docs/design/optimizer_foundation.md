@@ -11,137 +11,34 @@ Support and release claims are bounded by the
 and its qualified target cells. The north-star comparisons below describe the
 architectural goal.
 
-## Mid-end coverage and bounded work
+## Optimizer ownership and serialization
 
-Every serialized lowered function receives frontend mid-end coverage accounting,
-including stdlib bodies and large functions. User functions enter the optimizer
-regardless of size. Stdlib bodies bypass the Python optimizer as a measured cost
-policy owned by HF-773, while the backend Rust TIR pipeline still processes them.
-This is a cost decision, not a correctness gate: the 2026-11-05 round-2 native
-release measurements found cold builds growing from 51.66 to 111.58 seconds for
-`bench_math_numeric`, 59.05 to 109.70 for `bench_colorsys`, and 40.91 to 77.04 for
-`binary_trees`, for 0–3.4% fewer runtime instructions across the measured corpus.
-Receipts: `logs/agents/lane-hf572-midend-coverage/artifacts/round-2/report.md`
-in the integration checkout. These are whole-lane observations, not an isolated
-attribution of every instruction delta to stdlib optimization. HF-773 must carry
-the measured opportunities into the existing typed SSA optimizer and retire the
-overlapping Python fact families. It owns full stdlib differential qualification.
-The round-3 design and two sequential read-only review records are retained in
-the same lane's `artifacts/round-3/`; the first review's six findings were answered
-and the implementation-readiness review found no remaining design gap.
+The Python frontend lowers language semantics and serializes wire IR once.
+The overlapping Python SCCP/CSE/edge-thread pipeline, its admission policies,
+budgets, coverage payloads and pass timing observers are retired by HF-773
+slice E. The existing Rust typed SSA passes own optimization facts and their
+effects. No Python optimizer switch or pre/post optimizer debug view remains.
+`molt debug ir` exposes the frontend serialization boundary; backend pass-delta
+diagnostics expose the Rust optimizer boundary.
 
-The build's existing mid-end diagnostics
-record original input ops, output ops, status and reasons per function; a
-program summary is also emitted without detailed timing diagnostics. The
-denominator includes generated module chunks and precedes backend reachability.
-It is not a count of source functions or surviving optimized operations.
+Required language lowering remains in Python: async frame transport, traceback
+location publication, namespace/static truth analysis and wire validation.
+Suspended values use local homes with fresh SSA reload results. Checked
+producers publish into homes only on success. Branch transport captures borrowed
+frame views before local storage. General CFG/value-liveness analysis still
+serves this lowering; it is not a second SCCP or available-expression authority.
 
-The disjoint statuses are `full`, `degraded`, `skipped`, and `fallback`, with
-skipped taking precedence over fallback, and fallback over degraded. A fixed
-point without a rewrite is full optimization. A verification rejection,
-rollback, solver limit, disabled required pass or deterministic optional-pass
-budget is coverage loss even when a later attempt verifies. Reasons may
-overlap; their counts must not be added as category totals. Missing cached
-outcomes retain their function inventory as skipped with unknown input ops;
-op fractions are null until the denominator is complete. Empty denominators
-also have null fractions. Failed builds do not establish program coverage.
-Stdlib bypass records `skipped` with reason `stdlib_cost_policy`, including empty
-functions, original/output op counts and zero executed passes. The historical
-`midend_module_skips` counter counts per-function invocations of this policy;
-program function/module inventories provide their own denominators. Skipped
-stdlib functions are never counted as fully optimized by the Python pipeline.
+Source-qualified lowering products retain module bytes, compiler identity,
+Python/platform, source selection and dependency facts. Removing optimizer-only
+fields changes the lowering-cache schema so an old optimized body cannot enter
+the new boundary. Cache reuse and cold compilation remain distinct measurements.
 
-Required outer rewrites and SCCP's default worklists drain to a fixed point.
-Tier/profile round counts calibrate optional CSE's work budget, not required-pass
-admission. Backend benchmark and differential runners impose no hidden solver
-or outer-round diagnostic limits. An explicit diagnostic visit
-limit returns no value or branch facts and marks all CFG blocks and edges
-executable; its loss remains in coverage. Successive scalar outputs widen by
-the exact-literal lattice, and killed heap relations cannot resurrect around
-a cycle. The shared value-liveness analysis bounds retained block facts to
-values used locally or later. Joins project needed values before merging:
-a shared exception handler must not join every dead temporary from every
-predecessor. The verifier uses unique producer sites, instruction order and
-dominator intervals rather than a definition set for every block. MISSING
-taint follows PHI use dependencies iteratively.
-Authored `LOOP_INDEX_START`/`LOOP_INDEX_NEXT` are explicit pre-SSA loop carriers:
-an update requires its own loop's unique dominating start. They do not admit
-ordinary repeated SSA definitions or flow-insensitive literal facts.
-
-Optimized stdlib functions are products of the existing source-qualified
-module-lowering record, together with function metadata and original coverage
-receipts. Serial and parallel readers consult that product before constructing
-the frontend generator. Its identity must include module bytes, semantic
-compiler identity, target Python/platform, source-body selection, dependency
-facts, profile/PGO and every mid-end policy setting. Reusing the product executes
-no mid-end passes; restored pass timings describe its original production,
-identified by the existing cache-hit worker mode. There is no separate stdlib
-optimization cache. Cold compile cost and warm product reuse are distinct
-measurements; backend artifact reuse is another boundary.
-
-CSE propagates aliases only for values live out of each block. Substitutions
-for that block's eliminated definitions remain at their producers until final
-operand rewriting, including substitutions that are dead in the original
-value graph. This bounds propagated alias entries by the sum of live-out names,
-plus one local substitution per defining operation, instead of copying every
-earlier eliminated definition through every later block. Available expressions
-remain a separate fact: a dead representative may eliminate a future repeated
-computation. Their removal cannot be justified by value liveness alone.
-Scalar and type facts propagate for live values, live alias targets and all
-available representatives; dead eliminated aliases do not retain duplicate
-facts in every later block. This projects the existing fact domain without
-dropping expression availability or changing effect invalidation.
-CSE compares the four closed fact maps directly, using target SSA identity for
-aliases and available expressions. It retains no sorted signature projection
-or mutation-invalidated memo alongside those maps.
-
-With `MOLT_MIDEND_STATS` present, existing pass statistics also record actual
-call counts and sampled compiler-process peak RSS, including entry/exit samples
-and a 10 ms observer. Nested SCCP/CSE solver calls have their own records; their
-inclusive wall times and resident peaks overlap outer stages and must not be
-added as a total. RSS includes retained inputs and allocator pages, rather than
-only allocations made by the pass. Peak growth is relative to its first valid
-sample; unavailable observations remain null with explicit missing-sample counts.
-Disabled or rejected-before-execution stages have zero calls, independently of
-their recorded optimization attempts. The observer is owned by one function's
-mid-end invocation and closes on success or failure. Normal builds start no
-observer. Restored module-product timings remain historical receipts, so fresh
-optimizer profiling disables lowering-cache reuse.
-
-Frontend dominance queries use intervals and retained tree storage is linear.
-The CHK construction itself has a quadratic worst case: a chain whose final
-node has edges back to every earlier non-entry node makes repeated intersections
-walk long parent paths. A macOS arm64 / slot Python 3.12.15 measurement on
-2026-11-05 took 0.056/0.213/0.827/1.283 seconds at 4k/8k/16k/20k nodes
-(2N-3 edges), with a 155.9 MiB process high-water RSS at 20k including Python
-and imports. This bounds that measured case only; arbitrary graph construction
-is not claimed to be near-linear. Required frontend passes still admit every
-user function.
-
-PHI operands belong to incoming merge edges, including normal continuations
-through exception checks after a structured merge. One linear CFG edge table
-feeds liveness, SCCP, trimming and verification.
-The structured wire boundary additionally requires PHIs immediately after
-their `END_IF`; branch tail merging must retain common checks and metadata
-inside the branches when a PHI follows. CFG validity alone does not prove that
-backend attachment contract.
-Suspended values use explicit
-local homes, fresh SSA results on reload, and the existing backend SSA
-construction. Checked producers publish into a home only on the success path.
-Branch transport captures borrowed frame views before storing them in compiler
-locals, so a returned selection survives the source frame exit.
-Branch transport uses the same typed local homes; the retired frontend `COPY`
-identity has no remaining producer or consumer. The backend wire `copy` remains
-part of its own SSA lowering contract. Heap-read CSE invalidates available reads at effects and joins
-only identical available results; numeric mutation epochs are unnecessary and
-would grow indefinitely on loop backedges. Deterministic work budgets may
-disable the superlinear cross-block CSE optimization, with a coverage reason;
-they do not truncate required CFG/SCCP/DCE work or skip a function.
-
-This coverage contract does not qualify all backend/profile cells by itself.
-The findings ledger owns current qualification. The
-[single typed IR migration](foundation/77_architecture_convergence.md#b-one-typed-ir-as-the-backend-input)
-owns retirement of the overlapping Python and Rust optimizers.
+The Rust SCCP loop-header refusal remains HF-821 work; this deletion does not
+claim that every former optimization opportunity is implemented. The measured
+corpus and per-cell A/A envelopes below bound slice E's performance claim.
+The findings ledger owns release qualification and the
+[typed IR migration](foundation/77_architecture_convergence.md#b-one-typed-ir-as-the-backend-input)
+owns the broader convergence.
 
 ## Python SCCP/CSE retirement (HF-773 slice E)
 
@@ -149,16 +46,17 @@ Status: settled round-two design, 2026-11-10. The integrator's 07:05Z Correction
 authorizes implementation in steps (a)–(d). The settled decisions immediately
 below override conflicting proposals in the recorded measurement discussion.
 The earlier 01:00Z Correction
-supersedes the first proposal's structural-retention list. Step (a) is complete;
-step (c) implements heap-literal reuse, with the qualification limits below. The findings ledger owns qualification; Claude
+supersedes the first proposal's structural-retention list. Steps (a)–(d) are
+implemented on the lane, with the qualification limits below. The findings ledger owns qualification; Claude
 integrator owns review, integration and retirement. The assigned worker owns
 the measurements and proofs. D0 remains diagnostic-only; guarded-call admission
 and the inliner's execution-context gate remain HF-824's work.
 
 ### Settled implementation decisions (07:05Z)
 
-Implement in order, with one commit per step and a stop on the first failed
-oracle: (a) compare existing module-slot promotion diagnostics for A/on and
+The settled implementation order is below. The 12:57Z Correction replaces
+ordinary stop rules: diagnose and fix owned failures; stop only for a deliberate
+reserved-owner, scope, destructive or external-action blocker. Order: (a) compare existing module-slot promotion diagnostics for A/on and
 B/raw on the nine native and thirteen LLVM above-envelope programs; capture
 LLVM A/B loop anatomy for bench_sum and bench_dict, including runtime calls,
 reference-count sites and literal materializations. (b) Fix additional B
@@ -334,7 +232,7 @@ bench_while now has on/base -1.635583%, raw/on +0.006651% and raw/base
 rows completed without an above-envelope regression. LLVM bench_calls has
 on/base -5.353879% and raw/on +0.001416%, against a 0.596212% envelope.
 
-The batch stops at LLVM bench_chainmap: on/base +1.568592% exceeds its
+Historical 09:24Z batch stop, subsequently accepted and resumed: LLVM bench_chainmap on/base +1.568592% exceeds its
 0.072614% envelope. Raw/on -0.044060% is within the envelope; raw/base is
 +1.288231%. All five on/base pairs regress beyond that envelope; all fifteen
 executions match CPython stdout/exit and close their guards. This fails the
@@ -396,13 +294,113 @@ as noise. Evidence: logs/agents/lane-hf773-slice-d/artifacts/report-e.md and
 evidence-e-llvm-localization.tar.gz (359 members, all readback verified;
 SHA-256 2a8e59b43594a14a2e6e7d44f204f3c6a304ce140f46a71f6901749be6bcea3d).
 
-Continue the remaining corpus, then deletion and plain precheck-only. A newly
-regressing cell is accepted under the same disposition only when the same
-tracing establishes this cache cause; any different cause stops the batch.
-An unapplied deletion draft based on `9c8a163c40` is preserved privately; its
-rendered projections and Ruff checks do not qualify migrated readers or the
-final wire boundary. No cache fix or regression test for this mechanism is
-claimed. Claude integrator owns integration, HF-507 routing and retirement.
+### Completed corpus and Python retirement (step d)
+
+VERIFIED at the measured GVN/Line source: all 65 available instruction rows
+complete (22 native, 22 LLVM, 21 WASM), with five alternating base/on/raw triples
+per row. All 975 qualification executions match the pinned CPython stdout/exit,
+close their guards, and have no timeout or infrastructure failure. Sixty-three
+rows have no above-envelope regression; LLVM and WASM ChainMap carry the named
+HF-507 acceptance. The original A/A envelopes are unchanged. High-noise rows
+remain unknown for small differences; baseline WASM Regex Redux remains
+unavailable at the Node/WASI descriptor-passing boundary. Native bench_while
+meets its original envelope after Line's nothrow correction, as recorded above.
+
+VERIFIED WASM ChainMap same-cause tracing: on/base +0.683167% against a
+0.038746% envelope; raw/on -0.002880%. Per 1,000 steady periods the unchanged
+products make 31,000 string constructors in both arms, but cache misses rise
+6,000→8,000 and non-identifier misses 2,000→4,000. The generator qualified name
+collides with `object is not iterable` in slot 20; `maps` and `any` collide in
+slot 28. Two additional non-interned construction paths per iteration establish
+the accepted HF-507 mechanism. The finite diagnostic prefixes close their guards
+and are not whole-program or timing proofs. A preceding timed attempt has
+indeterminate closure and remains explicitly unqualified. See the private
+`c3-corpus-complete-summary-e.json` and `wasm-chainmap-cache-acceptance-e.json`.
+
+Step (d) removes all seven Python mid-end modules, their MRO and policy state,
+TV hooks/snapshots, optimizer debug selectors, telemetry/capsule fields,
+environment knobs and obsolete formal-model/readers. The lowering cache changes
+schema 11→12 and context 7→8; analysis capsules and frontend profiles move to
+schema 2. Source bytes, compiler identity, language/source selection and other
+semantic inputs still govern reuse. No compatibility optimizer path remains.
+The source-position pure/control and callback projections stay live. The unused
+`RAISING_KIND_NAMES` projection is removed; its canonical observer rows still
+feed callback metadata. Regeneration verifies that every other generated Python
+table value and the Rust projection are unchanged by this last retirement.
+Namespace/static-truth literal identity and the shared lowering CFG stay with
+their real readers. Local suspension reload substitution is language transport,
+not a second CSE authority. String-split/JSON pattern optimization remains later
+HF-773 debt at its existing serializer owner.
+
+The retained lowering family passes 522 cases and the opcode-generator family
+passes 241 in the plain pinned image. Migrated tests retain independent language
+oracles: CPython frame-slot layout, CFG path-removal dominance, raw bigint
+transport and runtime powers, failed-import retraction versus a surviving failed
+`__main__`, and one terminal trace exit per returning path. They no longer
+require Python folding, DCE of unreachable returns, or the retired structural
+repair method. Stale cache declarations and optimizer-only fake/record fields
+are removed with their producers. The Rust TIR proof rule stays active.
+
+Changed-reader qualification also exposed GPU consumers that had depended on
+the optimized frontend shape. Body-origin publication now belongs to shared
+function setup, covering both ordinary functions and class methods and clearing
+stale evidence on body restart. The descriptor projector consumes the raw
+`load_method`/`call_loaded_method` pair only when its callable and receiver match;
+the existing runtime query-binding admission remains authoritative. Native
+batching carries the shared-stdlib producer's full-program callable manifest
+instead of recomputing it from a partition that lacks referenced body symbols.
+This extends the change to the canonical batch-plan/application owner under
+`runtime/molt-backend/src/backend_process/native_batch/application/batched`.
+The reserved lowering and runtime owners remain untouched. Regression tests
+exercise actual GPU/struct body producers, raw and captured query calls, invalid
+method pairs and a full-program manifest crossing a shared-body partition.
+Hardware admission also queried raw header class edges for buffer fields,
+rejecting exact builtin values whose class is implicit. The GPU runtime consumer
+now obtains owned semantic types through the existing `molt_type_of` authority
+and compares those identities; it does not duplicate builtin classification or
+admit subclasses by storage shape. The compiled hardware fixture distinguishes
+exact string/integer/bytes fields from explicit subclasses. This extends the
+canonical consumer repair to `runtime/molt-gpu-runtime/src/{bridge,
+descriptor_admission}.rs`, with no change to the reserved runtime bridge.
+
+Two runtime identity guards then rejected every real hardware launch; both are
+fixed at their owner, `runtime/molt-runtime/src/intrinsics/registry.rs`.
+First, the compiled-body matcher compared the raw header class edge with
+`function`. Ordinary `molt_func_new` construction leaves that edge zero, and
+`builtins/type_ops.rs::type_of_bits` defines a zero edge on a function as
+builtin `function`. The matcher's unit fixture attached the edge by hand, so it
+missed the production shape. All three function matchers now ask
+`type_of_bits`. The fixture now uses the unedged production shape and adds an
+explicit foreign edge that must refuse. Second, the builtin-dependency matcher
+refused every builtin with a binding policy. `isinstance` carries
+`PositionalRange`, whose `requires_custom_binding()` is false, so admission
+rejected it as rebound. The matcher now refuses only policies that need a
+custom binder; the existing raw-call binding check still proves the exact
+arity. A new runtime test publishes `isinstance` through the generated builtin
+allocator and checks admission, a foreign builtin and a mutation bump. With
+both fixes, direct builds of the three compiled fixtures pass every asserted
+line on macOS arm64: Metal and WebGPU print the vector and `hardware admission
+ok` (subclass refusals included), and the CPU fixture prints `launch semantics
+ok` and refuses CUDA and HIP. The pytest wrappers time out on this host because
+the first exec of each fresh binary waits about 49 s for the OS (0.07 s user CPU;
+a second exec takes 0.25 s), above the tests' fixed 60 s child timeout under load.
+That is a host first-exec cost, not a product result.
+
+Before the related GPU repairs, the normal frontend (no raw-arm hook) passes eight differential programs
+on native, LLVM and WASM, 24 explicit backend observations with no failure,
+skip or not-run result and a closed outer guard. The extra existing failed-main
+fixture independently covers the namespace expectation exposed by reader tests.
+These receipts precede the GPU consumer repairs and are rerun on the final
+candidate (below). They are macOS arm64 / CPython 3.12.16 / release compiler and
+guest cells, not release acceptance or the whole target/profile matrix.
+
+VERIFIED single cold-product observations before the GPU repairs, with lowering/program reuse off,
+normal scheduler/daemon policy and ready release compiler/runtime producers:
+hello wall 32.23→8.67 s, sampled tree peak 576.78→558.70 MiB; ChainMap wall
+79.24→41.81 s, tree peak 1065.72→1026.55 MiB. Both final build guards and the
+owning suite close normally. Host load and first-launch costs are uncontrolled;
+these are observations, not attributed speedups or memory bounds. The compiler
+process maxima and complete phase diagnostics remain in the private receipts.
 
 VERIFIED native bench_calls inspection products have text identical to both
 new measured arms. Their loops have 429/431 static instructions and identical
