@@ -17,6 +17,9 @@
 //! 6. **Boolean simplification**: And(x, True) → x; Or(x, False) → x;
 //!    And(x, False) → False; Or(x, True) → True; Not(True) → False
 //! 7. **Comparison canonicalization**: 0 < x → x > 0 (constant on right)
+//! 8. **Truth of a bool**: Bool(x) → x when x is an exact bool. A loop guard
+//!    `Bool(Lt(i, n))` then tests the comparison itself, which is the shape
+//!    the counted-loop and range recognizers read.
 //!
 //! A rule that yields an existing value `x` rewrites the op into `Copy(x)`.
 //! The result keeps the owner it had: where it held a heap reference of its
@@ -169,6 +172,14 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         )
                     {
                         replace_with_copy(op, inner_src, result, &mut owners);
+                        stats.values_changed += 1;
+                    }
+
+                    // --- Rule 8: truth of an exact bool is the bool ---
+                    if op.opcode == OpCode::Bool
+                        && exact_scalar_types.get(&operand) == Some(&TirType::Bool)
+                    {
+                        replace_with_copy(op, operand, result, &mut owners);
                         stats.values_changed += 1;
                     }
 
@@ -767,6 +778,50 @@ mod tests {
         assert_eq!(
             annotated.blocks[&annotated.entry_block].ops[1].opcode,
             OpCode::Neg
+        );
+    }
+
+    #[test]
+    fn truth_of_an_exact_bool_is_the_bool() {
+        // `Bool(Lt(3, 7))`: the comparison of two exact ints is an exact bool.
+        let mut exact = TirFunction::new(
+            "exact".into(),
+            vec![],
+            TirType::Bool,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let (lhs, rhs) = (exact.fresh_value(), exact.fresh_value());
+        let (less, truth) = (exact.fresh_value(), exact.fresh_value());
+        let entry = exact.blocks.get_mut(&exact.entry_block).unwrap();
+        entry.ops.push(make_const_int(3, lhs));
+        entry.ops.push(make_const_int(7, rhs));
+        entry.ops.push(make_binop(OpCode::Lt, lhs, rhs, less));
+        entry.ops.push(make_unop(OpCode::Bool, less, truth));
+        entry.terminator = Terminator::Return {
+            values: vec![truth],
+        };
+        assert!(run(&mut exact).values_changed > 0);
+        let folded = &exact.blocks[&exact.entry_block].ops[3];
+        assert_eq!(folded.opcode, OpCode::Copy);
+        assert_eq!(folded.operands, vec![less]);
+
+        // A parameter annotated bool may be any object: `__bool__` still runs.
+        let mut annotated = TirFunction::new(
+            "annotated".into(),
+            vec![TirType::Bool],
+            TirType::Bool,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let truth = annotated.fresh_value();
+        let entry = annotated.blocks.get_mut(&annotated.entry_block).unwrap();
+        entry.ops.push(make_unop(OpCode::Bool, ValueId(0), truth));
+        entry.terminator = Terminator::Return {
+            values: vec![truth],
+        };
+        assert_eq!(run(&mut annotated).values_changed, 0);
+        assert_eq!(
+            annotated.blocks[&annotated.entry_block].ops[0].opcode,
+            OpCode::Bool
         );
     }
 }

@@ -545,6 +545,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            // -- AsyncWorkPending: test the thread's pending-work word. It
+            //    services nothing; a promoted module loop branches on it to
+            //    the unpromoted loop, whose poll runs the work.
+            OpCode::AsyncWorkPending => {
+                let pending = self.emit_async_work_pending();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, pending.into());
+                    self.value_types.insert(result_id, TirType::Bool);
+                }
+            }
+
             // -- FunctionDefaultsVersion: read a function object's
             //    __defaults__/__kwdefaults__ mutation version stamp as a boxed
             //    inline int (`molt_function_defaults_version(func)`).  Produced

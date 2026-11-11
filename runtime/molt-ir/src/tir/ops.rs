@@ -270,6 +270,13 @@ pub enum OpCode {
     /// Used as the condition of the `loop_break_if_exception` CondBranch that
     /// exits an iterator-consumer loop on a mid-iteration raise.
     ExceptionPending,
+    /// Read the thread's pending-work word as a boolean: true when a signal
+    /// handler, a pending call or a scheduler request waits for the next
+    /// async-work poll. It runs no work and cannot raise. The word is set
+    /// from other threads and from signal context, so the read is pinned at
+    /// its program point. A promoted module-level loop branches on it to the
+    /// unpromoted loop, whose poll services the work.
+    AsyncWorkPending,
     /// Read a function object's `__defaults__`/`__kwdefaults__` mutation version
     /// stamp (`molt_function_defaults_version_slot`).  Takes one arg (the
     /// function object) and yields the version as an inline int.  Side-effecting
@@ -517,6 +524,10 @@ pub const FRAME_LOCATION_ATTR: &str = "frame_location";
 /// blocks, because the range analysis that found the proof reads loop shape
 /// and the split hides that shape from a later run.
 pub const INLINE_INT_PROOF_ATTR: &str = "inline_int_proof";
+/// Proof carried into final TIR: this op cannot raise. The late lowering
+/// stage records it on the ops that replace an op which could not raise (an
+/// add of two exact ints), whose exception check is already gone.
+pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
 
 /// Attribute projection of a call's typed per-operand custody: the
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with
@@ -866,6 +877,29 @@ impl TirOp {
             self.attrs.get(ASYNC_WORK_POLL_ATTR),
             Some(AttrValue::Bool(true))
         )
+    }
+
+    /// Whether this op carries the late stage's proof that it cannot raise.
+    #[inline]
+    pub fn has_nothrow_proof(&self) -> bool {
+        matches!(
+            self.attrs.get(NOTHROW_PROOF_ATTR),
+            Some(AttrValue::Bool(true))
+        )
+    }
+
+    /// Record that this op cannot raise. Only the late lowering stage may
+    /// call it, on an op that replaces one which could not raise.
+    pub fn mark_nothrow_proof(&mut self) {
+        self.attrs
+            .insert(NOTHROW_PROOF_ATTR.into(), AttrValue::Bool(true));
+    }
+
+    /// Whether lowering this operation reads the thread's pending-work word:
+    /// a poll, or the `AsyncWorkPending` test. A function with such an
+    /// operation materializes the word's address once, at entry.
+    pub fn reads_pending_work_word(&self) -> bool {
+        self.is_async_work_poll() || self.opcode == OpCode::AsyncWorkPending
     }
 
     /// Whether this operation role can fuse an asynchronous-work poll without

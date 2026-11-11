@@ -41,6 +41,7 @@ FrontendOpKind = Literal[
     'ASYNCGEN_NEW',
     'ASYNC_FOR_END',
     'ASYNC_FOR_START',
+    'ASYNC_WORK_PENDING',
     'ASYNC_WORK_POLL',
     'BAND',
     'BINDING_ALIAS',
@@ -569,6 +570,7 @@ WireOpKind = Literal[
     'ascii_from_obj',
     'async_for_end',
     'async_for_start',
+    'async_work_pending',
     'async_work_poll',
     'asyncgen_new',
     'band',
@@ -1104,6 +1106,7 @@ class FrontendKinds:
     ASYNCGEN_NEW: Final = 'ASYNCGEN_NEW'
     ASYNC_FOR_END: Final = 'ASYNC_FOR_END'
     ASYNC_FOR_START: Final = 'ASYNC_FOR_START'
+    ASYNC_WORK_PENDING: Final = 'ASYNC_WORK_PENDING'
     ASYNC_WORK_POLL: Final = 'ASYNC_WORK_POLL'
     BAND: Final = 'BAND'
     BINDING_ALIAS: Final = 'BINDING_ALIAS'
@@ -1632,6 +1635,7 @@ class WireKinds:
     ASCII_FROM_OBJ: Final = 'ascii_from_obj'
     ASYNC_FOR_END: Final = 'async_for_end'
     ASYNC_FOR_START: Final = 'async_for_start'
+    ASYNC_WORK_PENDING: Final = 'async_work_pending'
     ASYNC_WORK_POLL: Final = 'async_work_poll'
     ASYNCGEN_NEW: Final = 'asyncgen_new'
     BAND: Final = 'band'
@@ -2168,6 +2172,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'ASYNCGEN_NEW': 'asyncgen_new',
     'ASYNC_FOR_END': 'async_for_end',
     'ASYNC_FOR_START': 'async_for_start',
+    'ASYNC_WORK_PENDING': 'async_work_pending',
     'ASYNC_WORK_POLL': 'async_work_poll',
     'BAND': 'band',
     'BINDING_ALIAS': 'binding_alias',
@@ -2690,6 +2695,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "ascii_from_obj",
         "async_for_end",
         "async_for_start",
+        "async_work_pending",
         "async_work_poll",
         "asyncgen_new",
         "band",
@@ -3258,6 +3264,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "ASYNCGEN_NEW",
         "ASYNC_FOR_END",
         "ASYNC_FOR_START",
+        "ASYNC_WORK_PENDING",
         "ASYNC_WORK_POLL",
         "BAND",
         "BINDING_ALIAS",
@@ -3944,6 +3951,7 @@ CANONICAL_KIND: dict[str, str] = {
     "check_exception": "check_exception",
     "async_work_poll": "check_exception",
     "exception_pending": "exception_pending",
+    "async_work_pending": "async_work_pending",
     "function_defaults_version": "function_defaults_version",
     "try_start": "try_start",
     "try_end": "try_end",
@@ -4068,6 +4076,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "raise",
         "check_exception",
         "exception_pending",
+        "async_work_pending",
         "function_defaults_version",
         "try_start",
         "try_end",
@@ -4257,6 +4266,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "ALLOC": False,
     "ALLOC_TASK": True,
     "AND": True,
+    "ASYNC_WORK_PENDING": False,
     "ASYNC_WORK_POLL": False,
     "BINDING_ALIAS": False,
     "BINOP_FLOOR_DIV": True,
@@ -4360,7 +4370,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "FRAME_HOME_STORE": True,
     "FRAME_HOME_TAKE": True,
     "FRAME_LOCALS": True,
-    "FRAME_SET_LOCATION": True,
+    "FRAME_SET_LOCATION": False,
     "FREE": True,
     "FUNCTION_DEFAULTS_VERSION": False,
     "GE": True,
@@ -4654,6 +4664,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "ascii_from_obj": 512,
     "async_for_end": 1024,
     "async_for_start": 1024,
+    "async_work_pending": 4,
     "async_work_poll": 32772,
     "band": 0,
     "binding_alias": 0,
@@ -5587,6 +5598,7 @@ BINARY_IMAGE_REF_RELEASE_KINDS: frozenset[WireOpKind] = frozenset(
 
 BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS: frozenset[WireOpKind] = frozenset(
     {
+        "async_work_pending",
         "check_exception",
         "copy",
         "copy_var",

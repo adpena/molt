@@ -393,8 +393,11 @@ pub fn op_instance_effects_for_op(
     op: &TirOp,
     value_types: &HashMap<ValueId, TirType>,
 ) -> OpcodeEffects {
-    op_instance_facts_for_op(op, value_types)
-        .map_or_else(|| opcode_effects_table(op.opcode), |facts| facts.effects)
+    let mut effects = op_instance_facts_for_op(op, value_types)
+        .map_or_else(|| opcode_effects_table(op.opcode), |facts| facts.effects);
+    // The late lowering stage replaced an op that could not raise.
+    effects.nothrow |= op.has_nothrow_proof();
+    effects
 }
 
 /// Conditional CFG transfer applies Python truthiness just like `Bool`.

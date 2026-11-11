@@ -1708,6 +1708,7 @@ tests/differential/stdlib/signal_dispatch_safepoints.py
 tests/differential/stdlib/signal_inline_backedge.py
 tests/differential/stdlib/signal_keyboardinterrupt.py
 tests/differential/stdlib/signal_keyboardinterrupt_subclass_exit.py
+tests/differential/stdlib/signal_promoted_module_loop.py
 tests/differential/stdlib/signal_strsignal_valid.py
 tests/differential/stdlib/smtplib_basic.py
 tests/differential/stdlib/smtplib_sendmail_basic.py

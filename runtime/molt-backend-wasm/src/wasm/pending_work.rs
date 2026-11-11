@@ -60,6 +60,19 @@ pub(in crate::wasm) fn thread_record_local(locals: &WasmFrameLocals) -> Option<u
     locals.optional_synthetic(WasmFrameSyntheticLocal::ThreadRecord)
 }
 
+/// Push the thread's pending-work word (i32): non-zero when work waits for a
+/// poll. The one read both the poll and the `async_work_pending` test use.
+pub(in crate::wasm) fn emit_pending_work_word(func: &mut Function, locals: &WasmFrameLocals) {
+    func.instruction(&Instruction::LocalGet(
+        locals.synthetic(WasmFrameSyntheticLocal::PendingWorkPtr),
+    ));
+    func.instruction(&Instruction::I32Load(MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    }));
+}
+
 /// `cold_prelude` runs at the start of the service path, before any pending
 /// call or signal handler: a check's `frame_location` store goes there.
 pub(in crate::wasm) fn emit_poll(
@@ -70,14 +83,7 @@ pub(in crate::wasm) fn emit_poll(
     payload: bool,
     cold_prelude: impl FnOnce(&mut Function),
 ) {
-    func.instruction(&Instruction::LocalGet(
-        locals.synthetic(WasmFrameSyntheticLocal::PendingWorkPtr),
-    ));
-    func.instruction(&Instruction::I32Load(MemArg {
-        offset: 0,
-        align: 2,
-        memory_index: 0,
-    }));
+    emit_pending_work_word(func, locals);
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
     cold_prelude(func);
     emit_call(

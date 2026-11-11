@@ -755,6 +755,14 @@ fn a_guarded_target_without_a_signature_is_a_compiler_error() {
 /// `total` a boxed parameter. Returns the function, the induction phi and its
 /// update.
 fn counted_loop_with_boxed_accumulator() -> (TirFunction, ValueId, ValueId) {
+    counted_loop(false)
+}
+
+/// The same loop. With `exact_accumulator`, `total` starts at the literal 0,
+/// so it is an exact int of unknown size (a boxed word that cannot raise in
+/// `+`), and the statement after the sum forwards an existing exception: an
+/// Unwind check, which admits no new source in front of it.
+fn counted_loop(exact_accumulator: bool) -> (TirFunction, ValueId, ValueId) {
     use crate::tir::blocks::TirBlock;
     use crate::tir::values::TirValue;
     let mut func = TirFunction::new(
@@ -773,8 +781,13 @@ fn counted_loop_with_boxed_accumulator() -> (TirFunction, ValueId, ValueId) {
     let total = func.fresh_value();
     let sum = func.fresh_value();
     let cond = func.fresh_value();
-    func.value_types.insert(total, TirType::DynBox);
-    func.value_types.insert(sum, TirType::DynBox);
+    let accumulator = if exact_accumulator {
+        TirType::I64
+    } else {
+        TirType::DynBox
+    };
+    func.value_types.insert(total, accumulator.clone());
+    func.value_types.insert(sum, accumulator.clone());
     func.value_types.insert(cond, TirType::Bool);
     let (header, guard, body, exit) = (
         func.fresh_block(),
@@ -791,8 +804,29 @@ fn counted_loop_with_boxed_accumulator() -> (TirFunction, ValueId, ValueId) {
     block.ops = vec![constant(0, zero), constant(1, one), constant(100, stop)];
     block.terminator = Terminator::Branch {
         target: header,
-        args: vec![zero, ValueId(0)],
+        args: vec![zero, if exact_accumulator { zero } else { ValueId(0) }],
     };
+    let mut body_ops = vec![
+        TirOp::new(OpCode::Add, vec![total, i], vec![sum]),
+        TirOp::new(OpCode::Add, vec![i, one], vec![next_i]),
+    ];
+    if exact_accumulator {
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 9);
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let mut forward = TirOp::new(OpCode::CheckException, vec![], vec![]);
+        forward.attrs.insert("value".into(), AttrValue::Int(9));
+        forward.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind);
+        body_ops.insert(1, forward);
+    }
     let mut insert = |id: BlockId, args: Vec<TirValue>, ops: Vec<TirOp>, terminator| {
         func.blocks.insert(
             id,
@@ -813,7 +847,7 @@ fn counted_loop_with_boxed_accumulator() -> (TirFunction, ValueId, ValueId) {
             },
             TirValue {
                 id: total,
-                ty: TirType::DynBox,
+                ty: accumulator,
             },
         ],
         vec![],
@@ -837,10 +871,7 @@ fn counted_loop_with_boxed_accumulator() -> (TirFunction, ValueId, ValueId) {
     insert(
         body,
         vec![],
-        vec![
-            TirOp::new(OpCode::Add, vec![total, i], vec![sum]),
-            TirOp::new(OpCode::Add, vec![i, one], vec![next_i]),
-        ],
+        body_ops,
         Terminator::Branch {
             target: header,
             args: vec![next_i, sum],
@@ -905,4 +936,53 @@ fn a_function_without_eligible_ops_carries_no_proof_marks() {
             .flat_map(|block| &block.ops)
             .all(|op| !op.has_inline_int_proof())
     );
+}
+
+/// An add of two exact ints cannot raise, so no check follows it. The ops
+/// that replace it box a sum and call the runtime; the op tables declare both
+/// as raising. Unmarked, each is a new exception source in front of a check
+/// that only forwards an existing one, which the region verifier rejects (the
+/// LLVM build failure of a `total += i * j` loop).
+#[test]
+fn replacing_an_op_that_cannot_raise_adds_no_exception_source() {
+    let (mut func, _, _) = counted_loop(true);
+    crate::tir::exception_regions::verify_exception_regions(&func)
+        .expect("the fixture is valid before the stage");
+    assert_eq!(run(&mut func).values_changed, 1, "`total + i` expands");
+    assert_valid(&func);
+    let replaced: Vec<TirOp> = [OpCode::BoxVal, OpCode::CallRuntime]
+        .into_iter()
+        .flat_map(|opcode| ops(&func, opcode))
+        .map(|(_, op)| op)
+        .collect();
+    assert_eq!(replaced.len(), 2);
+    for op in &replaced {
+        assert!(
+            !crate::tir::passes::effects::op_may_throw_with_types(op, &func.value_types),
+            "{:?} replaces an add that cannot raise",
+            op.opcode
+        );
+    }
+
+    // The marks are what satisfies the verifier.
+    for block in func.blocks.values_mut() {
+        for op in &mut block.ops {
+            op.attrs.remove(crate::tir::ops::NOTHROW_PROOF_ATTR);
+        }
+    }
+    assert!(crate::tir::exception_regions::verify_exception_regions(&func).is_err());
+}
+
+#[test]
+fn replacing_an_op_that_may_raise_keeps_its_exception_source() {
+    let (mut func, _) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
+    run(&mut func);
+    for opcode in [OpCode::BoxVal, OpCode::CallRuntime] {
+        let (_, op) = &ops(&func, opcode)[0];
+        assert!(!op.has_nothrow_proof());
+        assert!(crate::tir::passes::effects::op_may_throw_with_types(
+            op,
+            &func.value_types
+        ));
+    }
 }

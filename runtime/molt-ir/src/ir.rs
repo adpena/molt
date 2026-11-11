@@ -1356,6 +1356,12 @@ impl OpIR {
         self.async_work_poll || self.kind.is_async_work_poll()
     }
 
+    /// Whether lowering this operation reads the thread's pending-work word:
+    /// a poll, or the `async_work_pending` test.
+    pub fn reads_pending_work_word(&self) -> bool {
+        self.is_async_work_poll() || self.kind == crate::OpKind::AsyncWorkPending
+    }
+
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
         // Borrow the JSON input; the same typed field authority decodes binary
         // transport without a lossy JSON intermediate or a mirrored wire struct.

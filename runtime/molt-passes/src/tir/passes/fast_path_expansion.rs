@@ -426,6 +426,15 @@ fn expand_int_arith(
     let runtime = op
         .numeric_runtime()
         .expect("eligible ops have a runtime entry");
+    // An op on two exact ints cannot raise, and the check that would have
+    // observed it is gone. The ops that replace it box a sum or call the
+    // runtime, which the op tables declare as raising; unmarked, each would be
+    // a new exception source in front of a check that expects none.
+    let cannot_raise = !super::check_exception_elim::classify::op_may_raise(
+        &func.value_types,
+        &HashMap::new(),
+        &op,
+    );
     let boxed: Vec<ValueId> = (0..2)
         .filter(|&i| kinds[i] == IntOperand::Boxed)
         .map(|i| operands[i])
@@ -473,7 +482,11 @@ fn expand_int_arith(
     let raw = fresh_typed(func, raw_ty);
     let fast_result = fresh_typed(func, TirType::DynBox);
     fast_ops.push(new_op(fast, payloads.to_vec(), vec![raw], span));
-    fast_ops.push(new_op(OpCode::BoxVal, vec![raw], vec![fast_result], span));
+    let mut box_op = new_op(OpCode::BoxVal, vec![raw], vec![fast_result], span);
+    if cannot_raise {
+        box_op.mark_nothrow_proof();
+    }
+    fast_ops.push(box_op);
     func.blocks.insert(
         fast_block,
         new_block(fast_block, fast_ops, branch(join, fast_result)),
@@ -504,6 +517,9 @@ fn expand_int_arith(
     call.runtime = Some(runtime);
     call.operands = words.to_vec();
     call.results = vec![slow_result];
+    if cannot_raise {
+        call.mark_nothrow_proof();
+    }
     slow_ops.push(call);
     func.blocks
         .insert(slow, new_block(slow, slow_ops, branch(join, slow_result)));

@@ -1927,12 +1927,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         (record, word)
     }
 
-    pub(super) fn emit_async_work_poll(
-        &mut self,
-        payload: bool,
-        cold_location: Option<i64>,
-    ) -> BasicValueEnum<'ctx> {
-        let (record, word_ptr) = self.async_poll_context();
+    /// Read the thread's pending-work word and test it: an i1 that is true
+    /// when work waits for a poll. The load is volatile and atomic, so no
+    /// LLVM pass merges two reads or hoists one out of a loop.
+    pub(super) fn emit_async_work_pending(&mut self) -> inkwell::values::IntValue<'ctx> {
+        let (_, word_ptr) = self.async_poll_context();
         let context = self.backend.context;
         let builder = &self.backend.builder;
         let word = builder
@@ -1943,14 +1942,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         load.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
             .unwrap();
         load.set_volatile(true).unwrap();
-        let has_work = builder
+        builder
             .build_int_compare(
                 inkwell::IntPredicate::NE,
                 word.into_int_value(),
                 context.i32_type().const_zero(),
                 "has_async_work",
             )
-            .unwrap();
+            .unwrap()
+    }
+
+    pub(super) fn emit_async_work_poll(
+        &mut self,
+        payload: bool,
+        cold_location: Option<i64>,
+    ) -> BasicValueEnum<'ctx> {
+        let has_work = self.emit_async_work_pending();
+        let (record, _) = self.async_poll_context();
+        let context = self.backend.context;
+        let builder = &self.backend.builder;
         let cold = context.append_basic_block(self.llvm_fn, "async_poll_cold");
         let fast = context.append_basic_block(self.llvm_fn, "async_poll_fast");
         let done = context.append_basic_block(self.llvm_fn, "async_poll_done");

@@ -191,6 +191,15 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
         if !loop_info.has_material_exit || side_exits_observe_carried_state(func, &loop_info) {
             continue;
         }
+        // The unroller threads one straight-line body. A conditional exit in
+        // the body (`if x: break`) would need its edge cloned per iteration.
+        if loop_info
+            .body_path
+            .iter()
+            .any(|bid| matches!(&func.blocks[bid].terminator, Terminator::CondBranch { .. }))
+        {
+            continue;
+        }
 
         // Cost model: trip count within the full-unroll cap.
         if loop_info.trip_count <= 0 || loop_info.trip_count > tti.unroll_max_trip() {

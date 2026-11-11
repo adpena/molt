@@ -572,6 +572,7 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::Raise
         | OpCode::CheckException
         | OpCode::ExceptionPending
+        | OpCode::AsyncWorkPending
         | OpCode::FunctionDefaultsVersion
         | OpCode::TryStart
         | OpCode::TryEnd

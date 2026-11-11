@@ -511,7 +511,7 @@ impl SimpleBackend {
             .ops
             .iter()
             .any(|op| matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc));
-        let has_async_work_polls = func_ir.ops.iter().any(OpIR::is_async_work_poll);
+        let has_async_work_polls = func_ir.ops.iter().any(OpIR::reads_pending_work_word);
         let needs_thread_record =
             inline_exception_checks || makes_direct_python_calls || has_async_work_polls;
         let thread_record_slot = needs_thread_record.then(|| {
@@ -1564,6 +1564,7 @@ impl SimpleBackend {
                             representation_plan,
                             local_exc_pending_fast,
                             exc_flag_ptr_slot,
+                            work_ptr_slot,
                             &nbc,
                         );
                     }

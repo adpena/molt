@@ -183,6 +183,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ImportFrom
         | OpCode::Raise
         | OpCode::CheckException
+        | OpCode::AsyncWorkPending
         | OpCode::AllocTask
         | OpCode::Yield
         | OpCode::YieldFrom
