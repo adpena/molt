@@ -9,7 +9,7 @@ pub(super) struct NativeApplicationBatchPlan {
     pub(super) profile: Option<molt_backend::PgoProfileIR>,
     pub(super) all_function_names: BTreeSet<String>,
     pub(super) external_function_declarations: ExternalFunctionDeclarations,
-    pub(super) app_callable_manifest: BTreeSet<String>,
+    pub(super) app_callable_manifest: molt_backend::passes::AppCallableManifest,
     pub(super) module_context: molt_backend::NativeBackendModuleContext,
     pub(super) batches: Vec<Vec<molt_backend::FunctionIR>>,
 }
@@ -20,7 +20,7 @@ impl NativeApplicationBatchPlan {
         batch_size: usize,
         batch_ops_budget: usize,
         module_context: Option<molt_backend::NativeBackendModuleContext>,
-        app_callable_manifest: Option<BTreeSet<String>>,
+        app_callable_manifest: Option<molt_backend::passes::AppCallableManifest>,
     ) -> Self {
         let profile = ir.profile;
         let mut all_functions = ir.functions;
@@ -74,11 +74,15 @@ mod tests {
         }))
         .expect("valid full-program IR");
         let manifest = molt_backend::compute_app_callable_manifest_checked(&full.functions);
-        assert!(manifest.contains("shared_buffer_get"));
+        assert!(manifest.compiled_bodies.contains("shared_buffer_get"));
         let context = SimpleBackend::prepare_module_context(&mut full.functions);
         full.functions.retain(|function| function.name == "app");
         let plan = NativeApplicationBatchPlan::from_ir(full, 1, 100, Some(context), Some(manifest));
-        assert!(plan.app_callable_manifest.contains("shared_buffer_get"));
+        assert!(
+            plan.app_callable_manifest
+                .compiled_bodies
+                .contains("shared_buffer_get")
+        );
         assert_eq!(plan.batches.len(), 1);
         assert_eq!(plan.batches[0][0].name, "app");
     }

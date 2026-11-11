@@ -91,7 +91,7 @@ pub struct SimpleBackend {
     /// object. When `None`, `compile` derives it from this object's own
     /// `ir.functions` (the single-object, non-split case where `ir` already
     /// holds the full set).
-    pub app_callable_manifest: Option<std::collections::BTreeSet<String>>,
+    pub app_callable_manifest: Option<crate::passes::AppCallableManifest>,
     /// Function names that exist in other batches  use Linkage::Import.
     pub external_function_names: std::collections::BTreeSet<String>,
     /// Per-build module registry (import bedrock, design doc 69).  When set,
