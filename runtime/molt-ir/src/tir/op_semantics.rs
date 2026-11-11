@@ -335,11 +335,58 @@ pub fn op_instance_facts_for_op(
     if !op.has_valid_shape() {
         return Some(impure(None));
     }
+    if op.opcode == OpCode::CallRuntime {
+        return Some(op.runtime.map_or(impure(None), call_runtime_facts));
+    }
+    if op.opcode == OpCode::CodeIs {
+        // Reads the function's code pointer: no raise, no write, but the
+        // field is mutable (`__code__`), so two tests are never one.
+        return Some(facts(
+            Some(TirType::Bool),
+            OpcodeEffects {
+                consistent: false,
+                effect_free: true,
+                nothrow: true,
+                may_access_arbitrary_heap: true,
+                may_call_python: false,
+            },
+        ));
+    }
     let operand_types = OpOperandTypes {
         operands: &op.operands,
         value_types,
     };
     op_instance_facts_from_types(op.opcode, &operand_types)
+}
+
+/// A `CallRuntime`'s facts come from its entry's manifest row: the result
+/// carrier from the return contract and the effects from the `effects` key. An
+/// entry without that key keeps the impure floor.
+fn call_runtime_facts(runtime: crate::runtime_fn_generated::RuntimeFn) -> OpInstanceFacts {
+    use crate::runtime_fn_generated::{RuntimeEffects, RuntimeReturnContract};
+    let result_type = match runtime.result() {
+        RuntimeReturnContract::Void => None,
+        RuntimeReturnContract::RawBits
+        | RuntimeReturnContract::ExecutionToken
+        | RuntimeReturnContract::ScratchAllocation => Some(TirType::I64),
+        RuntimeReturnContract::OwnedObject
+        | RuntimeReturnContract::BorrowedObject
+        | RuntimeReturnContract::UnpublishedObject
+        | RuntimeReturnContract::PollResult => Some(TirType::DynBox),
+    };
+    let nothrow = |effect_free| OpcodeEffects {
+        consistent: false,
+        effect_free,
+        nothrow: true,
+        may_access_arbitrary_heap: true,
+        may_call_python: false,
+    };
+    let effects = match runtime.effects() {
+        RuntimeEffects::Impure => OPCODE_EFFECTS_IMPURE,
+        RuntimeEffects::NothrowRead => nothrow(true),
+        RuntimeEffects::NothrowWrite => nothrow(false),
+    };
+    facts(result_type, effects)
 }
 
 pub fn op_instance_effects_for_op(
@@ -910,5 +957,28 @@ mod tests {
                 "{operand:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_runtime_call_takes_its_type_and_effects_from_the_manifest_row() {
+        use crate::runtime_fn_generated::RuntimeFn;
+        let call = |runtime| {
+            let mut op = TirOp::new(OpCode::CallRuntime, vec![ValueId(0)], vec![ValueId(1)]);
+            op.runtime = Some(runtime);
+            op_instance_facts_for_op(&op, &HashMap::new()).expect("a runtime call has facts")
+        };
+        // An admission reader: a raw word, cannot raise, writes nothing, yet
+        // its answer may change between calls (function fields are mutable).
+        let eligible = call(RuntimeFn::FunctionDirectCallEligible);
+        assert_eq!(eligible.result_type, Some(TirType::I64));
+        assert!(eligible.effects.nothrow && eligible.effects.effect_free);
+        assert!(!eligible.effects.consistent && !eligible.effects.may_call_python);
+        // The recursion charge writes thread state but cannot raise.
+        let enter = call(RuntimeFn::RecursionEnterFast);
+        assert!(enter.effects.nothrow && !enter.effects.effect_free);
+        // A boxed call runs Python semantics: the impure floor, a boxed word.
+        let add = call(RuntimeFn::Add);
+        assert_eq!(add.effects, OPCODE_EFFECTS_IMPURE);
+        assert_eq!(add.result_type, Some(TirType::DynBox));
     }
 }

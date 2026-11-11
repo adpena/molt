@@ -413,7 +413,9 @@ fn late_lowered_boxed_add_selects_the_inline_int_lane() {
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     // Production order (finalize_function_drops): refine, then the stage.
     crate::tir::type_refine::refine_types(&mut func);
-    assert!(crate::tir::pass_manager::run_late_lowering(&mut func, &tti));
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
     backend.function_repr_facts.insert(
         func.name.clone(),
         crate::representation_plan::ProducerCarrierPlan::build(&func),
@@ -474,7 +476,9 @@ fn late_lowered_boxed_comparison_selects_a_signed_compare() {
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     // Production order (finalize_function_drops): refine, then the stage.
     crate::tir::type_refine::refine_types(&mut func);
-    assert!(crate::tir::pass_manager::run_late_lowering(&mut func, &tti));
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
     backend.function_repr_facts.insert(
         func.name.clone(),
         crate::representation_plan::ProducerCarrierPlan::build(&func),
@@ -525,7 +529,9 @@ fn late_lowered_truthiness_tests_bool_and_int_words_inline() {
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     // Production order (finalize_function_drops): refine, then the stage.
     crate::tir::type_refine::refine_types(&mut func);
-    assert!(crate::tir::pass_manager::run_late_lowering(&mut func, &tti));
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
     backend.function_repr_facts.insert(
         func.name.clone(),
         crate::representation_plan::ProducerCarrierPlan::build(&func),

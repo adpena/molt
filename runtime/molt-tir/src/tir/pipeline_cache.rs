@@ -198,6 +198,9 @@ pub struct TirOwnedModulePipelineOptions<'a> {
     pub non_inlinable: &'a HashSet<String>,
     pub missing_tir_context: &'a str,
     pub mode: TirOwnedModulePipelineMode,
+    /// The program's linkage rows, for backends that consume final TIR; the
+    /// late lowering stage admits guarded direct calls against them.
+    pub linkage: Option<&'a molt_ir::linkage_abi::FunctionSignatures>,
 }
 
 struct PreparedTirFunction {
@@ -863,6 +866,7 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
         &mut module,
         options.target_info,
         options.non_inlinable,
+        None,
     );
     if let Some(start) = module_pipeline_start {
         emit_simple_ir_module_stage(
@@ -942,6 +946,7 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
                 &mut module,
                 options.target_info,
                 options.non_inlinable,
+                options.linkage,
             );
             tir_functions = Vec::with_capacity(externs.len() + module.functions.len());
             tir_functions.extend(externs.into_iter().map(|func| (true, func)));
@@ -950,8 +955,11 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
         TirOwnedModulePipelineMode::TerminalDropsOnly => {
             for (is_extern, tir_func) in tir_functions.iter_mut() {
                 if !*is_extern {
-                    let _ =
-                        super::drop_phase::finalize_function_drops(tir_func, options.target_info);
+                    let _ = super::drop_phase::finalize_function_drops(
+                        tir_func,
+                        options.target_info,
+                        options.linkage,
+                    );
                 }
             }
         }
@@ -1436,6 +1444,7 @@ mod tests {
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "owned source test",
                 mode,
+                linkage: None,
             };
             let borrowed =
                 run_owned_module_pipeline_from_cached_tir(&functions, &mut cache(), options());
@@ -2275,6 +2284,7 @@ mod tests {
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "source-file test",
                 mode: TirOwnedModulePipelineMode::TerminalDropsOnly,
+                linkage: None,
             },
         );
 

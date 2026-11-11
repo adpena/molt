@@ -66,7 +66,7 @@ use molt_ir::repr::Repr;
 /// Expand every eligible op of `func`. Requires: the module phase is complete
 /// and drops are not inserted; `func` belongs to a target whose backend
 /// consumes final TIR.
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let mut stats = PassStats {
         name: "fast_path_expansion",
         ..Default::default()
@@ -80,7 +80,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             .ops
             .iter()
             .enumerate()
-            .find_map(|(index, op)| expansion_of(op, &repr).map(|e| (index, e)))
+            .find_map(|(index, op)| expansion_of(op, &repr, targets).map(|e| (index, e)))
         else {
             continue;
         };
@@ -92,6 +92,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 operands,
             } => expand_int_arith(func, block, split, fast, raw, operands),
             Expansion::Truthiness => expand_truthiness(func, block, split),
+            Expansion::GuardedCall => expand_guarded_call(func, block, split),
         };
         stats.ops_added += 6;
         stats.values_changed += 1;
@@ -112,6 +113,66 @@ enum Expansion {
         operands: [IntOperand; 2],
     },
     Truthiness,
+    /// A guarded call whose target's linkage row admits a direct call.
+    GuardedCall,
+}
+
+/// What the stage needs of a guarded call's target, from its linkage row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CalleeFacts {
+    /// Declared parameters, the closure included.
+    pub arity: usize,
+    pub has_closure: bool,
+}
+
+/// The linkage facts of every target a function's guarded calls name.
+pub type GuardedTargets = std::collections::BTreeMap<String, CalleeFacts>;
+
+/// The speculative target a guarded call names: the compiled function its
+/// frontend expected. The callee word may be any object at run time.
+fn guarded_target(op: &TirOp) -> Option<&str> {
+    if op.opcode != OpCode::Call || op.origin != Some(molt_ir::OpKind::CallGuarded) {
+        return None;
+    }
+    ["s_value", "_var"]
+        .iter()
+        .find_map(|key| match op.attrs.get(*key) {
+            Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.as_str()),
+            _ => None,
+        })
+}
+
+/// Project the signatures of the targets `func`'s guarded calls name.
+pub fn guarded_targets(
+    func: &TirFunction,
+    linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+) -> GuardedTargets {
+    let Some(linkage) = linkage else {
+        return GuardedTargets::new();
+    };
+    func.blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(guarded_target)
+        .map(|symbol| {
+            // The driver's table holds every function the unit defines or
+            // declares, so a missing target is a wiring defect, never a
+            // reason to keep the slow lane in silence.
+            let signature = linkage.get(symbol).unwrap_or_else(|| {
+                panic!(
+                    "guarded call in `{}` names `{symbol}`, which has no source signature",
+                    func.name
+                )
+            });
+            (
+                symbol.to_owned(),
+                CalleeFacts {
+                    arity: signature.arity,
+                    has_closure: signature.has_closure,
+                },
+            )
+        })
+        .collect()
 }
 
 /// How an integer operand reaches the fast arm: a boxed word is tag-tested
@@ -140,7 +201,11 @@ fn int_operand(repr: &HashMap<ValueId, Repr>, value: ValueId) -> Option<IntOpera
     }
 }
 
-fn expansion_of(op: &TirOp, repr: &HashMap<ValueId, Repr>) -> Option<Expansion> {
+fn expansion_of(
+    op: &TirOp,
+    repr: &HashMap<ValueId, Repr>,
+    targets: &GuardedTargets,
+) -> Option<Expansion> {
     if !op.has_valid_shape() || op.results.len() != 1 {
         return None;
     }
@@ -167,6 +232,15 @@ fn expansion_of(op: &TirOp, repr: &HashMap<ValueId, Repr>) -> Option<Expansion> 
         FastPathExpansionRule::Truthiness => (op.operands.len() == 1
             && is_boxed_word(repr, op.operands[0]))
         .then_some(Expansion::Truthiness),
+        // A closure-taking target and an arity mismatch keep the runtime lane:
+        // binding, not a static ABI, must answer them.
+        FastPathExpansionRule::GuardedCall => {
+            let facts = targets.get(guarded_target(op)?)?;
+            (!facts.has_closure
+                && facts.arity + 1 == op.operands.len()
+                && is_boxed_word(repr, op.operands[0]))
+            .then_some(Expansion::GuardedCall)
+        }
         FastPathExpansionRule::None => None,
     }
 }
@@ -445,6 +519,162 @@ fn expand_truthiness(func: &mut TirFunction, block: BlockId, split: Split) -> Bl
     func.blocks.insert(
         slow,
         new_block(slow, vec![slow_op], branch(join, slow_truth)),
+    );
+    finish(func, block, join, result, rest, terminator);
+    join
+}
+
+fn const_int(value: ValueId, constant: i64, span: Option<(u32, u32)>) -> TirOp {
+    let mut op = new_op(OpCode::ConstInt, vec![], vec![value], span);
+    op.attrs.insert("value".into(), AttrValue::Int(constant));
+    op
+}
+
+fn runtime_call(
+    runtime: molt_ir::runtime_fn_generated::RuntimeFn,
+    operands: Vec<ValueId>,
+    results: Vec<ValueId>,
+    span: Option<(u32, u32)>,
+) -> TirOp {
+    let mut op = new_op(OpCode::CallRuntime, operands, results, span);
+    op.runtime = Some(runtime);
+    op
+}
+
+/// ```text
+///   %r = Call[guarded @target] %f, args...
+/// becomes
+///   %e = CallRuntime[direct_call_eligible] %f, nargs, shape ; cond_br %e != 0, ^code, ^slow
+/// ^code:   %c = CodeIs[@target] %f ; cond_br %c, ^enter, ^slow
+/// ^enter:  %d = CallRuntime[recursion_enter_fast] ; cond_br %d != 0, ^direct, ^refuse
+/// ^direct: %r1 = DirectCall[@target] %f, args... ; CallRuntime[recursion_exit_fast]
+///          br ^join(%r1)
+/// ^refuse: CallRuntime[raise_recursion_error] ; %n = ConstNone ; br ^join(%n)
+/// ^slow:   %r2 = Call[guarded @target] %f, args...   ; the op, unchanged
+/// ^join(%r): the rest of the block, then its terminator
+/// ```
+///
+/// The admission ops cannot raise. The direct call and the RecursionError
+/// raise keep the call's exception source, so the check after the join reads
+/// one source. The direct call takes the call's argument custody but borrows
+/// the callable, which therefore outlives the call; on the refused path no op
+/// takes the inputs, so drop insertion releases them there.
+fn expand_guarded_call(func: &mut TirFunction, block: BlockId, split: Split) -> BlockId {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    let Split {
+        op,
+        rest,
+        terminator,
+    } = split;
+    let callee = op.operands[0];
+    let result = op.results[0];
+    let span = op.source_span;
+    let supplied = (op.operands.len() - 1) as i64;
+    // Bit 0: the entry takes a closure (never, here). Bit 1: the entry's
+    // custody must match this instruction's adoption of its arguments.
+    let shape = if op.argument_custody().is_some() {
+        0b10
+    } else {
+        0
+    };
+
+    let [code, enter, direct, refuse, slow, join] = [(); 6].map(|()| func.fresh_block());
+
+    let nargs = fresh_typed(func, TirType::I64);
+    let shape_word = fresh_typed(func, TirType::I64);
+    let eligible = fresh_typed(func, TirType::I64);
+    let zero = fresh_typed(func, TirType::I64);
+    let admitted = fresh_typed(func, TirType::Bool);
+    end_block(
+        func,
+        block,
+        vec![
+            const_int(nargs, supplied, span),
+            const_int(shape_word, shape, span),
+            runtime_call(
+                RuntimeFn::FunctionDirectCallEligible,
+                vec![callee, nargs, shape_word],
+                vec![eligible],
+                span,
+            ),
+            const_int(zero, 0, span),
+            new_op(OpCode::Ne, vec![eligible, zero], vec![admitted], span),
+        ],
+        cond_branch(admitted, code, slow),
+    );
+
+    let same_code = fresh_typed(func, TirType::Bool);
+    let mut code_is = new_op(OpCode::CodeIs, vec![callee], vec![same_code], span);
+    for key in ["s_value", "_var"] {
+        if let Some(target) = op.attrs.get(key) {
+            code_is.attrs.insert(key.into(), target.clone());
+        }
+    }
+    func.blocks.insert(
+        code,
+        new_block(code, vec![code_is], cond_branch(same_code, enter, slow)),
+    );
+
+    let depth_ok = fresh_typed(func, TirType::I64);
+    let zero_depth = fresh_typed(func, TirType::I64);
+    let entered = fresh_typed(func, TirType::Bool);
+    func.blocks.insert(
+        enter,
+        new_block(
+            enter,
+            vec![
+                runtime_call(RuntimeFn::RecursionEnterFast, vec![], vec![depth_ok], span),
+                const_int(zero_depth, 0, span),
+                new_op(OpCode::Ne, vec![depth_ok, zero_depth], vec![entered], span),
+            ],
+            cond_branch(entered, direct, refuse),
+        ),
+    );
+
+    let direct_result = fresh_typed(func, TirType::DynBox);
+    let mut call = op.clone();
+    call.opcode = OpCode::DirectCall;
+    call.origin = None;
+    call.results = vec![direct_result];
+    if let Some(mut custody) = op.argument_custody() {
+        custody[0] = crate::ir::ParameterCustody::Borrowed;
+        call.set_argument_custody(&custody);
+    }
+    func.blocks.insert(
+        direct,
+        new_block(
+            direct,
+            vec![
+                call,
+                runtime_call(RuntimeFn::RecursionExitFast, vec![], vec![], span),
+            ],
+            branch(join, direct_result),
+        ),
+    );
+
+    let raised = fresh_typed(func, TirType::I64);
+    let none = fresh_typed(func, TirType::None);
+    let mut raise = runtime_call(RuntimeFn::RaiseRecursionError, vec![], vec![raised], span);
+    if let Some(source) = op.attrs.get("exception_source") {
+        raise
+            .attrs
+            .insert("exception_source".into(), source.clone());
+    }
+    func.blocks.insert(
+        refuse,
+        new_block(
+            refuse,
+            vec![raise, new_op(OpCode::ConstNone, vec![], vec![none], span)],
+            branch(join, none),
+        ),
+    );
+
+    let slow_result = fresh_typed(func, TirType::DynBox);
+    let mut slow_call = op;
+    slow_call.results = vec![slow_result];
+    func.blocks.insert(
+        slow,
+        new_block(slow, vec![slow_call], branch(join, slow_result)),
     );
     finish(func, block, join, result, rest, terminator);
     join

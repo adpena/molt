@@ -443,6 +443,7 @@ fn wasm_terminal_reachability_preserves_unused_import_effects_and_balances_owner
     crate::tir::drop_phase::finalize_function_drops(
         &mut function,
         &crate::tir::TargetInfo::wasm_release_fast(),
+        None,
     );
     let ops: Vec<_> = function
         .blocks
@@ -542,6 +543,7 @@ fn wasm_final_owner_consumes_module_and_terminal_cached_pipeline_modes() {
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "WASM final owner test",
                 mode,
+                linkage: None,
             },
         );
         let (body, facts) = WasmFinalFunctions::from_final_tir(ir, typed)

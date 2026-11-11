@@ -1191,6 +1191,7 @@ opcode_has_local_only_operands_opcodes = [
 alias_rc_barrier_opcodes = [
     "CallargsPushMethodReceiver",
     "Call",
+    "DirectCall",
     "CallBuiltin",
     "CallLoadedMethod",
     "CallMethod",
@@ -1552,6 +1553,8 @@ final_tir_opcodes = [
     "IsBoolWord",
     "UnboxBoolWord",
     "BoxInlineInt",
+    "CodeIs",
+    "DirectCall",
     "CallRuntime",
 ]
 
@@ -1661,6 +1664,7 @@ fast_path_expansion_rules = [
     { opcode = "Gt", rule = "int_compare" },
     { opcode = "Ge", rule = "int_compare" },
     { opcode = "Bool", rule = "truthiness" },
+    { opcode = "Call", rule = "guarded_call" },
 ]
 
 value_range_transfer_rules = [
@@ -1931,6 +1935,7 @@ alias_slot_direct_observer_opcodes = [
     "BuildSlice",
     "BuildTuple",
     "Call",
+    "DirectCall",
     "CallBuiltin",
     "CallLoadedMethod",
     "CallMethod",
@@ -3694,6 +3699,35 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# The guarded direct call (HF-821 D4). CodeIs tests that a function word's code
+# pointer is the compiled target named by the op's call-target attribute; it
+# reads a mutable field, so it cannot raise but is never merged or hoisted
+# (op_semantics). DirectCall publishes the invocation, calls that target with
+# the operands after the callable, and restores; the callable is a borrowed
+# operand, so it outlives the call. Both are produced only by the final
+# lowering stage.
+[[opcode]]
+name = "CodeIs"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "DirectCall"
+may_call_python = true
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

@@ -130,6 +130,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ));
             return;
         }
+        if function.form() == molt_ir::runtime_fn_generated::RuntimeCallForm::Helper {
+            // A machine helper takes and returns machine words: each operand
+            // goes as the word it is, and a raw-bits result stays raw.
+            let callee = self.ensure_runtime_import(function);
+            let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
+                .operands
+                .iter()
+                .map(|&operand| self.ensure_i64(self.resolve(operand)).into())
+                .collect();
+            let call = self
+                .backend
+                .builder
+                .build_execution_call(callee, &args, "helper_call")
+                .unwrap();
+            if let Some(&result) = op.results.first() {
+                let word = call.try_as_basic_value().unwrap_basic();
+                let result_ty = match function.result() {
+                    molt_ir::runtime_fn_generated::RuntimeReturnContract::RawBits => TirType::I64,
+                    _ => TirType::DynBox,
+                };
+                self.values.insert(result, word);
+                self.value_types.insert(result, result_ty);
+            }
+            return;
+        }
         let callee = self.ensure_runtime_i64_fn(symbol, function.params());
         self.emit_positional_runtime_call(
             op,

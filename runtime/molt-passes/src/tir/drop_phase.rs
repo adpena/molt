@@ -518,7 +518,11 @@ fn canonicalize_direct_raise_edges(func: &mut TirFunction) -> bool {
 /// round-7 exists to prevent) or the finalizer ran twice. The drop pass is
 /// idempotent (bails on the marker), so this is a debug-only invariant check, not
 /// a correctness rail.
-pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool {
+pub fn finalize_function_drops(
+    func: &mut TirFunction,
+    tti: &TargetInfo,
+    linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+) -> bool {
     debug_assert!(
         !matches!(
             func.attrs.get(DROP_INSERTED_ATTR),
@@ -573,7 +577,7 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
     // call) would re-derive the original result's type as DynBox and widen
     // every value downstream of it, such as a loop-carried int (HF-821).
     if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
-        lowering_changed |= super::pass_manager::run_late_lowering(func, tti);
+        lowering_changed |= super::pass_manager::run_late_lowering(func, tti, linkage);
     }
     lowering_changed |= prepare_final_operation_reachability(func, tti);
     emit_drop_function_audit(
@@ -626,7 +630,11 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
 /// caller must back-convert to SimpleIR; the LLVM lane lowers the module directly
 /// and ignores the return). The order of the returned names follows
 /// `module.functions`.
-pub fn finalize_module_drops(module: &mut TirModule, tti: &TargetInfo) -> Vec<String> {
+pub fn finalize_module_drops(
+    module: &mut TirModule,
+    tti: &TargetInfo,
+    linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+) -> Vec<String> {
     let mut changed = Vec::new();
     let total = module.functions.len();
     let audit_start = Instant::now();
@@ -639,7 +647,7 @@ pub fn finalize_module_drops(module: &mut TirModule, tti: &TargetInfo) -> Vec<St
             None,
             Some(audit_start.elapsed().as_millis()),
         );
-        let did_change = finalize_function_drops(func, tti);
+        let did_change = finalize_function_drops(func, tti, linkage);
         emit_drop_function_audit(
             "after-function",
             func,
@@ -702,7 +710,7 @@ pub fn finalize_simple_ir_drops_with_tir_custody(
         // The function arriving here already went through the per-function pipeline
         // (its SimpleIR is the optimized output), so it is NOT yet drop-inserted —
         // its debug_assert verifies that.
-        let changed = finalize_function_drops(&mut tir_func, tti);
+        let changed = finalize_function_drops(&mut tir_func, tti, None);
         // Required consumer seam: final typed facts are projected while this
         // body's custody still exists, before its SimpleIR bridge consumes it.
         consume_final_tir(&tir_func);
@@ -1511,7 +1519,7 @@ mod tests {
             name: "m".into(),
             functions: vec![tir],
         };
-        let changed = finalize_module_drops(&mut module, &target);
+        let changed = finalize_module_drops(&mut module, &target, None);
         assert_eq!(changed, vec!["trivial"]);
         assert!(matches!(
             module.functions[0].attrs.get(DROP_INSERTED_ATTR),
@@ -1560,7 +1568,7 @@ mod tests {
             functions: vec![tir],
         };
 
-        let changed = finalize_module_drops(&mut module, &TargetInfo::luau_release_fast());
+        let changed = finalize_module_drops(&mut module, &TargetInfo::luau_release_fast(), None);
         assert!(changed.is_empty());
         assert!(!module.functions[0].attrs.contains_key(DROP_INSERTED_ATTR));
         assert!(

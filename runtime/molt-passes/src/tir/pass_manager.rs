@@ -566,19 +566,16 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
 /// Only when it expanded an op do GVN (merging a value's repeated tag tests)
 /// and DCE run; debug builds verify between them. A function without an
 /// eligible op is left untouched. Returns whether the function changed.
-pub fn run_late_lowering(func: &mut TirFunction, target_info: &TargetInfo) -> bool {
+pub fn run_late_lowering(
+    func: &mut TirFunction,
+    target_info: &TargetInfo,
+    linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+) -> bool {
     use Mutates::*;
-    let expansion = PassManager::new(
-        vec![pass("fast_path_expansion", Cfg, |f, _am, _tti| {
-            passes::fast_path_expansion::run(f)
-        })],
-        target_info.clone(),
-    );
-    let expanded: usize = expansion
-        .run(func)
-        .iter()
-        .map(PassStats::total_changes)
-        .sum();
+    // The stage reads the linkage rows of this function's guarded targets, so
+    // it runs directly: a registered pass is a plain function pointer.
+    let targets = passes::fast_path_expansion::guarded_targets(func, linkage);
+    let expanded = passes::fast_path_expansion::run(func, &targets).total_changes();
     if expanded == 0 {
         return false;
     }

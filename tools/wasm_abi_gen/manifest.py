@@ -1079,6 +1079,32 @@ def runtime_raw_abi_specs(data: dict) -> list[dict]:
 RUNTIME_FN_FORMS = ("boxed", "raw_call", "helper")
 
 
+#: What a runtime entry may do, for the optimizer (HF-821). Absent: the impure
+#: floor (may raise, may call Python, may write anything). A reader's answer can
+#: change between calls (a function's fields are mutable), so neither value
+#: lets two calls be merged.
+RUNTIME_IMPORT_EFFECTS = {
+    "nothrow_read": "NothrowRead",
+    "nothrow_write": "NothrowWrite",
+}
+
+
+def runtime_import_effects(data: dict) -> dict[str, str]:
+    """The declared `effects` of each [[import]] row, by runtime symbol."""
+    effects: dict[str, str] = {}
+    for entry in data["import"]:
+        declared = entry.get("effects")
+        if declared is None:
+            continue
+        if not isinstance(declared, str) or declared not in RUNTIME_IMPORT_EFFECTS:
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} has invalid effects {declared!r}; "
+                f"expected one of {sorted(RUNTIME_IMPORT_EFFECTS)}"
+            )
+        effects[_runtime_export_name_or_raise(entry)] = declared
+    return effects
+
+
 def runtime_fn_specs(data: dict) -> list[dict]:
     """One typed identity per runtime entry compiled code may call by name.
 
@@ -1137,6 +1163,18 @@ def runtime_fn_specs(data: dict) -> list[dict]:
             )
     if len(rows) > 0xFFFF:
         raise WasmAbiManifestError("RuntimeFn identities exceed the u16 index")
+    effects = runtime_import_effects(data)
+    for symbol, declared in effects.items():
+        if symbol not in rows:
+            raise WasmAbiManifestError(
+                f"runtime entry {symbol!r} declares effects but has no RuntimeFn identity"
+            )
+        if rows[symbol]["form"] == "boxed":
+            raise WasmAbiManifestError(
+                f"boxed call {symbol!r} runs Python semantics; it keeps the impure floor"
+            )
+    for symbol, row in rows.items():
+        row["effects"] = effects.get(symbol)
     return [rows[symbol] for symbol in sorted(rows)]
 
 

@@ -20,3 +20,10 @@ pub struct NativeFunctionLinkageAbi {
     /// `None` is a true native-void ABI. `Some` is the exact return carrier.
     pub return_type: Option<crate::tir::types::TirType>,
 }
+
+/// The source signature of every function a program unit defines or declares,
+/// by linkage symbol. The late lowering stage reads a guarded call target's
+/// arity and closure from it; the backend driver computes it before the TIR
+/// pipeline runs.
+pub type FunctionSignatures =
+    std::collections::BTreeMap<String, crate::ir::ExternFunctionSignature>;

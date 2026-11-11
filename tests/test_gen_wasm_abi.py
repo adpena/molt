@@ -308,7 +308,8 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
     )
     assert (
         'RuntimeFnAbi { symbol: "molt_runtime_init", params: 0, '
-        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::RawCall }"
+        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::RawCall, "
+        "effects: RuntimeEffects::Impure }"
     ) in rendered
     # The opt-in is checked, not trusted: a boxed-object row cannot claim it.
     drifted = copy.deepcopy(data)
@@ -358,13 +359,18 @@ def test_runtime_fn_names_every_all_word_runtime_entry_once() -> None:
             "params": params,
             "result": result,
             "form": "helper",
+            # The recursion charge writes thread state and cannot raise; an
+            # entry without the manifest's `effects` key keeps the impure floor.
+            "effects": "nothrow_write"
+            if symbol == "molt_recursion_enter_fast"
+            else None,
         }
     # A wasm32 pointer result proves no native signature.
     assert "molt_handle_resolve" not in rows
     rendered = gen_wasm_abi.render_runtime_fn_rs(data)
     assert (
         'RuntimeFnAbi { symbol: "molt_is_truthy", params: 1, '
-        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::Helper }"
+        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::Helper, effects: RuntimeEffects::Impure }"
     ) in rendered
     # Two forms cannot claim one symbol.
     drifted = copy.deepcopy(data)

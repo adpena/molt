@@ -81,6 +81,7 @@ pub(super) fn run_tir_pipeline(
             non_inlinable: &non_inlinable,
             missing_tir_context: "WASM TIR cache runner",
             mode: crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
+            linkage: None,
         },
     );
     emit_wasm_stage_audit(

@@ -99,6 +99,7 @@ pub fn run_module_pipeline(
     module: &mut TirModule,
     tti: &TargetInfo,
     non_inlinable: &std::collections::HashSet<String>,
+    linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
 ) -> BTreeSet<String> {
     let audit_start = Instant::now();
     emit_module_stage_audit("start", module, None, audit_start.elapsed().as_millis());
@@ -237,7 +238,7 @@ pub fn run_module_pipeline(
         Some(changed_functions.len()),
         audit_start.elapsed().as_millis(),
     );
-    let drop_changed = super::drop_phase::finalize_module_drops(module, tti);
+    let drop_changed = super::drop_phase::finalize_module_drops(module, tti, linkage);
     emit_module_stage_audit(
         "after-drop-finalize",
         module,
@@ -473,7 +474,7 @@ mod tests {
 
         let mut m = module(vec![a, b]);
         let tti = TargetInfo::native_release_fast();
-        let changed = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
+        let changed = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new(), None);
         // Inlining changes a; terminal ownership markers change both a and b.
         // Each name appears once even when multiple phases change the body.
         assert_eq!(changed, BTreeSet::from(["a".into(), "b".into()]));

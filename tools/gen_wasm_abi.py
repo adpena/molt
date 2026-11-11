@@ -53,6 +53,7 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
     CONTAINER_RUNTIME_SELECTOR_FACTS,
     CONTAINER_RUNTIME_SELECTOR_OPS,
     NUMERIC_OP_LOOP_VARIANTS,
+    RUNTIME_IMPORT_EFFECTS,
     RUNTIME_RETURN_CONTRACTS,
     WASM_VAL_TYPES,
     WasmAbiManifestError,
@@ -1400,12 +1401,23 @@ def render_runtime_fn_rs(data: dict) -> str:
         "    /// A machine helper that only a backend's own lowering calls.\n",
         "    Helper,\n",
         "}\n\n",
+        "/// What a runtime entry may do, from the manifest's `effects` key.\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeEffects {\n",
+        "    /// May raise, call Python and write anything: the floor of every entry.\n",
+        "    Impure,\n",
+        "    /// Cannot raise or call Python and writes nothing; its answer may change between calls.\n",
+        "    NothrowRead,\n",
+        "    /// Cannot raise or call Python; writes runtime state.\n",
+        "    NothrowWrite,\n",
+        "}\n\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub struct RuntimeFnAbi {\n",
         "    pub symbol: &'static str,\n",
         "    pub params: u8,\n",
         "    pub result: RuntimeReturnContract,\n",
         "    pub form: RuntimeCallForm,\n",
+        "    pub effects: RuntimeEffects,\n",
         "}\n\n",
         "/// A boxed call: a `RuntimeFn` whose form is `Boxed`, with its result binding.\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
@@ -1447,6 +1459,7 @@ def render_runtime_fn_rs(data: dict) -> str:
             "        !matches!(self.abi().result, RuntimeReturnContract::Void)\n",
             "    }\n",
             "    pub const fn form(self) -> RuntimeCallForm { self.abi().form }\n",
+            "    pub const fn effects(self) -> RuntimeEffects { self.abi().effects }\n",
             "    pub const fn boxed_abi(self) -> Option<RuntimeBoxedAbi> {\n",
             "        match self.abi().form {\n",
             "            RuntimeCallForm::Boxed(result) => Some(RuntimeBoxedAbi { function: self, result }),\n",
@@ -1489,7 +1502,8 @@ def render_runtime_fn_rs(data: dict) -> str:
         lines.append(
             "    RuntimeFnAbi { "
             f'symbol: "{spec["runtime_name"]}", params: {spec["params"]}, '
-            f"result: RuntimeReturnContract::{result}, form: {form}"
+            f"result: RuntimeReturnContract::{result}, form: {form}, "
+            f"effects: RuntimeEffects::{RUNTIME_IMPORT_EFFECTS.get(spec['effects'], 'Impure')}"
             " },\n"
         )
     lines.extend(

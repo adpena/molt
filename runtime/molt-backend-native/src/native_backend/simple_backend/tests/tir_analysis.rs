@@ -839,6 +839,7 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                     non_inlinable: &non_inlinable,
                     missing_tir_context: "native final cache test",
                     mode,
+                    linkage: None,
                 },
             );
             let finalized = NativeFinalFunctions::from_final_tir(

@@ -1087,6 +1087,7 @@ type = 10
 
 [[import]]
 name = "function_closure_bits"
+effects = "nothrow_read"
 return_contract = "borrowed_object"
 type = 2
 
@@ -1323,6 +1324,7 @@ type = 2
 
 [[import]]
 name = "function_direct_call_eligible"
+effects = "nothrow_read"
 return_contract = "raw_bits"
 type = 4
 
@@ -2030,11 +2032,13 @@ type = 4
 
 [[import]]
 name = "recursion_enter_fast"
+effects = "nothrow_write"
 return_contract = "raw_bits"
 type = 0
 
 [[import]]
 name = "recursion_exit_fast"
+effects = "nothrow_write"
 type = 7
 
 [[import]]

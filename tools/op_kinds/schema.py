@@ -42,6 +42,8 @@ _VARIABLE_RESULT_ARITY_OPCODES = {
     # A late-TIR runtime call has one result exactly when its RuntimeFn returns
     # a word (RuntimeFn::returns_word); the verifier checks that count.
     "CallRuntime",
+    # A direct call binds what the guarded call it replaces bound.
+    "DirectCall",
     # Exception checks can be pure control-transfer polls or produce an explicit
     # flag in older/diagnostic lanes.
     "CheckException",
@@ -179,6 +181,7 @@ _FAST_PATH_EXPANSION_RULES = {
     "int_add": "IntAdd",
     "int_sub": "IntSub",
     "int_compare": "IntCompare",
+    "guarded_call": "GuardedCall",
     "truthiness": "Truthiness",
 }
 _VALUE_RANGE_TRANSFER_RULES = {
