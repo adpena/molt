@@ -226,6 +226,17 @@ loop-header obligation, preservation of the marker and impure floors, and
 rejection of invalid or duplicate table entries. They do not qualify the
 remaining instruction corpus or the final landing matrix.
 
+The fact also moves asynchronous-work poll placement. A call-return poll walks
+forward to the next authored observation and stops at any op that may raise.
+Line no longer stops it, so a call followed by `Line; CheckException` is
+serviced by that authored check, where before the pass inserted a second check
+to the depth-zero landing ahead of it. The WASM control-nesting guests exposed
+this: their cleanup pads ran `print` with the transferred exception still
+pending, which the exception-region verifier rejects as an ambiguous event
+source. Real frontend handlers consume the exception first, so the guests now
+open each pad with `ExceptionClear` and the Node harness stubs it; routing,
+nesting and poll counts still pass.
+
 The 09:24Z nothrow implementation is measured at `9c8a163c40`. Native
 bench_while now has on/base -1.635583%, raw/on +0.006651% and raw/base
 -1.627254%, within its unchanged 0.011276% raw/on envelope. All 22 native
