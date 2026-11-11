@@ -390,9 +390,20 @@ Before the related GPU repairs, the normal frontend (no raw-arm hook) passes eig
 on native, LLVM and WASM, 24 explicit backend observations with no failure,
 skip or not-run result and a closed outer guard. The extra existing failed-main
 fixture independently covers the namespace expectation exposed by reader tests.
-These receipts precede the GPU consumer repairs and are rerun on the final
-candidate (below). They are macOS arm64 / CPython 3.12.16 / release compiler and
-guest cells, not release acceptance or the whole target/profile matrix.
+These receipts precede the GPU consumer repairs. On the final candidate merged
+with main (e71cd88d6b), 13 differential programs pass on native, LLVM and WASM
+(39 observations, no failure, skip or not-run): the eight above plus
+`midend_heap_read_effects.py` (new: repeated heap reads across calls, aliases,
+callbacks, handlers and loops), `loop_break_continue.py`,
+`loop_while_true_break_drops.py`, `assignment_unboundlocal_global.py` and
+`dead_branch_scope_unboundlocal.py`. The consumer gate for the deletion commit
+passes 15,883 tests with nine cells deselected and classified separately: the
+three compiled GPU tests (host first-exec cost, direct runs above), the WASM
+split SIGTERM test (main fixes the test), the WASM imported-syntax-error test
+(it times out the same way on main) and four hook/proof-queue tests that pass
+alone but time out under parallel load. All are macOS arm64 / CPython 3.12.16 /
+release compiler and guest cells, not release acceptance or the whole
+target/profile matrix.
 
 VERIFIED single cold-product observations before the GPU repairs, with lowering/program reuse off,
 normal scheduler/daemon policy and ready release compiler/runtime producers:
