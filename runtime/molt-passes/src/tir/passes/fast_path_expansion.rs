@@ -84,6 +84,8 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         return stats;
     }
     record_inline_int_proofs(func, &repr);
+    // Exact types as they stand before any block is split.
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
     let mut pending: Vec<BlockId> = func.blocks.keys().copied().collect();
     pending.sort_unstable_by(|a, b| b.cmp(a));
     while let Some(block) = pending.pop() {
@@ -101,7 +103,25 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
                 fast,
                 raw,
                 operands,
-            } => expand_int_arith(func, block, split, fast, raw, operands),
+                raw_result,
+            } => {
+                let exact_operands = split
+                    .op
+                    .operands
+                    .iter()
+                    .map(|operand| exact.get(operand).cloned())
+                    .collect();
+                expand_int_arith(
+                    func,
+                    block,
+                    split,
+                    fast,
+                    raw,
+                    operands,
+                    raw_result,
+                    exact_operands,
+                )
+            }
             Expansion::Truthiness => expand_truthiness(func, block, split),
             Expansion::GuardedCall => expand_guarded_call(func, block, split),
         };
@@ -164,6 +184,8 @@ enum Expansion {
         fast: OpCode,
         raw: TirType,
         operands: [IntOperand; 2],
+        /// The op's result is a raw bool: the arms join without boxing it.
+        raw_result: bool,
     },
     Truthiness,
     /// A guarded call whose target's linkage row admits a direct call.
@@ -267,14 +289,21 @@ fn expansion_of(
             return None;
         };
         let operands = [int_operand(repr, lhs)?, int_operand(repr, rhs)?];
+        // A comparison of two exact ints is planned as a raw bool even when
+        // an operand is a boxed word (an int of unknown size). Its fast arm
+        // yields the raw bool as it is; without this case no stage and no
+        // backend lane owned the op, and it fell to the runtime with a
+        // truthiness call on its result.
+        let raw_result = raw == TirType::Bool && repr.get(&op.results[0]) == Some(&Repr::Bool);
         // Two raw operands are the backend's raw lane, not a boxed fast path.
         (operands.contains(&IntOperand::Boxed)
-            && is_boxed_word(repr, op.results[0])
+            && (raw_result || is_boxed_word(repr, op.results[0]))
             && op.numeric_runtime().is_some())
         .then_some(Expansion::IntArith {
             fast,
             raw,
             operands,
+            raw_result,
         })
     };
     match opcode_fast_path_expansion_rule_table(op.opcode) {
@@ -414,6 +443,8 @@ fn expand_int_arith(
     fast: OpCode,
     raw_ty: TirType,
     kinds: [IntOperand; 2],
+    raw_result: bool,
+    exact_operands: Option<Vec<TirType>>,
 ) -> BlockId {
     let Split {
         op,
@@ -435,6 +466,12 @@ fn expand_int_arith(
         &HashMap::new(),
         &op,
     );
+    // The op's own exact result type, from its operands' exact types: an add
+    // of two exact ints is an exact int. The runtime call that replaces it is
+    // typed "an object" by its contract, and the join would lose the fact.
+    let exact_result = exact_operands
+        .and_then(|types| crate::tir::op_semantics::op_instance_facts(op.opcode, &types))
+        .and_then(|facts| facts.result_type);
     let boxed: Vec<ValueId> = (0..2)
         .filter(|&i| kinds[i] == IntOperand::Boxed)
         .map(|i| operands[i])
@@ -480,13 +517,22 @@ fn expand_int_arith(
         }
     }
     let raw = fresh_typed(func, raw_ty);
-    let fast_result = fresh_typed(func, TirType::DynBox);
     fast_ops.push(new_op(fast, payloads.to_vec(), vec![raw], span));
-    let mut box_op = new_op(OpCode::BoxVal, vec![raw], vec![fast_result], span);
-    if cannot_raise {
-        box_op.mark_nothrow_proof();
-    }
-    fast_ops.push(box_op);
+    let fast_result = if raw_result {
+        raw
+    } else {
+        let boxed = fresh_typed(func, TirType::DynBox);
+        let mut box_op = new_op(OpCode::BoxVal, vec![raw], vec![boxed], span);
+        if cannot_raise {
+            box_op.mark_nothrow_proof();
+        }
+        // The boxed word is the op's result: an exact int stays one.
+        if let Some(ty) = &exact_result {
+            box_op.mark_exact_result_proof(ty);
+        }
+        fast_ops.push(box_op);
+        boxed
+    };
     func.blocks.insert(
         fast_block,
         new_block(fast_block, fast_ops, branch(join, fast_result)),
@@ -520,7 +566,24 @@ fn expand_int_arith(
     if cannot_raise {
         call.mark_nothrow_proof();
     }
+    if let Some(ty) = &exact_result {
+        call.mark_exact_result_proof(ty);
+    }
     slow_ops.push(call);
+    // Two exact ints compare to a bool word: read its low bit, as the fast
+    // arm's raw bool, so the join carries one representation.
+    let slow_result = if raw_result {
+        let truth = fresh_typed(func, TirType::Bool);
+        slow_ops.push(new_op(
+            OpCode::UnboxBoolWord,
+            vec![slow_result],
+            vec![truth],
+            span,
+        ));
+        truth
+    } else {
+        slow_result
+    };
     func.blocks
         .insert(slow, new_block(slow, slow_ops, branch(join, slow_result)));
     finish(func, block, join, result, rest, terminator);

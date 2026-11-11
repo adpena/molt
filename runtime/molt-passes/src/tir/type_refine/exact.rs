@@ -138,6 +138,9 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                 let valid_shape = op.has_valid_shape();
                 let types = if !valid_shape {
                     vec![TirType::DynBox; op.results.len()]
+                } else if let Some(proven) = op.exact_result_proof() {
+                    // The late stage replaced an op whose result was exact.
+                    vec![proven; op.results.len()]
                 } else if let Some(source) = scalar_source {
                     vec![facts.get(&source).cloned().unwrap_or(TirType::DynBox)]
                 } else if op.opcode == OpCode::Copy

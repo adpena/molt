@@ -986,3 +986,112 @@ fn replacing_an_op_that_may_raise_keeps_its_exception_source() {
         ));
     }
 }
+
+/// `total < 100` where `total` is an exact int of unknown size (a boxed
+/// word) and the result is planned as a raw bool. No backend lane owns that
+/// shape, so before this case the op called the runtime and then asked the
+/// runtime for the truth of its result, on every iteration.
+#[test]
+fn a_comparison_with_a_raw_bool_result_joins_two_raw_bools() {
+    let (mut func, _, _) = counted_loop(true);
+    let body = func
+        .blocks
+        .iter()
+        .find(|(_, block)| block.ops.iter().any(|op| op.opcode == OpCode::Add))
+        .map(|(id, _)| *id)
+        .unwrap();
+    let total = func.blocks[&body].ops[0].operands[0];
+    let stop = func.blocks.values().find_map(|block| {
+        block
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Lt)
+            .map(|op| op.operands[1])
+    });
+    let less = func.fresh_value();
+    func.value_types.insert(less, TirType::Bool);
+    func.blocks.get_mut(&body).unwrap().ops.push(TirOp::new(
+        OpCode::Lt,
+        vec![total, stop.unwrap()],
+        vec![less],
+    ));
+    let before = plan(&func);
+    assert_eq!(before[&total], Repr::MaybeBigInt);
+    assert_eq!(before[&less], Repr::Bool);
+
+    assert_eq!(run(&mut func).values_changed, 2, "the add and the compare");
+    assert_valid(&func);
+    assert_eq!(plan(&func)[&less], Repr::Bool);
+    // The compare's result is the argument of a join that both arms feed raw.
+    let join = func
+        .blocks
+        .values()
+        .find(|block| block.args.iter().any(|arg| arg.id == less))
+        .expect("the join binds the compare's result");
+    assert_eq!(join.args[0].ty, TirType::Bool);
+    let feeders: Vec<&TirOp> = func
+        .blocks
+        .values()
+        .filter(|block| {
+            matches!(&block.terminator, Terminator::Branch { target, .. } if *target == join.id)
+        })
+        .map(|block| block.ops.last().unwrap())
+        .collect();
+    let mut opcodes: Vec<OpCode> = feeders.iter().map(|op| op.opcode).collect();
+    opcodes.sort_by_key(|opcode| format!("{opcode:?}"));
+    assert_eq!(opcodes, [OpCode::Lt, OpCode::UnboxBoolWord]);
+    // The fast arm compares payloads; nothing boxes a bool.
+    let fast = feeders.iter().find(|op| op.opcode == OpCode::Lt).unwrap();
+    let plan_after = plan(&func);
+    assert_eq!(plan_after[&fast.operands[0]], Repr::RawI64Safe);
+    assert!(ops(&func, OpCode::BoxVal).len() == 1, "only the add boxes");
+}
+
+/// An add of two exact ints is an exact int. After expansion the result is a
+/// join of a boxed sum and a runtime call, whose contract says "an object".
+/// The call carries the op's exact type, so the join and the loop phi it
+/// feeds stay exact; without it every later fact about the accumulator (a
+/// raw bool from `total < n`, a non-raising add) is lost.
+#[test]
+fn expansion_keeps_the_exact_type_of_the_result_it_joins() {
+    let (mut func, _, _) = counted_loop(true);
+    let exact = |func: &TirFunction| crate::tir::type_refine::extract_exact_scalar_map(func);
+    let sum = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::Add && op.results.len() == 1)
+        .map(|op| op.results[0])
+        .unwrap();
+    let before = exact(&func);
+    let sum_type = before[&sum].clone();
+    assert!(matches!(sum_type, TirType::I64 | TirType::BigInt));
+
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    let after = exact(&func);
+    for (value, ty) in &before {
+        if matches!(
+            ty,
+            TirType::I64 | TirType::BigInt | TirType::Bool | TirType::F64
+        ) {
+            assert_eq!(
+                after.get(value),
+                Some(ty),
+                "{value:?} lost its exact type (sum is {sum:?}): {}",
+                crate::tir::printer::print_function(&func)
+            );
+        }
+    }
+
+    for block in func.blocks.values_mut() {
+        for op in &mut block.ops {
+            op.attrs.remove(crate::tir::ops::EXACT_RESULT_PROOF_ATTR);
+        }
+    }
+    assert_eq!(
+        exact(&func).get(&sum),
+        None,
+        "unmarked, the join is no exact scalar"
+    );
+}
