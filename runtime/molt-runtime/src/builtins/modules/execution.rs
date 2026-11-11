@@ -609,7 +609,33 @@ pub(super) fn module_metadata_store(
     attr_bits: u64,
 ) -> Result<MetadataStore, u64> {
     let runtime_id = runtime_state(_py) as *const _ as usize;
-    let Some(attr) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
+    // Every module global store comes here, so the common answer costs no
+    // allocation: the context decides first, then the name's bytes in place.
+    let window_open = EXECUTION_STACK.with(|stack| {
+        stack.borrow().last().is_some_and(|ctx| {
+            ctx.runtime_id == runtime_id
+                && ctx.module_bits == module_bits
+                && ctx.metadata_override_pending != 0
+        })
+    });
+    if !window_open {
+        return Ok(MetadataStore::Body);
+    }
+    // SAFETY: the match neither calls back nor retires a reference.
+    let attr = unsafe {
+        crate::object::ops_format::with_string_bytes(
+            obj_from_bits(attr_bits),
+            |bytes| match bytes {
+                b"__name__" => Some("__name__"),
+                b"__file__" => Some("__file__"),
+                b"__package__" => Some("__package__"),
+                b"__path__" => Some("__path__"),
+                b"__spec__" => Some("__spec__"),
+                _ => None,
+            },
+        )
+    };
+    let Some(Some(attr)) = attr else {
         return Ok(MetadataStore::Body);
     };
     enum MetadataOverride {
@@ -622,7 +648,7 @@ pub(super) fn module_metadata_store(
         if ctx.runtime_id != runtime_id || ctx.module_bits != module_bits {
             return None;
         }
-        let (bit, value) = match (&ctx.metadata, attr.as_str()) {
+        let (bit, value) = match (&ctx.metadata, attr) {
             (_, "__name__") => (
                 EXECUTION_NAME_PENDING,
                 MetadataOverride::Text(Some(ctx.run_name.clone())),
