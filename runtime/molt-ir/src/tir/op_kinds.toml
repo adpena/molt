@@ -1497,6 +1497,8 @@ gvn_always_numberable_opcodes = [
     # Late-TIR primitives: pure and total on every word (HF-821).
     "IsInlineInt",
     "UnboxInlineInt",
+    "IsFloatWord",
+    "UnboxFloatWord",
     "IsBoolWord",
     "UnboxBoolWord",
     "BoxInlineInt",
@@ -1556,6 +1558,8 @@ gvn_numberable_attr_key_opcodes = [
 final_tir_opcodes = [
     "IsInlineInt",
     "UnboxInlineInt",
+    "IsFloatWord",
+    "UnboxFloatWord",
     "IsBoolWord",
     "UnboxBoolWord",
     "BoxInlineInt",
@@ -1657,18 +1661,22 @@ sccp_constant_eval_rules = [
 ]
 
 # fast_path_expansion_rules: the ops the late lowering stage of TIR expands on
-# two boxed words, by the fast arm each takes on two inline ints (HF-821).
+# boxed words (HF-821). Each takes an inline-int arm and a float arm where it
+# has one; multiplication has only the float arm until its int arm can test
+# overflow. Anything else takes the op's own runtime entry.
 fast_path_expansion_rules = [
-    { opcode = "Add", rule = "int_add" },
-    { opcode = "InplaceAdd", rule = "int_add" },
-    { opcode = "Sub", rule = "int_sub" },
-    { opcode = "InplaceSub", rule = "int_sub" },
-    { opcode = "Eq", rule = "int_compare" },
-    { opcode = "Ne", rule = "int_compare" },
-    { opcode = "Lt", rule = "int_compare" },
-    { opcode = "Le", rule = "int_compare" },
-    { opcode = "Gt", rule = "int_compare" },
-    { opcode = "Ge", rule = "int_compare" },
+    { opcode = "Add", rule = "numeric_add" },
+    { opcode = "InplaceAdd", rule = "numeric_add" },
+    { opcode = "Sub", rule = "numeric_sub" },
+    { opcode = "InplaceSub", rule = "numeric_sub" },
+    { opcode = "Mul", rule = "numeric_mul" },
+    { opcode = "InplaceMul", rule = "numeric_mul" },
+    { opcode = "Eq", rule = "numeric_compare" },
+    { opcode = "Ne", rule = "numeric_compare" },
+    { opcode = "Lt", rule = "numeric_compare" },
+    { opcode = "Le", rule = "numeric_compare" },
+    { opcode = "Gt", rule = "numeric_compare" },
+    { opcode = "Ge", rule = "numeric_compare" },
     { opcode = "Bool", rule = "truthiness" },
     { opcode = "Call", rule = "guarded_call" },
 ]
@@ -3689,6 +3697,34 @@ name = "UnboxBoolWord"
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# IsFloatWord is total: true iff the word is a float (its quiet-NaN prefix is
+# not the tag space). UnboxFloatWord is total and meaningful where IsFloatWord
+# holds: the word's bits as an f64. A boxed float is its own bits, so the
+# inverse is BoxVal of an f64, which canonicalizes NaN and cannot raise.
+[[opcode]]
+name = "IsFloatWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "UnboxFloatWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["f64"]
 may_throw = false
 side_effecting = false
 purity = "pure"

@@ -722,7 +722,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 use inkwell::FloatPredicate;
                 let pred = match name {
                     OpKind::Eq => FloatPredicate::OEQ,
-                    OpKind::Ne => FloatPredicate::ONE,
+                    // Python: `nan != nan` is True, so Ne is unordered-or-unequal.
+                    OpKind::Ne => FloatPredicate::UNE,
                     OpKind::Lt => FloatPredicate::OLT,
                     OpKind::Le => FloatPredicate::OLE,
                     OpKind::Gt => FloatPredicate::OGT,

@@ -231,3 +231,44 @@ fn bool_words_unbox_to_their_runtime_truth_value() {
         );
     }
 }
+
+#[test]
+fn is_float_matches_the_scalar_authority_on_every_kind_of_word() {
+    let floats = [
+        0.0f64,
+        -0.0,
+        1.5,
+        -2.25,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MIN_POSITIVE,
+        f64::MAX,
+    ];
+    let tagged = [
+        crate::box_float_bits(f64::NAN) as u64,
+        box_int_bits(0) as u64,
+        box_int_bits(-1) as u64,
+        box_bool_bits(1) as u64,
+        crate::QNAN | TAG_NONE,
+        crate::QNAN | TAG_PTR | 0x1000,
+        crate::QNAN | TAG_PENDING | 1,
+    ];
+    let words = floats
+        .iter()
+        .map(|f| crate::box_float_bits(*f) as u64)
+        .chain(tagged);
+    for word in words {
+        assert_eq!(
+            generate_is_float(&mut Evaluate, word),
+            crate::is_float_bits(word),
+            "{word:#x}"
+        );
+    }
+    // A boxed float's payload is its own bits.
+    for f in floats {
+        assert_eq!(
+            f64::from_bits(crate::box_float_bits(f) as u64).to_bits(),
+            f.to_bits()
+        );
+    }
+}
