@@ -129,15 +129,16 @@ function instantiate(path) {
       if (state.anchorFailure==='constructor') {state.pending=true;return 2;}
       state.anchorOwners.set(0x7ffc00000000038dn,1);view.setBigInt64(out,0x7ffc00000000038dn,true);return 0;
     },
-    frame_homes(count) {
-      ensure(state.homeCase && count === 2n, 'wrong home layout request');
-      ensure(state.enters === 1 && state.attempts.length === 1, 'homes lent before frame entry');
-      state.homeLends++;
-      if (state.failEntry || state.failLend) { state.pending = true; return 0n; }
-      ensure(state.depth === state.initialDepth + 1, 'homes lent outside owned frame');
+    // The record the entry links: its base is the homes base. A frame whose
+    // homes could not be reserved is linked without them, with its exception
+    // pending, and its exit still pops it.
+    link_record() {
       // Two public ABI pairs in an extra host page, disjoint from application
       // data and dispatcher maps. The decoy catches wrong-slot/base reads.
       state.homeBase = config.memory_pages * 65536 + 16;
+      if (!state.homeCase) return BigInt(state.homeBase);
+      state.homeLends++;
+      if (state.failLend) { state.pending = true; return BigInt(state.homeBase); }
       const view = new DataView(imports.env.memory.buffer);
       if (state.mixedCase) {
         for (let slot=0; slot<2; slot++) {
@@ -183,22 +184,25 @@ function instantiate(path) {
       state.pending = true;
       return boxedNone;
     },
-    trace_enter_slot(slot) {
+    // Zero: the entry linked nothing, and its exit is never called.
+    frame_record_enter(slot) {
       ensure(state.depth === state.initialDepth && state.enters === 0,
              'unexpected frame entry');
       ensure(slot === 0n, 'wrong owner code slot ' + slot);
       state.enters++;
       state.attempts.push(!state.failEntry);
       if (state.failEntry) {
+        if (state.homeCase) state.homeLends++;
         state.pending = true;
-      } else {
-        state.depth++;
+        return 0n;
       }
-      return boxedNone;
+      state.depth++;
+      return hooks.link_record();
     },
-    trace_exit() {
-      ensure(state.attempts.length === 1 && state.enters === 1 && state.exits === 0,
-             'frame pop without owned entry');
+    frame_record_exit(base) {
+      ensure(state.attempts.length === 1 && state.attempts[0] && state.enters === 1
+             && state.exits === 0, 'frame pop without owned entry');
+      ensure(base === BigInt(state.homeBase), 'frame exit names another record');
       const pushed = state.attempts.pop();
       ensure(state.depth === state.initialDepth + Number(pushed),
              'frame depth does not match the owned entry attempt');
@@ -344,14 +348,16 @@ function instantiate(path) {
   return new WebAssembly.Instance(module, attachedImports(imports)).exports;
 }
 function verifyOwner(exports, owner, polls, exceptionAt = 0, failEntry = false) {
-  // Failed capture must consume only its false attempt marker, even when a
-  // caller frame already exists. Split statements are effect-free `line`
+  // A failed entry must pop nothing, even when a caller frame already
+  // exists. Split statements are effect-free `line`
   // markers, so exception checks are the owner's observable progress.
   reset(owner + ' exceptionAt=' + exceptionAt + ' failEntry=' + failEntry,
         failEntry, exceptionAt, failEntry);
   const result = exports[compiledSymbol(owner)](executionContext);
-  ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
-         && state.attempts.length === 0,
+  // A failed entry links nothing: its marker stays and no exit runs.
+  ensure(state.depth === state.initialDepth && state.enters === 1
+         && state.exits === Number(!failEntry)
+         && state.attempts.length === Number(failEntry),
          'owner return must enter/pop exactly once');
   assert.equal(result, boxedNone, state.label + ': void payload returns boxed None');
   assert.equal(state.polls, polls, state.label + ': executed entry/chunk exception checks');
@@ -463,8 +469,9 @@ for (const test of config.home_modules) {
     const early = anchorFailure!=='none';
     const failed = failure !== 0 || failEntry || failLend || early;
     assert.equal(result,failed ? boxedNone : 0x7ffc000000000309n,state.label);
-    ensure(state.depth === state.initialDepth && state.enters === Number(!early) && state.exits === Number(!early)
-           && state.attempts.length === 0,'home return lost frame-attempt custody');
+    ensure(state.depth === state.initialDepth && state.enters === Number(!early)
+           && state.exits === Number(!early && !failEntry)
+           && state.attempts.length === Number(failEntry),'home return lost frame-attempt custody');
     assert.equal(state.homeLends,Number(!early),state.label);
     assert.equal(state.taskReads,test.stateful && !early ? 1 : 0,state.label);
     assert.equal(state.polls,early ? 0 : failEntry || failLend || failure===1 ? 1 : 2,state.label);
@@ -582,8 +589,12 @@ fn malformed_frame_module() -> Vec<u8> {
     types.ty().function([ValType::I64], []);
     module.section(&types);
     let mut imports = ImportSection::new();
-    imports.import("molt_runtime", "trace_enter_slot", EntityType::Function(0));
-    imports.import("molt_runtime", "trace_exit", EntityType::Function(1));
+    imports.import(
+        "molt_runtime",
+        "frame_record_enter",
+        EntityType::Function(0),
+    );
+    imports.import("molt_runtime", "frame_record_exit", EntityType::Function(0));
     module.section(&imports);
     let mut functions = FunctionSection::new();
     let mut exports = ExportSection::new();
@@ -603,16 +614,21 @@ fn malformed_frame_module() -> Vec<u8> {
             ExportKind::Func,
             2 + index as u32,
         );
-        let mut body = Function::new([]);
+        // Local 1 holds the base the entry returned, which the exit names.
+        let mut body = Function::new([(1, ValType::I64)]);
         for callee in calls {
             body.instruction(&Instruction::LocalGet(0));
             if callee == 0 {
                 // Keep the observer's admitted owner; each control changes
                 // only frame lifecycle, never code identity.
                 body.instruction(&Instruction::I64Const(0));
+                body.instruction(&Instruction::Call(callee));
+                body.instruction(&Instruction::LocalSet(1));
+            } else {
+                body.instruction(&Instruction::LocalGet(1));
+                body.instruction(&Instruction::Call(callee));
+                body.instruction(&Instruction::Drop);
             }
-            body.instruction(&Instruction::Call(callee));
-            body.instruction(&Instruction::Drop);
         }
         body.instruction(&Instruction::End);
         code.function(&body);
@@ -727,8 +743,8 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         .compile(ir);
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let import_indices = wasm_function_import_indices(&wasm);
-        let enter = import_indices["trace_enter_slot"];
-        let exit = import_indices["trace_exit"];
+        let enter = import_indices["frame_record_enter"];
+        let exit = import_indices["frame_record_exit"];
         let exports = wasm_function_export_indices(&wasm);
         let owner = case["owner"].as_str().unwrap();
         assert!(exports.contains_key(owner), "missing split owner {owner}");
@@ -1401,7 +1417,7 @@ fn symbolic_code_slots_emit_program_bound_immediates() {
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let imports = wasm_function_import_indices(&wasm);
         let operators = wasm_operator_debug_for_export(&wasm, "molt_main");
-        for (import, argument_distance) in [("code_slot_set", 3), ("trace_enter_slot", 1)] {
+        for (import, argument_distance) in [("code_slot_set", 3), ("frame_record_enter", 1)] {
             let call = format!("Call {{ function_index: {} }}", imports[import]);
             let index = operators.iter().position(|op| *op == call).unwrap();
             assert_eq!(

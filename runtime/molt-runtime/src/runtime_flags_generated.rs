@@ -127,7 +127,6 @@ pub(crate) enum RuntimeFlag {
     MOLT_TRACE_SYS_VERSION,
     MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR,
     MOLT_TRACE_TASK_RESULT,
-    MOLT_TRACE_TRACE_ENTER_SLOT,
     MOLT_TRACE_TRACE_EXIT_PENDING,
     MOLT_TRACE_TRAMPOLINE_POLICY,
     MOLT_TRACE_TYPE_CALL,
@@ -139,7 +138,7 @@ pub(crate) enum RuntimeFlag {
 
 impl RuntimeFlag {
     /// Every flag in declaration order: `ALL[flag as usize] == flag`.
-    pub(crate) const ALL: [RuntimeFlag; 129] = [
+    pub(crate) const ALL: [RuntimeFlag; 128] = [
         Self::MOLT_ASSERT_CHILD,
         Self::MOLT_ASSERT_NO_LEAK,
         Self::MOLT_ASSERT_NO_PENDING_ON_SUCCESS,
@@ -261,7 +260,6 @@ impl RuntimeFlag {
         Self::MOLT_TRACE_SYS_VERSION,
         Self::MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR,
         Self::MOLT_TRACE_TASK_RESULT,
-        Self::MOLT_TRACE_TRACE_ENTER_SLOT,
         Self::MOLT_TRACE_TRACE_EXIT_PENDING,
         Self::MOLT_TRACE_TRAMPOLINE_POLICY,
         Self::MOLT_TRACE_TYPE_CALL,
@@ -272,7 +270,7 @@ impl RuntimeFlag {
     ];
 
     /// Each flag's variable name, sorted: `NAMES[flag as usize]` names `flag`.
-    pub(crate) const NAMES: [&str; 129] = [
+    pub(crate) const NAMES: [&str; 128] = [
         "MOLT_ASSERT_CHILD",
         "MOLT_ASSERT_NO_LEAK",
         "MOLT_ASSERT_NO_PENDING_ON_SUCCESS",
@@ -394,7 +392,6 @@ impl RuntimeFlag {
         "MOLT_TRACE_SYS_VERSION",
         "MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR",
         "MOLT_TRACE_TASK_RESULT",
-        "MOLT_TRACE_TRACE_ENTER_SLOT",
         "MOLT_TRACE_TRACE_EXIT_PENDING",
         "MOLT_TRACE_TRAMPOLINE_POLICY",
         "MOLT_TRACE_TYPE_CALL",

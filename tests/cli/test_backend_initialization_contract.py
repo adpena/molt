@@ -507,4 +507,9 @@ def test_shared_module_code_payload_is_stable_when_an_earlier_module_is_added() 
             for op in function["ops"]:
                 if op["kind"] in {"code_slot_set", "trace_enter_slot"}:
                     assert op["s_value"] in state.global_code_ids
-                    assert "value" not in op
+                    # Code identity is the symbol. A synchronous frame's entry
+                    # also carries its frame shape, a nonnegative integer.
+                    shape = op.get("value")
+                    assert shape is None or (
+                        op["kind"] == "trace_enter_slot" and shape >= 0
+                    )

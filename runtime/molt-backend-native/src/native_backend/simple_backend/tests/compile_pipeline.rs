@@ -1144,7 +1144,7 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
             cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
 
         let enter_calls =
-            call_sites_for_import(function, compiled.import_ids["molt_trace_enter_slot"]);
+            call_sites_for_import(function, compiled.import_ids["molt_frame_record_enter"]);
         assert_eq!(enter_calls.len(), 1, "{}", function.display());
         let (enter_block, enter_call) = enter_calls[0];
         let guard = function
@@ -1197,7 +1197,8 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
             );
         }
 
-        let exit_calls = call_sites_for_import(function, compiled.import_ids["molt_trace_exit"]);
+        let exit_calls =
+            call_sites_for_import(function, compiled.import_ids["molt_frame_record_exit"]);
         assert_eq!(exit_calls.len(), 1, "{}", function.display());
         let anchor_releases =
             call_sites_for_import(function, compiled.import_ids[RuntimeFn::DecRefObj.symbol()])
@@ -1287,7 +1288,8 @@ fn nonleading_module_frame_keeps_literal_materialization_before_entry_and_rollba
     let cfg = ControlFlowGraph::with_function(function);
     let dominators =
         cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
-    let enter_calls = call_sites_for_import(function, compiled.import_ids["molt_trace_enter_slot"]);
+    let enter_calls =
+        call_sites_for_import(function, compiled.import_ids["molt_frame_record_enter"]);
     assert_eq!(enter_calls.len(), 1, "{}", function.display());
     let (enter_block, enter_call) = enter_calls[0];
     let guard = function
@@ -1333,8 +1335,8 @@ fn native_backend_preserves_semantic_frames_without_optional_tracing() {
     for setting in [None, Some("0"), Some("1")] {
         let bytes = compile_trace_probe_object(setting, crate::ir::ExecutionContextPolicy::Local);
         for symbol in [
-            b"molt_trace_enter_slot".as_slice(),
-            b"molt_trace_exit".as_slice(),
+            b"molt_frame_record_enter".as_slice(),
+            b"molt_frame_record_exit".as_slice(),
         ] {
             assert!(bytes.windows(symbol.len()).any(|window| window == symbol));
         }
@@ -1404,8 +1406,8 @@ fn static_calls_preserve_void_abi_and_callee_owned_frames() {
             .bytes;
         for symbol in [
             "molt_print_newline",
-            "molt_trace_enter_slot",
-            "molt_trace_exit",
+            "molt_frame_record_enter",
+            "molt_frame_record_exit",
         ] {
             assert!(
                 bytes
@@ -1560,8 +1562,8 @@ fn native_backend_does_not_mint_frames_for_frameless_or_inherited_bodies() {
     ] {
         let bytes = compile_trace_probe_object(None, policy);
         for symbol in [
-            b"molt_trace_enter_slot".as_slice(),
-            b"molt_trace_exit".as_slice(),
+            b"molt_frame_record_enter".as_slice(),
+            b"molt_frame_record_exit".as_slice(),
         ] {
             assert!(!bytes.windows(symbol.len()).any(|window| window == symbol));
         }

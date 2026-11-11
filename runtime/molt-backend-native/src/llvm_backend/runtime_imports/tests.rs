@@ -776,9 +776,9 @@ fn module_namespace_and_named_acquisition_have_callback_safe_declarations() {
 
     for (name, arity) in &[
         ("molt_func_new_builtin_named", 4usize),
-        ("molt_trace_enter_slot", 1),
+        ("molt_frame_record_enter", 1),
         ("molt_frame_locals_set", 1),
-        ("molt_trace_exit", 0),
+        ("molt_frame_record_exit", 1),
         ("molt_module_import", 1),
         ("molt_module_new", 1),
         ("molt_module_cache_get", 1),

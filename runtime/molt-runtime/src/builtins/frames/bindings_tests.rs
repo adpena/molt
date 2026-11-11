@@ -74,7 +74,7 @@ fn plan(homes: usize, policy: FramePolicy) -> FramePlan {
 }
 
 /// Push a synchronous frame of `code` whose plan gives it `slots` homes, as
-/// `molt_trace_enter_slot` does, and borrow them as its compiled entry does.
+/// the runtime frame entry does, and hold its base as compiled code does.
 /// Returns the homes and the entry's stack index.
 fn enter_frame(py: &PyToken<'_>, code: u64, slots: usize) -> (*mut u64, usize) {
     inc_ref_bits(py, code);
@@ -87,7 +87,7 @@ fn enter_frame(py: &PyToken<'_>, code: u64, slots: usize) -> (*mut u64, usize) {
         plan(slots, FramePolicy::of_runtime(py))
     ));
     let homes =
-        crate::provenance::abi::mut_ptr::<u64>(molt_frame_homes_attached_body(py, slots as u64))
+        crate::provenance::abi::mut_ptr::<u64>(crate::builtins::frames::compiled_entry::homes())
             .expect("frame homes address fits the target");
     assert!(!exception_pending(py));
     assert!(!homes.is_null() || slots == 0);
@@ -161,7 +161,7 @@ fn homes_are_a_stack_of_zeroed_words() {
             "homes start unbound"
         );
         // A frame larger than a chunk gets its own chunk and returns it.
-        let _large = enter(plan(HOME_CHUNK_WORDS, policy));
+        let _large = enter(plan(1 << 14, policy));
         frame_stack_pop(py);
         frame_stack_pop(py);
         frame_stack_pop(py);
@@ -202,7 +202,7 @@ fn origin_capture_owns_its_entry_preserves_multiplicity_and_is_failure_atomic() 
             0,
             plan(0, FramePolicy::of_runtime(py))
         ));
-        let homes = molt_frame_homes_attached_body(py, 0);
+        let homes = crate::builtins::frames::compiled_entry::homes();
         let error_ptr = crate::alloc_exception(py, BuiltinExc::ValueError, "selected origin");
         let error = MoltObject::from_ptr(error_ptr).bits();
         let trace = || {
@@ -922,41 +922,6 @@ fn a_proxy_writes_cells_retired_frames_and_extra_locals() {
                 dec_ref_bits(py, bits);
             }
         });
-    });
-}
-
-#[test]
-fn compiled_code_borrows_only_homes_the_frame_has() {
-    let _guard = crate::test_support::RuntimeTestTransaction::new();
-    crate::with_gil_entry_nopanic!(py, {
-        let code = slot_code(py, &[b"a", b"b"], &[]);
-        let (homes, _) = enter_frame(py, code, 2);
-        assert_eq!(
-            crate::provenance::abi::mut_ptr::<u64>(molt_frame_homes_attached_body(py, 1))
-                .expect("frame homes address fits the target"),
-            homes,
-            "a split chunk"
-        );
-        // More slots than the frame has is a layout disagreement: 0 and
-        // SystemError, never storage.
-        assert_eq!(molt_frame_homes_attached_body(py, 3), 0);
-        dec_ref_bits(py, take_pending(py));
-        // A failed entry leaves its exception pending: 0, the same exception.
-        let _ = raise_exception::<u64>(py, BuiltinExc::ValueError, "entry failed");
-        let before = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
-        assert_eq!(molt_frame_homes_attached_body(py, 2), 0);
-        let after = take_pending(py);
-        assert_eq!(before, after);
-        frame_stack_pop(py);
-        // A frame without homes (a module body) lends none.
-        inc_ref_bits(py, code);
-        assert!(frame_stack_enter(py, code, 0, 0, 0, FramePlan::default()));
-        assert_eq!(molt_frame_homes_attached_body(py, 1), 0);
-        dec_ref_bits(py, take_pending(py));
-        frame_stack_pop(py);
-        for bits in [before, after, code] {
-            dec_ref_bits(py, bits);
-        }
     });
 }
 

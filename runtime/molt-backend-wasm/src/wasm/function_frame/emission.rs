@@ -137,8 +137,8 @@ impl WasmFunctionFrame {
         }
         if let Some(homes) = self.frame_homes.filter(|homes| homes.at_entry) {
             // A split chunk runs inside its stub's frame and borrows its homes;
-            // none lent leaves at once with the exception pending.
-            self.emit_frame_homes_lend(func, homes, import_ids, reloc_enabled);
+            // without a frame it leaves at once.
+            self.emit_frame_homes_lend(func, homes);
             func.instruction(&Instruction::LocalGet(homes.local));
             func.instruction(&Instruction::I32Eqz);
             func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
@@ -216,49 +216,61 @@ impl WasmFunctionFrame {
         ));
     }
 
+    /// Enter this invocation's frame for code slot `slot` and keep its record
+    /// base: zero when nothing was linked. A synchronous frame (`shape`) calls
+    /// the module's generated push body; any other frame is runtime-linked.
     pub(in crate::wasm) fn emit_owned_frame_entry(
         &self,
         func: &mut Function,
         slot: i64,
+        shape: Option<molt_codegen_abi::frame_record::FrameShape>,
         import_ids: &TrackedImportIds,
         reloc_enabled: bool,
     ) {
-        let attempted = self
+        let base = self
             .owned_frame_attempt
             .expect("trace_enter_slot requires local execution-context ownership");
         func.instruction(&Instruction::I64Const(slot));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[WasmRuntimeImport::TraceEnterSlot],
-        );
-        func.instruction(&Instruction::Drop);
-        // The runtime records even an unsuccessful entry. Retire that marker
-        // on exit without accidentally popping the caller's Python frame.
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::LocalSet(attempted));
+        match shape {
+            Some(shape) => {
+                func.instruction(&Instruction::I64Const(i64::from(shape.homes)));
+                func.instruction(&Instruction::LocalGet(self.locals.refcount().admission));
+                emit_call(func, reloc_enabled, import_ids.frame_bodies().push());
+            }
+            None => emit_call(
+                func,
+                reloc_enabled,
+                import_ids[WasmRuntimeImport::FrameRecordEnter],
+            ),
+        }
+        func.instruction(&Instruction::I32WrapI64);
+        func.instruction(&Instruction::LocalSet(base));
         if let Some(homes) = self.frame_homes.filter(|homes| !homes.at_entry) {
-            // The entry took the frame's binding homes. A failed entry lends 0
+            // The record's base is the homes base. A failed entry leaves it 0
             // with its exception pending, and the entry's adjacent exception
             // check leaves before any home op runs.
-            self.emit_frame_homes_lend(func, homes, import_ids, reloc_enabled);
+            self.emit_frame_homes_lend(func, homes);
         }
     }
 
-    fn emit_frame_homes_lend(
-        &self,
-        func: &mut Function,
-        homes: super::WasmFrameHomes,
-        import_ids: &TrackedImportIds,
-        reloc_enabled: bool,
-    ) {
-        func.instruction(&Instruction::I64Const(homes.slots));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[WasmRuntimeImport::FrameHomes],
-        );
-        func.instruction(&Instruction::I32WrapI64);
+    /// Bind the frame's homes base: the record this invocation entered, or,
+    /// in a split chunk, the executing frame it runs in.
+    fn emit_frame_homes_lend(&self, func: &mut Function, homes: super::WasmFrameHomes) {
+        match self.owned_frame_attempt.filter(|_| !homes.at_entry) {
+            Some(base) => {
+                func.instruction(&Instruction::LocalGet(base));
+            }
+            None => {
+                crate::wasm::pending_work::emit_thread_record(func);
+                func.instruction(&Instruction::I32WrapI64);
+                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: molt_codegen_abi::THREAD_RECORD_FRAME_TOP_OFFSET as u64,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                func.instruction(&Instruction::I32WrapI64);
+            }
+        }
         func.instruction(&Instruction::LocalSet(homes.local));
     }
 
@@ -468,19 +480,21 @@ impl WasmFunctionFrame {
         if let Some(region) = self.const_anchor_region {
             region.emit_release(func, import_ids, reloc_enabled, self.locals.refcount());
         }
-        if let Some(attempted) = self.owned_frame_attempt {
-            func.instruction(&Instruction::LocalGet(attempted));
-            func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+        if let Some(base) = self.owned_frame_attempt {
+            // The pop body tests the base: a failed entry pops nothing.
+            func.instruction(&Instruction::LocalGet(base));
+            func.instruction(&Instruction::I64ExtendI32U);
             // Consume custody before frame destruction can reenter Python.
             func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::LocalSet(attempted));
+            func.instruction(&Instruction::LocalSet(base));
+            let homes = self.frame_shape.map_or(0, |shape| i64::from(shape.homes));
+            func.instruction(&Instruction::I64Const(homes));
+            func.instruction(&Instruction::LocalGet(self.locals.refcount().admission));
             emit_call(
                 func,
                 reloc_enabled,
-                import_ids[WasmRuntimeImport::TraceExit],
+                import_ids.frame_bodies().pop(self.frame_shape),
             );
-            func.instruction(&Instruction::Drop);
-            func.instruction(&Instruction::End);
         }
     }
 

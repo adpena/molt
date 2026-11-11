@@ -309,13 +309,11 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_code_slot_set", 3, ATTR_WILLRETURN),
     i64_ret("molt_code_slots_init", 1, ATTR_WILLRETURN),
     // Module builtins capture/publication and frame retirement can run
-    // namespace callbacks or displaced owners' finalizers.
-    i64_ret("molt_trace_enter_slot", 1, ATTR_NONE),
+    // namespace callbacks or displaced owners' finalizers. The record entry
+    // returns the raw record base, or 0 with an exception pending.
+    i64_ret("molt_frame_record_enter", 1, ATTR_NONE),
     i64_ret("molt_frame_locals_set", 1, ATTR_NONE),
-    i64_ret("molt_trace_exit", 0, ATTR_NONE),
-    // Lends the raw homes address, or 0 with an exception pending; runs no
-    // Python code.
-    i64_ret("molt_frame_homes", 1, ATTR_WILLRETURN),
+    i64_ret("molt_frame_record_exit", 1, ATTR_NONE),
     // A borrowed read of one home's binding; boxing a raw integer into the
     // home may raise MemoryError but runs no Python code.
     i64_ret("molt_frame_home_load", 1, ATTR_WILLRETURN),

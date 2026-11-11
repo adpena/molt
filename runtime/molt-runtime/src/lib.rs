@@ -844,10 +844,10 @@ pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gi
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, EXPECTED_LIVE_OBJECTS, PARSE_ARENA, REPR_DEPTH,
-    REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, leak_assertion_enabled, process_memory_snapshot,
-    profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
-    profile_hit_bytes_unchecked, profile_hit_unchecked, recursion_guard_enter,
-    recursion_guard_exit, recursion_limit_get, recursion_limit_set,
+    REPR_SET, REPR_STACK, leak_assertion_enabled, process_memory_snapshot, profile_enabled,
+    profile_enabled_unchecked, profile_hit, profile_hit_bytes, profile_hit_bytes_unchecked,
+    profile_hit_unchecked, recursion_guard_enter, recursion_guard_exit, recursion_limit_get,
+    recursion_limit_set,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::{

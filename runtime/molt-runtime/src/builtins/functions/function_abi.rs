@@ -501,7 +501,6 @@ fn molt_func_new_builtin_raw_impl(
         register_address_target(fn_key, raw_target);
     }
     let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BUILTIN_FUNC);
-    let trace_enter_ptr = fn_addr!(molt_trace_enter_slot);
     if trace {
         eprintln!(
             "molt builtin_func new: fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{trampoline_ptr:x} arity={arity}"
@@ -525,14 +524,7 @@ fn molt_func_new_builtin_raw_impl(
             return MoltObject::none().bits();
         }
     }
-    let bits = MoltObject::from_ptr(ptr).bits();
-    if trace && fn_ptr == trace_enter_ptr {
-        eprintln!(
-            "molt builtin_func trace_enter_slot bits=0x{bits:x} ptr=0x{:x}",
-            ptr as usize
-        );
-    }
-    bits
+    MoltObject::from_ptr(ptr).bits()
 }
 
 /// Resolve a public builtin name from the executing/canonical builtins

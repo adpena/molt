@@ -227,7 +227,8 @@ an isolated runtime starts with its own default. `sys.setrecursionlimit` checks
 the actual calling thread's depth before publishing a change. No process-global
 depth, thread-local policy mirror, or cold-path synchronization exists.
 
-Compiled entry (`molt_trace_enter_slot`) is the sole owner of Python frame
+Compiled entry (a synchronous function's inline frame-record push, or
+`molt_frame_record_enter` for every other frame) is the sole owner of Python frame
 creation; callable dispatch never manufactures a second frame. Each code slot
 publishes an owned code/globals pair under the runtime execution token. Dynamic
 function invocation transfers exact callable code, captured globals and builtins

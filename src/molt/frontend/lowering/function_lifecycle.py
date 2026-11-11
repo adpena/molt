@@ -66,7 +66,24 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         argument_zero: MoltValue | None = None,
         argument_kind: int | None = None,
     ) -> None:
-        """Publish live Python argument custody, never inferred ABI/locals snapshots."""
+        """Publish live Python argument custody, never inferred ABI/locals snapshots.
+
+        A synchronous frame publishes nothing: zero-argument ``super()`` reads
+        its code's ``co_argcount``, home 0 and the home of its ``__class__``
+        free variable, as CPython's ``super_init_without_args`` does.
+        """
+        if self.frame_home_slots is not None and self.python_class_frame_owner is None:
+            declaration = self.frame_code_slots
+            if "__class__" in self.free_vars and (
+                declaration is None or "__class__" not in declaration.freevars
+            ):
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    f"{self.current_func_name} captures __class__ outside its "
+                    "code object's free variables",
+                )
+            self.python_frame_context_active = True
+            return
         # Publication forwards frame custody; it does not own an error transfer.
         with self._suppress_check_exception(emit_on_exit=False):
             no_value = MoltValue(self.next_var(), type_hint="None")
@@ -263,15 +280,20 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             stack.extend(ast.iter_child_nodes(current))
         return False
 
-    def _emit_checked_frame_entry(self, code_symbol: str, failure_label: int) -> None:
+    def _emit_checked_frame_entry(
+        self, code_symbol: str, failure_label: int, *, frame: int | None = None
+    ) -> None:
         # Entry can initialize builtins and fail before pushing a Python frame.
-        # Its attempted-entry marker still needs TRACE_EXIT, and no body or
-        # frame-local mutation may run while that failure is pending.
+        # No body or frame-local mutation may run while that failure is
+        # pending; the frame's exit pops only a record the entry linked.
+        # `frame` is a synchronous frame's home count and clear order
+        # (`CodeSlotDeclaration.frame_entry_value`), which lets compiled code
+        # push and pop its record inline.
         self._register_code_symbol(code_symbol)
         self.emit(
             MoltOp(
                 kind="TRACE_ENTER_SLOT",
-                args=[code_symbol],
+                args=[code_symbol] if frame is None else [code_symbol, frame],
                 result=MoltValue("none"),
             )
         )
@@ -394,7 +416,13 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         if self._function_needs_frame_trace():
             entry_failure_label = self.next_label()
             self.funcs_map[name]["frame_entry_failure_label"] = entry_failure_label
-            self._emit_checked_frame_entry(name, entry_failure_label)
+            self._emit_checked_frame_entry(
+                name,
+                entry_failure_label,
+                frame=code_slots.frame_entry_value(self.target_python)
+                if code_slots is not None and self.frame_home_slots is not None
+                else None,
+            )
         else:
             self.funcs_map[name].pop("frame_entry_failure_label", None)
         if has_exception_handlers:

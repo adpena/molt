@@ -39,6 +39,5 @@ pub(crate) use runtime_state::{
 #[cfg(test)]
 pub(crate) use tls::molt_attached_context;
 pub(crate) use tls::{
-    CONTEXT_STACK, ExecutionTls, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK,
-    TRACE_FRAME_PUSH_STACK, execution_tls,
+    CONTEXT_STACK, ExecutionTls, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK, execution_tls,
 };

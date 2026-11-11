@@ -23,6 +23,7 @@ pub use attached_context_generated::*;
 
 pub mod boxed_word;
 pub mod c_width;
+pub mod frame_record;
 pub mod inline_refcount;
 pub mod word;
 
@@ -140,7 +141,7 @@ pub const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 // the frame's bindings: a compiled store hands its operand's reference to the
 // home, publishes the pair, then releases what the home held; a PEP 667 frame
 // proxy writes the same pairs (molt-runtime builtins/frames/bindings.rs).
-// `molt_frame_homes` lends the base address to the compiled frame.
+// The homes follow the frame record's header: the record's base is their base.
 pub const FRAME_HOME_WORDS: usize = 2;
 pub const FRAME_HOME_BYTES: i64 = 16;
 pub const FRAME_HOME_KIND_OFFSET: i32 = 0;
@@ -179,10 +180,43 @@ pub const THREAD_RECORD_PENDING_INVOCATION_OFFSET: i32 = 8;
 /// entry; async poll sites load the word atomically, never the pointer afresh.
 pub const THREAD_RECORD_PENDING_WORK_PTR_OFFSET: i32 = 16;
 pub const THREAD_RECORD_PENDING_WORK_WORD_BYTES: u32 = 4;
-/// u64: address of the executing Python frame's record, or zero. The chain
-/// it heads is the runtime's one frame authority
+/// u64: the executing Python frame's record base (its homes base), or zero.
+/// The chain it heads is the runtime's one frame authority
 /// (molt-runtime builtins/frames/records.rs).
 pub const THREAD_RECORD_FRAME_TOP_OFFSET: i32 = 24;
+/// u64: the first free byte of the thread's current frame-arena chunk.
+pub const THREAD_RECORD_ARENA_TOP_OFFSET: i32 = 32;
+/// u64: the end of the thread's current frame-arena chunk.
+pub const THREAD_RECORD_ARENA_LIMIT_OFFSET: i32 = 40;
+
+// A frame record: six header words, then the frame's homes. `base` is the
+// homes base; every header word sits at a negative offset from it, so home
+// and location accesses keep their offsets. Compiled code pushes and pops the
+// record of a synchronous function inline (`frame_record::generate_frame_push`
+// and `generate_frame_pop`); the runtime links every other frame.
+pub const FRAME_RECORD_HEADER_BYTES: i64 = 48;
+/// The caller's record base, or zero.
+pub const FRAME_RECORD_PREV_OFFSET: i32 = -48;
+/// The frame's function object, which the record owns one reference to; the
+/// address of a runtime namespace block when `FRAME_RECORD_OWNED`.
+pub const FRAME_RECORD_FUNCTION_OFFSET: i32 = -40;
+/// The function's code object at entry, which an unowned record owns one
+/// reference to.
+pub const FRAME_RECORD_CODE_OFFSET: i32 = -32;
+pub const FRAME_RECORD_FLAGS_OFFSET: i32 = -24;
+/// The `FRAME_BINDINGS` payload the frame's observers share, owned, or zero.
+pub const FRAME_RECORD_OBSERVER_OFFSET: i32 = -16;
+/// An observer attached a payload: the pop retires it.
+pub const FRAME_RECORD_OBSERVED: u64 = 1;
+/// The runtime linked the record and owns its edges through a namespace block.
+pub const FRAME_RECORD_OWNED: u64 = 2;
+/// The record opened an arena chunk: its pop returns to the previous chunk.
+pub const FRAME_RECORD_CHUNK_FIRST: u64 = 4;
+/// Function object fields the inline push reads (molt-runtime object/layout.rs
+/// asserts both).
+pub const FUNCTION_CODE_OFFSET: i32 = 32;
+/// A code object's compiled slot id plus one; zero when it has none.
+pub const CODE_FRAME_SLOT_OFFSET: i32 = 136;
 
 /// A compiled function object's entry custody, passed to `molt_func_new` and
 /// `molt_func_new_closure`: the entry adopts every Python argument. Zero: it

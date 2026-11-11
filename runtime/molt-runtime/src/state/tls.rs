@@ -29,11 +29,15 @@ pub(crate) struct ExecutionTls {
     /// Borrowed eval-breaker address, published and cleared with bound_state
     /// at runtime custody transitions, including runtime-originated callbacks.
     pub(crate) pending_work_ptr: Cell<u64>,
-    /// The executing Python frame's record, or zero
+    /// The executing Python frame's record base, or zero
     /// (`THREAD_RECORD_FRAME_TOP_OFFSET`, `builtins::frames::records`).
     pub(crate) frame_top: Cell<u64>,
-    /// How many records the frame chain holds.
-    pub(crate) frame_depth: Cell<usize>,
+    /// The first free byte and the end of the current frame-arena chunk
+    /// (`THREAD_RECORD_ARENA_TOP_OFFSET`, `THREAD_RECORD_ARENA_LIMIT_OFFSET`).
+    /// Compiled code bumps `arena_top` at an inline frame push; the runtime
+    /// owns the chunk list (`builtins::frames::records`).
+    pub(crate) arena_top: Cell<u64>,
+    pub(crate) arena_limit: Cell<u64>,
     /// The Python recursion depth this thread's execution stack holds
     /// (`state::recursion`).
     pub(crate) recursion_depth: Cell<usize>,
@@ -80,6 +84,7 @@ pub(crate) struct ExecutionTls {
 
 const _: () = {
     use molt_codegen_abi::{
+        THREAD_RECORD_ARENA_LIMIT_OFFSET, THREAD_RECORD_ARENA_TOP_OFFSET,
         THREAD_RECORD_EXCEPTION_PENDING_OFFSET, THREAD_RECORD_FRAME_TOP_OFFSET,
         THREAD_RECORD_PENDING_INVOCATION_OFFSET, THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
     };
@@ -98,6 +103,8 @@ const _: () = {
         offset_of!(ExecutionTls, pending_work_ptr) as i32 == THREAD_RECORD_PENDING_WORK_PTR_OFFSET
     );
     assert!(offset_of!(ExecutionTls, frame_top) as i32 == THREAD_RECORD_FRAME_TOP_OFFSET);
+    assert!(offset_of!(ExecutionTls, arena_top) as i32 == THREAD_RECORD_ARENA_TOP_OFFSET);
+    assert!(offset_of!(ExecutionTls, arena_limit) as i32 == THREAD_RECORD_ARENA_LIMIT_OFFSET);
 };
 
 thread_local! {
@@ -107,7 +114,8 @@ thread_local! {
             pending_invocation: Cell::new(0),
             pending_work_ptr: Cell::new(0),
             frame_top: Cell::new(0),
-            frame_depth: Cell::new(0),
+            arena_top: Cell::new(0),
+            arena_limit: Cell::new(0),
             recursion_depth: Cell::new(0),
             gil_depth: Cell::new(0),
             lease_depth: Cell::new(0),
@@ -166,7 +174,6 @@ pub extern "C" fn molt_attached_context() -> u64 {
 thread_local! {
     pub(crate) static PARSE_ARENA: std::mem::ManuallyDrop<RefCell<TempArena>> = std::mem::ManuallyDrop::new(RefCell::new(TempArena::new(8 * 1024)));
     pub(crate) static CONTEXT_STACK: std::mem::ManuallyDrop<RefCell<Vec<u64>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
-    pub(crate) static TRACE_FRAME_PUSH_STACK: std::mem::ManuallyDrop<RefCell<Vec<bool>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
     pub(crate) static REPR_STACK: std::mem::ManuallyDrop<RefCell<Vec<PtrSlot>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
     pub(crate) static REPR_SET: std::mem::ManuallyDrop<RefCell<HashSet<PtrSlot>>> = std::mem::ManuallyDrop::new(RefCell::new(HashSet::new()));
     pub(crate) static REPR_DEPTH: Cell<usize> = const { Cell::new(0) };

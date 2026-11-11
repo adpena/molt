@@ -154,8 +154,8 @@ for (const test of config.cases) {
   const hooks = {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
-    trace_enter_slot: () => { frames++; return none; },
-    trace_exit: () => { assert.equal(frames,1); frames--; return none; },
+    frame_record_enter: () => { frames++; return 1024n; },
+    frame_record_exit: (base) => { assert.equal(base,1024n); assert.equal(frames,1); frames--; return none; },
     print_obj: value => { assert.equal(frames,1); lines.push(Number(value - intBase)); },
     obj_get_state: () => 0n,
     exception_push: () => { handlers++; return none; },

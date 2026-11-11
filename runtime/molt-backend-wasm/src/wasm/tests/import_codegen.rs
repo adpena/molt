@@ -285,7 +285,7 @@ fn explicit_trace_ops_call_their_runtime_imports() {
         });
     let imports = wasm_function_import_indices(&wasm);
     let calls = wasm_direct_call_indices(&wasm);
-    for name in ["trace_enter_slot", "trace_exit"] {
+    for name in ["frame_record_enter", "frame_record_exit"] {
         let index = imports
             .get(name)
             .unwrap_or_else(|| panic!("{name} must be imported; imports={imports:?}"));
