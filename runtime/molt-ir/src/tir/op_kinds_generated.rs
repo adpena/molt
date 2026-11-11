@@ -41113,7 +41113,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::TryEnd => GvnNumberingRole::Never,
         OpCode::StateBlockStart => GvnNumberingRole::Never,
         OpCode::StateBlockEnd => GvnNumberingRole::Never,
-        OpCode::ModuleSlot => GvnNumberingRole::Never,
+        OpCode::ModuleSlot => GvnNumberingRole::Always,
         OpCode::ConstInt => GvnNumberingRole::ValueKeyedConstant,
         OpCode::ConstBigInt => GvnNumberingRole::ValueKeyedConstant,
         OpCode::ConstFloat => GvnNumberingRole::ValueKeyedConstant,
@@ -41130,7 +41130,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::ModuleGetAttr => GvnNumberingRole::Never,
         OpCode::ModuleImportFrom => GvnNumberingRole::Never,
         OpCode::ModuleGetGlobal => GvnNumberingRole::Never,
-        OpCode::GlobalSlotBase => GvnNumberingRole::Never,
+        OpCode::GlobalSlotBase => GvnNumberingRole::Always,
         OpCode::GlobalSlotGet => GvnNumberingRole::Never,
         OpCode::ModuleGetName => GvnNumberingRole::Never,
         OpCode::ModuleSetAttr => GvnNumberingRole::Never,
@@ -41172,6 +41172,7 @@ const GVN_VALUE_KEY_ATTRS_CONST_FLOAT: &[&str] = &["f_value", "value"];
 const GVN_VALUE_KEY_ATTRS_CONST_STR: &[&str] = &["s_value", "value"];
 const GVN_VALUE_KEY_ATTRS_CONST_BYTES: &[&str] = &["bytes", "value"];
 const GVN_VALUE_KEY_ATTRS_TYPE_GUARD: &[&str] = &["expected_type", "ty"];
+const GVN_VALUE_KEY_ATTRS_MODULE_SLOT: &[&str] = &["s_value"];
 
 /// GVN value-key payload spec. EXHAUSTIVE over OpCode; opcodes whose
 /// value identity has no attr payload map to None instead of pass-local
@@ -41283,7 +41284,10 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::TryEnd => None,
         OpCode::StateBlockStart => None,
         OpCode::StateBlockEnd => None,
-        OpCode::ModuleSlot => None,
+        OpCode::ModuleSlot => Some(GvnValueKeySpec {
+            kind: GvnValueKeyKind::StrAttr,
+            attrs: GVN_VALUE_KEY_ATTRS_MODULE_SLOT,
+        }),
         OpCode::ConstInt => Some(GvnValueKeySpec {
             kind: GvnValueKeyKind::I64Attr,
             attrs: GVN_VALUE_KEY_ATTRS_CONST_INT,

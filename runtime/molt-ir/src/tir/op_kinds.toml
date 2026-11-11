@@ -1502,6 +1502,11 @@ gvn_always_numberable_opcodes = [
     "IsBoolWord",
     "UnboxBoolWord",
     "BoxInlineInt",
+    # Module global slot sites (call_anatomy.md 4.5): a module's identity is
+    # one constant, and its slot base is fixed for one activation, so every
+    # read of one module in a function shares one base.
+    "ModuleSlot",
+    "GlobalSlotBase",
 ]
 
 gvn_type_gated_numberable_opcodes = [
@@ -1550,6 +1555,7 @@ gvn_value_keyed_constant_opcodes = [
 
 gvn_numberable_attr_key_opcodes = [
     { opcode = "TypeGuard", key = "str_attr", attrs = ["expected_type", "ty"] },
+    { opcode = "ModuleSlot", key = "str_attr", attrs = ["s_value"] },
 ]
 
 # final_tir_opcodes: produced only by the terminal phase of TIR for targets

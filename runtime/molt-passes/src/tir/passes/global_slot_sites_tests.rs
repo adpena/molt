@@ -145,3 +145,60 @@ fn a_store_whose_result_is_read_keeps_its_by_name_op() {
     assert_eq!(store.origin, Some(molt_ir::OpKind::DictSet));
     assert_eq!(store.global_slot(), None);
 }
+
+#[test]
+fn reads_of_one_module_share_one_base_after_the_cleanup_round() {
+    let mut func = function();
+    let first = func.fresh_value();
+    let second = func.fresh_value();
+    func.value_types.insert(first, TirType::DynBox);
+    func.value_types.insert(second, TirType::DynBox);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    for (result, index) in [(first, 0), (second, 4)] {
+        let mut op = TirOp::new(
+            OpCode::ModuleGetGlobal,
+            vec![ValueId(0), ValueId(1)],
+            vec![result],
+        );
+        op.set_global_slot(Some(&slot(index)));
+        block.ops.push(op);
+    }
+    block.terminator = Terminator::Return {
+        values: vec![second],
+    };
+
+    let target = crate::tir::target_info::TargetInfo::native_release_fast();
+    assert!(crate::tir::pass_manager::run_global_slot_sites(
+        &mut func, &target
+    ));
+    verify(&func);
+    let ops = entry_ops(&func);
+    let count = |opcode| ops.iter().filter(|op| op.opcode == opcode).count();
+    assert_eq!(count(OpCode::ModuleSlot), 1, "one module identity");
+    assert_eq!(count(OpCode::GlobalSlotBase), 1, "one base per activation");
+    let base = ops
+        .iter()
+        .find(|op| op.opcode == OpCode::GlobalSlotBase)
+        .unwrap()
+        .results[0];
+    let gets: Vec<_> = ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::GlobalSlotGet)
+        .collect();
+    assert_eq!(gets.len(), 2, "both reads stay: each may run Python");
+    // GVN leaves a merged value as a Copy of its leader.
+    let leader = |mut value: ValueId| {
+        while let Some(copy) = ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Copy && op.results == [value])
+        {
+            value = copy.operands[0];
+        }
+        value
+    };
+    assert!(
+        gets.iter().all(|get| leader(get.operands[0]) == base),
+        "{ops:#?}"
+    );
+}
