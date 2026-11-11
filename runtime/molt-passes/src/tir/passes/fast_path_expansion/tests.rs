@@ -1,4 +1,8 @@
-use super::run;
+use super::GuardedTargets;
+
+fn run(func: &mut TirFunction) -> super::PassStats {
+    super::run(func, &GuardedTargets::new())
+}
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
@@ -262,7 +266,9 @@ fn cleanup_merges_a_values_repeated_tag_test() {
         values: vec![tuple],
     };
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
-    assert!(crate::tir::pass_manager::run_late_lowering(&mut func, &tti));
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
     assert_valid(&func);
     let tests_of_a = ops(&func, OpCode::IsInlineInt)
         .into_iter()
@@ -277,7 +283,7 @@ fn a_function_without_eligible_ops_is_left_untouched() {
     let before = crate::tir::printer::print_function(&func);
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     assert!(!crate::tir::pass_manager::run_late_lowering(
-        &mut func, &tti
+        &mut func, &tti, None
     ));
     assert_eq!(crate::tir::printer::print_function(&func), before);
 }
@@ -445,7 +451,9 @@ fn truthiness_after_an_add_reuses_the_int_tag_test() {
         values: vec![tuple],
     };
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
-    assert!(crate::tir::pass_manager::run_late_lowering(&mut func, &tti));
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut func, &tti, None
+    ));
     assert_valid(&func);
     let tests_of_a = ops(&func, OpCode::IsInlineInt)
         .into_iter()
@@ -592,7 +600,153 @@ fn the_terminal_phase_keeps_the_expanded_results_type() {
     func.value_types.insert(result, TirType::I64);
     func.return_type = TirType::I64;
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
-    crate::tir::drop_phase::finalize_function_drops(&mut func, &tti);
+    crate::tir::drop_phase::finalize_function_drops(&mut func, &tti, None);
     assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 1, "the add expands");
     assert_eq!(func.value_types[&result], TirType::I64);
+}
+
+/// `return f(a)`: a guarded call of the compiled function `target` through the
+/// callable in parameter 0, adopting its operands when `adopts`.
+fn guarded_call(adopts: bool) -> (TirFunction, ValueId) {
+    let mut func = TirFunction::new(
+        "caller".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let result = func.fresh_value();
+    func.value_types.insert(result, TirType::DynBox);
+    let mut call = TirOp::new(OpCode::Call, vec![ValueId(0), ValueId(1)], vec![result]);
+    call.origin = Some(molt_ir::OpKind::CallGuarded);
+    call.attrs
+        .insert("s_value".into(), AttrValue::Str("target".into()));
+    if adopts {
+        call.set_argument_custody(&[crate::ir::ParameterCustody::Transferred; 2]);
+    }
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.push(call);
+    block.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    (func, result)
+}
+
+fn targets(arity: usize, has_closure: bool) -> GuardedTargets {
+    GuardedTargets::from([(
+        "target".to_string(),
+        super::CalleeFacts { arity, has_closure },
+    )])
+}
+
+#[test]
+fn a_guarded_call_admits_then_calls_its_target_directly() {
+    for adopts in [false, true] {
+        let (mut func, _) = guarded_call(adopts);
+        assert_eq!(super::run(&mut func, &targets(1, false)).values_changed, 1);
+        assert_valid(&func);
+        let runtimes: Vec<_> = ops(&func, OpCode::CallRuntime)
+            .into_iter()
+            .map(|(_, op)| op.runtime.unwrap())
+            .collect();
+        for expected in [
+            RuntimeFn::FunctionDirectCallEligible,
+            RuntimeFn::RecursionEnterFast,
+            RuntimeFn::RecursionExitFast,
+            RuntimeFn::RaiseRecursionError,
+        ] {
+            assert_eq!(
+                runtimes.iter().filter(|&&r| r == expected).count(),
+                1,
+                "{expected:?}"
+            );
+        }
+        // Admission passes the supplied count and the adoption bit as raw words.
+        let (entry, eligible) = ops(&func, OpCode::CallRuntime)
+            .into_iter()
+            .find(|(_, op)| op.runtime == Some(RuntimeFn::FunctionDirectCallEligible))
+            .unwrap();
+        let constant = |value: ValueId| {
+            func.blocks[&entry]
+                .ops
+                .iter()
+                .find(|op| op.results == [value])
+                .and_then(|op| match op.attrs.get("value") {
+                    Some(AttrValue::Int(v)) => Some(*v),
+                    _ => None,
+                })
+        };
+        assert_eq!(eligible.operands[0], ValueId(0));
+        assert_eq!(constant(eligible.operands[1]), Some(1));
+        assert_eq!(
+            constant(eligible.operands[2]),
+            Some(if adopts { 0b10 } else { 0 })
+        );
+        // The direct call keeps the arguments' custody and borrows the callable,
+        // so the callable outlives the call.
+        let (_, direct) = &ops(&func, OpCode::DirectCall)[0];
+        assert_eq!(direct.operands, [ValueId(0), ValueId(1)]);
+        assert_eq!(
+            direct.operand_custody(0),
+            crate::ir::ParameterCustody::Borrowed
+        );
+        assert_eq!(
+            direct.operand_custody(1),
+            if adopts {
+                crate::ir::ParameterCustody::Transferred
+            } else {
+                crate::ir::ParameterCustody::Borrowed
+            }
+        );
+        // The slow arm is the original guarded call, unchanged.
+        let slow = ops(&func, OpCode::Call);
+        assert_eq!(slow.len(), 1);
+        assert_eq!(slow[0].1.origin, Some(molt_ir::OpKind::CallGuarded));
+        assert_eq!(
+            slow[0].1.operand_custody(0) == crate::ir::ParameterCustody::Transferred,
+            adopts
+        );
+        assert_eq!(ops(&func, OpCode::CodeIs).len(), 1);
+    }
+}
+
+#[test]
+fn guarded_call_admission_cannot_raise() {
+    // Only the direct call, the slow call and the RecursionError raise may
+    // raise; the join's check keeps the call's own exception source.
+    let (mut func, _) = guarded_call(true);
+    super::run(&mut func, &targets(1, false));
+    let const_ints = std::collections::HashMap::new();
+    for op in func.blocks.values().flat_map(|block| &block.ops) {
+        let raises = matches!(op.opcode, OpCode::Call | OpCode::DirectCall)
+            || op.runtime == Some(RuntimeFn::RaiseRecursionError);
+        assert_eq!(
+            crate::tir::passes::check_exception_elim::classify::op_may_raise(
+                &func.value_types,
+                &const_ints,
+                op
+            ),
+            raises,
+            "{:?} {:?}",
+            op.opcode,
+            op.runtime
+        );
+    }
+}
+
+#[test]
+fn a_closure_target_or_an_arity_mismatch_keeps_the_runtime_lane() {
+    for facts in [targets(1, true), targets(2, false), GuardedTargets::new()] {
+        let (mut func, _) = guarded_call(true);
+        assert_eq!(super::run(&mut func, &facts).values_changed, 0);
+        assert_eq!(func.blocks.len(), 1);
+    }
+}
+
+#[test]
+#[should_panic(expected = "has no source signature")]
+fn a_guarded_target_without_a_signature_is_a_compiler_error() {
+    let (func, _) = guarded_call(true);
+    let table = molt_ir::linkage_abi::FunctionSignatures::new();
+    super::guarded_targets(&func, Some(&table));
 }

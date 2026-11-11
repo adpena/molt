@@ -121,6 +121,7 @@ impl SimpleBackend {
                     } else {
                         crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
                     },
+                    linkage: None,
                 },
             );
             let mut final_functions = NativeFinalFunctions::from_final_tir(

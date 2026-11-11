@@ -1869,7 +1869,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     /// The execution lease keeps both pointers alive for this invocation.
     /// Materialize them in the actual LLVM entry, including a CFG trampoline.
-    fn async_poll_context(
+    pub(super) fn async_poll_context(
         &mut self,
     ) -> (
         inkwell::values::PointerValue<'ctx>,

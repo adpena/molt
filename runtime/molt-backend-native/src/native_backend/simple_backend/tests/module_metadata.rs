@@ -42,7 +42,7 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
     }
     .function_signature()
     .unwrap();
-    let linkage = crate::NativeFunctionLinkageAbi {
+    let linkage = molt_ir::linkage_abi::NativeFunctionLinkageAbi {
         source_signature: signature,
         parameter_custody: Vec::new(),
         param_types: Vec::new(),

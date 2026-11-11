@@ -3,6 +3,8 @@ use crate::stdlib_module_symbols::{
     is_user_owned_symbol, original_partition_source, partition_user_owned_functions,
 };
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+#[cfg(feature = "native-backend")]
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
@@ -261,23 +263,6 @@ impl NativeFinalFunctions {
                 }
             })
     }
-}
-
-#[cfg(feature = "native-backend")]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-pub struct NativeFunctionLinkageAbi {
-    /// Target-neutral source ABI frozen from the owning FunctionIR before
-    /// partitioning. Consumer declarations must match it exactly.
-    pub source_signature: crate::ir::ExternFunctionSignature,
-    /// Entry parameter custody frozen with the source signature (design 20
-    /// §1.6). A consumer declaration must carry it exactly, so a caller in one
-    /// object adopts precisely what the entry in another takes over.
-    pub parameter_custody: Vec<crate::ir::ParameterCustody>,
-    /// Exact machine-carrier types frozen before the function set is split
-    /// into independently compiled objects.
-    pub param_types: Vec<crate::tir::types::TirType>,
-    /// `None` is a true native-void ABI. `Some` is the exact return carrier.
-    pub return_type: Option<crate::tir::types::TirType>,
 }
 
 #[cfg(feature = "native-backend")]

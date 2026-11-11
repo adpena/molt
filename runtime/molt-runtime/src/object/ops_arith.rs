@@ -175,6 +175,13 @@ fn add_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     ) {
         return result;
     }
+    // A complex operand decides the operation: no int, float, sequence or
+    // big-int case below can apply to it, so answer before those probes.
+    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+        && let Some(bits) = complex_binary(_py, ComplexArith::Add, lhs, rhs)
+    {
+        return bits;
+    }
     // BigInt fast path — hoisted above inline int/float checks because
     // BigInt operands fail every is_int/is_float/to_i64 check before
     // reaching the pointer dispatch, wasting ~8 branch mispredictions
@@ -280,11 +287,6 @@ fn add_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             return MoltObject::from_int(i).bits();
         }
         return bigint_bits(_py, res);
-    }
-    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
-        && let Some(bits) = complex_binary(_py, ComplexArith::Add, lhs, rhs)
-    {
-        return bits;
     }
     unsafe {
         let add_name_bits = crate::NameId::DunderAdd.bits(_py);
@@ -511,6 +513,13 @@ fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     ) {
         return result;
     }
+    // A complex operand decides the operation: no int, float, sequence or
+    // big-int case below can apply to it, so answer before those probes.
+    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+        && let Some(bits) = complex_binary(_py, ComplexArith::Sub, lhs, rhs)
+    {
+        return bits;
+    }
     // BigInt fast path — hoisted above inline int/float checks to avoid
     // wasted branch mispredictions when both operands are heap BigInts.
     if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -550,11 +559,6 @@ fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             return MoltObject::from_int(i).bits();
         }
         return bigint_bits(_py, res);
-    }
-    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
-        && let Some(bits) = complex_binary(_py, ComplexArith::Sub, lhs, rhs)
-    {
-        return bits;
     }
     if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
         unsafe {
@@ -1145,6 +1149,13 @@ fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     ) {
         return result;
     }
+    // A complex operand decides the operation: no int, float, sequence or
+    // big-int case below can apply to it, so answer before those probes.
+    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+        && let Some(bits) = complex_binary(_py, ComplexArith::Mul, lhs, rhs)
+    {
+        return bits;
+    }
     // BigInt fast path — hoisted to avoid wasted to_i64/is_float checks
     // when both operands are heap BigInts.
     if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -1205,11 +1216,6 @@ fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             return MoltObject::from_int(i).bits();
         }
         return bigint_bits(_py, res);
-    }
-    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
-        && let Some(bits) = complex_binary(_py, ComplexArith::Mul, lhs, rhs)
-    {
-        return bits;
     }
     unsafe {
         let mul_name_bits = crate::NameId::DunderMul.bits(_py);

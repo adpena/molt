@@ -153,6 +153,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(op.results[0], truth.into());
                 self.value_types.insert(op.results[0], TirType::Bool);
             }
+            OpCode::CodeIs => self.emit_code_is(op),
+            OpCode::DirectCall => self.emit_guarded_direct_call(op),
             OpCode::BoxInlineInt => {
                 let value = self.ensure_i64(self.resolve(op.operands[0]));
                 let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);

@@ -343,6 +343,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         | OpCode::IsBoolWord
         | OpCode::UnboxBoolWord
         | OpCode::BoxInlineInt
+        | OpCode::CodeIs
+        | OpCode::DirectCall
         | OpCode::CallRuntime => unreachable!(
             "{:?} is a final-TIR op; a SimpleIR target never runs the late lowering stage",
             op.opcode

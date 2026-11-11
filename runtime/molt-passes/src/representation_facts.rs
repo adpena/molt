@@ -503,6 +503,8 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::IsBoolWord
         | OpCode::UnboxBoolWord
         | OpCode::BoxInlineInt
+        | OpCode::CodeIs
+        | OpCode::DirectCall
         | OpCode::CallRuntime => (IntegerOperandObservation::Always, false),
         OpCode::Add
         | OpCode::InplaceAdd

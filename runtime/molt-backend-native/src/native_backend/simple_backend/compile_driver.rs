@@ -1,6 +1,8 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::*;
 use molt_ir::backend_environment::BackendEnv;
+#[cfg(feature = "llvm")]
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
 type ExternFunctionSignatures = BTreeMap<String, crate::ir::ExternFunctionSignature>;
 
@@ -187,6 +189,16 @@ impl SimpleBackend {
             // is empty here (the native lane needs it only because its module
             // phase runs *before* externalization).
             let non_inlinable = std::collections::HashSet::new();
+            // A guarded call may name a function another object of the program
+            // defines: the whole-program linkage rows supply its signature.
+            let mut program_signatures = function_signatures.clone();
+            if let Some(module_context) = self.module_context.as_ref() {
+                for (name, abi) in &module_context.function_linkage_abis {
+                    program_signatures
+                        .entry(name.clone())
+                        .or_insert(abi.source_signature);
+                }
+            }
             let tir_funcs = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
                 ir.functions,
                 &mut llvm_cached_tir,
@@ -200,6 +212,7 @@ impl SimpleBackend {
                     } else {
                         crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
                     },
+                    linkage: Some(&program_signatures),
                 },
             );
             super::program_pipeline::dump_rewritten_tir_if_requested(&tir_funcs);

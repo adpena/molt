@@ -970,6 +970,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
     crate::tir::drop_phase::finalize_function_drops(
         &mut mixed,
         &crate::tir::TargetInfo::wasm_release_fast(),
+        None,
     );
     let mixed_ir = SimpleIR {
         functions: vec![mixed_source],

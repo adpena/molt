@@ -60,7 +60,7 @@ use crate::tir::values::ValueId;
 fn require_function_linkage_abi<'a>(
     func: &TirFunction,
     backend: &'a LlvmBackend<'_>,
-) -> std::borrow::Cow<'a, crate::NativeFunctionLinkageAbi> {
+) -> std::borrow::Cow<'a, molt_ir::linkage_abi::NativeFunctionLinkageAbi> {
     if let Some(abi) = backend.function_linkage_abis.get(&func.name) {
         return std::borrow::Cow::Borrowed(abi);
     }
@@ -75,7 +75,7 @@ fn require_function_linkage_abi<'a>(
             .get(&func.name)
             .cloned()
             .unwrap_or_else(|| crate::representation_plan::ProducerCarrierPlan::build(func));
-        std::borrow::Cow::Owned(crate::NativeFunctionLinkageAbi {
+        std::borrow::Cow::Owned(molt_ir::linkage_abi::NativeFunctionLinkageAbi {
             source_signature: crate::ir::ExternFunctionSignature {
                 arity: func.param_types.len(),
                 has_closure: false,

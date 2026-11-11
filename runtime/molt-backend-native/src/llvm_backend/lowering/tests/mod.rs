@@ -96,8 +96,8 @@ fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
 fn test_native_linkage_abi(
     param_types: Vec<TirType>,
     return_type: Option<TirType>,
-) -> crate::NativeFunctionLinkageAbi {
-    crate::NativeFunctionLinkageAbi {
+) -> molt_ir::linkage_abi::NativeFunctionLinkageAbi {
+    molt_ir::linkage_abi::NativeFunctionLinkageAbi {
         source_signature: crate::ir::ExternFunctionSignature {
             arity: param_types.len(),
             has_closure: false,

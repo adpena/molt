@@ -631,6 +631,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     target_name,
                     target_fn,
                     direct_operands,
+                    op.operands.len() - direct_operands.len(),
                     &target_return_tir_ty,
                 );
             } else {
@@ -693,6 +694,95 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
+    /// The compiled target a guarded call or its late-TIR ops name, when its
+    /// linkage row exists.
+    fn guarded_target_fn(&self, op: &TirOp) -> Option<(String, FunctionValue<'ctx>, TirType)> {
+        let name = ["s_value", "_var"]
+            .iter()
+            .find_map(|key| match op.attrs.get(*key) {
+                Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
+                _ => None,
+            })?;
+        let abi = self.backend.function_linkage_abis.get(name.as_str())?;
+        let arity = abi.param_types.len();
+        let return_ty = abi.return_type.clone().unwrap_or(TirType::DynBox);
+        let target = self.ensure_function_symbol(&name, arity, false);
+        Some((name, target, return_ty))
+    }
+
+    /// `CodeIs` (HF-821 D4): the function word's code pointer, the first word
+    /// of the function object, equals the compiled target's address.
+    pub(super) fn emit_code_is(&mut self, op: &TirOp) {
+        let Some((_, target, _)) = self.guarded_target_fn(op) else {
+            self.record_fatal("CodeIs names no compiled target".to_string());
+            return;
+        };
+        let context = self.backend.context;
+        let i64_ty = context.i64_type();
+        let word = self.ensure_i64(self.resolve(op.operands[0]));
+        let address = self.unbox_ptr_bits(word);
+        let builder = &self.backend.builder;
+        let object = builder
+            .build_int_to_ptr(
+                address,
+                context.ptr_type(inkwell::AddressSpace::default()),
+                "callee_object",
+            )
+            .unwrap();
+        let code = builder
+            .build_load(i64_ty, object, "callee_code")
+            .unwrap()
+            .into_int_value();
+        let expected = builder
+            .build_ptr_to_int(
+                target.as_global_value().as_pointer_value(),
+                i64_ty,
+                "target_code",
+            )
+            .unwrap();
+        let same = builder
+            .build_int_compare(inkwell::IntPredicate::EQ, code, expected, "code_is")
+            .unwrap();
+        self.values.insert(op.results[0], same.into());
+        self.value_types.insert(op.results[0], TirType::Bool);
+    }
+
+    /// `DirectCall` (HF-821 D4): hand the callable to the callee's frame entry
+    /// through the thread record's invocation word, call the compiled target
+    /// with the operands after the callable, and put the outer handoff back.
+    pub(super) fn emit_guarded_direct_call(&mut self, op: &TirOp) {
+        let Some((name, target, return_ty)) = self.guarded_target_fn(op) else {
+            self.record_fatal("DirectCall names no compiled target".to_string());
+            return;
+        };
+        let context = self.backend.context;
+        let i64_ty = context.i64_type();
+        let callee = self.ensure_i64(self.resolve(op.operands[0]));
+        let (record, _) = self.async_poll_context();
+        let slot = unsafe {
+            self.backend
+                .builder
+                .build_gep(
+                    context.i8_type(),
+                    record,
+                    &[i64_ty.const_int(
+                        molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET as u64,
+                        false,
+                    )],
+                    "pending_invocation",
+                )
+                .unwrap()
+        };
+        let outer = self
+            .backend
+            .builder
+            .build_load(i64_ty, slot, "outer_invocation")
+            .unwrap();
+        self.backend.builder.build_store(slot, callee).unwrap();
+        self.emit_direct_compiled_call(op, &name, target, &op.operands[1..], 1, &return_ty);
+        self.backend.builder.build_store(slot, outer).unwrap();
+    }
+
     /// A direct call into compiled code. Every argument is coerced from its
     /// SOURCE TirType to the CALLEE's declared param TirType (DynBox = the boxed
     /// molt ABI default). A plain `call`/`call_internal` once passed an
@@ -710,6 +800,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         target_name: &str,
         target_fn: FunctionValue<'ctx>,
         operands: &[ValueId],
+        first_operand: usize,
         target_return_tir_ty: &TirType,
     ) {
         let i64_ty = self.backend.context.i64_type();
@@ -740,8 +831,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // Positions the instruction adopted (`argument_custody`, the target's
         // own parameter custody): the adopting entry owns one reference to each
         // such argument once it runs.
-        let adopted =
-            |idx: usize| op.operand_custody(idx) == crate::ir::ParameterCustody::Transferred;
+        // `operands` starts at the op's `first_operand`: a guarded call's
+        // operand 0 is its callable, which no entry adopts.
+        let adopted = |idx: usize| {
+            op.operand_custody(idx + first_operand) == crate::ir::ParameterCustody::Transferred
+        };
         let adopted_inputs: Vec<ValueId> = operands
             .iter()
             .enumerate()

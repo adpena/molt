@@ -28,9 +28,9 @@ use inkwell::targets::TargetMachine;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "llvm")]
-use crate::NativeFunctionLinkageAbi;
-#[cfg(feature = "llvm")]
 use crate::representation_plan::ProducerCarrierPlan;
+#[cfg(feature = "llvm")]
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 #[cfg(feature = "llvm")]
 pub struct LlvmBackend<'ctx> {
     pub context: &'ctx Context,
