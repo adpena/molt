@@ -175,12 +175,13 @@ _SCCP_CONSTANT_EVAL_RULES = {
     "bool": "Bool",
     "build_tuple": "BuildTuple",
 }
-# The ops the late lowering stage of TIR expands, by the fast arm they take
-# on two inline ints (HF-821).
+# The ops the late lowering stage of TIR expands, by the fast arms they take
+# on inline-int and float words (HF-821).
 _FAST_PATH_EXPANSION_RULES = {
-    "int_add": "IntAdd",
-    "int_sub": "IntSub",
-    "int_compare": "IntCompare",
+    "numeric_add": "NumericAdd",
+    "numeric_sub": "NumericSub",
+    "numeric_mul": "NumericMul",
+    "numeric_compare": "NumericCompare",
     "guarded_call": "GuardedCall",
     "truthiness": "Truthiness",
 }

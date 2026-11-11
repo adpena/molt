@@ -7,7 +7,7 @@ pub(crate) struct NativeApplicationArtifactOptions<'a> {
     pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
     pub(crate) target_triple: Option<&'a str>,
     pub(crate) stdlib_split_enabled: bool,
-    pub(crate) app_callable_manifest: Option<BTreeSet<String>>,
+    pub(crate) app_callable_manifest: Option<molt_backend::passes::AppCallableManifest>,
     pub(crate) log_prefix: &'a str,
     /// Per-build module registry (import bedrock, design doc 69): its init
     /// symbols are dead-function-elimination roots and the main application
@@ -35,7 +35,7 @@ pub(crate) struct NativeBatchObjectJob {
     pub(crate) codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment,
     pub(crate) target_triple: Option<String>,
     pub(crate) emit_app_callable_resolver: bool,
-    pub(crate) app_callable_manifest: Option<BTreeSet<String>>,
+    pub(crate) app_callable_manifest: Option<molt_backend::passes::AppCallableManifest>,
     pub(crate) external_function_names: BTreeSet<String>,
     /// Carried by the batch that emits the app callable resolver (the main
     /// application object): that batch also emits the module registry blob.
@@ -57,7 +57,7 @@ impl NativeBatchObjectJob {
     pub(crate) fn close_dependencies(mut self, context: &NativeBackendModuleContext) -> Self {
         let mut names = NativeBackendModuleContext::object_dependencies(&self.ir.functions);
         if let Some(manifest) = &self.app_callable_manifest {
-            names.extend(manifest.iter().cloned());
+            names.extend(manifest.names().cloned());
         }
         if let Some(registry) = &self.module_registry {
             names.extend(registry.init_symbols.iter().cloned());

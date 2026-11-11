@@ -732,7 +732,7 @@ impl SimpleBackend {
 /// codegen, for every code owner.
 pub(in crate::native_backend::simple_backend) struct NativeCodegenProgram {
     emit_resolver_here: bool,
-    app_callable_manifest: BTreeSet<String>,
+    app_callable_manifest: crate::passes::AppCallableManifest,
     source_callables: molt_tir::trampolines::CallableMetadata,
     final_functions: Option<NativeFinalFunctions>,
     extern_function_signatures: ExternFunctionSignatures,

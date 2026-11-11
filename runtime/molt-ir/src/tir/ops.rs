@@ -197,6 +197,8 @@ pub enum OpCode {
     IsInlineInt,
     UnboxInlineInt,
     IsBoolWord,
+    IsFloatWord,
+    UnboxFloatWord,
     UnboxBoolWord,
     BoxInlineInt,
     CodeIs,
@@ -540,6 +542,11 @@ pub const INLINE_INT_PROOF_ATTR: &str = "inline_int_proof";
 /// stage records it on the ops that replace an op which could not raise (an
 /// add of two exact ints), whose exception check is already gone.
 pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
+/// Proof carried into final TIR: the exact scalar type of this op's result,
+/// as a closed tag (`exact_result_proof`). The late lowering stage records it
+/// on the runtime call that replaces an op whose result type was exact; the
+/// call's own contract says only "an object".
+pub const EXACT_RESULT_PROOF_ATTR: &str = "exact_result_proof";
 
 /// Attribute projection of a call's typed per-operand custody: the
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with
@@ -943,6 +950,32 @@ impl TirOp {
     pub fn mark_nothrow_proof(&mut self) {
         self.attrs
             .insert(NOTHROW_PROOF_ATTR.into(), AttrValue::Bool(true));
+    }
+
+    /// The exact scalar type the late stage proved for this op's result.
+    pub fn exact_result_proof(&self) -> Option<TirType> {
+        match self.attrs.get(EXACT_RESULT_PROOF_ATTR) {
+            Some(AttrValue::Int(0)) => Some(TirType::I64),
+            Some(AttrValue::Int(1)) => Some(TirType::BigInt),
+            Some(AttrValue::Int(2)) => Some(TirType::Bool),
+            Some(AttrValue::Int(3)) => Some(TirType::F64),
+            _ => None,
+        }
+    }
+
+    /// Record the exact scalar type of this op's result. Returns false, and
+    /// records nothing, for a type that is not an exact scalar.
+    pub fn mark_exact_result_proof(&mut self, ty: &TirType) -> bool {
+        let tag = match ty {
+            TirType::I64 => 0,
+            TirType::BigInt => 1,
+            TirType::Bool => 2,
+            TirType::F64 => 3,
+            _ => return false,
+        };
+        self.attrs
+            .insert(EXACT_RESULT_PROOF_ATTR.into(), AttrValue::Int(tag));
+        true
     }
 
     /// Whether lowering this operation reads the thread's pending-work word:

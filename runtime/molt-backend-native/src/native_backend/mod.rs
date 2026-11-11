@@ -65,6 +65,17 @@ fn declare_python_execution_function(
         molt_ir::runtime_fn_generated::runtime_boxed_abi(logical, signature.params.len()).is_none(),
         "runtime callable `{logical}` has no execution ABI classification"
     );
+    declare_compiled_execution_function(module, logical, linkage, signature)
+}
+
+/// A compiled application function: its physical symbol carries the attached
+/// execution context, which is its first parameter.
+fn declare_compiled_execution_function(
+    module: &mut dyn Module,
+    logical: &str,
+    linkage: Linkage,
+    signature: &cranelift_codegen::ir::Signature,
+) -> Result<cranelift_module::FuncId, Box<cranelift_module::ModuleError>> {
     let mut physical = signature.clone();
     physical.params.insert(0, AbiParam::new(types::I64));
     module

@@ -55,20 +55,29 @@ fn assert_valid(func: &TirFunction) {
         .expect("expanded function keeps its exception regions");
 }
 
+/// The block holding a fast arm: the first block where `unbox` reads a value.
+fn arm_block(func: &TirFunction, unbox: OpCode) -> BlockId {
+    ops(func, unbox)[0].0
+}
+
+fn block_opcodes(func: &TirFunction, block: BlockId) -> Vec<OpCode> {
+    func.blocks[&block].ops.iter().map(|op| op.opcode).collect()
+}
+
 #[test]
-fn boxed_add_becomes_the_inline_int_diamond() {
+fn boxed_add_tests_int_then_float_words() {
     let (mut func, result) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
     let stats = run(&mut func);
     assert_eq!(stats.values_changed, 1);
     assert_valid(&func);
-    assert_eq!(func.blocks.len(), 5);
+    // entry (int test a), int test b, int arm, float test a, float test b,
+    // float arm, slow arm, join.
+    assert_eq!(func.blocks.len(), 8);
     assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 2);
-    let unboxed = ops(&func, OpCode::UnboxInlineInt);
-    assert_eq!(unboxed.len(), 2);
-    let fast = unboxed[0].0;
-    let fast_ops: Vec<OpCode> = func.blocks[&fast].ops.iter().map(|op| op.opcode).collect();
+    assert_eq!(ops(&func, OpCode::IsFloatWord).len(), 2);
+    let fast = arm_block(&func, OpCode::UnboxInlineInt);
     assert_eq!(
-        fast_ops,
+        block_opcodes(&func, fast),
         [
             OpCode::UnboxInlineInt,
             OpCode::UnboxInlineInt,
@@ -76,6 +85,29 @@ fn boxed_add_becomes_the_inline_int_diamond() {
             OpCode::BoxVal
         ]
     );
+    let float = arm_block(&func, OpCode::UnboxFloatWord);
+    assert_eq!(
+        block_opcodes(&func, float),
+        [
+            OpCode::UnboxFloatWord,
+            OpCode::UnboxFloatWord,
+            OpCode::Add,
+            OpCode::BoxVal
+        ]
+    );
+    let (_, float_add) = ops(&func, OpCode::Add)
+        .into_iter()
+        .find(|(block, _)| *block == float)
+        .unwrap();
+    for operand in &float_add.operands {
+        assert_eq!(func.value_types[operand], TirType::F64);
+    }
+    // A failed int test reaches the float tests, never the slow arm directly.
+    let entry_end = &func.blocks[&func.entry_block].terminator;
+    let Terminator::CondBranch { else_block, .. } = entry_end else {
+        panic!("the entry tests the int tag");
+    };
+    assert_eq!(block_opcodes(&func, *else_block), [OpCode::IsFloatWord]);
     let calls = ops(&func, OpCode::CallRuntime);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].1.runtime, Some(RuntimeFn::Add));
@@ -90,7 +122,7 @@ fn boxed_add_becomes_the_inline_int_diamond() {
     assert!(
         ops(&func, OpCode::Add)
             .iter()
-            .all(|(block, _)| *block == fast)
+            .all(|(block, _)| *block == fast || *block == float)
     );
 }
 
@@ -106,9 +138,10 @@ fn inplace_ops_call_their_inplace_entry_and_share_the_fast_arm() {
         assert_valid(&func);
         let calls = ops(&func, OpCode::CallRuntime);
         assert_eq!(calls[0].1.runtime, Some(runtime), "{opcode:?}");
-        assert_eq!(ops(&func, fast).len(), 1, "{opcode:?}");
+        // One payload op in the int arm and one in the float arm.
+        assert_eq!(ops(&func, fast).len(), 2, "{opcode:?}");
         assert!(
-            ops(&func, opcode).len() <= usize::from(opcode == fast),
+            ops(&func, opcode).len() <= if opcode == fast { 2 } else { 0 },
             "{opcode:?}"
         );
     }
@@ -279,7 +312,7 @@ fn cleanup_merges_a_values_repeated_tag_test() {
 
 #[test]
 fn a_function_without_eligible_ops_is_left_untouched() {
-    let (mut func, _) = binary(OpCode::Mul, [TirType::DynBox, TirType::DynBox]);
+    let (mut func, _) = binary(OpCode::FloorDiv, [TirType::DynBox, TirType::DynBox]);
     let before = crate::tir::printer::print_function(&func);
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     assert!(!crate::tir::pass_manager::run_late_lowering(
@@ -478,13 +511,20 @@ fn a_boxed_comparison_compares_payloads_and_boxes_the_raw_bool() {
         assert_eq!(run(&mut func).values_changed, 1, "{opcode:?}");
         assert_valid(&func);
         assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 2);
-        // Only the fast arm compares in TIR; the slow arm calls the entry.
+        assert_eq!(ops(&func, OpCode::IsFloatWord).len(), 2);
+        // Only the fast arms compare in TIR; the slow arm calls the entry.
         let compares = ops(&func, opcode);
-        assert_eq!(compares.len(), 1, "{opcode:?}");
-        let (fast, compare) = &compares[0];
+        assert_eq!(compares.len(), 2, "{opcode:?}");
+        let int_arm = arm_block(&func, OpCode::UnboxInlineInt);
+        let (fast, compare) = compares.iter().find(|(b, _)| *b == int_arm).unwrap();
         assert_eq!(func.value_types[&compare.results[0]], TirType::Bool);
         for operand in &compare.operands {
             assert_eq!(func.value_types[operand], TirType::I64);
+        }
+        let float_arm = arm_block(&func, OpCode::UnboxFloatWord);
+        let (_, float_compare) = compares.iter().find(|(b, _)| *b == float_arm).unwrap();
+        for operand in &float_compare.operands {
+            assert_eq!(func.value_types[operand], TirType::F64);
         }
         let fast_ops: Vec<OpCode> = func.blocks[fast].ops.iter().map(|op| op.opcode).collect();
         assert_eq!(
@@ -985,4 +1025,182 @@ fn replacing_an_op_that_may_raise_keeps_its_exception_source() {
             &func.value_types
         ));
     }
+}
+
+/// `total < 100` where `total` is an exact int of unknown size (a boxed
+/// word) and the result is planned as a raw bool. No backend lane owns that
+/// shape, so before this case the op called the runtime and then asked the
+/// runtime for the truth of its result, on every iteration.
+#[test]
+fn a_comparison_with_a_raw_bool_result_joins_two_raw_bools() {
+    let (mut func, _, _) = counted_loop(true);
+    let body = func
+        .blocks
+        .iter()
+        .find(|(_, block)| block.ops.iter().any(|op| op.opcode == OpCode::Add))
+        .map(|(id, _)| *id)
+        .unwrap();
+    let total = func.blocks[&body].ops[0].operands[0];
+    let stop = func.blocks.values().find_map(|block| {
+        block
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Lt)
+            .map(|op| op.operands[1])
+    });
+    let less = func.fresh_value();
+    func.value_types.insert(less, TirType::Bool);
+    func.blocks.get_mut(&body).unwrap().ops.push(TirOp::new(
+        OpCode::Lt,
+        vec![total, stop.unwrap()],
+        vec![less],
+    ));
+    let before = plan(&func);
+    assert_eq!(before[&total], Repr::MaybeBigInt);
+    assert_eq!(before[&less], Repr::Bool);
+
+    assert_eq!(run(&mut func).values_changed, 2, "the add and the compare");
+    assert_valid(&func);
+    assert_eq!(plan(&func)[&less], Repr::Bool);
+    // The compare's result is the argument of a join that both arms feed raw.
+    let join = func
+        .blocks
+        .values()
+        .find(|block| block.args.iter().any(|arg| arg.id == less))
+        .expect("the join binds the compare's result");
+    assert_eq!(join.args[0].ty, TirType::Bool);
+    let feeders: Vec<&TirOp> = func
+        .blocks
+        .values()
+        .filter(|block| {
+            matches!(&block.terminator, Terminator::Branch { target, .. } if *target == join.id)
+        })
+        .map(|block| block.ops.last().unwrap())
+        .collect();
+    let mut opcodes: Vec<OpCode> = feeders.iter().map(|op| op.opcode).collect();
+    opcodes.sort_by_key(|opcode| format!("{opcode:?}"));
+    assert_eq!(opcodes, [OpCode::Lt, OpCode::UnboxBoolWord]);
+    // The fast arm compares payloads; nothing boxes a bool.
+    let fast = feeders.iter().find(|op| op.opcode == OpCode::Lt).unwrap();
+    let plan_after = plan(&func);
+    assert_eq!(plan_after[&fast.operands[0]], Repr::RawI64Safe);
+    assert!(ops(&func, OpCode::BoxVal).len() == 1, "only the add boxes");
+}
+
+/// An add of two exact ints is an exact int. After expansion the result is a
+/// join of a boxed sum and a runtime call, whose contract says "an object".
+/// The call carries the op's exact type, so the join and the loop phi it
+/// feeds stay exact; without it every later fact about the accumulator (a
+/// raw bool from `total < n`, a non-raising add) is lost.
+#[test]
+fn expansion_keeps_the_exact_type_of_the_result_it_joins() {
+    let (mut func, _, _) = counted_loop(true);
+    let exact = |func: &TirFunction| crate::tir::type_refine::extract_exact_scalar_map(func);
+    let sum = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::Add && op.results.len() == 1)
+        .map(|op| op.results[0])
+        .unwrap();
+    let before = exact(&func);
+    let sum_type = before[&sum].clone();
+    assert!(matches!(sum_type, TirType::I64 | TirType::BigInt));
+
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    let after = exact(&func);
+    for (value, ty) in &before {
+        if matches!(
+            ty,
+            TirType::I64 | TirType::BigInt | TirType::Bool | TirType::F64
+        ) {
+            assert_eq!(
+                after.get(value),
+                Some(ty),
+                "{value:?} lost its exact type (sum is {sum:?}): {}",
+                crate::tir::printer::print_function(&func)
+            );
+        }
+    }
+
+    for block in func.blocks.values_mut() {
+        for op in &mut block.ops {
+            op.attrs.remove(crate::tir::ops::EXACT_RESULT_PROOF_ATTR);
+        }
+    }
+    assert_eq!(
+        exact(&func).get(&sum),
+        None,
+        "unmarked, the join is no exact scalar"
+    );
+}
+
+/// `x * y` on boxed words: the int arm multiplies the payloads with an
+/// overflow test and leaves for the runtime on overflow; the float arm
+/// multiplies the floats. The product of two inline payloads is planned as a
+/// full-range raw int and boxes through the overflow-safe path.
+#[test]
+fn boxed_mul_checks_overflow_in_its_int_arm() {
+    let (mut func, _) = binary(OpCode::Mul, [TirType::DynBox, TirType::DynBox]);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 2);
+    assert_eq!(ops(&func, OpCode::IsFloatWord).len(), 2);
+    let checked = ops(&func, OpCode::CheckedMul);
+    assert_eq!(checked.len(), 1);
+    let (int_arm, mul) = &checked[0];
+    let [product, overflow] = mul.results[..] else {
+        panic!("CheckedMul yields a value and a flag");
+    };
+    let slow = ops(&func, OpCode::CallRuntime)[0].0;
+    assert_eq!(
+        ops(&func, OpCode::CallRuntime)[0].1.runtime,
+        Some(RuntimeFn::Mul)
+    );
+    let Terminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = &func.blocks[int_arm].terminator
+    else {
+        panic!("the int arm branches on overflow");
+    };
+    assert_eq!((*cond, *then_block), (overflow, slow));
+    assert_eq!(block_opcodes(&func, *else_block), [OpCode::BoxVal]);
+    assert_eq!(plan(&func)[&product], Repr::RawI64FullDeopt);
+    assert_eq!(ops(&func, OpCode::Mul).len(), 1, "the float arm's product");
+}
+
+/// An operand proven an exact int takes no float arm, and one proven an exact
+/// float takes no int arm; a raw float boxes for the slow arm with BoxVal.
+#[test]
+fn exact_operand_kinds_select_the_arms() {
+    let (mut func, _) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
+    let float_const = func.fresh_value();
+    func.value_types.insert(float_const, TirType::F64);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.insert(
+        0,
+        TirOp {
+            attrs: AttrDict::from([("f_value".into(), AttrValue::Float(0.5))]),
+            ..TirOp::new(OpCode::ConstFloat, vec![], vec![float_const])
+        },
+    );
+    block.ops[1].operands[1] = float_const;
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert!(
+        ops(&func, OpCode::IsInlineInt).is_empty(),
+        "x + 0.5 has no int arm"
+    );
+    assert_eq!(ops(&func, OpCode::IsFloatWord).len(), 1, "only x is tested");
+    let slow = ops(&func, OpCode::CallRuntime)[0].0;
+    assert_eq!(
+        block_opcodes(&func, slow),
+        [OpCode::BoxVal, OpCode::CallRuntime],
+        "the raw float boxes for the runtime entry"
+    );
 }

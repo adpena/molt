@@ -365,7 +365,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_get_global",
+                molt_ir::runtime_fn_generated::RuntimeFn::ModuleGetGlobal.symbol(),
                 &[types::I64, types::I64],
                 &[types::I64],
             );

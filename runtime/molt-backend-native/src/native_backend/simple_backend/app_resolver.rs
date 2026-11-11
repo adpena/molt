@@ -3,6 +3,7 @@ use crate::app_resolver_abi::{
     APP_RESOLVER_NAMES_SYMBOL, APP_RESOLVER_RECORD_BYTES, APP_RESOLVER_SYMBOL,
     APP_RESOLVER_TABLE_SYMBOL, dump_app_callable_manifest,
 };
+use crate::passes::{AppCallableKind, AppCallableManifest};
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
@@ -38,9 +39,9 @@ impl SimpleBackend {
     /// manifest.
     pub(in crate::native_backend::simple_backend) fn emit_app_resolver_function(
         &mut self,
-        manifest_names: &BTreeSet<String>,
+        manifest: &AppCallableManifest,
     ) {
-        dump_app_callable_manifest(manifest_names);
+        dump_app_callable_manifest(manifest);
 
         // Declare the exported resolver: (i64 name_ptr, i64 name_len) -> i64.
         let mut sig = self.module.make_signature();
@@ -62,25 +63,43 @@ impl SimpleBackend {
         let mut canonical_sig = self.module.make_signature();
         canonical_sig.params.push(AbiParam::new(types::I64));
         canonical_sig.returns.push(AbiParam::new(types::I64));
+        let callables = manifest.entries();
         let mut entries: Vec<(&str, cranelift_module::FuncId)> =
-            Vec::with_capacity(manifest_names.len());
-        for name in manifest_names {
-            let physical_name = runtime_execution_abi(name)
-                .unwrap_or_else(|| {
-                    panic!("app resolver runtime callable `{name}` has no execution ABI")
-                })
-                .physical_symbol;
+            Vec::with_capacity(callables.len());
+        for (name, kind) in callables {
+            // A runtime callable is a staticlib symbol with an execution ABI; a
+            // compiled body is this program's function, possibly defined in
+            // another object of the same link.
+            let physical_name = match kind {
+                AppCallableKind::RuntimeCallable => runtime_execution_abi(name)
+                    .unwrap_or_else(|| {
+                        panic!("app resolver runtime callable `{name}` has no execution ABI")
+                    })
+                    .physical_symbol
+                    .to_owned(),
+                AppCallableKind::CompiledBody => compiled_execution_symbol(name),
+            };
             let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
-                self.module.get_name(physical_name)
+                self.module.get_name(&physical_name)
             {
                 id
             } else {
-                declare_runtime_execution_function(&mut self.module, name, &canonical_sig)
-                    .unwrap_or_else(|e| {
-                        panic!("app resolver: failed to declare callable '{name}': {e:?}")
-                    })
+                match kind {
+                    AppCallableKind::RuntimeCallable => {
+                        declare_runtime_execution_function(&mut self.module, name, &canonical_sig)
+                    }
+                    AppCallableKind::CompiledBody => declare_compiled_execution_function(
+                        &mut self.module,
+                        name,
+                        Linkage::Import,
+                        &canonical_sig,
+                    ),
+                }
+                .unwrap_or_else(|e| {
+                    panic!("app resolver: failed to declare callable '{name}': {e:?}")
+                })
             };
-            entries.push((name.as_str(), func_id));
+            entries.push((name, func_id));
         }
         let count = entries.len();
 

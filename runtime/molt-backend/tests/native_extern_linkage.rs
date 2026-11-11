@@ -325,10 +325,10 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
             profile: None,
         };
         let mut backend = SimpleBackend::new_with_target(Some(target));
-        backend.app_callable_manifest =
-            Some(std::collections::BTreeSet::from(
-                ["molt_sys_version".into()],
-            ));
+        backend.app_callable_manifest = Some(molt_backend::passes::AppCallableManifest {
+            runtime_callables: std::collections::BTreeSet::from(["molt_sys_version".into()]),
+            compiled_bodies: Default::default(),
+        });
         let output = backend.compile(ir);
         let file = object::File::parse(&*output.bytes).expect("parse cross-format object");
         assert_eq!(file.format(), expected_format);

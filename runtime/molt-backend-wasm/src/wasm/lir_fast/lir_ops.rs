@@ -126,6 +126,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::IsInlineInt
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord
+        | OpCode::IsFloatWord
+        | OpCode::UnboxFloatWord
         | OpCode::UnboxBoolWord
         | OpCode::BoxInlineInt
         | OpCode::CodeIs

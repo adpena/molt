@@ -196,6 +196,59 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
     requirements
 }
 
+/// What one app-resolver entry names. A runtime callable is a staticlib
+/// symbol with an execution ABI; a compiled body is an application function
+/// this program defines. The two are different identities and are never
+/// told apart by their spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum AppCallableKind {
+    RuntimeCallable,
+    CompiledBody,
+}
+
+/// The per-app callable manifest: every name the app resolver answers, with
+/// its kind. Both native resolvers (Cranelift and LLVM) and the batch worker's
+/// job transport read this one record.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AppCallableManifest {
+    pub runtime_callables: BTreeSet<String>,
+    pub compiled_bodies: BTreeSet<String>,
+}
+
+impl AppCallableManifest {
+    pub fn is_empty(&self) -> bool {
+        self.runtime_callables.is_empty() && self.compiled_bodies.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.runtime_callables.len() + self.compiled_bodies.len()
+    }
+
+    /// Every entry with its kind, in unsigned-byte name order: the order the
+    /// resolver's binary search requires. A name of both kinds is a compiler
+    /// defect and panics.
+    pub fn entries(&self) -> BTreeMap<&str, AppCallableKind> {
+        let mut entries = BTreeMap::new();
+        for name in &self.runtime_callables {
+            entries.insert(name.as_str(), AppCallableKind::RuntimeCallable);
+        }
+        for name in &self.compiled_bodies {
+            assert!(
+                entries
+                    .insert(name.as_str(), AppCallableKind::CompiledBody)
+                    .is_none(),
+                "app callable `{name}` is both a runtime callable and a compiled body"
+            );
+        }
+        entries
+    }
+
+    /// Every name, of either kind.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        self.runtime_callables.iter().chain(&self.compiled_bodies)
+    }
+}
+
 /// Compute the per-app callable manifest, obtaining the linked runtime
 /// staticlib's callable symbol set on demand and failing closed exactly when it
 /// matters.
@@ -206,27 +259,31 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
 ///
 /// Empty requirements keep backend probes independent of a staged symbol file;
 /// nonempty requirements are collected once and then admitted once.
-pub fn compute_app_callable_manifest_checked(functions: &[FunctionIR]) -> BTreeSet<String> {
+pub fn compute_app_callable_manifest_checked(functions: &[FunctionIR]) -> AppCallableManifest {
     let mut requirements = collect_app_callable_requirements(functions);
-    let compiled = std::mem::take(&mut requirements.compiled_body_symbols);
-    let mut names = requirements.into_names();
-    if !names.is_empty() {
+    let compiled_bodies = std::mem::take(&mut requirements.compiled_body_symbols);
+    let mut runtime_callables = requirements.into_names();
+    if !runtime_callables.is_empty() {
         let binding = crate::runtime_callable_symbols::RuntimeCallableSymbols::capture();
         let symbols = binding.required_symbols();
-        names.retain(|name| symbols.contains(name));
+        runtime_callables.retain(|name| symbols.contains(name));
     }
-    names.extend(compiled);
-    names
+    AppCallableManifest {
+        runtime_callables,
+        compiled_bodies,
+    }
 }
 
 pub fn compute_app_callable_manifest(
     functions: &[FunctionIR],
     runtime_callable_symbols: &BTreeSet<String>,
-) -> BTreeSet<String> {
+) -> AppCallableManifest {
     let mut requirements = collect_app_callable_requirements(functions);
-    let compiled = std::mem::take(&mut requirements.compiled_body_symbols);
-    let mut names = requirements.into_names();
-    names.retain(|name| runtime_callable_symbols.contains(name));
-    names.extend(compiled);
-    names
+    let compiled_bodies = std::mem::take(&mut requirements.compiled_body_symbols);
+    let mut runtime_callables = requirements.into_names();
+    runtime_callables.retain(|name| runtime_callable_symbols.contains(name));
+    AppCallableManifest {
+        runtime_callables,
+        compiled_bodies,
+    }
 }

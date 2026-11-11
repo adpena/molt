@@ -50,7 +50,7 @@ fn app_callable_manifest_publication_retains_the_supported_builtin_namespace() {
                 expected
             );
             assert_eq!(
-                compute_app_callable_manifest(&functions, &symbols),
+                compute_app_callable_manifest(&functions, &symbols).runtime_callables,
                 expected
             );
         }
@@ -66,7 +66,7 @@ fn app_callable_manifest_canonicalizes_explicit_intrinsic_alias_candidates() {
     ]);
     let symbols = BTreeSet::from(["molt_time_time".into(), "molt_getframe".into()]);
     assert_eq!(
-        compute_app_callable_manifest(&[function], &symbols),
+        compute_app_callable_manifest(&[function], &symbols).runtime_callables,
         BTreeSet::from(["molt_time_time".into()])
     );
 }
@@ -99,7 +99,8 @@ fn app_callable_manifest_retains_every_named_builtin_without_specializing_lookup
                 })
             };
             let function = manifest_func(vec![make_const_str("name", spec.python_name), lookup]);
-            let result = compute_app_callable_manifest(std::slice::from_ref(&function), &symbols);
+            let result = compute_app_callable_manifest(std::slice::from_ref(&function), &symbols)
+                .runtime_callables;
             assert_eq!(
                 result,
                 BTreeSet::from([spec.runtime_name.to_owned()]),
@@ -136,7 +137,7 @@ fn app_callable_manifest_computed_or_redefined_names_retain_only_generated_built
             ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
         });
         assert_eq!(
-            compute_app_callable_manifest(&[function], &symbols),
+            compute_app_callable_manifest(&[function], &symbols).runtime_callables,
             expected
         );
     }
@@ -179,7 +180,8 @@ fn app_callable_manifest_retains_qualified_acquisitions_without_literal_symbol_o
         ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
     }]);
     assert_eq!(
-        compute_app_callable_manifest(&[function], &BTreeSet::from([symbol.into()])),
+        compute_app_callable_manifest(&[function], &BTreeSet::from([symbol.into()]))
+            .runtime_callables,
         BTreeSet::from([symbol.into()])
     );
 }
@@ -196,7 +198,7 @@ fn app_callable_manifest_captures_wrapper_indirected_intrinsic_name() {
         // `_require_callable_intrinsic(name)` — a user wrapper call.
         make_call_func("res", "wrapper", &["name"]),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
     assert!(
         manifest.contains("molt_gc_collect"),
         "wrapper-indirected intrinsic name must be in the manifest"
@@ -233,7 +235,7 @@ fn app_callable_manifest_excludes_intrinsic_absent_from_staticlib() {
         make_const_str("name", "molt_pbkdf2_hmac"), // not in `symbols`
         make_call_func("res", "wrapper", &["name"]),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
     assert!(
         !manifest.contains("molt_pbkdf2_hmac"),
         "an intrinsic absent from the staticlib must never be address-taken"
@@ -249,7 +251,7 @@ fn app_callable_manifest_excludes_non_symbol_molt_strings() {
         make_const_str("msg", "molt_sys_platform intrinsic unavailable"),
         make_call_func("res", "panic", &["msg"]),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
     assert!(
         manifest.is_empty(),
         "free-text molt_ strings must not enter the manifest"
@@ -271,7 +273,7 @@ fn app_callable_manifest_captures_stored_intrinsic_name() {
         // it is still resolved later via `_require_intrinsic(self._name)`.
         make_store_var("slot", "name"),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
     assert!(
         manifest.contains("molt_gc_collect"),
         "an intrinsic name stored for later resolution must be captured"
@@ -297,7 +299,7 @@ fn app_callable_manifest_excludes_well_formed_name_absent_from_symbol_set() {
         make_const_str("absent", "molt_pbkdf2_hmac"),
         make_call_func("r2", "wrapper", &["absent"]),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
     assert!(manifest.contains("molt_gc_collect"));
     assert!(
         !manifest.contains("molt_pbkdf2_hmac"),
@@ -312,7 +314,7 @@ fn app_callable_manifest_captures_async_sleep_public_symbol_directly() {
         make_const_str("nm", "molt_async_sleep"),
         make_call_func("res", "require_intrinsic", &["nm"]),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
     assert!(manifest.contains("molt_async_sleep"));
     assert!(!manifest.contains("molt_async_sleep_new"));
 }
@@ -326,7 +328,7 @@ fn app_callable_manifest_keeps_non_override_name_verbatim() {
         make_const_str("nm", "molt_gc_collect"),
         make_call_func("res", "require_intrinsic", &["nm"]),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
     assert!(manifest.contains("molt_gc_collect"));
 }
 
@@ -339,7 +341,7 @@ fn app_callable_manifest_captures_reachable_builtin_function_runtime_name() {
         make_builtin_func("len_func", "molt_len", 1),
         make_builtin_func("ord_func", "molt_ord", 1),
     ]);
-    let manifest = compute_app_callable_manifest(&[func], &symbols);
+    let manifest = compute_app_callable_manifest(&[func], &symbols).runtime_callables;
 
     assert_eq!(
         manifest,
@@ -373,9 +375,42 @@ fn gpu_body_identity_retains_actual_application_target_without_runtime_import() 
         assert_eq!(requirements.compiled_body_symbols, expected);
         assert!(requirements.intrinsic_names.is_empty());
         assert!(requirements.builtin_trampolines.is_empty());
-        assert_eq!(
-            compute_app_callable_manifest(&functions, &BTreeSet::new()),
-            expected
-        );
+        let manifest = compute_app_callable_manifest(&functions, &BTreeSet::new());
+        assert_eq!(manifest.compiled_bodies, expected);
+        assert!(manifest.runtime_callables.is_empty());
     }
+}
+
+/// A compiled body whose name starts with `molt_` (a function of the module
+/// `molt.gpu`) stays a compiled body: its kind travels with it, and the
+/// resolver never asks the runtime ABI table about it.
+#[test]
+fn a_compiled_body_spelled_like_a_runtime_callable_keeps_its_kind() {
+    use crate::passes::AppCallableKind;
+    let manifest = crate::passes::AppCallableManifest {
+        runtime_callables: BTreeSet::from(["molt_len".to_owned()]),
+        compiled_bodies: BTreeSet::from(["molt_gpu__Buffer___getitem__".to_owned()]),
+    };
+    let entries: Vec<_> = manifest.entries().into_iter().collect();
+    assert_eq!(
+        entries,
+        [
+            (
+                "molt_gpu__Buffer___getitem__",
+                AppCallableKind::CompiledBody
+            ),
+            ("molt_len", AppCallableKind::RuntimeCallable),
+        ],
+        "one table, in the binary search's byte order"
+    );
+}
+
+#[test]
+#[should_panic(expected = "is both a runtime callable and a compiled body")]
+fn a_name_of_both_kinds_is_a_compiler_defect() {
+    let manifest = crate::passes::AppCallableManifest {
+        runtime_callables: BTreeSet::from(["molt_len".to_owned()]),
+        compiled_bodies: BTreeSet::from(["molt_len".to_owned()]),
+    };
+    let _ = manifest.entries();
 }
