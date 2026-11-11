@@ -27,7 +27,7 @@ pub(in crate::wasm) fn read_indices(ir: &SimpleIR) -> BTreeSet<u32> {
         .iter()
         .flat_map(|function| function.ops.iter())
         .filter(|op| op.kind == molt_ir::OpKind::GlobalSlotGet)
-        .map(|op| slot_index(op))
+        .map(slot_index)
         .collect()
 }
 

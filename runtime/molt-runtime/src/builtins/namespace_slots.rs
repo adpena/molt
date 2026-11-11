@@ -88,10 +88,10 @@ impl NamespaceSlots {
                 return None;
             }
             let k = entry as usize - 1;
-            if self.hashes[k] == hash {
-                if self.names[k] == key || unsafe { str_bytes(self.names[k]) == str_bytes(key) } {
-                    return Some(k);
-                }
+            if self.hashes[k] == hash
+                && (self.names[k] == key || unsafe { str_bytes(self.names[k]) == str_bytes(key) })
+            {
+                return Some(k);
             }
             index = (index + 1) & mask;
         }
