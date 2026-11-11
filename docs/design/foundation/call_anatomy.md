@@ -676,8 +676,25 @@ frame's homes; its base is the homes base compiled code already addressed.
   (`molt_frame_context_set` remains for stateful and class-body frames).
 
 `molt_trace_enter_slot`, `molt_trace_exit`, `molt_frame_homes`, `FRAME_STACK` and
-`TRACE_FRAME_PUSH_STACK` are deleted. Stateful activations inline are slice 2. The original
-sketch follows.
+`TRACE_FRAME_PUSH_STACK` are deleted. The original sketch follows the slice-2 notes.
+
+**Slice 2 (not started; state at 077e117176).** A stateful activation (generator, coroutine,
+async poll) still enters through `molt_frame_record_enter`: the runtime links an owned record
+whose namespace block holds the task as `activation_bits`, restores the task's saved location
+word, and `molt_frame_record_exit` saves it back (`FrameEntry::exit`). Its entry carries no
+frame shape (no `trace_enter_slot` value), and its frame still publishes `FRAME_CONTEXT_SET` on
+entry and after each resume (`function_lifecycle.py`, `async_gen.py`). Slice 2 keeps the record
+in the task payload, as CPython keeps `gi_iframe` in the generator: resume links it to
+`frame_top` and suspend unlinks it, both through new `frame_record` generators, so no backend
+hand-writes them. It then reads `super()` from the payload's slots, as synchronous frames read
+their homes, and removes `FRAME_CONTEXT_SET` from stateful frames (class bodies keep it). The
+flags word uses bits 0-2 (`FRAME_RECORD_OBSERVED`, `OWNED`, `CHUNK_FIRST`); a `STATEFUL` bit is
+free. Slice 2 must carry the differential cells `frame_record_observed_frames` (a suspended
+`gi_frame`) and `sys_exception_across_resume`. Its measurement adds a generator loop and an async
+call loop to the programs of section 9.
+Two step-2 measurements are also still open: WASM instruction rows (WASM runs the differential
+cells but has no instruction row) and atomic-refcount builds, where the record's two retains and
+each home release are runtime calls.
 
 A function whose frame can be observed keeps a `FrameRecord` in its own native stack frame (on
 WASM, in the shadow stack):
