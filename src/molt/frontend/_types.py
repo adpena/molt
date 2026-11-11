@@ -80,6 +80,7 @@ class SimpleIROp(TypedDict):
     defines_del: NotRequired[Any]
     end_col_offset: NotRequired[Any]
     f_value: NotRequired[Any]
+    global_slot: NotRequired[Any]
     native_callable_abi: NotRequired[Any]
     native_callable_binding: NotRequired[Any]
     native_callable_export: NotRequired[Any]

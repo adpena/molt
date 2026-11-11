@@ -107,6 +107,10 @@ _MODULE_OBJECT_GLOBAL_OPS = frozenset(
         "module_del_global_if_present",
     }
 )
+# The sites a compiled global slot serves: reads of the frame's globals and
+# stores into the module's own namespace (module level) or the frame's
+# globals (``global`` declarations in functions).
+_SLOTTED_SITE_OPS = frozenset({"module_get_global", "module_set_attr", "dict_set"})
 
 
 def _global_name_sites(
@@ -159,6 +163,43 @@ def module_global_layout(funcs: Sequence[dict[str, Any]]) -> tuple[str, ...]:
     """
     names = {name for _, name in _global_name_sites(funcs)}
     return tuple(sorted(name for name in names if not is_dunder_name(name)))
+
+
+def stamp_global_slots(
+    functions: list[dict[str, Any]],
+    module_functions: Mapping[str, Sequence[dict[str, Any]]],
+    global_layouts: Mapping[str, tuple[str, ...]],
+    registered_modules: Collection[str],
+) -> None:
+    """Mark each read and store of a slotted global with its slot
+    ``{"module": M, "index": k}``: slot k of M's layout. Only modules with a
+    registry row (which binds the runtime table) are stamped; everything else
+    keeps the by-name op unchanged. A stamped function is a copy-on-write
+    replacement in ``functions``, so its admitted body digest is never stale.
+    """
+    position = {id(function): index for index, function in enumerate(functions)}
+    for module_name, funcs in module_functions.items():
+        if module_name not in registered_modules:
+            continue
+        index_of = {
+            name: index
+            for index, name in enumerate(global_layouts.get(module_name, ()))
+        }
+        for func in funcs:
+            stamps: dict[int, dict[str, Any]] = {}
+            for op, name in _global_name_sites([func]):
+                index = index_of.get(name)
+                if index is not None and op.get("kind") in _SLOTTED_SITE_OPS:
+                    stamps[id(op)] = {"module": module_name, "index": index}
+            if not stamps or id(func) not in position:
+                continue
+            functions[position[id(func)]] = {
+                **func,
+                "ops": [
+                    {**op, "global_slot": stamps[id(op)]} if id(op) in stamps else op
+                    for op in func["ops"]
+                ],
+            }
 
 
 def _validate_class_definition_references_with_state(
@@ -241,6 +282,7 @@ def _integrate_module_frontend_result_with_state(
     integration_state.function_digest_seeds.extend(function_digest_seeds)
     integration_state.functions.extend(ir_functions)
     integration_state.global_layouts[module_name] = module_global_layout(ir_functions)
+    integration_state.module_functions[module_name] = ir_functions
     integration_state.function_metadata.update(metadata)
     # ClassIds are program-wide identities: one module's classes never
     # replace another module's same-named classes.

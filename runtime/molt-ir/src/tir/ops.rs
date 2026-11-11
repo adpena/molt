@@ -533,6 +533,10 @@ pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with
 /// `operands`. Absent means the op borrows every operand.
 pub const ARGUMENT_CUSTODY_ATTR: &str = "argument_custody";
+/// The two attributes of a module global slot (`OpIR::global_slot`). One
+/// typed accessor pair reads and writes them; nothing else spells them.
+const GLOBAL_SLOT_MODULE_ATTR: &str = "global_slot_module";
+const GLOBAL_SLOT_INDEX_ATTR: &str = "global_slot_index";
 
 /// Executable builtin identity, separate from positional arguments. A name
 /// selects runtime builtin lookup; it does not prove a fixed callable, purity,
@@ -823,6 +827,40 @@ impl TirOp {
 
     /// Every operand's custody in operand order, or `None` when this op
     /// borrows every operand: the SimpleIR `argument_custody` projection.
+    /// The module global slot this op reads or stores (call_anatomy.md 4.5).
+    pub fn global_slot(&self) -> Option<crate::ir::GlobalSlotRef> {
+        let module = match self.attrs.get(GLOBAL_SLOT_MODULE_ATTR)? {
+            AttrValue::Str(module) => module.clone(),
+            other => panic!("{:?}: malformed global slot module {other:?}", self.opcode),
+        };
+        let index = match self.attrs.get(GLOBAL_SLOT_INDEX_ATTR) {
+            Some(&AttrValue::Int(index)) => u32::try_from(index).unwrap_or_else(|_| {
+                panic!("{:?}: global slot index {index} out of range", self.opcode)
+            }),
+            other => panic!("{:?}: malformed global slot index {other:?}", self.opcode),
+        };
+        Some(crate::ir::GlobalSlotRef { module, index })
+    }
+
+    pub fn set_global_slot(&mut self, slot: Option<&crate::ir::GlobalSlotRef>) {
+        match slot {
+            Some(slot) => {
+                self.attrs.insert(
+                    GLOBAL_SLOT_MODULE_ATTR.into(),
+                    AttrValue::Str(slot.module.clone()),
+                );
+                self.attrs.insert(
+                    GLOBAL_SLOT_INDEX_ATTR.into(),
+                    AttrValue::Int(i64::from(slot.index)),
+                );
+            }
+            None => {
+                self.attrs.remove(GLOBAL_SLOT_MODULE_ATTR);
+                self.attrs.remove(GLOBAL_SLOT_INDEX_ATTR);
+            }
+        }
+    }
+
     pub fn argument_custody(&self) -> Option<Vec<ParameterCustody>> {
         self.attrs.contains_key(ARGUMENT_CUSTODY_ATTR).then(|| {
             (0..self.operands.len())

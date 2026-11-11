@@ -55,6 +55,9 @@ pub(super) fn annotate_lowered_op(
             panic!("TIR runtime_requirement_bits is outside the generated bitset domain: {bits}")
         });
     }
+    // The module global slot a read or store names (call_anatomy.md 4.5) is
+    // a typed transport fact; every relift and back-conversion keeps it.
+    opir.global_slot = tir_op.global_slot();
     opir.passes_execution_context = matches!(
         tir_op.attrs.get("passes_execution_context"),
         Some(AttrValue::Bool(true))

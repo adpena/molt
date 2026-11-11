@@ -483,6 +483,64 @@ def test_module_global_layout_collects_the_module_body_names() -> None:
     assert module_global_layout(funcs) == ("counter", "gone", "index", "total")
 
 
+def test_global_slot_stamps_name_each_slotted_read_and_store() -> None:
+    from molt.cli.frontend_integration import module_global_layout, stamp_global_slots
+
+    def const(out: str, value: str) -> dict[str, str]:
+        return {"kind": "const_str", "out": out, "s_value": value}
+
+    chunk = {
+        "name": "chunk",
+        "params": ["__molt_module_obj__"],
+        "ops": [
+            const("a", "total"),
+            {"kind": "module_get_global", "args": ["__molt_module_obj__", "a"]},
+            const("b", "index"),
+            {"kind": "module_set_attr", "args": ["__molt_module_obj__", "b", "v"]},
+            const("c", "__doc__"),
+            {"kind": "module_set_attr", "args": ["__molt_module_obj__", "c", "v"]},
+            const("d", "gone"),
+            {"kind": "module_del_global", "args": ["__molt_module_obj__", "d"]},
+        ],
+    }
+    func = {
+        "name": "f",
+        "ops": [
+            {"kind": "call", "s_value": "molt_globals_builtin", "out": "g"},
+            const("e", "total"),
+            {"kind": "dict_set", "args": ["g", "e", "v"]},
+        ],
+    }
+    layout = module_global_layout([chunk, func])
+    assert layout == ("gone", "index", "total")
+    functions = [chunk, func]
+    stamp_global_slots(functions, {"demo": [chunk, func]}, {"demo": layout}, {"demo"})
+    # Copy-on-write: the admitted bodies are unchanged; the program holds copies.
+    assert all("global_slot" not in op for body in (chunk, func) for op in body["ops"])
+    assert functions[0] is not chunk and functions[1] is not func
+    stamped = [
+        (op["kind"], op.get("global_slot"))
+        for body in functions
+        for op in body["ops"]
+        if op["kind"] != "const_str" and op["kind"] != "call"
+    ]
+    assert stamped == [
+        ("module_get_global", {"module": "demo", "index": 2}),
+        ("module_set_attr", {"module": "demo", "index": 1}),
+        ("module_set_attr", None),
+        ("module_del_global", None),
+        ("dict_set", {"module": "demo", "index": 2}),
+    ]
+    # A module without a registry row keeps every op by name.
+    other = {
+        "name": "o",
+        "ops": [const("a", "x"), {"kind": "module_get_global", "args": ["m", "a"]}],
+    }
+    program = [other]
+    stamp_global_slots(program, {"other": [other]}, {"other": ("x",)}, {"demo"})
+    assert program[0] is other
+
+
 # ─── G7: one writer, one reader — constants synchronized ────────────────────
 
 

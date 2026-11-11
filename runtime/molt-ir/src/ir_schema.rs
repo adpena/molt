@@ -23,6 +23,14 @@ const CONTAINER_TYPES: &[&str] = &[
 ];
 
 const BCE_SAFE_KINDS: &[crate::OpKind] = &[crate::OpKind::Index, crate::OpKind::StoreIndex];
+/// The reads and stores of a module global that a global slot can serve
+/// (call_anatomy.md 4.5): reads of the frame's globals, stores into the
+/// module's own namespace and stores into the frame's globals.
+const GLOBAL_SLOT_KINDS: &[crate::OpKind] = &[
+    crate::OpKind::ModuleGetGlobal,
+    crate::OpKind::ModuleSetAttr,
+    crate::OpKind::DictSet,
+];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
     BackendPrivate {
@@ -598,6 +606,9 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
         }
     } else if op.task_closure_size.is_some() {
         return Err(format!("op `{}` cannot carry task_closure_size", op.kind));
+    }
+    if op.global_slot.is_some() && !GLOBAL_SLOT_KINDS.contains(&op.kind) {
+        return Err(format!("op `{}` cannot carry global_slot", op.kind));
     }
     if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry bce_safe", op.kind));

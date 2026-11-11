@@ -41,6 +41,7 @@ from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.frontend_integration import (
     _register_global_code_id_with_state,
     _validate_class_definition_references_with_state,
+    stamp_global_slots,
 )
 from molt.cli.models import (
     _FrontendIntegrationState,
@@ -2249,6 +2250,14 @@ def _prepare_backend_ir(
                 json_output,
                 command="build",
             )
+        # Compiled global slot sites (call_anatomy.md 4.5): the registry row
+        # carries each module's layout, so only registered modules are stamped.
+        stamp_global_slots(
+            functions,
+            integration_state.module_functions,
+            integration_state.global_layouts,
+            {row.name for row in module_registry.rows},
+        )
         if module_table_lane:
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
             if rewrite_issue is not None:
