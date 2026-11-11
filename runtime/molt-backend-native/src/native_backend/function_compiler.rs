@@ -863,23 +863,19 @@ impl SimpleBackend {
         let frame_sites = has_frame_slot.then(|| NativeFrameSites {
             retain: local_inc_ref_obj,
             release: local_dec_ref_obj,
-            enter: import_func_ref(
+            enter: import_runtime_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
-                "molt_frame_record_enter",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FrameRecordEnter,
             ),
-            exit: import_func_ref(
+            exit: import_runtime_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
-                "molt_frame_record_exit",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FrameRecordExit,
             ),
         });
         let leading_frame_entry_op_idx = func_ir

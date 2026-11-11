@@ -39,7 +39,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         shape: Option<FrameShape>,
     ) -> IntValue<'ctx> {
         let Some(shape) = shape else {
-            let enter = self.ensure_runtime_i64_fn("molt_frame_record_enter", 1);
+            let enter = self.ensure_runtime_import(RuntimeFn::FrameRecordEnter);
             return self
                 .backend
                 .builder
@@ -147,8 +147,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             admission,
             retain: self.ensure_refcount_helper(RefcountOperation::Retain),
             release: self.ensure_refcount_helper(RefcountOperation::Release),
-            enter: self.ensure_runtime_i64_fn("molt_frame_record_enter", 1),
-            exit: self.ensure_runtime_i64_fn("molt_frame_record_exit", 1),
+            enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
+            exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
         };
         match helper {
