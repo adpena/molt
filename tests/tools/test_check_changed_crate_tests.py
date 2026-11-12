@@ -14,7 +14,7 @@ import pytest
 
 from tools import check_changed_crate_tests as gate
 from tools.proof_plan import excluded_backend_crates, excluded_backends
-from tools.check_changed_clippy import Reach, Workspace, reach
+from tools.cargo_reach import Reach, Workspace, reach
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST = "aarch64-apple-darwin"

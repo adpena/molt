@@ -162,12 +162,6 @@ def _receipt_for(
     )
 
 
-_CARGO_GATE_SCRIPTS = (
-    "tools/check_changed_clippy.py",
-    "tools/check_changed_crate_tests.py",
-)
-
-
 def _changed(git: Git, old: str, new: str) -> list[str]:
     out = git._run(["diff", "--name-only", old, new]).stdout
     return [line for line in out.splitlines() if line]
@@ -190,7 +184,8 @@ def _interaction_rerun(
     workspace or the toolchain). Any other try-run gate reruns. Chromium's
     commit queue and TAP make the same trade; postsubmit runs everything.
     """
-    from tools.check_changed_clippy import Workspace, reach
+    from tools.cargo_reach import Workspace, reach
+    from tools.proof_plan import CargoTargetAccess
     from tools.molt_dev_gates import display
     from tools.molt_dev_policy import select_landing_gates
     from tools.molt_dev_queue import queue_paths, recent_postsubmit_failures
@@ -238,7 +233,10 @@ def _interaction_rerun(
         shown = display(gate.command)
         if gate.pytest:
             return shown in moved_cohorts
-        if any(script in shown for script in _CARGO_GATE_SCRIPTS):
+        # A Cargo gate's verdict can change only through a package both
+        # reverse-dependency closures reach (a package it builds depends on
+        # both changes), so disjoint closures carry it.
+        if gate.cargo_target_access is not CargoTargetAccess.NONE:
             return cargo_interacts()
         return True
 
