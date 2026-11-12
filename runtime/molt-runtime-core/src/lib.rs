@@ -609,10 +609,6 @@ pub mod ffi {
         #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_pending")]
         pub fn molt_exception_pending(context: u64) -> u64;
 
-        /// Fast-path pending check (skips GIL entry when possible).
-        #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_pending_fast")]
-        pub fn molt_exception_pending_fast(context: u64) -> u64;
-
         /// Returns the currently active exception handle (or None).
         #[link_name = molt_codegen_abi::attached_symbol!("molt_exception_active")]
         pub fn molt_exception_active(context: u64) -> u64;
@@ -1203,12 +1199,6 @@ pub fn rt_exception_pending(py: &PyToken) -> bool {
     unsafe { ffi::molt_exception_pending(py.attached_context()) != 0 }
 }
 
-/// Fast-path exception check (avoids full GIL entry when possible).
-#[inline]
-pub fn rt_exception_pending_fast(py: &PyToken) -> bool {
-    unsafe { ffi::molt_exception_pending_fast(py.attached_context()) != 0 }
-}
-
 /// Borrow an already-constructed exception and publish a retained raised owner.
 /// Returns None bits; the caller still owns its input reference.
 #[inline]
@@ -1561,9 +1551,9 @@ pub mod prelude {
     // Safe runtime wrappers
     pub use crate::{
         rt_bytes_as_slice, rt_bytes_from, rt_dec_ref, rt_dict, rt_exception_clear,
-        rt_exception_pending, rt_exception_pending_fast, rt_float, rt_inc_ref, rt_int,
-        rt_is_truthy, rt_list, rt_none, rt_raise, rt_raise_str, rt_repr, rt_str,
-        rt_string_as_bytes, rt_string_from, rt_string_from_bytes, rt_target_at_least, rt_tuple,
+        rt_exception_pending, rt_float, rt_inc_ref, rt_int, rt_is_truthy, rt_list, rt_none,
+        rt_raise, rt_raise_str, rt_repr, rt_str, rt_string_as_bytes, rt_string_from,
+        rt_string_from_bytes, rt_target_at_least, rt_tuple,
     };
 }
 

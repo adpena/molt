@@ -59,20 +59,40 @@ pub(in crate::native_backend::function_compiler) fn def_inline_int_value(
 pub(in crate::native_backend::function_compiler) fn emit_exception_pending_condition(
     builder: &mut FunctionBuilder<'_>,
     pointer_type: types::Type,
-    local_exc_pending_fast: FuncRef,
+    local_exc_pending: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
 ) -> Value {
-    if let Some(slot) = exc_flag_ptr_slot {
-        let flag_ptr = builder.ins().stack_load(pointer_type, types::I64, slot, 0);
-        let pending_byte = builder
-            .ins()
-            .load(types::I8, MemFlagsData::trusted(), flag_ptr, 0);
-        return builder.ins().icmp_imm_s(IntCC::NotEqual, pending_byte, 0);
-    }
-
-    let call = builder.ins().call(local_exc_pending_fast, &[]);
+    let Some(slot) = exc_flag_ptr_slot else {
+        let call = builder.ins().call(local_exc_pending, &[]);
+        let pending = builder.inst_results(call)[0];
+        return builder.ins().icmp_imm_s(IntCC::NotEqual, pending, 0);
+    };
+    // The record's byte is a hint (invariant J1): clear means nothing is
+    // pending; set may be stale after a task switch, so the runtime reader
+    // confirms it and repairs the byte, exactly as LLVM and WASM do.
+    let record = builder.ins().stack_load(pointer_type, types::I64, slot, 0);
+    let hint = builder.ins().load(
+        types::I8,
+        MemFlagsData::trusted(),
+        record,
+        molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET,
+    );
+    let hint_set = builder.ins().icmp_imm_s(IntCC::NotEqual, hint, 0);
+    let confirm = builder.create_block();
+    let join = builder.create_block();
+    let answer = builder.append_block_param(join, types::I8);
+    builder.set_cold_block(confirm);
+    // Both blocks are private to this check and complete once entered.
+    brif_block(builder, hint_set, confirm, &[], join, &[hint_set]);
+    switch_to_block_materialized(builder, confirm);
+    builder.seal_block(confirm);
+    let call = builder.ins().call(local_exc_pending, &[]);
     let pending = builder.inst_results(call)[0];
-    builder.ins().icmp_imm_s(IntCC::NotEqual, pending, 0)
+    let confirmed = builder.ins().icmp_imm_s(IntCC::NotEqual, pending, 0);
+    jump_block(builder, join, &[confirmed]);
+    switch_to_block_materialized(builder, join);
+    builder.seal_block(join);
+    answer
 }
 
 /// Store `location` into the frame's location word, at the canonical ABI
@@ -120,6 +140,9 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     work_ptr_slot: cranelift_codegen::ir::StackSlot,
     record_slot: cranelift_codegen::ir::StackSlot,
     cold_observer: FuncRef,
+    // `molt_exception_pending`: confirms a set pending byte on the fast path,
+    // which services no work.
+    exception_pending: FuncRef,
     fast_observer: Option<FuncRef>,
     cold_location: Option<(cranelift_codegen::ir::StackSlot, i64)>,
 ) -> Value {
@@ -145,7 +168,7 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     switch_to_block_materialized(builder, fast);
     seal_block_once(builder, sealed_blocks, fast);
     let cond =
-        emit_exception_pending_condition(builder, types::I64, cold_observer, Some(record_slot));
+        emit_exception_pending_condition(builder, types::I64, exception_pending, Some(record_slot));
     let result = if let Some(observer) = fast_observer {
         let capture = builder.create_block();
         let none = builder

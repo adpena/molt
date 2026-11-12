@@ -26,8 +26,8 @@ pub(in crate::wasm) fn emit_thread_record(func: &mut Function) {
 /// inline and calls the runtime reader only when the byte is set. The reader
 /// answers 0 at once for a clear byte, and for a set byte it confirms it,
 /// repairing a stale task slot, so the inline test returns exactly what the
-/// call returned. Without the record (the `lir_fast` lane, functions that do
-/// not poll) the check stays a call.
+/// call returned. Every planned frame holds the record; only the `lir_fast`
+/// lane, which plans no frame, keeps the call.
 pub(in crate::wasm) fn emit_exception_pending_test(
     func: &mut Function,
     record: Option<u32>,

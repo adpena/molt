@@ -493,7 +493,7 @@ fn molt_int_from_i64(value: i64) -> u64 {
     let attempt = ATTEMPTS.fetch_add(1, SeqCst) + 1;
     assert_eq!(value, if attempt == 1 { 1_i64 << 62 } else { (1_i64 << 62) + (1_i64 << 31) });
     if FAIL.load(SeqCst) == attempt {
-        unsafe { PENDING = 1; }
+        unsafe { PENDING = 1; *core::ptr::addr_of_mut!(FIXTURE_THREAD_RECORD).cast::<u8>() = 1; }
         return NONE;
     }
     assert!(attempt <= 2, "one box per distinct operand");
@@ -533,7 +533,7 @@ fn construct(values: &[u64]) -> u64 {
         );
     }
     if CTOR_FAIL.load(SeqCst) != 0 {
-        unsafe { PENDING = 1; }
+        unsafe { PENDING = 1; *core::ptr::addr_of_mut!(FIXTURE_THREAD_RECORD).cast::<u8>() = 1; }
         return NONE;
     }
     for (slot, &value) in RETAINED.iter().zip(values) {
@@ -603,7 +603,9 @@ fn molt_refcount_admission() -> u64 { 0 }
 
 // This provider owns a stable record and the token header passed through every
 // compiled/runtime entry. No TLS lookup supplies either address.
-static FIXTURE_THREAD_RECORD: [u64; 16] = [0; 16];
+// raise() sets the record's pending byte, as the runtime does; compiled code
+// tests the byte inline and confirms a set byte through molt_exception_pending.
+static mut FIXTURE_THREAD_RECORD: [u64; 16] = [0; 16];
 fn fixture_thread_record() -> u64 { core::ptr::addr_of!(FIXTURE_THREAD_RECORD) as u64 }
 
 #[export_name = "molt_int_from_i64@EXECUTION_SUFFIX@"]
@@ -1066,7 +1068,7 @@ fn pending() -> bool {
 }
 fn raise() -> u64 {
     let _ = PENDING_ERROR.compare_exchange(0, 0xa000, SeqCst, SeqCst);
-    unsafe { PENDING = 1; }
+    unsafe { PENDING = 1; *core::ptr::addr_of_mut!(FIXTURE_THREAD_RECORD).cast::<u8>() = 1; }
     NONE
 }
 fn task_handle() -> u64 {
@@ -1504,6 +1506,8 @@ fn molt_refcount_admission() -> u64 { 0 }
 
 // This provider owns a stable record and the token header passed through every
 // compiled/runtime entry. No TLS lookup supplies either address.
+// raise() sets the record's pending byte, as the runtime does; compiled code
+// tests the byte inline and confirms a set byte through molt_exception_pending.
 static mut FIXTURE_THREAD_RECORD: [u64; 16] = [0; 16];
 // The compiled bodies run inside one executing frame: the record's frame-top
 // word (THREAD_RECORD_FRAME_TOP_OFFSET, word 3) names its homes.

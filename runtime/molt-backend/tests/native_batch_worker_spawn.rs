@@ -50,7 +50,7 @@ const RECORD_BASE: u64 = 0x5eed_0000;
     assert_eq!(base, RECORD_BASE, "the exit names the record its entry linked");
     EXITS.fetch_add(1, Ordering::SeqCst); 0
 }}
-#[unsafe(export_name = "{pending_fast}")] pub extern "C" fn molt_exception_pending_fast(context: u64) -> u64 {{ check_context(context); 0 }}
+#[unsafe(export_name = "{pending}")] pub extern "C" fn molt_exception_pending(context: u64) -> u64 {{ check_context(context); 0 }}
 #[unsafe(export_name = "{work_poll}")] pub extern "C" fn molt_async_work_poll_and_exception_pending(context: u64) -> u64 {{ check_context(context); 0 }}
 // The cold edge of an Origin check; nothing raises here, so it is never taken.
 #[unsafe(export_name = "{frame_origin}")] pub extern "C" fn molt_exception_frame_origin(context: u64, _homes: u64) -> u64 {{ check_context(context); unreachable!() }}
@@ -82,7 +82,7 @@ fn main() {{
             abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
             frame_enter = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_frame_record_enter").unwrap().physical_symbol,
             frame_exit = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_frame_record_exit").unwrap().physical_symbol,
-            pending_fast = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_pending_fast").unwrap().physical_symbol,
+            pending = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_pending").unwrap().physical_symbol,
             work_poll = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_async_work_poll_and_exception_pending").unwrap().physical_symbol,
             frame_origin = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_frame_origin").unwrap().physical_symbol,
             init_sys = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_init_sys"),
@@ -370,8 +370,13 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     }).to_string()
     };
     let run_backend =
-        |destination: &Path, cache_key: &str, opt_level: &str, inline_exc_disabled: &str| {
-            Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        |destination: &Path, cache_key: &str, opt_level: &str, rc_coalesce_disabled: bool| {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_molt-backend"));
+            if rc_coalesce_disabled {
+                // A presence-gated emitter control: its presence alone changes codegen.
+                command.env("MOLT_DISABLE_RC_COALESCE", "");
+            }
+            command
                 .args(["--native-output-kind", "archive"])
                 .arg("--ir-file")
                 .arg(&ir_path)
@@ -382,7 +387,6 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
                 .env("MOLT_STDLIB_CACHE_ENTRY", archive_for(cache_key))
                 .env("MOLT_STDLIB_CACHE_KEY", cache_key)
                 .env("MOLT_BACKEND_OPT_LEVEL", opt_level)
-                .env("MOLT_BACKEND_INLINE_EXC_DISABLED", inline_exc_disabled)
                 .env(
                     "MOLT_STDLIB_CACHE_MANIFEST",
                     manifest_for(cache_key, opt_level),
@@ -398,7 +402,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
                 .output()
                 .expect("spawn production molt-backend binary")
         };
-    let output = run_backend(&output_path, initial_key.as_str(), "speed", "0");
+    let output = run_backend(&output_path, initial_key.as_str(), "speed", false);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -473,7 +477,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     );
 
     let warm_output_path = tmp.path().join("out-warm.a");
-    let warm_output = run_backend(&warm_output_path, initial_key.as_str(), "speed", "0");
+    let warm_output = run_backend(&warm_output_path, initial_key.as_str(), "speed", false);
     let warm_stderr = String::from_utf8_lossy(&warm_output.stderr);
     let warm_required = required_archive_for(&warm_output_path);
     assert_eq!(
@@ -533,7 +537,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     };
     assert_eq!(content_entries(), 1, "the cold build publishes its content");
     let other_output_path = tmp.path().join("other-program.a");
-    let content_output = run_backend(&other_output_path, other_key.as_str(), "speed", "0");
+    let content_output = run_backend(&other_output_path, other_key.as_str(), "speed", false);
     let content_stderr = String::from_utf8_lossy(&content_output.stderr);
     assert!(
         content_output.status.success(),
@@ -589,7 +593,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         &constituent_output_path,
         constituent_key.as_str(),
         "speed",
-        "0",
+        false,
     );
     let constituent_stderr = String::from_utf8_lossy(&constituent_output.stderr);
     assert!(
@@ -653,7 +657,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     std::fs::remove_dir_all(&content_store).unwrap();
     let shifted_output_path = tmp.path().join("shifted-program.a");
     let shifted_key = "e".repeat(64);
-    let shifted_output = run_backend(&shifted_output_path, &shifted_key, "speed", "0");
+    let shifted_output = run_backend(&shifted_output_path, &shifted_key, "speed", false);
     let shifted_stderr = String::from_utf8_lossy(&shifted_output.stderr);
     assert!(
         shifted_output.status.success(),
@@ -679,7 +683,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         &tmp.path().join("changed-emitter.a"),
         emitter_key.as_str(),
         "speed",
-        "1",
+        true,
     );
     let emitter_stderr = String::from_utf8_lossy(&emitter_output.stderr);
     assert!(
@@ -697,7 +701,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         &tmp.path().join("changed-codegen.a"),
         changed_key.as_str(),
         "none",
-        "0",
+        false,
     );
     let changed_stderr = String::from_utf8_lossy(&changed_output.stderr);
     assert!(

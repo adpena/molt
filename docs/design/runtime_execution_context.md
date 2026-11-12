@@ -74,7 +74,7 @@ Static counts from the release binary the HF-657 lane built and retained on 2026
 
 | code | non-raising path |
 |---|---|
-| Guard in a nested entry (`molt_exception_pending_fast`) | 42 instructions outside the body: 4 to reach the `_tlv_get_addr` thunk, 5 to test lease and drain depth, 6 to raise the GIL depth, 12 to build the guard and token on the stack, 15 to drop them |
+| Guard in a nested entry (`molt_exception_pending`) | 42 instructions outside the body: 4 to reach the `_tlv_get_addr` thunk, 5 to test lease and drain depth, 6 to raise the GIL depth, 12 to build the guard and token on the stack, 15 to drop them |
 | `runtime_state_for_gil_in` (main thread, Ready) | 21 instructions, out of line; a token runs it on its first `runtime_state` call |
 | `molt_thread_record` | 17 instructions, one thunk call, and `runtime_state_for_gil_in` |
 | `molt_recursion_enter_fast` | 20 instructions, two thread-local accesses, and `runtime_state_for_gil_in` |

@@ -63,12 +63,15 @@ impl FrameRuntimeRequirements {
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) {
+        // Invariant J1 (`call_anatomy.md` 4.1): every frame reads execution
+        // state through its thread record, one entry load. Exception tests
+        // come from many op lowerings, so the record is not gated on them.
+        locals.ensure_synthetic(
+            WasmFrameSyntheticLocal::ThreadRecord,
+            local_types,
+            local_count,
+        );
         if self.needs_async_poll {
-            locals.ensure_synthetic(
-                WasmFrameSyntheticLocal::ThreadRecord,
-                local_types,
-                local_count,
-            );
             locals.ensure_synthetic(
                 WasmFrameSyntheticLocal::PendingWorkPtr,
                 local_types,

@@ -36,7 +36,6 @@ def _isolated_sccache(monkeypatch, tmp_path):
 def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     baseline = _backend_codegen_env_digest(is_wasm=False, env={})
     for name, value in (
-        ("MOLT_BACKEND_INLINE_EXC_DISABLED", "1"),
         ("MOLT_DISABLE_RC_COALESCE", ""),
         ("MOLT_DISABLE_EXC_ELIDE", "1"),
     ):

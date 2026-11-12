@@ -120,7 +120,7 @@ fn worker_identity_keeps_its_closed_stage_and_rejects_old_serialization() {
     );
     let serialized = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
     assert_eq!(serialized["values"]["MOLT_DISABLE_RC_COALESCE"], "");
-    assert!(serialized["values"]["MOLT_BACKEND_INLINE_EXC_DISABLED"].is_null());
+    assert!(serialized["values"]["MOLT_BACKEND_ENABLE_VERIFIER"].is_null());
     let mut unknown = serialized.clone();
     unknown["values"]["MOLT_UNKNOWN_WORKER_INPUT"] = "unrecognized".into();
     assert!(serde_json::from_value::<NativeCodegenEnvironment>(unknown).is_err());

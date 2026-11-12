@@ -58,13 +58,6 @@ pub unsafe extern "C" fn molt_exception_pending(__context: u64) -> u64 {
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_pending_attached_body(_py)
 }
-#[unsafe(export_name = "molt_exception_pending_fast__molt_context_047a33b55bc1b76d")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_exception_pending_fast(__context: u64) -> u64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_exception_pending_fast_attached_body(_py)
-}
 #[unsafe(export_name = "molt_async_work_poll_and_exception_pending__molt_context_047a33b55bc1b76d")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_async_work_poll_and_exception_pending(__context: u64) -> u64 {

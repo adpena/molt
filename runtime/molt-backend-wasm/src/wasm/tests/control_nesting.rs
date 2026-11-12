@@ -378,6 +378,7 @@ for (const test of config.cases) {
     imports[entry.module] ??= {};
     imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {throw Error('unexpected import '+entry.name);});
   }
+  initializeConfirmingRecord(imports.env.memory);
   const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
   const mode = test.name.split('-')[0];
   const total = mode === 'dispatch' ? config.head + config.tail : config.forward;

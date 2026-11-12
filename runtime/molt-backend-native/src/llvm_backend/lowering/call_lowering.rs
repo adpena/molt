@@ -758,7 +758,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let context = self.backend.context;
         let i64_ty = context.i64_type();
         let callee = self.ensure_i64(self.resolve(op.operands[0]));
-        let (record, _) = self.async_poll_context();
+        let record = self.thread_record();
         let slot = unsafe {
             self.backend
                 .builder

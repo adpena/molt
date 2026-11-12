@@ -356,7 +356,19 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 .expect("runtime allocator block");
             let allocation_ir = block_ir(allocation);
             let init_ir = block_ir(init);
-            let ready_ir = block_ir(ready);
+            // The continuation's exception check splits it: the ready block
+            // tests the record's pending byte and the check's join carries on
+            // (invariant J1). Together they are the shared continuation.
+            let ready_join = blocks
+                .iter()
+                .find(|bb| {
+                    bb.get_name()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("exception_pending_join")
+                })
+                .expect("the continuation's exception check joins");
+            let ready_ir = format!("{}\n{}", block_ir(ready), block_ir(ready_join));
             let call_name = if call_async {
                 "call_async_task_new"
             } else {
@@ -377,8 +389,13 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 )),
                 "allocation failure must directly join cleanup: {ir}"
             );
+            // The entry block also reads the thread record (invariant J1);
+            // only the task object must stay undereferenced until allocation
+            // succeeds.
             assert!(
-                !allocation_ir.contains_execution("inttoptr")
+                !allocation_ir.lines().any(|line| line.contains("inttoptr")
+                    && !line.contains("%execution_context_header")
+                    && !line.contains("%thread_record"))
                     && !allocation_ir.contains_execution("ret "),
                 "{ir}"
             );
@@ -414,8 +431,24 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "{ir}"
             );
             assert!(!init_ir.contains_execution("ret "), "{ir}");
+            // Invariant J1: the continuation tests the record's pending byte
+            // inline; only a set byte reaches the runtime reader.
             assert!(
-                ready_ir.contains_execution("@molt_exception_pending("),
+                ready_ir.contains_execution("load i8, ptr %exc_pending_byte_ptr"),
+                "{ir}"
+            );
+            assert!(
+                !ready_ir.contains_execution("@molt_exception_pending("),
+                "{ir}"
+            );
+            assert!(
+                blocks.iter().any(|bb| {
+                    bb.get_name()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("exception_pending_confirm")
+                        && block_ir(bb).contains_execution("@molt_exception_pending(")
+                }),
                 "{ir}"
             );
             assert_eq!(

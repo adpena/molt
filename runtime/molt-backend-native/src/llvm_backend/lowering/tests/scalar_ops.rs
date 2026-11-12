@@ -691,12 +691,31 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             )),
             "{ir}"
         );
+        // Invariant J1: the merge tests the thread record's pending byte
+        // inline; only a set byte reaches the runtime reader, and the join
+        // selects the exceptional edge from the confirmed answer.
+        let named = |prefix: &str| {
+            block_text(
+                llvm_fn
+                    .get_basic_blocks()
+                    .into_iter()
+                    .find(|block| block.get_name().to_str().unwrap().starts_with(prefix))
+                    .unwrap_or_else(|| panic!("{prefix} block: {ir}")),
+            )
+        };
+        let confirm = named("exception_pending_confirm");
+        let join = named("exception_pending_join");
         assert!(
-            merge.contains_execution("@molt_exception_pending()"),
+            merge.contains_execution("load i8, ptr %check_exc_byte_ptr"),
+            "{ir}"
+        );
+        assert!(!merge.contains_execution("@molt_exception_pending"), "{ir}");
+        assert!(
+            confirm.contains_execution("@molt_exception_pending"),
             "{ir}"
         );
         assert!(
-            merge.contains_execution("icmp ne i64 %check_exc, 0"),
+            join.contains_execution("icmp ne i64 %check_exc_word, 0"),
             "{ir}"
         );
         let origin = llvm_fn
@@ -707,7 +726,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         let origin_name = origin.get_name().to_str().unwrap();
         let origin_text = block_text(origin);
         assert!(
-            merge.contains_execution(&format!(
+            join.contains_execution(&format!(
                 "br i1 %check_exc_pending, label %{origin_name}, label %check_exc_cont",
             )),
             "{ir}"

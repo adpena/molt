@@ -558,7 +558,7 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
         "molt_stream_close",
         "molt_stream_drop",
         "molt_int_from_i64",
-        "molt_exception_pending_fast",
+        "molt_exception_pending",
         "molt_dec_ref_obj",
     ):
         assert f"link-arg=--export-if-defined={_physical(name)}" in flags

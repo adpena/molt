@@ -139,14 +139,18 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let res = if op.is_async_work_poll() {
-                let fast = SimpleBackend::import_func_id_split(
+                let fast = SimpleBackend::import_runtime_func_id_split(
                     module,
                     import_ids,
-                    "molt_exception_last_pending",
-                    &[],
-                    &[types::I64],
+                    RuntimeFn::ExceptionLastPending,
                 );
                 let fast = module.declare_func_in_func(fast, builder.func);
+                let confirm = SimpleBackend::import_runtime_func_id_split(
+                    module,
+                    import_ids,
+                    RuntimeFn::ExceptionPending,
+                );
+                let confirm = module.declare_func_in_func(confirm, builder.func);
                 let (word, record) =
                     pending_work_slots.expect("async observer requires an execution record");
                 emit_async_work_poll(
@@ -155,6 +159,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                     word,
                     record,
                     local_callee,
+                    confirm,
                     Some(fast),
                     None,
                 )

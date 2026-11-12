@@ -131,7 +131,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         let i64_ty = self.backend.context.i64_type();
-        let (record, _) = self.async_poll_context();
+        let record = self.thread_record();
         let frame_top = unsafe {
             self.backend
                 .builder

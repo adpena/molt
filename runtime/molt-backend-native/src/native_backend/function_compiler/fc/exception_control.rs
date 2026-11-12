@@ -48,7 +48,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     last_use: &BTreeMap<String, usize>,
     cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: NativeRefcountSite,
-    local_exc_pending_fast: FuncRef,
+    local_exc_pending: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
     cold_frame_homes: Option<cranelift_codegen::ir::StackSlot>,
     pending_work_slots: Option<(
@@ -255,6 +255,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     word,
                     record,
                     callee,
+                    local_exc_pending,
                     None,
                     cold_location,
                 );
@@ -263,7 +264,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 emit_exception_pending_condition(
                     &mut *builder,
                     module.target_config().pointer_type(),
-                    local_exc_pending_fast,
+                    local_exc_pending,
                     exc_flag_ptr_slot,
                 )
             };

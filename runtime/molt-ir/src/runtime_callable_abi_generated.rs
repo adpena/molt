@@ -18215,10 +18215,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Boundary,
             physical_symbol: "molt_exception_pending_detached",
         },
-        "molt_exception_pending_fast" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_exception_pending_fast__molt_context_047a33b55bc1b76d",
-        },
         "molt_exception_pop" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_pop__molt_context_047a33b55bc1b76d",

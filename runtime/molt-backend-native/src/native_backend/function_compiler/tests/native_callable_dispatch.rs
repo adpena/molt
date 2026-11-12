@@ -80,12 +80,12 @@ static ORIGINS:AtomicU64=AtomicU64::new(0);
 fn fixture_thread_record() ->u64 {{
  unsafe {{RECORD.work=core::ptr::addr_of!(WORK) as u64;}} core::ptr::addr_of!(RECORD) as u64
 }}
-#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) ->u64 {{
+#[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending(_context: u64) ->u64 {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_exception_pending_fast()
+    molt_exception_pending()
 }}
-pub fn molt_exception_pending_fast() ->u64 {{unsafe{{RECORD.pending as u64}}}}
+pub fn molt_exception_pending() ->u64 {{unsafe{{RECORD.pending as u64}}}}
 #[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) ->u64 {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -361,12 +361,12 @@ pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {{
     molt_inc_ref_obj(_arg0)
 }}
 pub fn molt_inc_ref_obj(_: u64)  {{}}
-#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {{
+#[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending(_context: u64) -> u64 {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_exception_pending_fast()
+    molt_exception_pending()
 }}
-pub fn molt_exception_pending_fast() -> u64 {{ 0 }}
+pub fn molt_exception_pending() -> u64 {{ 0 }}
 fn fixture_thread_record() -> u64 {{
     unsafe {{ EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; }} core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }}
@@ -559,12 +559,12 @@ pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {
     molt_dec_ref(_arg0)
 }
 pub fn molt_dec_ref(_: u64)  {}
-#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {
+#[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending(_context: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_exception_pending_fast()
+    molt_exception_pending()
 }
-pub fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
+pub fn molt_exception_pending() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
 fn fixture_thread_record() -> u64 {
     unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }
@@ -574,7 +574,7 @@ pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: 
     molt_async_work_poll_and_exception_pending()
 }
 pub fn molt_async_work_poll_and_exception_pending() -> u64 {
-    molt_exception_pending_fast()
+    molt_exception_pending()
 }
 #[export_name = "molt_int_from_i64@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_int_from_i64(_context: u64, _arg0: i64) -> u64 {
@@ -613,7 +613,7 @@ extern "C" { fn fixed_execution_context() -> u64;
     fn scalarized_fail(fail: u64);
     fn scalarized_constructed() -> u64;
     fn scalarized_word_retains() -> u64;
-    #[link_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"] fn molt_exception_pending_fast(_context: u64) -> u64;
+    #[link_name = "molt_exception_pending@EXECUTION_SUFFIX@"] fn molt_exception_pending(_context: u64) -> u64;
 }
 
 fn main() {
@@ -622,7 +622,7 @@ fn main() {
         assert_eq!(scalarized_constructed(), 1, "the constructor received both borrowed words");
         let success_retains = scalarized_word_retains();
         assert!(success_retains >= 1, "the bound element must own one retain");
-        assert_eq!(molt_exception_pending_fast(fixed_execution_context()), 0);
+        assert_eq!(molt_exception_pending(fixed_execution_context()), 0);
 
         scalarized_fail(1);
         assert_eq!(scalarized_tuple_head(fixed_execution_context(), 0x7ffc000000000065u64, 0x7ffc000000000066u64), BOXED_NONE, "a failed tuple has no element");
@@ -631,7 +631,7 @@ fn main() {
             success_retains - 1,
             "a failed construction must not retain a borrowed word"
         );
-        assert_eq!(molt_exception_pending_fast(fixed_execution_context()), 1, "the construction failure stays pending");
+        assert_eq!(molt_exception_pending(fixed_execution_context()), 1, "the construction failure stays pending");
     }
 }
 "#
@@ -2094,12 +2094,12 @@ pub unsafe fn molt_unpack_sequence(pair: u64, count: u64, output: u64) -> u64 {
     *output.add(1) = molt_classmethod_new(BOXED_NONE);
     BOXED_NONE
 }
-#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {
+#[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending(_context: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_exception_pending_fast()
+    molt_exception_pending()
 }
-pub fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
+pub fn molt_exception_pending() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
 fn fixture_thread_record() -> u64 {
     unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }
@@ -2108,7 +2108,7 @@ pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: 
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_async_work_poll_and_exception_pending()
 }
-pub fn molt_async_work_poll_and_exception_pending() -> u64 { molt_exception_pending_fast() }
+pub fn molt_async_work_poll_and_exception_pending() -> u64 { molt_exception_pending() }
 #[export_name = "molt_exception_pop@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_exception_pop(_context: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -2315,7 +2315,7 @@ pub fn molt_refcount_admission() -> u64 { 0 }
     fn cleanup_hash_error() -> u64;
     fn cleanup_hash_box_fail(index: u64);
     fn cleanup_hash_boxes() -> u64;
-    #[link_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"] fn molt_exception_pending_fast(_context: u64) -> u64;
+    #[link_name = "molt_exception_pending@EXECUTION_SUFFIX@"] fn molt_exception_pending(_context: u64) -> u64;
     fn cleanup_oracle_reset();
     fn cleanup_oracle_allocations() -> u64;
     fn cleanup_oracle_inc_refs() -> u64;
@@ -2677,7 +2677,7 @@ fn main() {
                 assert_eq!(cleanup_hash_inserts(), calls, "{label}: insert boundary");
                 assert_eq!(cleanup_hash_boxes(), boxes, "{label}: skipped later materialization");
                 assert_eq!(cleanup_hash_error(), error, "{label}: original exception");
-                assert_eq!(molt_exception_pending_fast(fixed_execution_context()), u64::from(error != 0));
+                assert_eq!(molt_exception_pending(fixed_execution_context()), u64::from(error != 0));
                 reset();
             }
         }
@@ -2703,7 +2703,7 @@ fn main() {
                 assert_counts(label, allocations, 0, allocations, 0);
                 assert_eq!(cleanup_hash_inserts(), expected_calls, "{label}: skipped later inserts");
                 assert_eq!(cleanup_hash_error(), error, "{label}: original exception");
-                assert_eq!(molt_exception_pending_fast(fixed_execution_context()), u64::from(error != 0));
+                assert_eq!(molt_exception_pending(fixed_execution_context()), u64::from(error != 0));
                 reset();
                 for discarded in [absent, none] {
                     cleanup_hash_mode(allocate, insert);
@@ -2711,7 +2711,7 @@ fn main() {
                     assert_counts(label, allocations, 0, allocations, 0);
                     assert_eq!(cleanup_hash_inserts(), expected_calls, "{label}: discarded later inserts");
                     assert_eq!(cleanup_hash_error(), error, "{label}: discarded original exception");
-                    assert_eq!(molt_exception_pending_fast(fixed_execution_context()), u64::from(error != 0));
+                    assert_eq!(molt_exception_pending(fixed_execution_context()), u64::from(error != 0));
                     reset();
                 }
             }
@@ -2844,12 +2844,12 @@ pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {{
     molt_inc_ref_obj(_arg0)
 }}
 pub fn molt_inc_ref_obj(_: u64)  {{}}
-#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {{
+#[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending(_context: u64) -> u64 {{
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_exception_pending_fast()
+    molt_exception_pending()
 }}
-pub fn molt_exception_pending_fast() -> u64 {{ 0 }}
+pub fn molt_exception_pending() -> u64 {{ 0 }}
 fn fixture_thread_record() -> u64 {{
     unsafe {{ EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; }} core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }}
@@ -3157,7 +3157,7 @@ unsafe fn construct(address: u64, len: u64) -> u64 {
     construct_words(unsafe {core::slice::from_raw_parts(address as *const u64, len as usize)})
 }
 fn construct_words(values: &[u64]) -> u64 {
-    CALLS.fetch_add(1, SeqCst); assert_eq!(molt_exception_pending_fast(), 0);
+    CALLS.fetch_add(1, SeqCst); assert_eq!(molt_exception_pending(), 0);
     assert_eq!(values, &[0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102], "preserve repeated operand identity and order");
     assert_eq!(FIRST.load(SeqCst), 1); assert_eq!(SECOND.load(SeqCst), 1);
     if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING_RECORD.pending = 1;} return NONE;}
@@ -3215,7 +3215,7 @@ pub extern "C" fn attached_molt_vec_max(_context: u64, _arg0: u64, _arg1: u64, _
 }
 pub fn molt_vec_max(it:u64,acc:u64,target:u64) ->u64 {construct_words(&[it,acc,target])}
 fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
-    CALLS.fetch_add(1,SeqCst); assert_eq!(molt_exception_pending_fast(),0);
+    CALLS.fetch_add(1,SeqCst); assert_eq!(molt_exception_pending(),0);
     assert_eq!(values,expected,"borrow each distinct operand once, in order");
     for &value in values {
         let refs = match value {0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, _ => continue};
@@ -3312,19 +3312,19 @@ pub unsafe fn molt_guarded_class_def(name:u64,bases:u64,nbases:u64,attrs:u64,nat
     let words=unsafe { [*(bases as *const u64), *(attrs as *const u64), *((attrs as *const u64).add(1))] };
     unsafe {construct(words.as_ptr() as u64,3)}
 }
-#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) ->u64 {
+#[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending(_context: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_exception_pending_fast()
+    molt_exception_pending()
 }
-pub fn molt_exception_pending_fast() ->u64 {unsafe {PENDING_RECORD.pending as u64}}
+pub fn molt_exception_pending() ->u64 {unsafe {PENDING_RECORD.pending as u64}}
 fn fixture_thread_record() ->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
 #[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_async_work_poll_and_exception_pending()
 }
-pub fn molt_async_work_poll_and_exception_pending() ->u64 {molt_exception_pending_fast()}
+pub fn molt_async_work_poll_and_exception_pending() ->u64 {molt_exception_pending()}
 #[no_mangle] pub extern "C" fn fixed_reset(failure:u64, ctor_failure:u64) {
     assert_eq!(fixed_live(),0); ATTEMPTS.store(0,SeqCst); CALLS.store(0,SeqCst);
     DICT_SETS.store(0,SeqCst);
@@ -3361,7 +3361,7 @@ extern "C" { fn fixed_execution_context() -> u64;
  #[link_name = "fixed_operator_index@EXECUTION_SUFFIX@"] fn fixed_operator_index(_context: u64)->u64; #[link_name = "fixed_operator_index_discard@EXECUTION_SUFFIX@"] fn fixed_operator_index_discard(_context: u64);
  fn fixed_reset(failure:u64,ctor_failure:u64); fn fixed_live()->u64;
  fn fixed_attempts()->u64; fn fixed_calls()->u64; fn fixed_dict_set_calls()->u64;
- #[link_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"] fn molt_exception_pending_fast(_context: u64)->u64;
+ #[link_name = "molt_exception_pending@EXECUTION_SUFFIX@"] fn molt_exception_pending(_context: u64)->u64;
  #[link_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"] fn molt_dec_ref_obj(_context: u64, value:u64);
 }
 fn main() {unsafe {
@@ -3373,7 +3373,7 @@ fn main() {unsafe {
    assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
    assert_eq!(fixed_calls(),u64::from(failure==0));
    assert_eq!(fixed_live(),if success {4} else {0});
-   assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+   assert_eq!(molt_exception_pending(fixed_execution_context()),u64::from(!success));
    if success {molt_dec_ref_obj(fixed_execution_context(), result)} assert_eq!(fixed_live(),0);
   }
  }
@@ -3382,7 +3382,7 @@ fn main() {unsafe {
    fixed_reset(failure,consumer_failure); run(fixed_execution_context()); assert_eq!(fixed_live(),0);
    assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
    assert_eq!(fixed_calls(),u64::from(failure==0));
-   assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(failure!=0 || consumer_failure!=0));
+   assert_eq!(molt_exception_pending(fixed_execution_context()),u64::from(failure!=0 || consumer_failure!=0));
   }
  }
  // operator.index returns a fresh owned result after borrowing one boxed input.
@@ -3392,12 +3392,12 @@ fn main() {unsafe {
   assert_eq!(result,if success {0x7ffc000000000200} else {NONE});
   assert_eq!(fixed_attempts(),1); assert_eq!(fixed_calls(),u64::from(failure==0));
   assert_eq!(fixed_live(),u64::from(success));
-  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+  assert_eq!(molt_exception_pending(fixed_execution_context()),u64::from(!success));
   if success {molt_dec_ref_obj(fixed_execution_context(), result)} assert_eq!(fixed_live(),0);
   fixed_reset(failure,consumer_failure); fixed_operator_index_discard(fixed_execution_context());
   assert_eq!(fixed_live(),0); assert_eq!(fixed_attempts(),1);
   assert_eq!(fixed_calls(),u64::from(failure==0));
-  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+  assert_eq!(molt_exception_pending(fixed_execution_context()),u64::from(!success));
  }
  // An owned result may alias a borrowed operand: the key keeps its box through
  // the result's own credit after the transaction releases its temporaries.
@@ -3409,11 +3409,11 @@ fn main() {unsafe {
   assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
   assert_eq!(fixed_calls(),u64::from(failure==0));
   assert_eq!(fixed_live(),u64::from(success));
-  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+  assert_eq!(molt_exception_pending(fixed_execution_context()),u64::from(!success));
   if success {molt_dec_ref_obj(fixed_execution_context(), result)} assert_eq!(fixed_live(),0);
   fixed_reset(failure,consumer_failure); discard(fixed_execution_context());
   assert_eq!(fixed_live(),0); assert_eq!(fixed_calls(),u64::from(failure==0));
-  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+  assert_eq!(molt_exception_pending(fixed_execution_context()),u64::from(!success));
  }
  }
  // Statements discard the borrowed container return, which aliases the first
@@ -3426,7 +3426,7 @@ fn main() {unsafe {
    assert_eq!(fixed_calls(),u64::from(!failed_box));
    assert_eq!(fixed_dict_set_calls(),if failed_box {0} else {dict_sets},"dict_set selects its direct provider, never the general store protocol");
    assert_eq!(fixed_live(),0);
-   assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(failed_box || consumer_failure!=0));
+   assert_eq!(molt_exception_pending(fixed_execution_context()),u64::from(failed_box || consumer_failure!=0));
   }
  }
 }}
