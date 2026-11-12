@@ -504,7 +504,6 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
         crate::OpKind::Call
             | crate::OpKind::CallInternal
             | crate::OpKind::CodeSlotSet
-            | crate::OpKind::TraceEnterSlot
             | crate::OpKind::ModuleSlot
     ) && value.is_some()
     {
@@ -526,8 +525,9 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
             expected: shape.operands,
             actual: operands,
         })
-    } else if shape.value_rule == SimpleIrOpValueRule::NonNegative
-        && value.is_none_or(|value| value < 0)
+    } else if (shape.value_rule == SimpleIrOpValueRule::NonNegative
+        && value.is_none_or(|value| value < 0))
+        || (kind == crate::OpKind::TraceEnterSlot && value.is_some_and(|shape| shape < 0))
     {
         Some(OpShapeViolation::NonNegativeValue { actual: value })
     } else {

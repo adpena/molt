@@ -64,12 +64,12 @@ pub(crate) use dict_set_tables::{
     dict_get_str_bytes_borrowed, dict_get_with_hash_in_place, dict_increment_exact_statement,
     dict_items_method, dict_key_hash, dict_keys_method, dict_popitem_method, dict_presize_capacity,
     dict_publish_staged, dict_remove_identity_with_hash_deferred, dict_remove_last,
-    dict_require_writable, dict_reserve_merge, dict_set_deferred, dict_set_in_place,
-    dict_set_inline_int_in_place, dict_set_with_hash_in_place, dict_setdefault_in_place,
-    dict_setdefault_method, dict_setdefault_with_hash_in_place, dict_update_method,
-    dict_update_set_via_store, dict_usable_capacity, dict_values_method, exact_string_bytes,
-    set_add_in_place, set_add_with_hash_in_place, set_clear_in_place, set_copy_into_empty,
-    set_del_in_place, set_del_with_hash_in_place, set_find_entry,
+    dict_replace_row, dict_require_writable, dict_reserve_merge, dict_set_deferred,
+    dict_set_in_place, dict_set_inline_int_in_place, dict_set_with_hash_in_place,
+    dict_setdefault_in_place, dict_setdefault_method, dict_setdefault_with_hash_in_place,
+    dict_update_method, dict_update_set_via_store, dict_usable_capacity, dict_values_method,
+    exact_string_bytes, set_add_in_place, set_add_with_hash_in_place, set_clear_in_place,
+    set_copy_into_empty, set_del_in_place, set_del_with_hash_in_place, set_find_entry,
     set_find_entry_in_place_with_hash, set_pin_next, set_pop_owned, set_publish_staged,
 };
 pub(super) use dict_set_tables::{concat_bytes_like, fill_repeated_bytes, simd_bytes_eq};

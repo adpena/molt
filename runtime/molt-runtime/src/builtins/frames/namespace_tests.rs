@@ -1,5 +1,4 @@
 //! Namespace custody is independent of call shape, source names and suspension.
-use super::bindings::molt_frame_homes_attached_body;
 use super::locals_proxy::molt_frame_f_locals_get_attached_body;
 use super::*;
 use crate::BuiltinExc;
@@ -44,7 +43,7 @@ fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings
             assert!(dict_set_in_place(py, globals_ptr, key, original));
         }
         let slot = crate::test_support::publish_test_code_slot(py, outer_code, globals);
-        crate::molt_trace_enter_slot_attached_body(py, slot);
+        crate::builtins::frames::compiled_entry::enter(py, slot);
         let captured = molt_class_body_builtins_attached_body(py, globals);
         unsafe {
             assert!(dict_set_in_place(py, globals_ptr, key, replacement));
@@ -88,9 +87,9 @@ fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings
             } & 3,
             0
         );
-        crate::molt_trace_exit_attached_body(py);
+        crate::molt_class_frame_exit_attached_body(py, class_code);
         assert_eq!(frame_stack_active_builtins_bits(), original);
-        crate::molt_trace_exit_attached_body(py);
+        crate::builtins::frames::compiled_entry::exit(py);
         for bits in [
             observed,
             captured,
@@ -173,7 +172,7 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                     ))
                 };
                 let slot = crate::test_support::publish_test_code_slot(py, code, namespace);
-                crate::molt_trace_enter_slot_attached_body(py, slot);
+                crate::builtins::frames::compiled_entry::enter(py, slot);
                 assert!(!crate::exception_pending(py));
                 let homes = if module {
                     molt_frame_locals_set_attached_body(py, namespace);
@@ -182,7 +181,7 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                     // An optimized activation's bindings are its compiled
                     // homes, not a dictionary injected as module locals.
                     let homes = crate::provenance::abi::mut_ptr::<u64>(
-                        molt_frame_homes_attached_body(py, 1),
+                        crate::builtins::frames::compiled_entry::homes(),
                     )
                     .expect("frame homes address fits the target");
                     assert!(!homes.is_null());
@@ -229,7 +228,7 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                     );
                 }
                 assert!(!crate::exception_pending(py));
-                crate::molt_trace_exit_attached_body(py);
+                crate::builtins::frames::compiled_entry::exit(py);
                 for bits in [
                     first,
                     second,
@@ -553,14 +552,14 @@ extern "C" fn namespace_probe(__context: u64) -> u64 {
 
     {
         let py = __py;
-        crate::molt_trace_enter_slot_attached_body(py, 0);
+        crate::builtins::frames::compiled_entry::enter(py, 0);
         assert_eq!(
             crate::builtins::frames::records::depth(),
             1,
             "dispatch must not create a frame"
         );
         let globals = super::molt_globals_builtin_attached_body(py);
-        crate::molt_trace_exit_attached_body(py);
+        crate::builtins::frames::compiled_entry::exit(py);
         assert!(!crate::exception_pending(py));
         globals
     }
@@ -884,7 +883,7 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
             FramePlan::default()
         ));
         frame_stack_set_locals_dict(py, locals);
-        let snapshot = FrameStackSnapshot::capture(py, |len| len - 1..len).unwrap();
+        let snapshot = FrameStackSnapshot::capture(py, &[super::records::top().unwrap()]).unwrap();
         frame_stack_pop(py);
         let entry = snapshot.entries[0];
         let construct = || unsafe { alloc_frame_obj(py, entry, MoltObject::none().bits()) };
@@ -951,7 +950,7 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
         for bits in pending {
             dec_ref_bits(py, bits);
         }
-        let entry_result = crate::molt_trace_enter_slot_attached_body(py, 0);
+        let entry_result = crate::builtins::frames::compiled_entry::enter(py, 0);
         assert!(obj_from_bits(entry_result).is_none());
         dec_ref_bits(py, entry_result);
         assert_eq!(
@@ -960,7 +959,7 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
                 .code_bits,
             original
         );
-        crate::molt_trace_exit_attached_body(py);
+        crate::builtins::frames::compiled_entry::exit(py);
         drop(invocation);
         dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         assert_eq!(refs(original), 1);
@@ -1075,7 +1074,7 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
         for invoked in [false, true] {
             for _ in 0..4 {
                 let invocation = invoked.then(|| FrameInvocationGuard::for_function(py, function));
-                let result = crate::molt_trace_enter_slot_attached_body(py, 0);
+                let result = crate::builtins::frames::compiled_entry::enter(py, 0);
                 assert!(obj_from_bits(result).is_none());
                 // Every backend can discard this owned ABI result. The frame's
                 // code must remain retained independently of result disposal.
@@ -1088,7 +1087,7 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
                         .code_bits,
                     code
                 );
-                dec_ref_bits(py, crate::molt_trace_exit_attached_body(py));
+                dec_ref_bits(py, crate::builtins::frames::compiled_entry::exit(py));
                 drop(invocation);
                 assert_eq!(refs(code), baseline);
                 assert!((crate::builtins::frames::records::depth() == 0));
@@ -1112,17 +1111,17 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
         assert!(crate::exception_pending(py));
         assert_eq!(compiled_slot_for_code(code), Some(0));
         crate::molt_exception_clear_attached_body(py);
-        assert!(obj_from_bits(crate::molt_trace_enter_slot_attached_body(py, 0)).is_none());
+        assert!(obj_from_bits(crate::builtins::frames::compiled_entry::enter(py, 0)).is_none());
         assert_eq!(
             crate::builtins::frames::frame_stack_top_entry()
                 .unwrap()
                 .code_bits,
             code
         );
-        crate::molt_trace_exit_attached_body(py);
-        crate::molt_trace_enter_slot_attached_body(py, 1);
+        crate::builtins::frames::compiled_entry::exit(py);
+        crate::builtins::frames::compiled_entry::enter(py, 1);
         assert!(crate::exception_pending(py));
-        crate::molt_trace_exit_attached_body(py);
+        crate::builtins::frames::compiled_entry::exit(py);
         crate::molt_exception_clear_attached_body(py);
         assert!((crate::builtins::frames::records::depth() == 0));
         for bits in [code, globals] {

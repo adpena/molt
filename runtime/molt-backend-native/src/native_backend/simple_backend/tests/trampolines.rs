@@ -494,8 +494,8 @@ fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
             .bytes
     };
     for symbol in [
-        b"molt_trace_enter_slot".as_slice(),
-        b"molt_trace_exit".as_slice(),
+        b"molt_frame_record_enter".as_slice(),
+        b"molt_frame_record_exit".as_slice(),
     ] {
         assert!(
             object.windows(symbol.len()).any(|window| window == symbol),

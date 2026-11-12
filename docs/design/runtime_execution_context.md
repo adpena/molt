@@ -46,8 +46,10 @@ prefix (`THREAD_RECORD_*`), and `state/tls.rs` asserts it with `offset_of!`:
 | offset | field | written by | read by |
 |---:|---|---|---|
 | 0 | `exception_pending: Cell<bool>` | raise, clear, task switch | the runtime; Cranelift inline checks; WASM and LLVM inline polls |
-| 8 | `pending_invocation: Cell<u64>` | direct-call handoff (inline stores) | the callee's `molt_trace_enter_slot` |
+| 8 | `pending_invocation: Cell<u64>` | direct-call handoff (inline stores) | the callee's frame entry: its inline record push, or `molt_frame_record_enter` |
 | 16 | `pending_work_ptr: Cell<u64>` | `molt_thread_record`, each invocation | inline polls, all backends |
+| 24 | `frame_top: Cell<u64>` | frame record push and pop (inline in synchronous functions; `frames/records.rs`) | every frame observer; split chunks |
+| 32, 40 | `arena_top`, `arena_limit: Cell<u64>` | inline push and pop; the runtime's chunk list | the inline push's room test |
 
 `pending_work_ptr` is the address of the word inside `Arc<PendingWork>`. The `RuntimeState`, its
 GC state, its concurrent state and its signal state share that `Arc` (`runtime_state.rs:539-636`).
@@ -88,7 +90,7 @@ because the cold path joins the same drop.
 | step | entry | today |
 |---|---|---|
 | callee prologue | `molt_thread_record` | thread-local + state resolution |
-| frame push, homes, argument zero, frame pop | `molt_trace_enter_slot`, `molt_frame_homes`, `molt_frame_context_set`, `molt_trace_exit` | guard each |
+| frame push, homes, argument zero, frame pop | `molt_trace_enter_slot`, `molt_frame_homes`, `molt_frame_context_set`, `molt_trace_exit` | guard each (measured before call-anatomy stage 1, which made all four inline for synchronous functions) |
 | line, column | `molt_frame_set_line_col`, `molt_frame_set_col` | `FRAME_STACK` thread-local, no guard |
 | caller: global read, admission | `molt_module_get_global`, `molt_function_direct_call_eligible` | guard each |
 | caller: decode | `molt_handle_resolve` | no guard |

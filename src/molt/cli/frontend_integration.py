@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from molt.frontend import ClassId, ClassInfo, layout_definition_symbol
 from molt.cli.models import _FrontendIntegrationState
+from molt.cli.module_registry import is_dunder_name
+from molt.frontend._types import _MOLT_MODULE_CHUNK_PARAM
 from molt.frontend.module_publication import (
     inspect_source_module_publication,
     parse_function_metadata,
@@ -70,7 +72,13 @@ def _plan_module_code_slots(
                 )
             if kind in {"code_slot_set", "trace_enter_slot"}:
                 symbol = op.get("s_value")
-                if symbol not in local_symbols or op.get("value") is not None:
+                value = op.get("value")
+                # A frame entry may carry its synchronous frame's home count
+                # and clear order; the symbol alone is the code identity.
+                frame_shape = (
+                    kind == "trace_enter_slot" and type(value) is int and value >= 0
+                )
+                if symbol not in local_symbols or not (value is None or frame_shape):
                     raise ValueError(
                         f"Missing canonical code owner {symbol!r} in module {module_name}"
                     )
@@ -91,6 +99,113 @@ def _plan_module_code_slots(
                 class_references.setdefault(definition, module_name)
                 code_symbols.setdefault(definition, None)
     return owned_functions, code_symbols, class_references
+
+
+# Ops whose name operand is a global of the module that owns the executing
+# frame (``module_get_global`` reads the frame's globals) or of the module
+# object operand (the others, when that operand is the module's own object).
+_FRAME_GLOBAL_OPS = frozenset({"module_get_global"})
+_MODULE_OBJECT_GLOBAL_OPS = frozenset(
+    {
+        "module_set_attr",
+        "module_get_attr",
+        "module_del_global",
+        "module_del_global_if_present",
+    }
+)
+# The sites a compiled global slot serves: reads of the frame's globals and
+# stores into the module's own namespace (module level) or the frame's
+# globals (``global`` declarations in functions).
+_SLOTTED_SITE_OPS = frozenset({"module_get_global", "module_set_attr", "dict_set"})
+
+
+def _global_name_sites(
+    funcs: Sequence[dict[str, Any]],
+) -> Iterator[tuple[dict[str, Any], str]]:
+    """Every op of a module's own body that names one of its globals, with
+    the name: the single scanner behind its layout and its slot stamps."""
+    for func in funcs:
+        constants: dict[str, str] = {}
+        globals_dicts: set[str] = set()
+        own_modules: set[str] = {
+            param
+            for param in func.get("params") or ()
+            if param == _MOLT_MODULE_CHUNK_PARAM
+        }
+        for op in func.get("ops", ()):
+            kind = op.get("kind")
+            out = op.get("out")
+            if kind == "const_str":
+                value = op.get("s_value")
+                if isinstance(out, str) and isinstance(value, str):
+                    constants[out] = value
+                continue
+            if kind == "module_new" and isinstance(out, str):
+                own_modules.add(out)
+                continue
+            if kind == "call" and op.get("s_value") == "molt_globals_builtin":
+                if isinstance(out, str):
+                    globals_dicts.add(out)
+                continue
+            args = op.get("args") or ()
+            if len(args) < 2 or args[1] not in constants:
+                continue
+            if (
+                kind in _FRAME_GLOBAL_OPS
+                or (kind in _MODULE_OBJECT_GLOBAL_OPS and args[0] in own_modules)
+                or (kind == "dict_set" and args[0] in globals_dicts)
+            ):
+                yield op, constants[args[1]]
+
+
+def module_global_layout(funcs: Sequence[dict[str, Any]]) -> tuple[str, ...]:
+    """A module's global slot layout (call_anatomy.md 4.5): every non-dunder
+    name its own code reads, writes or deletes as a module global, sorted.
+
+    The set is a function of the module's lowered body alone, so another
+    module's edit never renumbers it. Names bound only by other modules or
+    through ``globals()`` with a computed key are not slotted; their reads and
+    writes stay on the by-name path, which is always correct.
+    """
+    names = {name for _, name in _global_name_sites(funcs)}
+    return tuple(sorted(name for name in names if not is_dunder_name(name)))
+
+
+def stamp_global_slots(
+    functions: list[dict[str, Any]],
+    module_functions: Mapping[str, Sequence[dict[str, Any]]],
+    global_layouts: Mapping[str, tuple[str, ...]],
+    registered_modules: Collection[str],
+) -> None:
+    """Mark each read and store of a slotted global with its slot
+    ``{"module": M, "index": k}``: slot k of M's layout. Only modules with a
+    registry row (which binds the runtime table) are stamped; everything else
+    keeps the by-name op unchanged. A stamped function is a copy-on-write
+    replacement in ``functions``, so its admitted body digest is never stale.
+    """
+    position = {id(function): index for index, function in enumerate(functions)}
+    for module_name, funcs in module_functions.items():
+        if module_name not in registered_modules:
+            continue
+        index_of = {
+            name: index
+            for index, name in enumerate(global_layouts.get(module_name, ()))
+        }
+        for func in funcs:
+            stamps: dict[int, dict[str, Any]] = {}
+            for op, name in _global_name_sites([func]):
+                index = index_of.get(name)
+                if index is not None and op.get("kind") in _SLOTTED_SITE_OPS:
+                    stamps[id(op)] = {"module": module_name, "index": index}
+            if not stamps or id(func) not in position:
+                continue
+            functions[position[id(func)]] = {
+                **func,
+                "ops": [
+                    {**op, "global_slot": stamps[id(op)]} if id(op) in stamps else op
+                    for op in func["ops"]
+                ],
+            }
 
 
 def _validate_class_definition_references_with_state(
@@ -172,6 +287,8 @@ def _integrate_module_frontend_result_with_state(
         integration_state.class_definition_references.setdefault(symbol, owner)
     integration_state.function_digest_seeds.extend(function_digest_seeds)
     integration_state.functions.extend(ir_functions)
+    integration_state.global_layouts[module_name] = module_global_layout(ir_functions)
+    integration_state.module_functions[module_name] = ir_functions
     integration_state.function_metadata.update(metadata)
     # ClassIds are program-wide identities: one module's classes never
     # replace another module's same-named classes.

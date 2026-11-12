@@ -317,12 +317,12 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
 }
 
 #[test]
-#[should_panic(expected = "LLVM function type mismatch for `molt_trace_exit`")]
+#[should_panic(expected = "LLVM function type mismatch for `molt_frame_record_exit`")]
 fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "test");
     backend.module.add_compiled_function(
-        "molt_trace_exit",
+        "molt_frame_record_exit",
         ctx.void_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
     );
@@ -339,7 +339,7 @@ fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
     );
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
 
-    let _ = lowering.ensure_runtime_i64_fn("molt_trace_exit", 0);
+    let _ = lowering.ensure_runtime_i64_fn("molt_frame_record_exit", 1);
 }
 
 #[test]

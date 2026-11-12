@@ -597,7 +597,7 @@ simpleir_object_model_semantics_kinds = [
     "any", "builtin_any", "all", "builtin_all",
     "module_new", "module_cache_get", "module_load_cached", "module_cache_set",
     "module_cache_del", "module_import", "module_get_attr", "module_import_from",
-    "module_get_name", "module_get_global", "module_set_attr",
+    "module_get_name", "module_get_global", "global_slot_get", "module_set_attr",
     "object_new", "builtin_type", "bound_method_new",
     "func_new", "func_new_closure", "code_new", "code_slot_set", "code_slots_init",
     "set_new", "frozenset_new", "set_add", "set_add_probe", "frozenset_add",
@@ -1502,6 +1502,11 @@ gvn_always_numberable_opcodes = [
     "IsBoolWord",
     "UnboxBoolWord",
     "BoxInlineInt",
+    # Module global slot sites (call_anatomy.md 4.5): a module's identity is
+    # one constant, and its slot base is fixed for one activation, so every
+    # read of one module in a function shares one base.
+    "ModuleSlot",
+    "GlobalSlotBase",
 ]
 
 gvn_type_gated_numberable_opcodes = [
@@ -1550,11 +1555,13 @@ gvn_value_keyed_constant_opcodes = [
 
 gvn_numberable_attr_key_opcodes = [
     { opcode = "TypeGuard", key = "str_attr", attrs = ["expected_type", "ty"] },
+    { opcode = "ModuleSlot", key = "str_attr", attrs = ["s_value"] },
 ]
 
-# final_tir_opcodes: produced only by the late lowering stage of TIR for targets
-# whose backend consumes final TIR (HF-821). They never cross the SimpleIR wire
-# and carry no frontend facts.
+# final_tir_opcodes: produced only by the terminal phase of TIR for targets
+# whose backend consumes final TIR: the late lowering stage (HF-821) and the
+# module global slot sites (call_anatomy.md 4.5). They never cross the SimpleIR
+# wire under their own kind and carry no frontend facts.
 final_tir_opcodes = [
     "IsInlineInt",
     "UnboxInlineInt",
@@ -1566,6 +1573,7 @@ final_tir_opcodes = [
     "CodeIs",
     "DirectCall",
     "CallRuntime",
+    "GlobalSlotBase",
 ]
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
@@ -4382,6 +4390,30 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "GlobalSlotBase"
+may_call_python = false
+operand_arity = 1
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_types = ["i64"]
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "GlobalSlotGet"
+may_call_python = true
+operand_arity = 3
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_independent_result_types = ["dynbox"]
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "ModuleGetName"
 may_call_python = true
 operand_arity = 2
@@ -5039,6 +5071,11 @@ mapper_opcode = "ModuleImportFrom"
 canonical = "module_get_global"
 aliases = []
 mapper_opcode = "ModuleGetGlobal"
+
+[[kind]]
+canonical = "global_slot_get"
+aliases = []
+mapper_opcode = "GlobalSlotGet"
 
 [[kind]]
 canonical = "module_get_name"

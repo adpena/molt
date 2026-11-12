@@ -16,9 +16,9 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
-| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`) | generated inline push and pop on Cranelift, LLVM and WASM (lane call-anatomy-phase2) | HF-185, HF-261 |
+| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a) | guarded call promotion design (HF-773 slice D) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5) | guarded call promotion design (HF-773 slice D); `module.attr` slot reads and the guarded builtin call (lane module-slots) | HF-507, HF-79, HF-200 |
 | 4 inline caches | not started | - | - | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -648,12 +648,53 @@ identity; the premise checker refuses the build when a write to the slot appears
 
 ### 4.3 Frame records and lazy frame objects
 
-Settled 2026-11-10: records live in the per-thread frame arena that already holds the binding
-homes (stable addresses, the same on every backend), not in the native stack frame; the record
-retains its function and code, as CPython 3.12 holds `f_funcobj` and `f_code` strong. Step 1
-(landed) makes the record chain headed by `ThreadRecord.frame_top` the runtime's one frame
-authority (`molt-runtime/src/builtins/frames/records.rs`); step 2 generates the push and pop
-inline. The original sketch follows.
+Settled 2026-11-10 and landed in two steps: records live in the per-thread frame arena, not in
+the native stack frame (stable addresses, the same on every backend). The record chain headed by
+`ThreadRecord.frame_top` is the runtime's one frame authority
+(`molt-runtime/src/builtins/frames/records.rs`). A record is six header words (`prev`, `function`,
+`code`, `flags`, `observer`, `location`; `molt-codegen-abi` `FRAME_RECORD_*`) followed by the
+frame's homes; its base is the homes base compiled code already addressed.
+
+- A **synchronous function** pushes and pops its record inline. One generator per transition
+  (`molt-codegen-abi/src/frame_record.rs`: `generate_frame_push`, `generate_frame_pop`) serves
+  Cranelift (inline), LLVM (an always-inlined body per frame shape) and WASM (one push body and
+  one pop body per module). The push takes the handed function from
+  `ThreadRecord.pending_invocation` when its code owns this slot and the arena chunk has room
+  (`arena_top`, `arena_limit`); the record retains its function and code, as CPython 3.12 holds
+  `f_funcobj` and `f_code` strong, and reads globals and builtins from the function. The pop
+  unlinks, releases the homes in the target's clear order (the `trace_enter_slot` value carries
+  the home count and that order), releases function and code, and returns the arena top.
+- **Every other frame** (a module or class body, a stateful activation, a runtime-implemented
+  Python body, an entry with no handed function or no room in the chunk) is linked by the runtime
+  (`molt_frame_record_enter`) as an owned record whose namespace block sits below its header.
+- A pop enters the runtime (`molt_frame_record_exit`) only when the record's flags word is not
+  zero: an observer attached a frame payload, the runtime owns the record, or it opened an arena
+  chunk.
+- Zero-argument `super()` reads a synchronous frame as CPython's `super_init_without_args` does:
+  "no arguments" is `co_argcount == 0`, argument zero is home 0 and the class cell is the home of
+  the code's `__class__` free variable. Such a frame publishes no context
+  (`molt_frame_context_set` remains for stateful and class-body frames).
+
+`molt_trace_enter_slot`, `molt_trace_exit`, `molt_frame_homes`, `FRAME_STACK` and
+`TRACE_FRAME_PUSH_STACK` are deleted. The original sketch follows the slice-2 notes.
+
+**Slice 2 (not started; state at 077e117176).** A stateful activation (generator, coroutine,
+async poll) still enters through `molt_frame_record_enter`: the runtime links an owned record
+whose namespace block holds the task as `activation_bits`, restores the task's saved location
+word, and `molt_frame_record_exit` saves it back (`FrameEntry::exit`). Its entry carries no
+frame shape (no `trace_enter_slot` value), and its frame still publishes `FRAME_CONTEXT_SET` on
+entry and after each resume (`function_lifecycle.py`, `async_gen.py`). Slice 2 keeps the record
+in the task payload, as CPython keeps `gi_iframe` in the generator: resume links it to
+`frame_top` and suspend unlinks it, both through new `frame_record` generators, so no backend
+hand-writes them. It then reads `super()` from the payload's slots, as synchronous frames read
+their homes, and removes `FRAME_CONTEXT_SET` from stateful frames (class bodies keep it). The
+flags word uses bits 0-2 (`FRAME_RECORD_OBSERVED`, `OWNED`, `CHUNK_FIRST`); a `STATEFUL` bit is
+free. Slice 2 must carry the differential cells `frame_record_observed_frames` (a suspended
+`gi_frame`) and `sys_exception_across_resume`. Its measurement adds a generator loop and an async
+call loop to the programs of section 9.
+Two step-2 measurements are also still open: WASM instruction rows (WASM runs the differential
+cells but has no instruction row) and atomic-refcount builds, where the record's two retains and
+each home release are runtime calls.
 
 A function whose frame can be observed keeps a `FrameRecord` in its own native stack frame (on
 WASM, in the shadow stack):
@@ -1105,6 +1146,18 @@ must be equal in hot-path instructions (gate in the anatomy tool).
 - **Names.** Attribute and method names are interned name handles in the op format (typed keys,
   HF-202), never `(ptr, len)` bytes.
 
+**Implementation (lane module-slots, 2026-11-11).** A module's layout is the sorted
+non-dunder names its own code reads, writes or deletes as globals; the module registry
+(schema 6) carries it. The namespace dictionary owns every value; its slot table mirrors
+them inside the dictionary's commit primitives (insert, replace, remove, compaction,
+reset), with a row-to-slot inverse so a replacement needs no probe. A non-exact-`str` key
+degrades the table for good. Compiled reads: `GlobalSlotBase` (one runtime call per
+activation, merged by GVN and hoisted by LICM; the frame's globals table when it uses the
+site's layout, else an all-unbound array) and `GlobalSlotGet`, whose meaning is the shared
+`molt_codegen_abi::global_slot` generator. Stores replace the dictionary row by slot
+index (`molt_global_slot_set`). Free-threaded runtimes take the by-name path. The base
+becomes inline loads once the frame record exposes the function's globals (stage 1).
+
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,
 module slot write, builtins version). Check: mutation tests per guard kind (rebind a global, add a
@@ -1212,7 +1265,7 @@ a static layout, such as big integers) remain.
 | Object header layout | exists | `molt-codegen-abi` `HEADER_*` constants |
 | `NativeSignature` per function | **missing** (pieces are name-keyed) | new typed fact in TIR |
 | Call-site binding class (`Proven`/`Guarded`/`Monomorphic`/`Dynamic`) | **missing** as a typed fact | new, from binding flow |
-| `GlobalSlot(ModuleId, k)` | **missing**; globals are dict entries | new, with the module slot array |
+| `GlobalSlot(ModuleId, k)` | exists for global reads and stores (`OpIR::global_slot`, `TirOp::global_slot`); `module.attr` sites open | layouts in the module registry (schema 6); `builtins/namespace_slots.rs`; `molt_codegen_abi::global_slot` |
 | `FramePlan` (record or none, home count, class cell) | partial (runtime code-slot frame plan) | move to compile time |
 | `FieldSlot(ClassId, j)` for attribute sites | **missing** at compile time (runtime site caches exist) | new, from class layout facts |
 | Interprocedural may-raise summary | **missing** | new TIR analysis |
@@ -1238,6 +1291,32 @@ layout, and the tests. The replaced lane is deleted in the same stage.
 
 **Goal.** Replace the runtime-owned frame stack with records in compiled frames. Locations become
 plain stores into the record. Frame objects materialize on observation.
+
+**As built (2026-11-11).** Section 4.3 describes the landed design. It differs from the work list
+below in four ways: records live in the per-thread frame arena, not in a native stack slot; the
+record retains its function and code; the existing `trace_enter_slot` and `trace_exit` ops stay
+(the entry's value now carries the frame's home count and clear order) and the shared generators
+in `molt-codegen-abi` are their instruction selection on all three backends; and
+`frame_context_set` stays for stateful and class-body frames only. The work list is kept as the
+record of the original plan.
+
+Measured (VERIFIED: macOS arm64, release, instructions retired from `/usr/bin/time -l`, median of
+5 runs, identical output; base is main at 57c433cc8, head adds the inline push and pop):
+
+| program | backend | base | head | change |
+|---|---|---:|---:|---:|
+| p8 call loop, 10 M calls | Cranelift | 21,007 M | 9,790 M | -53.4% (2,091 to 969 per iteration) |
+| p8 call loop, 10 M calls | LLVM | 22,811 M | 11,005 M | -51.8% |
+| `fib(32)`, 7.05 M calls | Cranelift | 16,031 M | 8,263 M | -48.5% (2,260 to 1,158 per call) |
+| `fib(32)` | LLVM | 14,243 M | 6,116 M | -57.1% |
+| `bench_method_default_binding` | Cranelift | 17,698 M | 11,708 M | -33.8% |
+| `bench_method_default_binding` | LLVM | 17,884 M | 11,634 M | -34.9% |
+| `bench_exception_heavy` | Cranelift | 24,358 M | 24,315 M | -0.2% |
+| `bench_exception_heavy` | LLVM | 24,548 M | 24,508 M | -0.2% |
+
+The LLVM rows include the guarded direct call (HF-821 D4) on both sides. Not measured: WASM (it
+runs the differential cells, with no instruction row yet) and atomic-refcount builds, where the
+record's two retains and each home release are runtime calls.
 
 **Work.**
 

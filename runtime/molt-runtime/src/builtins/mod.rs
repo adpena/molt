@@ -52,6 +52,7 @@ pub(crate) mod lzma;
 pub(crate) mod methods;
 pub(crate) mod module_table;
 pub(crate) mod modules;
+pub(crate) mod namespace_slots;
 pub(crate) mod native_arguments;
 pub(crate) mod numbers;
 pub(crate) mod operator;

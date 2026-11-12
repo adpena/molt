@@ -431,6 +431,7 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::ModuleNew
         | molt_ir::OpKind::ModuleSetAttr
         | molt_ir::OpKind::ModuleSlot
+        | molt_ir::OpKind::GlobalSlotGet
         | molt_ir::OpKind::Modulo
         | molt_ir::OpKind::Mul
         | molt_ir::OpKind::Ne

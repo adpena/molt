@@ -8461,6 +8461,20 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
     IntrinsicSpec {
+        name: "molt_global_slot_base",
+        symbol: "molt_global_slot_base",
+        arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_global_slot_set",
+        symbol: "molt_global_slot_set",
+        arity: 5,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_build_class_builtin",
         symbol: "molt_build_class_builtin",
         arity: 2,
@@ -8498,7 +8512,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_class_frame_exit",
         symbol: "molt_class_frame_exit",
-        arity: 0,
+        arity: 1,
         defaults: &[],
         public: None,
     },
@@ -9184,20 +9198,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_sys_copyright",
         symbol: "molt_sys_copyright",
-        arity: 0,
-        defaults: &[],
-        public: None,
-    },
-    IntrinsicSpec {
-        name: "molt_trace_enter_slot",
-        symbol: "molt_trace_enter_slot",
-        arity: 1,
-        defaults: &[],
-        public: None,
-    },
-    IntrinsicSpec {
-        name: "molt_trace_exit",
-        symbol: "molt_trace_exit",
         arity: 0,
         defaults: &[],
         public: None,

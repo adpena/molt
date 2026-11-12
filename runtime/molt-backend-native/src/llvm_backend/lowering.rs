@@ -101,6 +101,9 @@ mod constant_ops;
 #[cfg(feature = "llvm")]
 mod container_ops;
 #[cfg(feature = "llvm")]
+mod frame_record;
+mod global_slot;
+#[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
 mod object_ops;
@@ -525,8 +528,10 @@ struct FunctionLowering<'ctx, 'func> {
     /// facts as the native/WASM/Luau backends instead of trusting `TirType`.
     repr_facts: crate::representation_plan::ProducerCarrierPlan,
     /// The entry slot holding the base address of the binding homes that own
-    /// a synchronous Python frame's bindings, once `molt_frame_homes` lent it.
+    /// a synchronous Python frame's bindings: its frame record's base.
     frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
+    /// The entry slot holding the base of the frame record this invocation
+    /// entered, zero until it does.
     owned_frame_entered: Option<inkwell::values::PointerValue<'ctx>>,
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,

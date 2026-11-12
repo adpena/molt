@@ -4978,14 +4978,6 @@ owner = "runtime/molt-runtime-tk/src/tk/native.rs"
 summary = "Any set value, including 0, enables Tcl command tracing to stderr on native-tcl builds of the tkinter runtime; the presence check runs once and is cached; unset stays silent."
 
 [[variable]]
-name = "MOLT_TRACE_TRACE_ENTER_SLOT"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-runtime/src/object/ops_builtins.rs"
-summary = "Set to exactly 1 to trace the trace-enter slot path of builtin call dispatch to stderr; the value is read once per process; unset or any other value stays silent."
-
-[[variable]]
 name = "MOLT_TRACE_TRACE_EXIT_PENDING"
 audience = "user"
 kind = "bool"

@@ -10110,6 +10110,7 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         native_module_init_specs=(),
         generated_native_init_modules=(),
         spawn_enabled=False,
+        global_layouts={},
         module_source_role_by_module={
             name: "user" for name in {"application": Path("/virtual/application.py")}
         },

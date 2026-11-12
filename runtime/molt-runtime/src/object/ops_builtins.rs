@@ -72,11 +72,6 @@ pub(crate) use {
 // integer-loop benchmarks. Each flag is read exactly once at first use.
 
 #[inline]
-fn trace_enter_slot_enabled() -> bool {
-    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TRACE_ENTER_SLOT)
-}
-
-#[inline]
 fn trace_exit_pending_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TRACE_EXIT_PENDING)
 }
@@ -204,14 +199,21 @@ fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> Option<CodeNamespace> {
     Some(binding)
 }
 
-pub(crate) fn molt_trace_enter_slot_attached_body(_py: &crate::PyToken<'_>, code_id: u64) -> u64 {
+/// The frame entry of compiled code that does not push its record inline: a
+/// module body, a stateful activation's resume, and a synchronous function
+/// whose inline push found no handed function for its slot or no room in the
+/// arena chunk (`molt_codegen_abi::frame_record::generate_frame_push`). Links
+/// an owned record for code slot `code_id` and returns its base, raw; the
+/// compiled exit passes that base to `molt_frame_record_exit`. Zero: nothing
+/// was linked and an exception is pending. A nonzero base with an exception
+/// pending is a frame whose homes could not be reserved: it is linked without
+/// them so the `MemoryError` traceback keeps it, compiled code leaves through
+/// the entry's exception check before any home operation, and its exit still
+/// pops it.
+pub(crate) fn molt_frame_record_enter_attached_body(_py: &crate::PyToken<'_>, code_id: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let handed = match take_invocation_namespace(_py, code_id) {
-            Ok(handed) => handed,
-            Err(()) => {
-                TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
-                return MoltObject::none().bits();
-            }
+        let Ok(handed) = take_invocation_namespace(_py, code_id) else {
+            return 0;
         };
         let (binding, builtins_bits, activation_bits) =
             if let Some([globals, builtins, code, activation]) = handed {
@@ -227,12 +229,12 @@ pub(crate) fn molt_trace_enter_slot_attached_body(_py: &crate::PyToken<'_>, code
                 )
             } else {
                 let Some(binding) = code_slot_acquire(_py, code_id) else {
-                    TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
-                    return raise_exception::<u64>(
+                    raise_exception::<u64>(
                         _py,
                         BuiltinExc::SystemError,
                         "compiled frame slot is unbound",
                     );
+                    return 0;
                 };
                 let builtins = match crate::builtins::frames::frame_effective_builtins_bits(
                     _py,
@@ -241,38 +243,15 @@ pub(crate) fn molt_trace_enter_slot_attached_body(_py: &crate::PyToken<'_>, code
                     Ok(builtins) => builtins,
                     Err(()) => {
                         binding.release(_py);
-                        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
-                        return MoltObject::none().bits();
+                        return 0;
                     }
                 };
                 inc_ref_bits(_py, builtins);
                 (binding, builtins, 0)
             };
-        let code_bits = binding.code_bits;
-        if trace_enter_slot_enabled() {
-            let mut name = "<none>".to_string();
-            let mut file = "<none>".to_string();
-            if code_bits != 0
-                && let Some(ptr) = obj_from_bits(code_bits).as_ptr()
-                && unsafe { object_type_id(ptr) == TYPE_ID_CODE }
-            {
-                let name_bits = unsafe { code_name_bits(ptr) };
-                name = string_obj_to_owned(obj_from_bits(name_bits))
-                    .unwrap_or_else(|| "<unknown>".to_string());
-                let file_bits = unsafe { code_filename_bits(ptr) };
-                file = string_obj_to_owned(obj_from_bits(file_bits))
-                    .unwrap_or_else(|| "<unknown>".to_string());
-            }
-            eprintln!(
-                "molt trace_enter_slot code_id={} bits=0x{:x} name={} file={}",
-                code_id, code_bits, name, file
-            );
-        }
         // A synchronous activation of an optimized body keeps its bindings in
         // homes its code slot's plan sizes; a stateful activation's bindings
-        // live in its task payload. The pushed entry is popped by this
-        // invocation's exit even when the homes cannot be taken, and compiled
-        // code borrows them only after this entry's exception check passed.
+        // live in its task payload.
         let plan = if activation_bits == 0 {
             runtime_state(_py)
                 .code_slots
@@ -285,19 +264,38 @@ pub(crate) fn molt_trace_enter_slot_attached_body(_py: &crate::PyToken<'_>, code
         };
         let entered = crate::builtins::frames::frame_stack_enter(
             _py,
-            code_bits,
+            binding.code_bits,
             binding.globals_bits,
             builtins_bits,
             activation_bits,
             plan,
         );
-        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(true));
         if !entered {
             crate::record_memory_error_without_allocation(_py);
-            return MoltObject::none().bits();
         }
-        // The frame stack now owns the code edge; an owned-result sink must
-        // never receive that borrowed edge as the result of this mutator.
+        crate::builtins::frames::records::top().map_or(0, |record| record.base() as u64)
+    })
+}
+
+/// The exit of a frame whose record compiled code cannot pop inline: one the
+/// runtime linked, one an observer attached a payload to, or one that opened
+/// an arena chunk. `base` is the record compiled code entered; it is the
+/// executing frame, because frames exit in LIFO order.
+pub(crate) fn molt_frame_record_exit_attached_body(_py: &crate::PyToken<'_>, base: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        if trace_exit_pending_enabled()
+            && let Some((kind, _)) = crate::builtins::exceptions::pending_exception_diagnostic(_py)
+            && let Some((file, line, func, _, _)) =
+                crate::builtins::frames::frame_stack_top_info(_py)
+        {
+            eprintln!(
+                "molt trace_exit pending kind={} frame={} file={} line={}",
+                kind, func, file, line
+            );
+        }
+        let top = crate::builtins::frames::records::top().map_or(0, |record| record.base() as u64);
+        assert_eq!(top, base, "compiled frame exit is not LIFO");
+        frame_stack_pop(_py);
         MoltObject::none().bits()
     })
 }
@@ -309,8 +307,6 @@ pub(crate) fn molt_class_frame_enter_attached_body(
     builtins_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        // Like TRACE_ENTER_SLOT, every attempt owns one TRACE_EXIT marker.
-        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
         let Some(_code) = obj_from_bits(code_bits).as_ptr().filter(|ptr| unsafe {
             object_type_id(*ptr) == TYPE_ID_CODE
                 && crate::object::layout::code_scope_kind(*ptr)
@@ -349,7 +345,6 @@ pub(crate) fn molt_class_frame_enter_attached_body(
             0,
             plan,
         );
-        TRACE_FRAME_PUSH_STACK.with(|stack| *stack.borrow_mut().last_mut().unwrap() = true);
         if !entered {
             crate::record_memory_error_without_allocation(py);
         }
@@ -357,38 +352,24 @@ pub(crate) fn molt_class_frame_enter_attached_body(
     })
 }
 
-pub(crate) fn molt_class_frame_exit_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+/// Leave the class body of `code_bits`. Its compiled cleanup runs on every
+/// exit of the class statement, including a failed entry that linked no frame:
+/// the executing frame is this class body's exactly when its entry linked one,
+/// because a class body never runs directly inside itself.
+pub(crate) fn molt_class_frame_exit_attached_body(_py: &crate::PyToken<'_>, code_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        let entered =
-            TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow().last().copied().unwrap_or(false));
-        molt_trace_exit_attached_body(py);
-        if entered && exception_pending(py) {
+        let entered = crate::builtins::frames::records::top()
+            .is_some_and(|record| record.code_bits() == code_bits && record.is_class_body());
+        if !entered {
+            return MoltObject::none().bits();
+        }
+        frame_stack_pop(py);
+        if exception_pending(py) {
             // Propagation out of the class body is a call-site Origin in its
             // caller, just as a real class-body function returning an error.
-            let homes = crate::builtins::frames::frame_stack_top_entry()
-                .map_or(0, |entry| entry.bindings.homes_base() as u64);
+            let homes =
+                crate::builtins::frames::records::top().map_or(0, |record| record.base() as u64);
             crate::builtins::exceptions::molt_exception_frame_origin_attached_body(py, homes);
-        }
-        MoltObject::none().bits()
-    })
-}
-
-pub(crate) fn molt_trace_exit_attached_body(_py: &crate::PyToken<'_>) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, _py, {
-        if trace_exit_pending_enabled()
-            && let Some((kind, _)) = crate::builtins::exceptions::pending_exception_diagnostic(_py)
-            && let Some((file, line, func, _, _)) =
-                crate::builtins::frames::frame_stack_top_info(_py)
-        {
-            eprintln!(
-                "molt trace_exit pending kind={} frame={} file={} line={}",
-                kind, func, file, line
-            );
-        }
-        let should_pop =
-            TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or(false));
-        if should_pop {
-            frame_stack_pop(_py);
         }
         MoltObject::none().bits()
     })

@@ -259,11 +259,12 @@ for (const test of config.cases) {
       },
       exception_pending: () => current().pending ? 1n : 0n,
       exception_pending_fast: () => current().pending ? 1n : 0n,
-      trace_enter_slot(slot) {
+      frame_record_enter(slot) {
         assert.equal(slot,0n); const ctx=current(); assert.equal(ctx.pending,false);
-        ctx.entered++; frameDepth++; return none;
+        ctx.entered++; frameDepth++; return 1024n;
       },
-      trace_exit() {
+      frame_record_exit(base) {
+        assert.equal(base,1024n,'the exit names the record its entry linked');
         const ctx=current(); assert.equal(ctx.entered-ctx.exited,1);
         assert.equal(ctx.frees,test.count ? 1 : 0,'region retired before frame exit');
         ctx.exited++;frameDepth--;

@@ -483,6 +483,7 @@ impl LuauBackend {
             | molt_ir::OpKind::ModuleDelGlobalIfPresent
             | molt_ir::OpKind::ModuleGetAttr
             | molt_ir::OpKind::ModuleGetGlobal
+            | molt_ir::OpKind::GlobalSlotGet
             | molt_ir::OpKind::ModuleGetName
             | molt_ir::OpKind::ModuleImport
             | molt_ir::OpKind::ModuleImportFrom

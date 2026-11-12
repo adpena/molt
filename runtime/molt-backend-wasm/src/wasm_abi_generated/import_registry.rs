@@ -275,8 +275,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "frame_locals_begin",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::FrameHomes,
-        name: "frame_homes",
+        import: WasmRuntimeImport::FrameRecordEnter,
+        name: "frame_record_enter",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FrameRecordExit,
+        name: "frame_record_exit",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FrameHomeLoad,
@@ -617,6 +621,14 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardBuiltinBindings,
         name: "guard_builtin_bindings",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::GlobalSlotBase,
+        name: "global_slot_base",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::GlobalSlotSet,
+        name: "global_slot_set",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BuildClassBuiltin,
@@ -1173,14 +1185,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::RefcountAdmission,
         name: "refcount_admission",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TraceEnterSlot,
-        name: "trace_enter_slot",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TraceExit,
-        name: "trace_exit",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TraceSetLine,
@@ -11341,8 +11345,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_frame_context_set" => Some(WasmRuntimeImport::FrameContextSet),
         "frame_locals_begin" => Some(WasmRuntimeImport::FrameLocalsBegin),
         "molt_frame_locals_begin" => Some(WasmRuntimeImport::FrameLocalsBegin),
-        "frame_homes" => Some(WasmRuntimeImport::FrameHomes),
-        "molt_frame_homes" => Some(WasmRuntimeImport::FrameHomes),
+        "frame_record_enter" => Some(WasmRuntimeImport::FrameRecordEnter),
+        "molt_frame_record_enter" => Some(WasmRuntimeImport::FrameRecordEnter),
+        "frame_record_exit" => Some(WasmRuntimeImport::FrameRecordExit),
+        "molt_frame_record_exit" => Some(WasmRuntimeImport::FrameRecordExit),
         "frame_home_load" => Some(WasmRuntimeImport::FrameHomeLoad),
         "molt_frame_home_load" => Some(WasmRuntimeImport::FrameHomeLoad),
         "frame_home_take" => Some(WasmRuntimeImport::FrameHomeTake),
@@ -11521,6 +11527,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_cell_ge" => Some(WasmRuntimeImport::CellGe),
         "guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
         "molt_guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
+        "global_slot_base" => Some(WasmRuntimeImport::GlobalSlotBase),
+        "molt_global_slot_base" => Some(WasmRuntimeImport::GlobalSlotBase),
+        "global_slot_set" => Some(WasmRuntimeImport::GlobalSlotSet),
+        "molt_global_slot_set" => Some(WasmRuntimeImport::GlobalSlotSet),
         "build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
         "molt_build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
         "class_builder_check" => Some(WasmRuntimeImport::ClassBuilderCheck),
@@ -11801,10 +11811,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_attached_context" => Some(WasmRuntimeImport::AttachedContext),
         "refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
         "molt_refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
-        "trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
-        "molt_trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
-        "trace_exit" => Some(WasmRuntimeImport::TraceExit),
-        "molt_trace_exit" => Some(WasmRuntimeImport::TraceExit),
         "trace_set_line" => Some(WasmRuntimeImport::TraceSetLine),
         "molt_trace_set_line" => Some(WasmRuntimeImport::TraceSetLine),
         "runtime_init" => Some(WasmRuntimeImport::RuntimeInit),

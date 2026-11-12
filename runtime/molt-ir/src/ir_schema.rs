@@ -23,6 +23,15 @@ const CONTAINER_TYPES: &[&str] = &[
 ];
 
 const BCE_SAFE_KINDS: &[crate::OpKind] = &[crate::OpKind::Index, crate::OpKind::StoreIndex];
+/// The reads and stores of a module global that a global slot can serve
+/// (call_anatomy.md 4.5): reads of the frame's globals, stores into the
+/// module's own namespace and stores into the frame's globals.
+const GLOBAL_SLOT_KINDS: &[crate::OpKind] = &[
+    crate::OpKind::ModuleGetGlobal,
+    crate::OpKind::GlobalSlotGet,
+    crate::OpKind::ModuleSetAttr,
+    crate::OpKind::DictSet,
+];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
     BackendPrivate {
@@ -167,6 +176,10 @@ impl std::error::Error for OpShapeDiagnostic {}
 /// execution-context ownership. Existing result-role/cardinality facts remain
 /// the result authority; this checker does not duplicate them.
 /// Both SimpleIR and preserved TIR operations project into this same checker.
+/// Check one operation's operand count and `value` against its kind's shape.
+/// A frame entry's `value`, when present, is a synchronous frame's home count
+/// and clear order (`molt_codegen_abi::frame_record::FrameShape`), which sizes
+/// its inline record push; it is never a code identity: the symbol is.
 pub fn validate_op_shape(
     kind: crate::OpKind,
     operands: Option<usize>,
@@ -177,7 +190,6 @@ pub fn validate_op_shape(
         crate::OpKind::Call
             | crate::OpKind::CallInternal
             | crate::OpKind::CodeSlotSet
-            | crate::OpKind::TraceEnterSlot
             | crate::OpKind::ModuleSlot
     ) && value.is_some()
     {
@@ -199,8 +211,9 @@ pub fn validate_op_shape(
             expected: shape.operands,
             actual: operands,
         })
-    } else if shape.value_rule == SimpleIrOpValueRule::NonNegative
-        && value.is_none_or(|value| value < 0)
+    } else if (shape.value_rule == SimpleIrOpValueRule::NonNegative
+        && value.is_none_or(|value| value < 0))
+        || (kind == crate::OpKind::TraceEnterSlot && value.is_some_and(|shape| shape < 0))
     {
         Some(OpShapeViolation::NonNegativeValue { actual: value })
     } else {
@@ -599,6 +612,9 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     } else if op.task_closure_size.is_some() {
         return Err(format!("op `{}` cannot carry task_closure_size", op.kind));
     }
+    if op.global_slot.is_some() && !GLOBAL_SLOT_KINDS.contains(&op.kind) {
+        return Err(format!("op `{}` cannot carry global_slot", op.kind));
+    }
     if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry bce_safe", op.kind));
     }
@@ -842,7 +858,6 @@ mod op_shape_tests {
             (crate::OpKind::Call, 0),
             (crate::OpKind::CallInternal, 0),
             (crate::OpKind::CodeSlotSet, 2),
-            (crate::OpKind::TraceEnterSlot, 0),
             (crate::OpKind::ModuleSlot, 0),
         ] {
             assert!(validate_op_shape(kind, Some(operands), None).is_ok());
@@ -852,6 +867,16 @@ mod op_shape_tests {
                 assert_eq!(error.violation, OpShapeViolation::ForbiddenValue);
             }
         }
+        // A frame entry may carry its synchronous frame's home count.
+        for homes in [None, Some(0), Some(3)] {
+            assert!(validate_op_shape(crate::OpKind::TraceEnterSlot, Some(0), homes).is_ok());
+        }
+        assert_eq!(
+            validate_op_shape(crate::OpKind::TraceEnterSlot, Some(0), Some(-1))
+                .unwrap_err()
+                .violation,
+            OpShapeViolation::NonNegativeValue { actual: Some(-1) }
+        );
         for kind in [crate::OpKind::CodeSlotSet, crate::OpKind::TraceEnterSlot] {
             for symbol in [None, Some("")] {
                 assert_eq!(

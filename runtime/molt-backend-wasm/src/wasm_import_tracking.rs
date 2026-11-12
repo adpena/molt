@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crate::wasm::frame_record::WasmFrameBodies;
 use crate::wasm::refcount::WasmRefcountBodies;
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
@@ -14,6 +15,10 @@ pub(crate) struct TrackedImportIds {
     /// The module's generated RC transition bodies: the callees that replace
     /// direct inc/dec imports at every dynamic site.
     refcount_bodies: Option<WasmRefcountBodies>,
+    /// The module's generated frame push and pop bodies.
+    frame_bodies: Option<WasmFrameBodies>,
+    /// The module's generated global slot read bodies, by slot index.
+    global_slot_bodies: Option<BTreeMap<u32, u32>>,
 }
 
 impl TrackedImportIds {
@@ -27,6 +32,8 @@ impl TrackedImportIds {
             by_index,
             used: Rc::new(RefCell::new(BTreeSet::new())),
             refcount_bodies: None,
+            frame_bodies: None,
+            global_slot_bodies: None,
         }
     }
 
@@ -60,6 +67,36 @@ impl TrackedImportIds {
         self.refcount_bodies
             .expect("RC transition bodies must be emitted before any function body")
             .index(operation)
+    }
+
+    pub(crate) fn set_global_slot_bodies(&mut self, bodies: BTreeMap<u32, u32>) {
+        assert!(
+            self.global_slot_bodies.replace(bodies).is_none(),
+            "a WASM module emits its global slot read bodies once"
+        );
+    }
+
+    /// The function index of the read body for slot `index`.
+    pub(crate) fn global_slot_body(&self, index: u32) -> u32 {
+        *self
+            .global_slot_bodies
+            .as_ref()
+            .and_then(|bodies| bodies.get(&index))
+            .expect("global slot read bodies must be emitted before any function body")
+    }
+
+    pub(crate) fn set_frame_bodies(&mut self, bodies: WasmFrameBodies) {
+        assert!(
+            self.frame_bodies.replace(bodies).is_none(),
+            "a WASM module emits its frame bodies once"
+        );
+    }
+
+    /// The module's generated frame bodies, which every synchronous frame
+    /// entry and exit calls.
+    pub(crate) fn frame_bodies(&self) -> WasmFrameBodies {
+        self.frame_bodies
+            .expect("frame bodies must be emitted before any function body")
     }
 
     pub(crate) fn len(&self) -> usize {

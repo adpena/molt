@@ -80,6 +80,7 @@ class SimpleIROp(TypedDict):
     defines_del: NotRequired[Any]
     end_col_offset: NotRequired[Any]
     f_value: NotRequired[Any]
+    global_slot: NotRequired[Any]
     native_callable_abi: NotRequired[Any]
     native_callable_binding: NotRequired[Any]
     native_callable_export: NotRequired[Any]
@@ -289,6 +290,13 @@ class CodeSlotDeclaration:
         """CPython clears upwards through 3.13, downwards from 3.14."""
         count = len(self._slots)
         return range(count - 1, -1, -1) if target_python >= (3, 14) else range(count)
+
+    def frame_entry_value(self, target_python: tuple[int, int]) -> int:
+        """The ``trace_enter_slot`` value of a synchronous frame of this code:
+        its home count in bits 0..32 and, in bit 32, whether it clears its
+        slots last to first (molt-codegen-abi ``FrameShape``)."""
+        descending = self.release_order(target_python).step < 0
+        return len(self._slots) | (1 << 32 if descending else 0)
 
 
 class AsyncFrameSlotRole(StrEnum):

@@ -190,12 +190,15 @@ public finder semantics.
 
 ## 3. Compile-time artifacts (the single authority)
 
-The current wire authority is schema 5, magic `MOLTMOD5`, with required
+The current wire authority is schema 6, magic `MOLTMOD6`, with required
 stdlib-provider provenance (`0x10`) alongside file-location provenance (`0x08`).
 The metadata producer, frontend bootstrap role, worker/cache identity and catalog
 consume the same source-role fact. This does not encode a compiler filesystem
-root as target-runtime authority. The physical layout has a 56-byte header and
-48-byte rows. Namespace-parent rows carry an ordered span of length-prefixed
+root as target-runtime authority. The physical layout has a 64-byte header and
+56-byte rows. Each row also carries its module's global slot layout
+(call_anatomy.md 4.5): the strictly sorted non-dunder names its own code reads,
+writes or deletes as globals, length-prefixed in a separate blob table, in the
+digest; the runtime binds a module namespace's slot table to it. Namespace-parent rows carry an ordered span of length-prefixed
 UTF-8 directory portions in a separate blob table. They have the package flag,
 no initializer, no file location and an empty serialized origin. Other kinds
 cannot carry portions. The producer, JSON/digest projections and runtime parser
