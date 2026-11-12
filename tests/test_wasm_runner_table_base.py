@@ -12,8 +12,6 @@ from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_SECTION_VERSION,
     WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
     WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLES,
     compiled_execution_symbol,
     runtime_execution_abi,
     ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
@@ -28,8 +26,6 @@ from tests.wasm_execution_manifest import (
 from tools.wasm_link_format import _write_varuint
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_WASM_APP_TABLE_BASE = 256
-TEST_SHARED_WASM_TABLE_BASE = 4096
 
 
 def _runtime_symbol(logical: str) -> str:
@@ -279,7 +275,7 @@ def _wasm_from_wat(
     name: str,
     wat: str,
     *,
-    callable_layout: tuple[int, int, int, int] | None = None,
+    callable_layout: tuple[int, int] | None = None,
     empty_callable_table: bool = False,
     callable_table_payload: bytes | None = None,
 ) -> Path:
@@ -387,8 +383,6 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
             ("missing", "MOLT_WASM_TABLE_ATTESTATION_MISSING"),
             ("malformed", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
             ("malformed-slot", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
-            ("missing-export", "MOLT_WASM_TABLE_EXPORT_REQUIRED"),
-            ("zero-base", "MOLT_WASM_TABLE_BASE_REQUIRED"),
             ("malformed-layout", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
             ("missing-indirect-export", "molt_call_indirect012habE"),
         )
@@ -401,7 +395,15 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
 def test_hosts_share_callable_table_admission(
     tmp_path: Path, host: str, case: str, expected: str | None
 ) -> None:
-    """Actual guest guards prove publication precedes admission and initialization."""
+    """Actual guest guards prove each host's callable-table admission.
+
+    Every host refuses a missing or malformed attestation. No host publishes a
+    table base (HF-699 K3): runtime callables are keys the runtime resolves
+    itself, so the guest asserts that the retired setter never ran. Only the
+    Rust host scans the layout section, so only it refuses a malformed one.
+    """
+    if case == "malformed-layout" and host not in {"rust", "rust-split"}:
+        expected = None
     split = host in {
         "node-split",
         "rust-split",
@@ -410,7 +412,7 @@ def test_hosts_share_callable_table_admission(
         "split-worker",
     }
     nonempty = case != "empty"
-    base = 0 if case == "zero-base" else 4
+    base = 4
     # Split imports introduce () -> i64 as type zero; $ref is the next type.
     ref_type_index = int(split)
     payload = b"".join(
@@ -461,19 +463,11 @@ def test_hosts_share_callable_table_admission(
                 WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
             )
         )
-    check = (
-        "global.get $published i64.const 4 i64.ne if unreachable end"
-        if case in {"nonempty", "nonempty-layout", "nonempty-attested", "zero-base"}
-        else ""
-    )
-    setter = (
-        ""
-        if case == "missing-export"
-        else f"""
-      (func (export "{"molt_set_wasm_table_base" if "worker" in host else "publish_base"}") (param i64)
-        {"local.get 0 global.set $published" if nonempty else "unreachable"})
+    check = "global.get $published i64.const 0 i64.ne if unreachable end"
+    setter = """
+      (func (export "molt_set_wasm_table_base") (param i64)
+        local.get 0 global.set $published)
     """
-    )
     indirect_export = (
         f'(func (export "{compiled_execution_symbol("molt_call_indirect0")}") (param i64))'
         if case == "missing-indirect-export"
@@ -546,7 +540,7 @@ def test_hosts_share_callable_table_admission(
             if case == "malformed-layout"
             else b"".join(
                 _write_varuint(value)
-                for value in (WASM_CALLABLE_TABLE_LAYOUT_VERSION, 0, 0, base, 1)
+                for value in (WASM_CALLABLE_TABLE_LAYOUT_VERSION, base, 1)
             )
         )
         section = _write_varuint(len(name)) + name + layout
@@ -559,8 +553,6 @@ def test_hosts_share_callable_table_admission(
         else _linked_manifest(wasm)
     )
     data = json.loads(manifest.read_text(encoding="utf-8"))
-    if nonempty and case not in {"nonempty-layout", "nonempty-attested"}:
-        data["wasm_table_base"] = base
     data["abi"] = {
         "linked_self_imports": [],
         "runtime_imports": {
@@ -577,9 +569,6 @@ def test_hosts_share_callable_table_admission(
                 "attached_context": "molt_attached_context",
                 "compiled_execution_enter": "molt_compiled_execution_enter",
                 "compiled_execution_leave": "molt_compiled_execution_leave",
-                "molt_set_wasm_table_base": (
-                    "molt_set_wasm_table_base" if "worker" in host else "publish_base"
-                ),
             },
         },
     }
@@ -649,9 +638,6 @@ def test_hosts_share_callable_table_admission(
                 deployment_manifest=data,
                 shared_memory_initial_pages=1,
                 shared_table_initial=8,
-                shared_table_base=base
-                if nonempty and case not in {"nonempty-layout", "nonempty-attested"}
-                else None,
                 runtime_import_names={_runtime_symbol("molt_runtime_init")},
             ),
             encoding="utf-8",
@@ -763,7 +749,6 @@ def _stderr_guest_manifest(
           (import "env" "__indirect_function_table" (table 1 funcref))
           {wasi_import}
           (export "memory" (memory 0))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           {writer} {lifecycle}
           (data (i32.const 320) "runtime|")
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
@@ -1073,24 +1058,6 @@ def test_direct_node_runner_rejects_ambiguous_capture_prefix(tail: list[str]) ->
     assert "usage: run_wasm.js --guest-stderr PATH -- MANIFEST" in result.stderr
 
 
-def _extract_table_base(wasm_path: Path) -> int | None:
-    script = (
-        "const fs = require('fs');"
-        "const runner = require('./wasm/run_wasm.js');"
-        "const value = runner.extractWasmTableBase(fs.readFileSync(process.argv[1]));"
-        "process.stdout.write(JSON.stringify(value));"
-    )
-    result = _run_wasm_test_process(
-        ["node", "-e", script, str(wasm_path)],
-        role="tool",
-        cwd=ROOT,
-        env=os.environ,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
-
-
 def test_host_socket_errors_reach_the_guest_in_the_declared_domain() -> None:
     script = """
 const runner = require('./wasm/run_wasm.js');
@@ -1165,112 +1132,6 @@ def test_parse_wasm_imports_handles_tag_imports_before_memory(tmp_path: Path) ->
             "results": [],
         }
     ]
-
-
-def test_extract_wasm_table_base_accepts_active_base_one(tmp_path: Path) -> None:
-    wasm_path = _wasm_from_wat(
-        tmp_path,
-        "active_base_one",
-        """
-        (module
-          (table 4 funcref)
-          (func $f)
-          (elem (i32.const 1) func $f)
-        )
-        """,
-    )
-
-    assert _extract_table_base(wasm_path) == 1
-
-
-def test_extract_wasm_table_base_uses_published_fixed_runtime_prefix(
-    tmp_path: Path,
-) -> None:
-    wasm_path = _wasm_from_wat(
-        tmp_path,
-        "runtime_prefix_and_app_segment",
-        """
-        (module
-          (table 4097 funcref)
-          (func $runtime)
-          (func $app)
-          (elem (i32.const 1) func $runtime)
-          (elem (i32.const 4096) func $app)
-        )
-        """,
-        callable_layout=(1, 1, 4096, 1),
-    )
-
-    assert _extract_table_base(wasm_path) == 1
-
-
-def test_extract_wasm_table_base_uses_published_layout_after_segment_coalescing(
-    tmp_path: Path,
-) -> None:
-    wasm_path = _wasm_from_wat(
-        tmp_path,
-        "coalesced_runtime_and_app_segment",
-        """
-        (module
-          (table 4 funcref)
-          (func $runtime)
-          (func $app)
-          (elem (i32.const 1) func $runtime $app)
-        )
-        """,
-        callable_layout=(1, 1, 2, 1),
-    )
-
-    assert _extract_table_base(wasm_path) == 1
-
-
-def test_extract_wasm_table_base_uses_app_base_without_fixed_runtime_prefix(
-    tmp_path: Path,
-) -> None:
-    wasm_path = _wasm_from_wat(
-        tmp_path,
-        "app_only_callable_segment",
-        """
-        (module
-          (table 9 funcref)
-          (func $app)
-          (elem (i32.const 8) func $app)
-        )
-        """,
-        callable_layout=(0, 0, 8, 1),
-    )
-
-    assert _extract_table_base(wasm_path) == 8
-
-
-def test_linked_runner_propagates_table_base_publication_failure(
-    tmp_path: Path,
-) -> None:
-    wasm_path = _execution_wasm_from_wat(
-        tmp_path,
-        "linked_trapping_table_base_setter",
-        f"""
-        (module
-          (memory (export "molt_memory") 1)
-          (table (export "molt_table") 8 funcref)
-          (func $ref)
-          (elem (i32.const 4) func $ref)
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64)
-            unreachable)
-          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64))
-        )
-        """,
-    )
-
-    result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(_linked_manifest(wasm_path))],
-        role="guest-host",
-        cwd=ROOT,
-        env={**os.environ, "NODE_NO_WARNINGS": "1"},
-        timeout=30,
-    )
-    assert result.returncode != 0
-    assert "unreachable" in result.stderr
 
 
 def test_linked_runner_uses_only_main_startup_authority(
@@ -1383,7 +1244,6 @@ def test_direct_split_runner_shares_runtime_memory_with_app_wasi(
           (import "env" "__indirect_function_table" (table 2 funcref))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (type $runtime_init_indirect (func (param i64) (result i64)))
           (func $runtime_table_entry (param $context i64) (result i64)
             i64.const 0)
@@ -1507,7 +1367,6 @@ def test_direct_split_runner_reads_call_dispatch_argv_in_shared_memory(
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
           (global $heap (mut i32) (i32.const 2048))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_scratch_alloc")}") (param $context i64) (param $size i64) (result i64)
             (local $ptr i32)
             global.get $heap
@@ -1649,7 +1508,6 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
           (func (export "{_runtime_symbol("molt_call_func_dispatch")}") (param $context i64)
@@ -1778,7 +1636,6 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
           (func (export "{_runtime_symbol("molt_guarded_class_def")}") (param $context i64)
@@ -1871,7 +1728,6 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
           (func (export "{_runtime_symbol("molt_closure_load")}") (param $context i64) (param i64 i64) (result i64)
@@ -1966,7 +1822,6 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
           (import "env" "__indirect_function_table" (table 5 funcref))
           (import "env" "{compiled_execution_symbol("molt_call_indirect3")}"
             (func $call_indirect3 (param $context i64) (param i64 i64 i64 i64) (result i64)))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             call $fixture_context
             i64.const 4
@@ -2032,180 +1887,6 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
     assert result.stdout == "ok"
 
 
-def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
-    tmp_path: Path,
-) -> None:
-    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
-    reserved_callable_index = 5
-    default_trampoline_idx = (
-        DEFAULT_WASM_APP_TABLE_BASE
-        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
-        + reserved_callable_count
-        + reserved_callable_index
-    )
-    runtime_path = _execution_wasm_from_wat(
-        tmp_path,
-        "molt_runtime_reserved_runtime_trampoline",
-        f"""
-        (module
-          (import "env" "memory" (memory 1))
-          (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "env" "{compiled_execution_symbol("molt_call_indirect3")}"
-            (func $call_indirect3 (param $context i64) (param i64 i64 i64 i64) (result i64)))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
-          (func (export "{_runtime_symbol("molt_object_init_subclass")}") (param $context i64) (param i64) (result i64)
-            local.get 1
-            i64.const 7
-            i64.add)
-          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
-            i32.const 128
-            i64.const 35
-            i64.store
-            ;; default app table base + reserved base + generated reserved count + index 5.
-            call $fixture_context
-            i64.const {default_trampoline_idx}
-            i64.const 0
-            i64.const 128
-            i64.const 1
-            call $call_indirect3)
-        )
-        """,
-    )
-    app_path = _wasm_from_wat(
-        tmp_path,
-        "split_app_reserved_runtime_trampoline",
-        f"""
-        (module
-          (import "env" "memory" (memory 1))
-          (import "env" "__indirect_function_table" (table 4200 funcref))
-          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
-          (import "wasi_snapshot_preview1" "fd_write"
-            (func $fd_write (param i32 i32 i32 i32) (result i32)))
-          (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
-          (data (i32.const 64) "ok")
-          (func $anchor (param $context i64) (result i64) i64.const 0)
-          (elem (i32.const 4096) func $anchor)
-          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
-            local.get $context i64.const 32768 i64.ne if unreachable end
-            call $rt
-            i64.const 42
-            i64.ne
-            if
-              unreachable
-            end
-            i32.const 1
-            i32.const 16
-            i32.const 1
-            i32.const 32
-            call $fd_write
-            drop)
-        )
-        """,
-    )
-
-    result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
-        role="guest-host",
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "NODE_NO_WARNINGS": "1",
-        },
-        timeout=30,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "ok"
-
-
-def test_direct_split_runner_dispatches_runtime_owned_reserved_trampoline(
-    tmp_path: Path,
-) -> None:
-    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
-    app_trampoline_idx = (
-        TEST_SHARED_WASM_TABLE_BASE
-        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
-        + reserved_callable_count
-    )
-    runtime_path = _execution_wasm_from_wat(
-        tmp_path,
-        "molt_runtime_reserved_trampoline_owns_reserved_slot",
-        f"""
-        (module
-          (import "env" "memory" (memory 1))
-          (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "env" "{compiled_execution_symbol("molt_call_indirect3")}"
-            (func $call_indirect3 (param $context i64) (param i64 i64 i64 i64) (result i64)))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
-          (func (export "{_runtime_symbol("molt_type_call")}") (param $context i64) (param i64) (result i64)
-            local.get 1
-            i64.const 44
-            i64.ne
-            if
-              unreachable
-            end
-            i64.const 77)
-          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
-            i32.const 128
-            i64.const 44
-            i64.store
-            ;; shared table base + reserved base + generated reserved count.
-            call $fixture_context
-            i64.const {app_trampoline_idx}
-            i64.const 0
-            i64.const 128
-            i64.const 1
-            call $call_indirect3)
-        )
-        """,
-    )
-    app_path = _wasm_from_wat(
-        tmp_path,
-        "split_app_reserved_trampoline_trap_stub",
-        f"""
-        (module
-          (import "env" "memory" (memory 1))
-          (import "env" "__indirect_function_table" (table 4200 funcref))
-          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
-          (import "wasi_snapshot_preview1" "fd_write"
-            (func $fd_write (param i32 i32 i32 i32) (result i32)))
-          (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
-          (data (i32.const 64) "ok")
-          (func $anchor (param $context i64) (result i64) i64.const 0)
-          (elem (i32.const 4096) func $anchor)
-          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
-            local.get $context i64.const 32768 i64.ne if unreachable end
-            call $rt
-            i64.const 77
-            i64.ne
-            if
-              unreachable
-            end
-            i32.const 1
-            i32.const 16
-            i32.const 1
-            i32.const 32
-            call $fd_write
-            drop)
-        )
-        """,
-    )
-
-    result = _run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
-        role="guest-host",
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "NODE_NO_WARNINGS": "1",
-        },
-        timeout=30,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "ok"
-
-
 def test_direct_runner_verifies_linker_published_callable_table() -> None:
     runner = (ROOT / "wasm" / "run_wasm.js").read_text(encoding="utf-8")
 
@@ -2218,96 +1899,6 @@ def test_direct_runner_verifies_linker_published_callable_table() -> None:
         "verifyCallableTableEntries(outputCallableTable, table, 'output wasm');"
         in runner
     )
-
-
-def _remap_default_app_runtime_shared_table_index(
-    idx: int,
-    *,
-    shared_table_base: int,
-    reserved_callable_count: int,
-    installed_indices: tuple[int, ...] = (),
-) -> int:
-    """Invoke the JS ``remapDefaultAppRuntimeSharedTableIndex`` via node.
-
-    ``installed_indices`` model raw table slots that already hold an installed
-    funcref (the ``rawIndexHasInstalledEntry`` predicate returns true for them).
-    """
-    script = (
-        "const bridge = require('./wasm/loader_bridge.js');"
-        "const installed = new Set(JSON.parse(process.argv[2]));"
-        "const out = bridge.remapDefaultAppRuntimeSharedTableIndex(Number(process.argv[1]), {"
-        "  sharedTableBase: %d,"
-        "  defaultAppTableBase: %d,"
-        "  reservedRuntimeCallableBase: %d,"
-        "  reservedRuntimeCallableCount: %d,"
-        "  rawIndexHasInstalledEntry: (i) => installed.has(i),"
-        "});"
-        "process.stdout.write(String(out));"
-    ) % (
-        shared_table_base,
-        DEFAULT_WASM_APP_TABLE_BASE,
-        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-        reserved_callable_count,
-    )
-    result = _run_wasm_test_process(
-        ["node", "-e", script, str(idx), json.dumps(list(installed_indices))],
-        role="tool",
-        cwd=ROOT,
-        env=os.environ,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    return int(result.stdout)
-
-
-def test_remap_relocates_bare_default_base_reserved_reference() -> None:
-    """A bare (unpopulated) default-base reserved reference is relocated to the
-    live shared-table reserved region."""
-    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
-    # An index inside the default-base direct-reserved region with no installed slot.
-    reserved_offset = 14
-    default_idx = (
-        DEFAULT_WASM_APP_TABLE_BASE
-        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
-        + reserved_offset
-    )
-    remapped = _remap_default_app_runtime_shared_table_index(
-        default_idx,
-        shared_table_base=TEST_SHARED_WASM_TABLE_BASE,
-        reserved_callable_count=reserved_callable_count,
-        installed_indices=(),
-    )
-    assert (
-        remapped
-        == default_idx - DEFAULT_WASM_APP_TABLE_BASE + TEST_SHARED_WASM_TABLE_BASE
-    )
-
-
-def test_remap_preserves_installed_app_slot_in_default_region() -> None:
-    """Regression: an app-local function pointer installed at a raw table index
-    that happens to fall inside the default reserved region MUST be dispatched
-    directly, not hijacked into a reserved runtime callable.
-
-    This is the pact-witness capsule misdispatch: a real 4-arg app funcref at
-    table index (default_app_base + reserved_base + 14) was remapped into the
-    reserved region and dispatched to molt_types_capsule_new, raising a spurious
-    ``TypeError: cannot create 'capsule' instances`` during numpy import.
-    """
-    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
-    reserved_offset = 14
-    installed_idx = (
-        DEFAULT_WASM_APP_TABLE_BASE
-        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
-        + reserved_offset
-    )
-    remapped = _remap_default_app_runtime_shared_table_index(
-        installed_idx,
-        shared_table_base=TEST_SHARED_WASM_TABLE_BASE,
-        reserved_callable_count=reserved_callable_count,
-        installed_indices=(installed_idx,),
-    )
-    # An occupied slot is a genuine indirect call: index is returned unchanged.
-    assert remapped == installed_idx
 
 
 @pytest.mark.parametrize("trap", [False, True])

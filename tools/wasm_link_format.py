@@ -64,29 +64,17 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES = dict(
 
 @dataclass(frozen=True, slots=True)
 class CallableTableLayout:
-    fixed_prefix_base: int
-    fixed_prefix_len: int
+    """The app's callable region. Slots below ``finalized_app_base`` hold the
+    runtime's own address-taken functions; no slot is reserved for runtime
+    callables, which are keys (HF-699 K3)."""
+
     finalized_app_base: int
     app_entry_count: int
 
     def validate(self) -> None:
-        values = (
-            self.fixed_prefix_base,
-            self.fixed_prefix_len,
-            self.finalized_app_base,
-            self.app_entry_count,
-        )
+        values = (self.finalized_app_base, self.app_entry_count)
         if any(value < 0 or value > 0xFFFF_FFFF for value in values):
             raise ValueError("callable-table layout values must fit u32")
-        if self.fixed_prefix_len == 0 and self.fixed_prefix_base != 0:
-            raise ValueError("empty callable-table fixed prefix must have base zero")
-        fixed_end = self.fixed_prefix_base + self.fixed_prefix_len
-        if fixed_end > 0xFFFF_FFFF:
-            raise ValueError("callable-table fixed prefix boundary overflows u32")
-        if self.fixed_prefix_len and fixed_end > self.finalized_app_base:
-            raise ValueError(
-                "callable-table fixed runtime prefix overlaps finalized app base"
-            )
         app_end = self.finalized_app_base + self.app_entry_count
         if app_end > 0xFFFF_FFFF:
             raise ValueError("callable-table finalized app boundary overflows u32")

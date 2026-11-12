@@ -677,7 +677,6 @@ def test_the_real_closures_key_what_their_crates_read_outside_themselves() -> No
         "include/molt",
         "include/molt/shared",
         "runtime/build_support",
-        "runtime/wasm_table_layout.inc",
         "runtime/molt-runtime-path/src/pathlib.rs",
         "src/molt/wasi_c_abi_protocol.txt",
     } <= runtime

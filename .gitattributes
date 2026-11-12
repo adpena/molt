@@ -361,7 +361,6 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-stdlib-text/src/token_metadata_generated.rs" merge=binary
 "/runtime/molt-wasm-facts/src/callable_table_generated.rs" merge=binary
 "/runtime/molt-wasm-host/tests/support/launch.rs" merge=binary
-"/runtime/wasm_table_layout.inc" merge=binary
 "/src/molt/_environment_registry.py" merge=binary
 "/src/molt/_host_capabilities_generated.py" merge=binary
 "/src/molt/_intrinsic_symbols.py" merge=binary

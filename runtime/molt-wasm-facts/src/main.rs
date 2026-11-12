@@ -62,18 +62,10 @@ fn parse_callable_table_layout(
                 .map_err(|error| format!("invalid callable-table layout value {part:?}: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let [
-        fixed_prefix_base,
-        fixed_prefix_len,
-        finalized_app_base,
-        app_entry_count,
-    ] = values.as_slice()
-    else {
-        return Err("--callable-table-layout requires four comma-separated u32 values".to_string());
+    let [finalized_app_base, app_entry_count] = values.as_slice() else {
+        return Err("--callable-table-layout requires two comma-separated u32 values".to_string());
     };
     Ok(molt_wasm_facts::CallableTableLayout {
-        fixed_prefix_base: *fixed_prefix_base,
-        fixed_prefix_len: *fixed_prefix_len,
         finalized_app_base: *finalized_app_base,
         app_entry_count: *app_entry_count,
     })

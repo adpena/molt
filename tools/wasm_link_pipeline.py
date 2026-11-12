@@ -19,10 +19,7 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 
 from molt import artifact_publication as artifact_publish
-from molt._wasm_abi_generated import (
-    WASM_RESERVED_RUNTIME_CALLABLES,
-    compiled_execution_symbol,
-)
+from molt._wasm_abi_generated import compiled_execution_symbol
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 from molt.cli.app_export_contract import (
     app_export_call_abi,
@@ -188,7 +185,6 @@ class _LinkCommandInputs:
     required_native_direct_symbols: tuple[str, ...]
     user_export_symbol_names: tuple[str, ...]
     callable_entry_symbol_names: tuple[str, ...]
-    reserved_runtime_link_exports: tuple[str, ...]
     work_linked: Path
     linked_rewritten_path: Path
     rewritten_path: Path
@@ -237,7 +233,6 @@ class _LoadedLinkContract:
     output_memory_min: int | None
     output_table_min: int | None
     callable_entry_export_names: tuple[str, ...]
-    reserved_runtime_link_exports: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -730,31 +725,11 @@ def _load_link_contract_stage(
     callable_entry_export_names = (
         tuple(
             _callable_table._callable_entry_export_name(slot)
-            for slot in range(
-                output_callable_layout.fixed_prefix_len
-                + output_callable_layout.app_entry_count
-            )
+            for slot in range(output_callable_layout.app_entry_count)
         )
         if output_callable_layout is not None
         else ()
     )
-    reserved_export_symbols: list[str] = []
-    for (
-        _index,
-        runtime_name,
-        _import_name,
-        _arity,
-        dispatch,
-    ) in WASM_RESERVED_RUNTIME_CALLABLES:
-        if dispatch != "direct":
-            continue
-        physical = wasm_split_runtime_export_name_for_import(runtime_name)
-        if physical is None:
-            raise ValueError(
-                f"reserved runtime callable lacks physical export: {runtime_name}"
-            )
-        reserved_export_symbols.append(physical)
-    reserved_runtime_link_exports = tuple(reserved_export_symbols)
     split_callable_layout: CallableTableLayout | None = None
     deploy_runtime_path: Path | None = None
     if split_runtime:
@@ -806,7 +781,6 @@ def _load_link_contract_stage(
         output_memory_min=output_memory_min,
         output_table_min=output_table_min,
         callable_entry_export_names=callable_entry_export_names,
-        reserved_runtime_link_exports=reserved_runtime_link_exports,
     )
 
 
@@ -1050,7 +1024,6 @@ def _plan_link_commands_stage(
         "--export-if-defined=memory",
         "--export-if-defined=molt_table",
         "--export-if-defined=__indirect_function_table",
-        "--export-if-defined=molt_set_wasm_table_base",
     ]
     linked_callable_growth_base = (
         _callable_table._monolithic_linked_callable_growth_base(
@@ -1083,10 +1056,6 @@ def _plan_link_commands_stage(
             (
                 f"--export-if-defined={name}"
                 for name in inputs.callable_entry_symbol_names
-            ),
-            (
-                f"--export-if-defined={name}"
-                for name in inputs.reserved_runtime_link_exports
             ),
         )
     )
@@ -1242,8 +1211,7 @@ def _prepare_linked_artifact_stage(
                 artifact.data,
                 plan.callable_layout,
                 entry_symbol_names=plan.callable_entry_symbol_names,
-                include_fixed_prefix=True,
-                override_reserved_direct=True,
+                owns_runtime_region=True,
                 facts_provider=facts_provider,
             )
             _callable_table._merge_linked_callable_table(
@@ -1256,7 +1224,7 @@ def _prepare_linked_artifact_stage(
                     artifact.data,
                     plan.callable_layout,
                     entry_symbol_names=plan.callable_entry_symbol_names,
-                    entry_plan=entry_plan,
+                    app_indices=entry_plan.app_indices,
                     facts_provider=facts_provider,
                 )
             )
@@ -1489,8 +1457,7 @@ def _link_split_app_stage(
             artifact.data,
             plan.callable_layout,
             entry_symbol_names=plan.callable_entry_symbol_names,
-            include_fixed_prefix=False,
-            override_reserved_direct=False,
+            owns_runtime_region=False,
             facts_provider=facts_provider,
         )
         required_table_min = _callable_table._merge_linked_callable_table(
@@ -1503,9 +1470,7 @@ def _link_split_app_stage(
                 artifact.data,
                 plan.callable_layout,
                 entry_symbol_names=plan.callable_entry_symbol_names,
-                include_fixed_prefix=False,
-                override_reserved_direct=False,
-                entry_plan=entry_plan,
+                app_indices=entry_plan.app_indices,
                 facts_provider=facts_provider,
             )
         )
@@ -1906,7 +1871,6 @@ def run_wasm_ld_with_custodied_inputs(
         output_memory_min = loaded_contract.output_memory_min
         output_table_min = loaded_contract.output_table_min
         callable_entry_export_names = loaded_contract.callable_entry_export_names
-        reserved_runtime_link_exports = loaded_contract.reserved_runtime_link_exports
 
         prepared_inputs = _prepare_link_inputs_stage(
             output,
@@ -1984,7 +1948,6 @@ def run_wasm_ld_with_custodied_inputs(
                 required_native_direct_symbols=required_native_direct_symbols,
                 user_export_symbol_names=user_export_symbol_names,
                 callable_entry_symbol_names=callable_entry_symbol_names,
-                reserved_runtime_link_exports=reserved_runtime_link_exports,
                 work_linked=work_linked,
                 linked_rewritten_path=linked_rewritten_path.path,
                 rewritten_path=rewritten_path.path,

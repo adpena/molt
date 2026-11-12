@@ -303,7 +303,6 @@ mod tests {
                     launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
-                    wasm_table_admission: WasmTableAdmission::Empty,
                 }
             )
             .unwrap(),

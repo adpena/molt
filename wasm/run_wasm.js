@@ -22,22 +22,16 @@ const {
   deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callIsolateImportExport,
-  callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
   callRuntimeObjectArrayArgImport,
   callWithWasmSignature,
-  extractWasmTableBase,
   installManifestLinkImportTraps,
   installWasmTagImports,
   normalizeValueForKind,
   parseWasmMetadata,
   parseWasmImports,
-  planReservedRuntimeDispatch,
+  readCallableTableAttestation,
   requireWasmCallableTable,
-  prepareWasmTableAdmission,
-  publishWasmTableAdmission,
-  remapDefaultAppRuntimeSharedTableIndex,
-  runtimeCallableTableLayout,
   callableTableSignature,
   runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
@@ -94,8 +88,7 @@ let wasmEnv = null;
 let wasi = null;
 let wasiImport = null;
 let wasiExitCode = null;
-let detectedWasmTableBase = null;
-let tableAdmission = null;
+let callableTableAttestation = null;
 let implicitBundlePreopen = null;
 let runnerGuestArgs = [];
 let guestStderrCapture = null;
@@ -136,7 +129,6 @@ const runtimeLifetime = (runtimeInst) => {
   return lifetime;
 };
 const withRuntimeExecution = (runtimeInst, operation) => runtimeLifetime(runtimeInst).execute(operation);
-let activeRuntimeCallableLayout = runtimeCallableTableLayout(null);
 const traceMark = (message) => {
   if (!traceRunFile) return;
   try {
@@ -274,16 +266,12 @@ const initWasmAssets = (manifestPath) => {
         ...manifestRuntimeImportExportNames,
       }
     : defaultRuntimeImportExportNames;
-  activeRuntimeCallableLayout = runtimeCallableTableLayout(runtimeManifest);
   linkedPath = resolved.linkedPath;
   linkedBuffer = resolved.linkedBuffer;
-  const tableBaseProbe = linkedBuffer || wasmBuffer;
-  tableAdmission = prepareWasmTableAdmission({
-    buffer: tableBaseProbe, manifest: runtimeManifest,
-    runtimeExportNames: runtimeImportExportNames,
+  callableTableAttestation = readCallableTableAttestation({
+    buffer: linkedBuffer || wasmBuffer,
     label: linkedBuffer ? 'linked wasm' : 'app wasm',
   });
-  detectedWasmTableBase = tableAdmission.base;
   runtimePath = resolved.runtimePath;
   runtimeBuffer = resolved.runtimeBuffer;
   wasmEnv = deploymentLaunchEnvironment(runtimeManifest, process.env);
@@ -302,12 +290,6 @@ const initWasmAssets = (manifestPath) => {
       implicitBundlePreopen = { guest: '/molt_bundle', host: bundleDir };
       wasmEnv.MOLT_VFS_BUNDLE = `/molt_bundle/${bundleName}`;
     }
-  }
-  if (
-    detectedWasmTableBase !== null &&
-    !Object.prototype.hasOwnProperty.call(wasmEnv, 'MOLT_WASM_TABLE_BASE')
-  ) {
-    wasmEnv.MOLT_WASM_TABLE_BASE = String(detectedWasmTableBase);
   }
   wasiExitCode = null;
   ({ wasi, wasiImport } = createWasiContext());
@@ -5326,7 +5308,7 @@ const runDirectLink = async () => {
       'WASM output is missing shared memory/table imports; rebuild with the updated toolchain or use a linked artifact.'
     );
   }
-  const outputCallableTable = tableAdmission.callableTable;
+  const outputCallableTable = callableTableAttestation;
   const runtimeCallableTable = requireWasmCallableTable(runtimeBuffer, 'runtime wasm');
   const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
@@ -5408,62 +5390,9 @@ const runDirectLink = async () => {
     env[name] = (...args) => {
       const rawIdx = args[1];
       const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-      const dispatchIdx = remapDefaultAppRuntimeSharedTableIndex(idx, {
-        sharedTableBase: detectedWasmTableBase,
-        defaultAppTableBase: activeRuntimeCallableLayout.defaultAppTableBase,
-        reservedRuntimeCallableBase: activeRuntimeCallableLayout.reservedRuntimeCallableBase,
-        reservedRuntimeCallableCount: activeRuntimeCallableLayout.reservedRuntimeCallables.length,
-        rawIndexHasInstalledEntry: (rawTableIdx) => {
-          if (!table) {
-            return false;
-          }
-          try {
-            return typeof table.get(rawTableIdx) === 'function';
-          } catch (err) {
-            return false;
-          }
-        },
-      });
-      const reservedDispatch = planReservedRuntimeDispatch({
-        dispatchIdx,
-        sharedTableBase: detectedWasmTableBase,
-        reservedRuntimeCallableBase: activeRuntimeCallableLayout.reservedRuntimeCallableBase,
-        reservedRuntimeCallableCount: activeRuntimeCallableLayout.reservedRuntimeCallables.length,
-        reservedRuntimeCallables: activeRuntimeCallableLayout.reservedRuntimeCallables,
-      });
-      const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
-      if (reservedDispatch.dispatchReservedRuntimeCallable) {
-        try {
-          return callReservedRuntimeCallable({
-            runtimeExports: runtimeInstance && runtimeInstance.exports ? runtimeInstance.exports : null,
-            memory,
-            entry: reservedRuntimeCallable,
-            indirectName: name,
-            context: args[0],
-            args: args.slice(2),
-            describeArgs: (entry, callArgs) => {
-              if (entry.runtimeExport !== wasmAbiGenerated.runtime_execution_abis.molt_importlib_import_transaction.physical_symbol) {
-                return '';
-              }
-              const moduleName = readRuntimeStringBits(runtimeInstance, callArgs[0]);
-              const level = callArgs.length > 4 ? String(callArgs[4]) : 'unknown';
-              return moduleName === null
-                ? ` import_name=<unreadable> import_level=${level}`
-                : ` import_name=${JSON.stringify(moduleName)} import_level=${level}`;
-            },
-          });
-        } catch (err) {
-          const detail = err && typeof err.message === 'string' ? err.message : String(err);
-          if (callIndirectDebug && err && typeof err.stack === 'string') {
-            console.error(
-              `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
-            );
-          }
-          throw new Error(
-            `${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`,
-          );
-        }
-      }
+      // Runtime callables are keys the runtime resolves itself, so every
+      // index here is a slot of the shared table (HF-699 K1, K3).
+      const dispatchIdx = idx;
       if (callIndirectDebug) {
         const entry = table ? table.get(dispatchIdx) : null;
         const state = entry ? 'set' : 'null';
@@ -5505,7 +5434,6 @@ const runDirectLink = async () => {
   traceMark('direct:runtime_instantiate:completed');
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
-  publishWasmTableAdmission(tableAdmission, runtimeInst);
   runtimeLifetime(runtimeInst).admit();
   if (traceRun) {
     console.error('[molt wasm] direct: runtime instantiated');
@@ -5598,7 +5526,7 @@ const runLinked = async () => {
   if (!linkedBuffer) {
     throw new Error(`Linked wasm not found at ${linkedPath}`);
   }
-  const linkedCallableTable = tableAdmission.callableTable;
+  const linkedCallableTable = callableTableAttestation;
   const linkedImports = parseWasmImports(linkedBuffer);
   const hasRuntimeImports = linkedImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
@@ -5727,7 +5655,6 @@ const runLinked = async () => {
   requireAttachedExecutionAbi(linkedCompiledModule, linkedModule.instance, wasmAbiGenerated);
   traceMark('linked:instantiate:completed');
   runtimeInstance = linkedModule.instance;
-  publishWasmTableAdmission(tableAdmission, runtimeInstance);
   runtimeLifetime(runtimeInstance).admit();
   const molt_main = linkedModule.instance.exports[compiledExecutionSymbol('molt_main')];
   if (typeof molt_main !== 'function') {
@@ -5928,7 +5855,6 @@ if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
 }
 
 module.exports = {
-  extractWasmTableBase,
   mapSocketError,
   mapResolverFailure,
   parseWasmImports,

@@ -273,14 +273,61 @@ Stages (each lands one whole family; no build sees two identities for one callab
   67.10 G before, 61.25 G after (-8.7%; about -29k instructions per await), because a runtime
   poll is now one `call_indirect` instead of a trip through the app's `molt_call_indirect1` and
   the table-base reads.
-- **E2, reserved callables.** Compiled code and function objects carry reserved callables as keys;
-  argv unpacking for the 78 `UnpackArgs` callables follows native's path; the 2 `CallFrame`
-  callables are called directly. The backend's reserved trampolines, the JS host dispatch (four
-  host files and `cli/wasm.py`), the prefix, `--table-base=191`,
-  `WASM_RESERVED_RUNTIME_CALLABLE_BASE`, the gap modes, `include_fixed_prefix`, the table-base
-  publication chain, the prefix fixtures and spec 0400's callable-table admission protocol go.
-  The census of every deleted site is in the design record
-  (`logs/agents/hf699-split-runtime-keys/design-rev3.md`).
+- **E2, reserved callables (lane hf699-e2-callable-keys).** The 80 reserved runtime callables
+  are keys (`RUNTIME_CALLABLE_KEY_BASE` + index) on every target. Argv unpacking follows native's
+  path for each call shape, as traced:
+  - A runtime-created function object (`fn_addr!` into `alloc_runtime_function_obj`, trampoline 0)
+    resolves its key when it is built (`init_runtime_callable_function_obj`,
+    `object/builders.rs::alloc_function_obj`) and caches the target in word 8. Every call takes the
+    fixed-arity entry through that word, a `call_indirect` on the runtime's own slot, as native
+    does: the binder always delivers the callable's ABI arity, so nothing unpacks argv.
+  - A compiled `builtin_func` of a reserved callable stores the key (`i64.const`). Its trampoline
+    follows native's typed trampoline (`call_lowering.rs::ensure_builtin_callable`): an
+    `UnpackArgs` callable gets an app trampoline that unpacks argv and calls the runtime import,
+    emitted only for callables a `builtin_func` names; a `CallFrame` callable's key is also its
+    trampoline.
+  - The 2 `CallFrame` callables (`molt_cpython_abi_cext_call_trampoline`,
+    `molt_dataclasses_init_trampoline`) are called directly: the trampoline lane resolves a key
+    and calls the entry with `(closure, argv, argc)`.
+  - The manifest's `callable_dispatch = "trampoline"` no longer selects a slot. It keeps one
+    consumer the design census missed: `runtime_boxed_call_specs` keeps such a callable out of
+    the boxed-call set (`runtime_fn_specs`). The two rows stay for that; the Python and
+    shared-callable projections drop the field.
+
+  On wasm32 the runtime calls every resolved target itself: `call/function.rs` takes native's
+  fixed-arity path on every target (`required_native_call_target!`, `call_native_fixed_arity!`),
+  its trampoline lane resolves a key or calls the app's trampoline slot directly, and
+  `object/ops_builtins.rs::molt_guarded_call_dispatch` no longer routes through
+  `molt_call_indirectN`. Deleted with their consumers: the reserved slot arithmetic in
+  `function_abi.rs` and `call/function.rs` (`normalize_runtime_callable_ptr`,
+  `normalize_runtime_trampoline_ptr`, `fixed_arity_call_target_ptr` and the region tests); the
+  backend's poll prefix, reserved-callable and reserved-trampoline regions, the fixed shared-runtime
+  address class and the poll-prefix import wrappers (`poll_table.rs` became `poll_keys.rs`); the
+  rooting of all 80 reserved imports; the JS reserved dispatch, the legacy base-256 remap and the
+  table-base admission in `loader_bridge.js`, `run_wasm.js`, `browser_host.js`, `browser_embed.js`,
+  the split worker template in `cli/wasm.py` and `tools/wasm_worker_template.js`; the browser
+  ABI `reserved_runtime_callables` and `table_layout`; and the split runtime's base and gap
+  inference in `wasm_artifact.py`. A linked build of the reserved-callable witness imports 1
+  reserved callable instead of 80 and no poll; its app table holds no sentinel (main: 20) and 2
+  reserved callables, both app-resolver entries of intrinsics the stdlib names (main: 79).
+  App-resolver entries for reserved callables keep slots, as on native; giving them keys is the
+  K1 follow-up.
+  After HF-198 landed, E2 deleted the table-base chain too: the shared runtime links at wasm-ld's
+  default table base (no `--table-base=191`); the runtime exports no `molt_set_wasm_table_base`
+  and reads no `MOLT_WASM_TABLE_BASE`; `runtime/wasm_table_layout.inc` and its generator are gone;
+  the manifest has no `[table_layout]` and no setter rows; the generated
+  `WASM_RESERVED_RUNTIME_CALLABLE_BASE`, `WASM_DEFAULT_APP_TABLE_BASE` and
+  `WASM_RESERVED_RUNTIME_CALLABLE_COUNT` are gone; `include_fixed_prefix`, the fixed-index entry
+  plan and the reserved link exports are gone from the link tools; the split worker and manifest
+  publish no `wasm_table_base`. The `molt.callable_table.layout` section is version 2 and records
+  the app region only (base, count) in the backend, `molt-wasm-facts`, the facts CLI and the link
+  tools. The Rust host admits both modules' attestations
+  (`molt_wasm_facts::scan_attested_callable_table`) and publishes nothing:
+  `admit_callable_table`, `WasmTableAdmission` and `configure_wasm_table_base` are deleted.
+  Dropping the setter from the attached-context boundary set changed the schema fingerprint, so
+  the generated-object ABI is revision 11. The Rust host runs split modules: its split cells in
+  `tests/test_wasm_runner_table_base.py` and the split package test
+  (`test_wasm_importlib_package_bootstrap.py::..._split_direct`) execute through it.
 
 Tests (CPython is the oracle):
 - `tests/test_wasm_runtime_heavy_regressions.py::test_wasm_runtime_polls_match_cpython`: sleep,
@@ -289,15 +336,21 @@ Tests (CPython is the oracle):
   `molt_call_indirect1` traps, and the function at the key's low 32 bits never runs; a call with
   that slot reaches it. The probe drives the app object each build emits (linked and split), since
   neither final module exports these functions: in a linked module wasm-ld binds the runtime's
-  imports to them (its name section names the trapping frame `molt_call_indirect1`), and a split
-  host serves those imports itself until E2.
+  imports to them (its name section names the trapping frame `molt_call_indirect1`).
 - The repaired DB parity fixture (grants `db.read,time`, rethrows the operation error) no longer
   traps on split, but deadlocks: `run()` is synchronous and the DB host answers through `fetch`
   promises that cannot settle inside synchronous WASM. It lands with an asynchronous browser run
   (HF-699).
-- E2: a builtin called through a function object (both arities and argv) on split and linked; no
-  element row of an app or runtime targets a sentinel for a runtime callable; the
-  instructions-retired A/B on the async and call-heavy benchmarks, linked WASM.
+- E2: `test_wasm_reserved_runtime_callables_match_cpython` (a builtin through a function object
+  at two arities, a starred call, bound methods, a variadic `Context.run`, keywords, and
+  generator and coroutine methods; linked and split) and
+  `test_wasm_app_callable_table_reserves_no_runtime_region` (the app's table holds no runtime
+  poll and no `unreachable`-only sentinel, and a reserved callable at most once, as an
+  app-resolver entry) in the same file; the backend's `keyed_callables` tests (a `builtin_func`
+  stores the key; `UnpackArgs` gets an app trampoline, `CallFrame` none); the host-parity oracle
+  `tests/test_wasm_runner_table_base.py::test_hosts_share_callable_table_admission` (every host,
+  linked and split, refuses a missing or malformed attestation and never calls a table-base
+  setter).
 
 ## Skeleton of the end state
 

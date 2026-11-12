@@ -19,9 +19,6 @@ from pathlib import Path
 import pytest
 
 from molt._wasm_abi_generated import (
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
-    WASM_RESERVED_RUNTIME_CALLABLES,
     compiled_execution_symbol,
     ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
     runtime_execution_abi,
@@ -224,7 +221,6 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
         runtime_import_names=names,
     )
     worker_path = tmp_path / "worker.js"
@@ -421,18 +417,11 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
         "mode": "split-runtime",
         "shared_memory_initial_pages": 1,
         "shared_table_initial": 1,
-        "wasm_table_base": None,
         "abi": {
             "browser_embed": {
                 "call_indirect_imports": [
                     compiled_execution_symbol("molt_call_indirect0")
                 ],
-                "reserved_runtime_callables": [],
-                "table_layout": {
-                    "default_app_table_base": 256,
-                    "reserved_runtime_callable_base": 33,
-                    "reserved_runtime_callable_count": 0,
-                },
             },
             "runtime_imports": {
                 **execution_abi_metadata(),
@@ -1454,32 +1443,10 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert browser_abi["call_indirect_imports"] == [
         compiled_execution_symbol(f"molt_call_indirect{arity}") for arity in range(14)
     ]
-    assert browser_abi["table_layout"]["default_app_table_base"] == 256
-    assert (
-        browser_abi["table_layout"]["reserved_runtime_callable_base"]
-        == WASM_RESERVED_RUNTIME_CALLABLE_BASE
-    )
-    assert browser_abi["reserved_runtime_callables"] == [
-        {
-            "index": index,
-            "runtime_export": _runtime_export_name_for_import_from_manifest(
-                runtime_name
-            ),
-            "import_name": import_name,
-            "arity": arity,
-            "dispatch": dispatch,
-            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
-                runtime_name
-            ],
-        }
-        for (
-            index,
-            runtime_name,
-            import_name,
-            arity,
-            dispatch,
-        ) in WASM_RESERVED_RUNTIME_CALLABLES
-    ]
+    # Runtime callables are keys the runtime resolves itself: the browser ABI
+    # names no reserved callable and no table layout (HF-699 K1, K3).
+    assert "reserved_runtime_callables" not in browser_abi
+    assert "table_layout" not in browser_abi
     assert "runtime_import_fallbacks" not in browser_abi
     runtime_imports = manifest["abi"]["runtime_imports"]
     import molt.wasm_artifact as wasm_artifact

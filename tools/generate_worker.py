@@ -70,9 +70,6 @@ def generate_worker(
     )
     lifetime_exports = {
         **wasm_runtime_lifetime_export_names(),
-        "molt_set_wasm_table_base": abi["runtime_export_by_import"][
-            "molt_set_wasm_table_base"
-        ],
     }
     if not all(c.isalnum() or c in "._-" for c in wasm_filename):
         raise ValueError(f"Invalid wasm_filename: {wasm_filename!r}")

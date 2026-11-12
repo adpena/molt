@@ -74,7 +74,6 @@ pub(crate) enum RuntimeFlag {
     MOLT_TRACE_CALL_BIND_MISSING,
     MOLT_TRACE_CALL_DISPATCH,
     MOLT_TRACE_CALL_DISPATCH_ARGS,
-    MOLT_TRACE_CALL_FUNCTION_OBJ0,
     MOLT_TRACE_CALL_FUNCTION_OBJ1,
     MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE,
     MOLT_TRACE_CALL_FUNCTION_VEC,
@@ -128,7 +127,6 @@ pub(crate) enum RuntimeFlag {
     MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR,
     MOLT_TRACE_TASK_RESULT,
     MOLT_TRACE_TRACE_EXIT_PENDING,
-    MOLT_TRACE_TRAMPOLINE_POLICY,
     MOLT_TRACE_TYPE_CALL,
     MOLT_TRACE_TYPE_NEW_INIT,
     MOLT_TRACE_TYPE_NEW_INIT_BT,
@@ -138,7 +136,7 @@ pub(crate) enum RuntimeFlag {
 
 impl RuntimeFlag {
     /// Every flag in declaration order: `ALL[flag as usize] == flag`.
-    pub(crate) const ALL: [RuntimeFlag; 128] = [
+    pub(crate) const ALL: [RuntimeFlag; 126] = [
         Self::MOLT_ASSERT_CHILD,
         Self::MOLT_ASSERT_NO_LEAK,
         Self::MOLT_ASSERT_NO_PENDING_ON_SUCCESS,
@@ -207,7 +205,6 @@ impl RuntimeFlag {
         Self::MOLT_TRACE_CALL_BIND_MISSING,
         Self::MOLT_TRACE_CALL_DISPATCH,
         Self::MOLT_TRACE_CALL_DISPATCH_ARGS,
-        Self::MOLT_TRACE_CALL_FUNCTION_OBJ0,
         Self::MOLT_TRACE_CALL_FUNCTION_OBJ1,
         Self::MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE,
         Self::MOLT_TRACE_CALL_FUNCTION_VEC,
@@ -261,7 +258,6 @@ impl RuntimeFlag {
         Self::MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR,
         Self::MOLT_TRACE_TASK_RESULT,
         Self::MOLT_TRACE_TRACE_EXIT_PENDING,
-        Self::MOLT_TRACE_TRAMPOLINE_POLICY,
         Self::MOLT_TRACE_TYPE_CALL,
         Self::MOLT_TRACE_TYPE_NEW_INIT,
         Self::MOLT_TRACE_TYPE_NEW_INIT_BT,
@@ -270,7 +266,7 @@ impl RuntimeFlag {
     ];
 
     /// Each flag's variable name, sorted: `NAMES[flag as usize]` names `flag`.
-    pub(crate) const NAMES: [&str; 128] = [
+    pub(crate) const NAMES: [&str; 126] = [
         "MOLT_ASSERT_CHILD",
         "MOLT_ASSERT_NO_LEAK",
         "MOLT_ASSERT_NO_PENDING_ON_SUCCESS",
@@ -339,7 +335,6 @@ impl RuntimeFlag {
         "MOLT_TRACE_CALL_BIND_MISSING",
         "MOLT_TRACE_CALL_DISPATCH",
         "MOLT_TRACE_CALL_DISPATCH_ARGS",
-        "MOLT_TRACE_CALL_FUNCTION_OBJ0",
         "MOLT_TRACE_CALL_FUNCTION_OBJ1",
         "MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE",
         "MOLT_TRACE_CALL_FUNCTION_VEC",
@@ -393,7 +388,6 @@ impl RuntimeFlag {
         "MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR",
         "MOLT_TRACE_TASK_RESULT",
         "MOLT_TRACE_TRACE_EXIT_PENDING",
-        "MOLT_TRACE_TRAMPOLINE_POLICY",
         "MOLT_TRACE_TYPE_CALL",
         "MOLT_TRACE_TYPE_NEW_INIT",
         "MOLT_TRACE_TYPE_NEW_INIT_BT",

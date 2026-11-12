@@ -4,25 +4,18 @@ use crate::CALLABLE_TABLE_LAYOUT_VERSION;
 use crate::encoding::AttestationDecoder;
 use crate::model::{CallableTableArtifactRole, CallableTableLayout, WasmCallableTableEntryFact};
 
+/// The layout names the app's region only. Runtime callables are keys, so no
+/// table region is reserved for them (HF-699 K3); the runtime's own entries
+/// sit below the app base.
 pub(crate) fn validate_callable_table_layout(
     layout: CallableTableLayout,
     entries: &[WasmCallableTableEntryFact],
     role: CallableTableArtifactRole,
 ) -> Result<(), String> {
-    let fixed_end = layout
-        .fixed_prefix_base
-        .checked_add(layout.fixed_prefix_len)
-        .ok_or("callable-table fixed prefix overflows u32")?;
-    if layout.fixed_prefix_len == 0 && layout.fixed_prefix_base != 0 {
-        return Err("empty callable-table fixed prefix must have base zero".to_string());
-    }
     layout
         .finalized_app_base
         .checked_add(layout.app_entry_count)
         .ok_or("callable-table app region overflows u32")?;
-    if fixed_end > layout.finalized_app_base {
-        return Err("callable-table fixed and app regions overlap".to_string());
-    }
     match role {
         CallableTableArtifactRole::Monolithic => {
             let app_start = entries.partition_point(|entry| entry.slot < layout.finalized_app_base);
@@ -74,32 +67,6 @@ fn validate_runtime_entries(
             entry.slot, layout.finalized_app_base
         ));
     }
-    if layout.fixed_prefix_len == 0 {
-        return Ok(());
-    }
-    let fixed_end = layout
-        .fixed_prefix_base
-        .checked_add(layout.fixed_prefix_len)
-        .ok_or("callable-table fixed prefix overflows u32")?;
-    if entries.first().map(|entry| entry.slot) == Some(fixed_end) {
-        return Ok(());
-    }
-    if entries.first().map(|entry| entry.slot) != Some(layout.fixed_prefix_base) {
-        return Err("callable-table fixed prefix base is not the runtime base".to_string());
-    }
-    let fixed_count = usize::try_from(layout.fixed_prefix_len)
-        .map_err(|_| "callable-table fixed prefix exceeds host usize")?;
-    if entries.len() < fixed_count {
-        return Err(format!(
-            "callable-table runtime fixed prefix is incomplete: expected {fixed_count} entries, found {}",
-            entries.len()
-        ));
-    }
-    validate_contiguous_entries(
-        &entries[..fixed_count],
-        layout.fixed_prefix_base,
-        "runtime fixed prefix",
-    )?;
     Ok(())
 }
 
@@ -125,8 +92,6 @@ fn validate_contiguous_entries(
 pub(crate) fn encode_callable_table_layout(layout: CallableTableLayout) -> Vec<u8> {
     let mut payload = Vec::new();
     CALLABLE_TABLE_LAYOUT_VERSION.encode(&mut payload);
-    layout.fixed_prefix_base.encode(&mut payload);
-    layout.fixed_prefix_len.encode(&mut payload);
     layout.finalized_app_base.encode(&mut payload);
     layout.app_entry_count.encode(&mut payload);
     payload
@@ -138,20 +103,10 @@ pub(crate) fn decode_callable_table_layout(payload: &[u8]) -> Result<CallableTab
         return Err("unsupported callable-table layout version".to_string());
     }
     let layout = CallableTableLayout {
-        fixed_prefix_base: decoder.read_u32()?,
-        fixed_prefix_len: decoder.read_u32()?,
         finalized_app_base: decoder.read_u32()?,
         app_entry_count: decoder.read_u32()?,
     };
     decoder.finish("callable-table layout")?;
-    if layout.fixed_prefix_len == 0 && layout.fixed_prefix_base != 0 {
-        return Err("empty callable-table fixed prefix must have base zero".to_string());
-    }
-    layout
-        .fixed_prefix_base
-        .checked_add(layout.fixed_prefix_len)
-        .filter(|fixed_end| *fixed_end <= layout.finalized_app_base)
-        .ok_or("callable-table layout fixed prefix overlaps app region")?;
     layout
         .finalized_app_base
         .checked_add(layout.app_entry_count)

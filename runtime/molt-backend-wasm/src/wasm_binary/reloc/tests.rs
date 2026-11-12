@@ -6,8 +6,8 @@ use crate::wasm_binary::Function;
 use crate::wasm_binary::{emit_call_indirect, encode_u32_leb128_padded, strip_unused_imports};
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_table::{
-    TableRelocSite, WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableSlot,
-    WasmCallableTableTarget, WasmFunctionSymbol, WasmTableRelocations,
+    TableRelocSite, WasmCallableTableRole, WasmCallableTableSlot, WasmCallableTableTarget,
+    WasmFunctionSymbol, WasmTableRelocations,
 };
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -15,9 +15,8 @@ use std::fs;
 use std::process::Command;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::{
-    CodeSection, ConstExpr, CustomSection, ElementMode, ElementSection, ElementSegment, Elements,
-    Encode, EntityType, ExportKind, ExportSection, ImportSection, Instruction, Module, RawSection,
-    RefType, TableType, TypeSection,
+    CodeSection, CustomSection, Encode, EntityType, ExportKind, ExportSection, ImportSection,
+    Instruction, Module, RawSection, RefType, TableType, TypeSection,
 };
 use wasmparser::{Parser, Payload};
 
@@ -435,10 +434,10 @@ fn table_reloc_sites_use_symbol_identity_after_import_strip() {
         &mut second,
         &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
             current_table_index: 4101,
-            address: WasmCallableTableAddress::Relocatable(WasmFunctionSymbol::RuntimeImport(
+            symbol: WasmFunctionSymbol::RuntimeImport(
                 crate::wasm_abi_generated::wasm_runtime_import("abc_bootstrap")
                     .expect("generated abc_bootstrap import"),
-            )),
+            ),
             role: WasmCallableTableRole::DirectCallable,
         }),
     );
@@ -450,9 +449,9 @@ fn table_reloc_sites_use_symbol_identity_after_import_strip() {
         &mut second,
         &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
             current_table_index: 4102,
-            address: WasmCallableTableAddress::Relocatable(WasmFunctionSymbol::Defined {
+            symbol: WasmFunctionSymbol::Defined {
                 defined_func_index: 0,
-            }),
+            },
             role: WasmCallableTableRole::Trampoline,
         }),
     );
@@ -532,11 +531,9 @@ fn native_initializer_table_reloc_resolves_native_import_symbol_after_import_str
         &mut body,
         &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
             current_table_index: 4101,
-            address: WasmCallableTableAddress::Relocatable(
-                WasmFunctionSymbol::NativeCallableImport {
-                    native_import_ordinal: 0,
-                },
-            ),
+            symbol: WasmFunctionSymbol::NativeCallableImport {
+                native_import_ordinal: 0,
+            },
             role: WasmCallableTableRole::DirectCallable,
         }),
     );
@@ -564,30 +561,6 @@ fn native_initializer_table_reloc_resolves_native_import_symbol_after_import_str
             .collect::<Vec<_>>(),
         vec![1],
         "a native initializer table address must bind to the PyInit import symbol, not a stale function index"
-    );
-}
-
-#[test]
-fn fixed_shared_runtime_table_address_emits_no_linker_relocation() {
-    let mut relocations = WasmTableRelocations::default();
-    let mut body = Function::new([]);
-    relocations.emit_i64(
-        true,
-        0,
-        0,
-        &mut body,
-        &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
-            current_table_index: 4097,
-            address: WasmCallableTableAddress::FixedSharedRuntimeAbi {
-                finalized_app_base: 8192,
-            },
-            role: WasmCallableTableRole::DirectCallable,
-        }),
-    );
-
-    assert!(
-        relocations.relocs().is_empty(),
-        "the explicitly fixed split-runtime ABI prefix must not be handed to the linker"
     );
 }
 
@@ -622,13 +595,10 @@ fn missing_callable_table_relocation_owner_fails_closed() {
 fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
     let wasm_ld = wasm_ld_path();
 
-    const FIXED_RUNTIME_SLOT: u32 = 3;
-    const FINALIZED_APP_BASE: u32 = 8;
-
     let mut types = TypeSection::new();
     types.ty().function([], [wasm_encoder::ValType::I32]);
     let mut funcs = FunctionSection::new();
-    for _ in 0..3 {
+    for _ in 0..2 {
         funcs.function(0);
     }
     let mut imports = ImportSection::new();
@@ -644,11 +614,7 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
         }),
     );
     let mut exports = ExportSection::new();
-    for (name, index) in [
-        ("candidate_target", 0),
-        ("prefix_invoke", 1),
-        ("candidate_invoke", 2),
-    ] {
+    for (name, index) in [("candidate_target", 0), ("candidate_invoke", 1)] {
         exports.export(name, ExportKind::Func, index);
     }
 
@@ -659,24 +625,6 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
     candidate_target.instruction(&Instruction::End);
     codes.function(&candidate_target);
 
-    let mut prefix_invoke = Function::new([]);
-    relocations.emit_i32(
-        true,
-        0,
-        1,
-        &mut prefix_invoke,
-        &WasmCallableTableSlot {
-            current_table_index: FIXED_RUNTIME_SLOT,
-            address: WasmCallableTableAddress::FixedSharedRuntimeAbi {
-                finalized_app_base: FINALIZED_APP_BASE,
-            },
-            role: WasmCallableTableRole::DirectCallable,
-        },
-    );
-    emit_call_indirect(&mut prefix_invoke, true, 0, 0);
-    prefix_invoke.instruction(&Instruction::End);
-    codes.function(&prefix_invoke);
-
     let mut candidate_invoke = Function::new([]);
     for _ in 0..4096 {
         candidate_invoke.instruction(&Instruction::Nop);
@@ -684,13 +632,13 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
     relocations.emit_i32(
         true,
         0,
-        2,
+        1,
         &mut candidate_invoke,
         &WasmCallableTableSlot {
             current_table_index: 0,
-            address: WasmCallableTableAddress::Relocatable(WasmFunctionSymbol::Defined {
+            symbol: WasmFunctionSymbol::Defined {
                 defined_func_index: 0,
-            }),
+            },
             role: WasmCallableTableRole::DirectCallable,
         },
     );
@@ -720,30 +668,6 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
     module.section(&codes);
     let object = add_reloc_sections(module.finish(), &[], &[], relocations.relocs());
 
-    let mut runtime_elements = ElementSection::new();
-    let runtime_offset = ConstExpr::i32_const(FIXED_RUNTIME_SLOT as i32);
-    runtime_elements.segment(ElementSegment {
-        mode: ElementMode::Active {
-            table: Some(0),
-            offset: &runtime_offset,
-        },
-        elements: Elements::Functions(Cow::Owned(vec![0])),
-    });
-    let mut runtime_code = CodeSection::new();
-    let mut runtime_target = Function::new([]);
-    runtime_target.instruction(&Instruction::I32Const(7));
-    runtime_target.instruction(&Instruction::End);
-    runtime_code.function(&runtime_target);
-    let mut runtime = Module::new();
-    runtime.section(&types);
-    runtime.section(&imports);
-    let mut runtime_funcs = FunctionSection::new();
-    runtime_funcs.function(0);
-    runtime.section(&runtime_funcs);
-    runtime.section(&runtime_elements);
-    runtime.section(&runtime_code);
-    let runtime = runtime.finish();
-
     let temp = std::env::temp_dir().join(format!(
         "molt-wasm-table-reloc-{}-{}",
         std::process::id(),
@@ -762,9 +686,7 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
     let _remove_temp = RemoveTemp(temp.clone());
     let object_path = temp.join("callable.o.wasm");
     let linked_path = temp.join("callable.wasm");
-    let runtime_path = temp.join("runtime.wasm");
     fs::write(&object_path, object).expect("write relocatable wasm object");
-    fs::write(&runtime_path, runtime).expect("write fixed-prefix runtime wasm");
     let status = Command::new(&wasm_ld)
         .args([
             "--no-entry",
@@ -772,7 +694,6 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
             "--import-memory",
             "--table-base=8",
             "--export=__molt_output_export_1",
-            "--export=__molt_output_export_2",
             "-o",
         ])
         .arg(&linked_path)
@@ -786,15 +707,12 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
         &script,
         r#"const fs=require('fs');
 const bytes=fs.readFileSync(process.argv[2]);
-const runtimeBytes=fs.readFileSync(process.argv[3]);
 const table=new WebAssembly.Table({initial:16,element:'anyfunc'});
 const memory=new WebAssembly.Memory({initial:2});
 const env={__indirect_function_table:table,memory};
-WebAssembly.instantiate(runtimeBytes,{env})
-.then(()=>WebAssembly.instantiate(bytes,{env})).then(({instance})=>{
-  const prefix=instance.exports.prefix_invoke();
+WebAssembly.instantiate(bytes,{env}).then(({instance})=>{
   const candidate=instance.exports.candidate_invoke();
-  if(prefix!==7 || candidate!==42) throw new Error(`bad results ${prefix},${candidate}`);
+  if(candidate!==42) throw new Error(`bad result ${candidate}`);
 }).catch(error=>{console.error(error);process.exit(1);});
 "#,
     )
@@ -802,11 +720,10 @@ WebAssembly.instantiate(runtimeBytes,{env})
     let node_status = Command::new("node")
         .arg(&script)
         .arg(&linked_path)
-        .arg(&runtime_path)
         .status()
         .expect("run node relocation verifier");
     assert!(
         node_status.success(),
-        "both shifted indirect calls must reach their linker-assigned targets"
+        "a shifted indirect call must reach its linker-assigned target"
     );
 }

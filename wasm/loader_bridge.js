@@ -17,8 +17,6 @@
   const WASM_VERSION = 0x1;
   const CALLABLE_TABLE_SECTION_NAME = callableTableAbi.section_name;
   const CALLABLE_TABLE_SECTION_VERSION = callableTableAbi.version;
-  const CALLABLE_TABLE_LAYOUT_SECTION_NAME = callableTableAbi.layout_section_name;
-  const CALLABLE_TABLE_LAYOUT_VERSION = callableTableAbi.layout_version;
   const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE = callableTableAbi.active_element_role;
   const CALLABLE_TABLE_VALUE_TYPE_FORMAT = callableTableAbi.value_type_format;
   const UTF8_DECODER = new TextDecoder('utf-8');
@@ -210,95 +208,6 @@
       return readVarUint(view, pos).offset;
     }
     throw new Error(`Unknown import kind ${kind}`);
-  };
-
-  const parseCallableTableLayoutPayload = (view, offset, end) => {
-    const values = [];
-    for (let idx = 0; idx < 5; idx += 1) {
-      const value = readVarUint(view, offset);
-      values.push(value.value);
-      offset = value.offset;
-    }
-    if (offset !== end || values[0] !== CALLABLE_TABLE_LAYOUT_VERSION) {
-      throw new Error('Invalid callable-table layout publication');
-    }
-    const [, fixedPrefixBase, fixedPrefixLen, finalizedAppBase, appEntryCount] = values;
-    if (
-      (fixedPrefixLen === 0 && fixedPrefixBase !== 0) ||
-      fixedPrefixBase + fixedPrefixLen > finalizedAppBase ||
-      finalizedAppBase + appEntryCount > 0xffffffff
-    ) {
-      throw new Error('Invalid callable-table layout bounds');
-    }
-    return { fixedPrefixBase, fixedPrefixLen, finalizedAppBase, appEntryCount };
-  };
-
-  const extractWasmTableBase = (buffer) => {
-    const bytes = new Uint8Array(buffer);
-    const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (bytes.length < 8 || header.getUint32(0, true) !== WASM_MAGIC ||
-        header.getUint32(4, true) !== WASM_VERSION) {
-      throw new Error('Invalid WASM header for callable-table layout');
-    }
-    let offset = 8;
-    let callableTable = null;
-    let callableTableLayout = null;
-    while (offset < bytes.length) {
-      const sectionId = bytes[offset++];
-      const sizeRes = readVarUint(bytes, offset);
-      offset = sizeRes.offset;
-      const sectionEnd = offset + sizeRes.value;
-      if (sectionEnd > bytes.length) {
-        throw new Error('Unexpected EOF in callable-table layout section');
-      }
-      if (sectionId === 0) {
-        const section = bytes.subarray(offset, sectionEnd);
-        const name = readString(section, 0);
-        if (name.value === CALLABLE_TABLE_LAYOUT_SECTION_NAME) {
-          if (callableTableLayout !== null) {
-            throw new Error('Duplicate callable-table layout publication');
-          }
-          callableTableLayout = parseCallableTableLayoutPayload(
-            section, name.offset, section.length,
-          );
-        } else if (name.value === CALLABLE_TABLE_SECTION_NAME) {
-          if (callableTable !== null) throw new Error('Duplicate callable-table attestation');
-          callableTable = parseCallableTableSectionPayload(section.subarray(name.offset));
-        }
-      }
-      offset = sectionEnd;
-    }
-    if (callableTableLayout) {
-      return callableTableLayout.fixedPrefixLen > 0
-        ? callableTableLayout.fixedPrefixBase
-        : callableTableLayout.finalizedAppBase;
-    }
-    return callableTable?.entries[0]?.slot ?? null;
-  };
-
-  const wasmTableBaseFromManifest = (manifest) => {
-    const raw = manifest?.wasm_table_base;
-    if (raw === null || raw === undefined) {
-      return null;
-    }
-    const value = Number(raw);
-    if (!Number.isInteger(value) || value < 0) {
-      throw new Error(`manifest.wasm_table_base must be a non-negative integer, got ${raw}`);
-    }
-    return value;
-  };
-
-  const resolveWasmTableBase = ({ manifest = null, extracted = null }) => {
-    const manifestBase = wasmTableBaseFromManifest(manifest);
-    if (manifestBase === null) {
-      return extracted;
-    }
-    if (extracted !== null && extracted !== undefined && extracted < manifestBase) {
-      throw new Error(
-        `manifest wasm_table_base ${manifestBase} is above binary table base ${extracted}`,
-      );
-    }
-    return manifestBase;
   };
 
   const decodeWasmValType = (encoded) => {
@@ -749,73 +658,27 @@
     return callableTable;
   };
 
-  /** @typedef {{kind: 'empty', base: null, callableTable: object} |
-   * {kind: 'publish', base: number, exportName: string, callableTable: object}} WasmTableAdmission */
-
-  // The attestation, not the presence of a table or a setter, decides whether
-  // execution needs a reserved callable region. Compiled-module consumers use
-  // the same layout publication as byte consumers (Workers import Modules).
-  const prepareWasmTableAdmission = ({
-    buffer = null, module = null, manifest = null,
-    runtimeExportNames = manifest?.abi?.runtime_imports?.export_names,
-    label = 'wasm',
-  }) => {
-    let callableTable;
-    let extracted;
+  // Hosts read an artifact's callable-table attestation only for the
+  // signatures of its own entries. No slot is reserved for runtime callables,
+  // so no table base is published to the runtime (HF-699 K3). Compiled-module
+  // consumers (Workers import Modules) read the same attestation.
+  const readCallableTableAttestation = ({ buffer = null, module = null, label = 'wasm' }) => {
     try {
       if (module !== null) {
         const sections = WebAssembly.Module.customSections(module, CALLABLE_TABLE_SECTION_NAME);
         if (sections.length === 0) {
           throw new Error('missing callable-table attestation');
         }
-        callableTable = callableTableFromModule(module, label);
-        const layouts = WebAssembly.Module.customSections(module, CALLABLE_TABLE_LAYOUT_SECTION_NAME);
-        if (layouts.length > 1) throw new Error('Duplicate callable-table layout publication');
-        extracted = callableTable.entries[0]?.slot ?? null;
-        if (layouts.length === 1) {
-          const view = new Uint8Array(layouts[0]);
-          const layout = parseCallableTableLayoutPayload(view, 0, view.length);
-          extracted = layout.fixedPrefixLen > 0 ? layout.fixedPrefixBase : layout.finalizedAppBase;
-        }
-      } else {
-        callableTable = parseWasmMetadata(buffer, {
-          exportFunctionSignatures: false, label,
-        }).callableTable;
-        if (callableTable === null) throw new Error('missing callable-table attestation');
-        extracted = extractWasmTableBase(buffer);
+        return callableTableFromModule(module, label);
       }
+      const callableTable = parseWasmMetadata(buffer, {
+        exportFunctionSignatures: false, label,
+      }).callableTable;
+      if (callableTable === null) throw new Error('missing callable-table attestation');
+      return callableTable;
     } catch (error) {
       const missing = error.message === 'missing callable-table attestation';
       throw new Error(`${missing ? 'MOLT_WASM_TABLE_ATTESTATION_MISSING' : 'MOLT_WASM_TABLE_ATTESTATION_MALFORMED'}: ${label}: ${error.message}`);
-    }
-    if (callableTable.entries.length === 0) {
-      return Object.freeze({ kind: 'empty', base: null, callableTable });
-    }
-    const base = resolveWasmTableBase({ manifest, extracted });
-    if (!Number.isInteger(base) || base <= 0) {
-      throw new Error(`MOLT_WASM_TABLE_BASE_REQUIRED: ${label} needs a positive callable table base`);
-    }
-    const exportName = runtimeExportNames?.molt_set_wasm_table_base;
-    if (typeof exportName !== 'string' || exportName.length === 0) {
-      throw new Error(`MOLT_WASM_TABLE_EXPORT_REQUIRED: ${label} ABI must name canonical molt_set_wasm_table_base export`);
-    }
-    return Object.freeze({ kind: 'publish', base, exportName, callableTable });
-  };
-
-  // Call immediately after runtime instantiation, before lifetime admission or
-  // WASI/libc/app initialization. Empty attestations deliberately publish nothing.
-  const publishWasmTableAdmission = (admission, instance) => {
-    switch (admission.kind) {
-      case 'empty': return;
-      case 'publish': {
-        const setter = instance.exports[admission.exportName];
-        if (typeof setter !== 'function') {
-          throw new Error(`MOLT_WASM_TABLE_EXPORT_REQUIRED: missing canonical molt_set_wasm_table_base export ${admission.exportName}`);
-        }
-        setter(BigInt(admission.base));
-        return;
-      }
-      default: throw new Error('Invalid WASM table admission outcome');
     }
   };
 
@@ -970,291 +833,6 @@
       params: Array.from({ length: arity + 1 + (includeIndex ? 1 : 0) }, () => 'i64'),
       result: 'i64',
     };
-  };
-
-  const reservedRuntimeCallableForTableIndex = (
-    idx,
-    {
-      sharedTableBase,
-      reservedRuntimeCallableBase,
-      reservedRuntimeCallableCount = null,
-      reservedRuntimeCallables,
-    },
-  ) => {
-    const count = reservedRuntimeCallableCount ?? reservedRuntimeCallables.length;
-    if (!Number.isInteger(idx) || sharedTableBase === null || sharedTableBase === undefined) {
-      return null;
-    }
-    const directStart = sharedTableBase + reservedRuntimeCallableBase;
-    const trampolineStart = directStart + count;
-    let offset = idx - directStart;
-    let trampoline = false;
-    if (offset < 0 || offset >= count) {
-      offset = idx - trampolineStart;
-      trampoline = true;
-    }
-    if (offset < 0 || offset >= count) {
-      return null;
-    }
-    const spec = reservedRuntimeCallables.find((entry) => entry.index === offset);
-    return spec ? { ...spec, trampoline } : null;
-  };
-
-  const planReservedRuntimeDispatch = ({
-    dispatchIdx,
-    sharedTableBase,
-    reservedRuntimeCallableBase,
-    reservedRuntimeCallableCount = null,
-    reservedRuntimeCallables,
-  }) => {
-    const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(
-      dispatchIdx,
-      {
-        sharedTableBase,
-        reservedRuntimeCallableBase,
-        reservedRuntimeCallableCount,
-        reservedRuntimeCallables,
-      },
-    );
-    if (
-      reservedRuntimeCallable &&
-      !reservedRuntimeCallable.trampoline &&
-      reservedRuntimeCallable.dispatch === 'trampoline'
-    ) {
-      throw new Error(
-        `reserved runtime callable ${reservedRuntimeCallable.runtimeExport} at idx=${dispatchIdx} is trampoline-only`,
-      );
-    }
-    return {
-      reservedRuntimeCallable,
-      dispatchReservedRuntimeCallable: Boolean(reservedRuntimeCallable),
-    };
-  };
-
-  const reservedRuntimeCallablesFromManifest = (manifest) => {
-    const entries = manifest?.abi?.browser_embed?.reserved_runtime_callables;
-    if (!Array.isArray(entries)) {
-      return null;
-    }
-    return parseReservedRuntimeCallables(entries);
-  };
-
-  // One reserved-runtime-callable table layout per execution: the artifact's
-  // manifest ABI when it declares one, else the generated ABI this host was
-  // built with. Hosts never keep their own copy of the base, count or list.
-  const runtimeCallableTableLayoutFromAbi = (abi, label) => {
-    const layout = abi?.table_layout;
-    if (!layout || typeof layout !== 'object') {
-      throw new Error(`${label}.table_layout is missing`);
-    }
-    const field = (name) => {
-      const value = layout[name];
-      if (!Number.isInteger(value) || value < 0) {
-        throw new Error(`${label}.table_layout.${name} must be a non-negative integer`);
-      }
-      return value;
-    };
-    if (!Array.isArray(abi.reserved_runtime_callables)) {
-      throw new Error(`${label}.reserved_runtime_callables must be an array`);
-    }
-    const reservedRuntimeCallables = parseReservedRuntimeCallables(
-      abi.reserved_runtime_callables,
-    );
-    const count = field('reserved_runtime_callable_count');
-    if (reservedRuntimeCallables.length !== count) {
-      throw new Error(
-        `${label}.reserved_runtime_callables has ${reservedRuntimeCallables.length} ` +
-          `entries; table_layout.reserved_runtime_callable_count is ${count}`,
-      );
-    }
-    const indices = new Set(reservedRuntimeCallables.map((entry) => entry.index));
-    if (
-      indices.size !== count ||
-      reservedRuntimeCallables.some((entry) => entry.index >= count)
-    ) {
-      throw new Error(`${label}.reserved_runtime_callables indices must be exactly 0..${count - 1}`);
-    }
-    return Object.freeze({
-      defaultAppTableBase: field('default_app_table_base'),
-      reservedRuntimeCallableBase: field('reserved_runtime_callable_base'),
-      reservedRuntimeCallables,
-    });
-  };
-
-  const runtimeCallableTableLayout = (manifest) => {
-    const abi = manifest?.abi?.browser_embed;
-    if (abi === undefined || abi === null) {
-      return runtimeCallableTableLayoutFromAbi(
-        callableTableAbi.runtime_callables,
-        'generated callable-table ABI runtime_callables',
-      );
-    }
-    return runtimeCallableTableLayoutFromAbi(abi, 'manifest.abi.browser_embed');
-  };
-
-  const parseReservedRuntimeCallables = (entries) => {
-    return entries.map((entry, idx) => {
-      if (!entry || typeof entry !== 'object') {
-        throw new Error(`reserved runtime callable manifest entry ${idx} must be an object`);
-      }
-      const index = Number(entry.index);
-      const runtimeExport = entry.runtime_export;
-      const importName = entry.import_name;
-      const arity = Number(entry.arity);
-      const dispatch = entry.dispatch === undefined ? 'direct' : entry.dispatch;
-      const trampolineAbi = entry.trampoline_abi === undefined ? 'unpack_args' : entry.trampoline_abi;
-      if (!Number.isInteger(index) || index < 0) {
-        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid index`);
-      }
-      if (typeof runtimeExport !== 'string' || !runtimeExport.startsWith('molt_')) {
-        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid runtime_export`);
-      }
-      if (typeof importName !== 'string' || importName.length === 0) {
-        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid import_name`);
-      }
-      if (!Number.isInteger(arity) || arity < 0) {
-        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid arity`);
-      }
-      if (dispatch !== 'direct' && dispatch !== 'trampoline') {
-        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid dispatch`);
-      }
-      if (trampolineAbi !== 'unpack_args' && trampolineAbi !== 'call_frame') {
-        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid trampoline_abi`);
-      }
-      return { index, runtimeExport, importName, arity, dispatch, trampolineAbi };
-    });
-  };
-
-  const remapDefaultAppRuntimeSharedTableIndex = (
-    idx,
-    {
-      sharedTableBase,
-      defaultAppTableBase,
-      reservedRuntimeCallableBase,
-      reservedRuntimeCallableCount,
-      rawIndexHasInstalledEntry = null,
-    },
-  ) => {
-    if (
-      !Number.isInteger(idx) ||
-      sharedTableBase === null ||
-      sharedTableBase === undefined ||
-      sharedTableBase <= defaultAppTableBase
-    ) {
-      return idx;
-    }
-    const defaultStart = defaultAppTableBase + reservedRuntimeCallableBase;
-    const defaultEnd = defaultStart + reservedRuntimeCallableCount * 2;
-    if (idx >= defaultStart && idx < defaultEnd) {
-      // A default-base reserved-callable reference is a *bare* index (no installed
-      // table entry) baked by an app-layout runtime module, to be relocated
-      // into the live shared-table reserved region. App-local function pointers
-      // legitimately occupy this same low index window (below the shared-table
-      // base), so an index that already resolves to an installed funcref is a
-      // genuine indirect call — NOT a default-base reserved reference — and must be
-      // dispatched directly. The index range alone is ambiguous because both
-      // kinds share [defaultStart, defaultEnd); table occupancy disambiguates.
-      // Only relocate unpopulated (bare) references.
-      if (
-        typeof rawIndexHasInstalledEntry === 'function' &&
-        rawIndexHasInstalledEntry(idx)
-      ) {
-        return idx;
-      }
-      return idx - defaultAppTableBase + sharedTableBase;
-    }
-    return idx;
-  };
-
-  const readRuntimeCallargsVector = (memory, ptr, len) => {
-    const count = Number(len);
-    if (!Number.isInteger(count) || count < 0) {
-      throw new Error(`reserved runtime trampoline arg count must be non-negative, got ${len}`);
-    }
-    const base = Number(ptr);
-    if (!Number.isInteger(base) || base < 0) {
-      throw new Error(`reserved runtime trampoline argv pointer must be non-negative, got ${ptr}`);
-    }
-    const view = new DataView(memory.buffer);
-    const args = [];
-    for (let idx = 0; idx < count; idx += 1) {
-      args.push(view.getBigUint64(base + idx * 8, true));
-    }
-    return args;
-  };
-
-  const callReservedRuntimeCallable = ({
-    runtimeExports,
-    context,
-    memory,
-    entry,
-    indirectName,
-    args,
-    describeArgs = null,
-  }) => {
-    const fn = runtimeExports ? runtimeExports[entry.runtimeExport] : null;
-    if (typeof fn !== 'function') {
-      throw new Error(`${indirectName} reserved runtime callable ${entry.runtimeExport} is not exported`);
-    }
-    let callArgs = args;
-    if (entry.trampoline) {
-      if (args.length !== 3) {
-        throw new Error(
-          `${indirectName} reserved runtime trampoline ${entry.runtimeExport} expects closure, argv, argc; got ${args.length} args`,
-        );
-      }
-      if (entry.trampolineAbi === 'call_frame') {
-        callArgs = args;
-      } else {
-        const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
-        if (closureBits !== 0n) {
-          throw new Error(
-            `${indirectName} reserved runtime trampoline ${entry.runtimeExport} does not accept closure bits ${closureBits}`,
-          );
-        }
-        callArgs = readRuntimeCallargsVector(memory, args[1], args[2]);
-      }
-    }
-    if (
-      typeof process !== 'undefined' &&
-      process &&
-      process.env &&
-      process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1'
-    ) {
-      const printableArgs = callArgs.map((arg) => String(arg)).join(',');
-      const described =
-        typeof describeArgs === 'function' ? describeArgs(entry, callArgs) || '' : '';
-      console.error(
-        `[molt wasm] reserved-runtime ${indirectName} ${entry.runtimeExport}` +
-          ` trampoline=${entry.trampoline ? 'yes' : 'no'} argc=${callArgs.length}` +
-          ` args=[${printableArgs}]${described}`,
-      );
-    }
-    // Reserved runtime callables are reached through the generic
-    // `molt_call_indirectN` fixed-arity lane, whose N is chosen by the
-    // *caller's* positional-argument count, not by the callable's true C
-    // signature. A type `__new__` slot, for instance, forwards `(cls, *args)`,
-    // so `molt_types_capsule_new(cls) -> u64` (declared arity 1) can be invoked
-    // as `capsule(cls, x, None, None)` and arrive here with 4 operands. The
-    // callable reads only its declared leading params and ignores the surplus —
-    // exactly as the native C ABI silently drops extra positional arguments.
-    // WASM cannot invoke a 1-param function with 4 operands (a call_indirect
-    // type-mismatch trap), so this host bridge is the single point that
-    // reconciles the two conventions: forward exactly `entry.arity` leading
-    // args. Under-supply (fewer operands than the declared arity) remains a hard
-    // error because the missing arguments cannot be fabricated.
-    if (callArgs.length < entry.arity) {
-      throw new Error(
-        `${indirectName} reserved runtime callable ${entry.runtimeExport} arity mismatch: expected ${entry.arity}, got ${callArgs.length}`,
-      );
-    }
-    const forwardedArgs =
-      callArgs.length === entry.arity ? callArgs : callArgs.slice(0, entry.arity);
-    return callWithWasmSignature(
-      fn,
-      { params: Array.from({ length: entry.arity + 1 }, () => 'i64'), result: 'i64' },
-      [normalizeI64BridgeValue(context, `${indirectName} context`), ...forwardedArgs],
-    );
   };
 
   const requireCallIndirectImportName = (name) => {
@@ -1509,11 +1087,9 @@
     callIndirectObjectSignature,
     requireCallIndirectImportName,
     callIsolateImportExport,
-    callReservedRuntimeCallable,
     callRuntimeByteSpanOutImport,
     callRuntimeObjectArrayArgImport,
     callWithWasmSignature,
-    extractWasmTableBase,
     installManifestLinkImportTraps,
     installWasmTagImports,
     normalizeI64BridgeValue,
@@ -1521,14 +1097,8 @@
     parseWasmMetadata,
     parseWasmExportFunctionSignatures,
     parseWasmImports,
+    readCallableTableAttestation,
     requireWasmCallableTable,
-    prepareWasmTableAdmission,
-    publishWasmTableAdmission,
-    planReservedRuntimeDispatch,
-    remapDefaultAppRuntimeSharedTableIndex,
-    reservedRuntimeCallablesFromManifest,
-    runtimeCallableTableLayout,
-    runtimeCallableTableLayoutFromAbi,
     runtimeExceptionPending,
     requireAttachedExecutionAbi,
     requireAppExecutionAbi,

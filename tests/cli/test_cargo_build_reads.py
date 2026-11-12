@@ -543,7 +543,6 @@ def test_the_runtime_identity_covers_what_its_build_reads(tmp_path) -> None:
             "runtime/molt-runtime/src/lib.rs",
             "runtime/molt-runtime/../../include/molt/molt.h",
             "include/molt/shared/_buffer_abi.h",
-            "runtime/molt-runtime-constants/../wasm_table_layout.inc",
             "runtime/molt-runtime/src/builtins/../../../molt-runtime-path/src/pathlib.rs",
         ],
     )

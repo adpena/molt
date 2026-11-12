@@ -116,7 +116,6 @@ from molt.cli.source_extension_link_requirements import (
 )
 from molt.cli.wasm import (
     WASM_WORKER_COMPATIBILITY_DATE,
-    _effective_split_worker_table_base,
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
     _runtime_export_name_for_import_from_manifest,
@@ -1815,20 +1814,6 @@ def _prepare_non_native_build_result_in_generation(
                     command="build",
                 )
             try:
-                effective_wasm_table_base = _effective_split_worker_table_base(
-                    wasm_table_base=wasm_table_base,
-                    app_callable_table_slots=(
-                        entry.slot for entry in app_callable_table
-                    ),
-                )
-            except ValueError as exc:
-                return None, _fail(
-                    f"Split-runtime wasm_table_base metadata mismatch: {exc}",
-                    json_output,
-                    command="build",
-                )
-
-            try:
                 native_callables_manifest = _browser_native_callable_manifest(
                     native_artifact_plan,
                     required_symbols=app_native_callable_import_names,
@@ -1880,7 +1865,6 @@ def _prepare_non_native_build_result_in_generation(
                 "tree_shaken": True,
                 "shared_memory_initial_pages": shared_memory_initial_pages,
                 "shared_table_initial": shared_table_initial,
-                "wasm_table_base": effective_wasm_table_base,
                 "abi": {
                     "runtime_imports": runtime_import_abi,
                     "browser_embed": browser_embed_abi,
@@ -1923,7 +1907,6 @@ def _prepare_non_native_build_result_in_generation(
                     deployment_manifest=manifest_data,
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
-                    shared_table_base=effective_wasm_table_base,
                     runtime_import_names=runtime_abi_names,
                     runtime_export_signatures=app_runtime_export_signatures,
                 ),

@@ -166,25 +166,20 @@ const traceBrowserWasi =
 const {
   bindRuntimeFunctionImports,
   callIsolateImportExport,
-  callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
   callRuntimeObjectArrayArgImport,
   callWithWasmSignature,
   compiledExecutionSymbol,
-  prepareWasmTableAdmission,
-  publishWasmTableAdmission,
   installWasmTagImports,
   normalizeValueForKind,
   parseWasmImports,
-  planReservedRuntimeDispatch,
+  readCallableTableAttestation,
   requireAppExecutionAbi,
   requireAttachedExecutionAbi,
   requireCallIndirectImportName,
   requireSharedExecutionMemory,
   requireSharedExecutionMemoryImport,
   requireWasmCallableTable,
-  remapDefaultAppRuntimeSharedTableIndex,
-  runtimeCallableTableLayout,
   callableTableSignature,
   runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
@@ -2809,9 +2804,6 @@ const buildWasiStub = (state, logFn, options = {}) => {
       ? process.env.MOLT_CAPABILITY_TIER
       : EXPLICIT_CAPABILITY_TIER;
   wasiEnvMap.set('MOLT_CAPABILITY_TIER', capabilityTier);
-  if (Number.isFinite(state.wasmTableBase) && state.wasmTableBase > 0) {
-    wasiEnvMap.set('MOLT_WASM_TABLE_BASE', String(state.wasmTableBase));
-  }
   if (options.env && typeof options.env === 'object') {
     for (const [key, value] of Object.entries(options.env)) {
       if (typeof key !== 'string' || key.length === 0 || value === undefined || value === null) {
@@ -3621,11 +3613,9 @@ export const loadMoltWasm = async (options = {}) => {
     }
 
     if (linkedBytes) {
-      const tableAdmission = prepareWasmTableAdmission({
-        buffer: linkedBytes, manifest: runtimeManifest,
-        runtimeExportNames: runtimeImportAbi.export_names, label: 'linked wasm',
+      const linkedCallableTable = readCallableTableAttestation({
+        buffer: linkedBytes, label: 'linked wasm',
       });
-      state.wasmTableBase = tableAdmission.base;
       const linkedImports = parseWasmImports(linkedBytes);
       if (linkedImports.funcImports.some((imp) => imp.module === 'molt_runtime')) {
         throw new Error('linked browser module still imports molt_runtime');
@@ -3655,7 +3645,6 @@ export const loadMoltWasm = async (options = {}) => {
           `linked wasm self-import manifest mismatch: declared=${JSON.stringify(declaredLinkedSelfImports)} actual=${JSON.stringify(actualLinkedSelfImports)}`,
         );
       }
-      const linkedCallableTable = tableAdmission.callableTable;
       const linkedCallIndirectNames = linkedImports.funcImports
         .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
         .map((imp) => requireCallIndirectImportName(imp.name));
@@ -3689,10 +3678,6 @@ export const loadMoltWasm = async (options = {}) => {
       const instance = linkedInstance;
       state.runtimeInstance = instance;
       state.memory = instance.exports.molt_memory || instance.exports.memory || memory || env.memory || null;
-      // Linking relocates the app's reserved callable region. Publish that
-      // execution state before runtime admission or any module initializer;
-      // the runtime's default base addresses unrelated Rust table entries.
-      publishWasmTableAdmission(tableAdmission, instance);
       runtimeLifetime(instance, runtimeImportAbi).admit();
       for (const name of linkedCallIndirectNames) {
         const fn = instance.exports[name];
@@ -3730,8 +3715,6 @@ export const loadMoltWasm = async (options = {}) => {
       };
     }
 
-    const runtimeCallableLayout = runtimeCallableTableLayout(runtimeManifest);
-    const activeReservedRuntimeCallables = runtimeCallableLayout.reservedRuntimeCallables;
     const wasmBytes = await tryFetch(wasmUrl);
     if (!wasmBytes) {
       throw new Error(`Failed to load wasm at ${wasmUrl}`);
@@ -3756,13 +3739,11 @@ export const loadMoltWasm = async (options = {}) => {
       globalThis.crypto,
       manifestUrl,
     );
-    const tableAdmission = prepareWasmTableAdmission({
-      buffer: wasmBytes, manifest: runtimeManifest,
-      runtimeExportNames: runtimeImportAbi.export_names, label: 'app wasm',
+    const appCallableTable = readCallableTableAttestation({
+      buffer: wasmBytes, label: 'app wasm',
     });
     const outputImports = parseWasmImports(wasmBytes);
     const runtimeImports = parseWasmImports(runtimeBytes);
-    const appCallableTable = tableAdmission.callableTable;
     const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
     verifyCallableTableManifestSummary(
       appCallableTable,
@@ -3778,8 +3759,6 @@ export const loadMoltWasm = async (options = {}) => {
       runtimeManifest,
       parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
     );
-    const detectedWasmTableBase = tableAdmission.base;
-    state.wasmTableBase = detectedWasmTableBase;
     if (!outputImports.table || !runtimeImports.table || !runtimeImports.memory) {
       throw new Error('Direct-link wasm requires split-runtime shared table plus runtime memory imports');
     }
@@ -3799,54 +3778,13 @@ export const loadMoltWasm = async (options = {}) => {
       callIndirect[name] = (...args) => {
         const rawIdx = args[1];
         const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-        const dispatchIdx = remapDefaultAppRuntimeSharedTableIndex(idx, {
-          sharedTableBase: detectedWasmTableBase,
-          defaultAppTableBase: runtimeCallableLayout.defaultAppTableBase,
-          reservedRuntimeCallableBase: runtimeCallableLayout.reservedRuntimeCallableBase,
-          reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
-          rawIndexHasInstalledEntry: (rawTableIdx) => {
-            if (!table) {
-              return false;
-            }
-            try {
-              return typeof table.get(rawTableIdx) === 'function';
-            } catch (err) {
-              return false;
-            }
-          },
-        });
+        // Runtime callables are keys the runtime resolves itself, so every
+        // index here is a slot of the shared table (HF-699 K1, K3).
+        const dispatchIdx = idx;
         const directSignature =
           callableTableSignature(appCallableTable, dispatchIdx) ||
           callableTableSignature(runtimeCallableTable, dispatchIdx);
         const fn = table ? table.get(dispatchIdx) : null;
-        const reservedDispatch = planReservedRuntimeDispatch({
-          dispatchIdx,
-          sharedTableBase: detectedWasmTableBase,
-          reservedRuntimeCallableBase: runtimeCallableLayout.reservedRuntimeCallableBase,
-          reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
-          reservedRuntimeCallables: activeReservedRuntimeCallables,
-        });
-        const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
-        if (reservedDispatch.dispatchReservedRuntimeCallable) {
-          try {
-            return callReservedRuntimeCallable({
-              runtimeExports: state.runtimeInstance?.exports,
-              memory,
-              entry: reservedRuntimeCallable,
-              indirectName: name,
-              context: args[0],
-              args: args.slice(2),
-            });
-          } catch (err) {
-            const detail = err && typeof err.message === 'string' ? err.message : String(err);
-            if (traceCallIndirect && err && typeof err.stack === 'string') {
-              console.error(
-                `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
-              );
-            }
-            throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
-          }
-        }
         if (traceCallIndirect) {
           console.error(
             `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
@@ -3879,7 +3817,6 @@ export const loadMoltWasm = async (options = {}) => {
     const runtimeModule = await WebAssembly.instantiate(runtimeBytes, runtimeImportObject);
     const runtimeInstance = runtimeModule.instance;
     state.runtimeInstance = runtimeInstance;
-    publishWasmTableAdmission(tableAdmission, runtimeInstance);
     runtimeLifetime(runtimeInstance, runtimeImportAbi).admit();
     const outputImportObject = {
       molt_runtime: buildRuntimeImports(outputImports, runtimeInstance, {

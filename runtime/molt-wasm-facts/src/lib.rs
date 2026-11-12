@@ -16,10 +16,7 @@ use callable_table_generated::{
     CALLABLE_TABLE_VALUE_TYPE_FORMAT,
 };
 
-pub use admission::{
-    CallableTableAdmission, CallableTableAdmissionError, admit_callable_table,
-    scan_attested_callable_table,
-};
+pub use admission::{CallableTableAdmissionError, scan_attested_callable_table};
 pub use model::{
     CallableTableArtifactRole, CallableTableLayout, WasmActiveElementSegment,
     WasmActiveFunctionElement, WasmCallableTableEntryFact, WasmCanonicalExportTypeFact,

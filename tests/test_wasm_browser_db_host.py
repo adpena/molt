@@ -792,15 +792,6 @@ const host = await loadMoltWasm({{
 let result;
 try {{
   if (!host.linked) throw new Error('linked execution-boundary proof loaded split wasm');
-  const linkedBytes = await (await fetch(`${{baseUrl}}/output_linked.wasm`)).arrayBuffer();
-  const expectedBase = globalThis.MoltWasmLoaderBridge.extractWasmTableBase(linkedBytes);
-  const defaultBase = globalThis.MoltWasmLoaderBridge.runtimeCallableTableLayout().defaultAppTableBase;
-  if (!Number.isInteger(expectedBase) || expectedBase <= defaultBase) {{
-    throw new Error('linked execution fixture must relocate the reserved callable region');
-  }}
-  if (host.__debugState.wasmTableBase !== expectedBase) {{
-    throw new Error('linked execution state did not bind the binary callable table base');
-  }}
   const runtime = host.__debugState.runtimeInstance;
   const manifest = await (await fetch(`${{baseUrl}}/manifest.json`)).json();
   const enterName = manifest?.abi?.runtime_imports?.export_names?.runtime_execution_enter;

@@ -26,7 +26,6 @@ pub(super) fn wasi_environment(
     launch_environment: &[(String, String)],
     extra_envs: &[(String, String)],
     execution_target: Option<&str>,
-    table_admission: Option<&WasmTableAdmission>,
 ) -> Vec<(String, String)> {
     let mut environment = ambient.into_iter().collect::<Vec<_>>();
     let Some(target) = execution_target else {
@@ -37,14 +36,6 @@ pub(super) fn wasi_environment(
     };
     for (name, value) in launch_environment.iter().chain(extra_envs) {
         upsert_extra_env(&mut environment, name, value.clone());
-    }
-    if let Some(admission) = table_admission {
-        // Ambient values, launch policy and caller extras cannot override the
-        // admitted region. Commands have no Molt callable-table environment.
-        environment.retain(|(name, _)| name != "MOLT_WASM_TABLE_BASE");
-        if let WasmTableAdmission::Publish { base, .. } = admission {
-            upsert_extra_env(&mut environment, "MOLT_WASM_TABLE_BASE", base.to_string());
-        }
     }
     upsert_extra_env(
         &mut environment,
@@ -59,14 +50,12 @@ pub(super) fn build_wasi_ctx(
     extra_envs: &[(String, String)],
     guest_args: &[String],
     execution_target: Option<&str>,
-    table_admission: Option<&WasmTableAdmission>,
 ) -> Result<WasiP1Ctx> {
     let envs = wasi_environment(
         env::vars(),
         launch_environment,
         extra_envs,
         execution_target,
-        table_admission,
     );
     let mut builder = WasiCtxBuilder::new();
     builder.inherit_stdio();

@@ -62,6 +62,7 @@ from molt import wasm_artifact
 from molt._wasm_abi_generated import (
     compiled_execution_symbol,
     runtime_execution_abi,
+    WASM_CALLABLE_TABLE_LAYOUT_VERSION,
     WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
 )
 
@@ -407,8 +408,6 @@ def test_wasm_link_cache_bench_imports_owner_authorities_directly() -> None:
 def test_callable_layout_rejects_unbounded_unattested_entry_counts() -> None:
     facts: dict[str, object] = {
         "callable_table_layout": {
-            "fixed_prefix_base": 0,
-            "fixed_prefix_len": 0,
             "finalized_app_base": 0,
             "app_entry_count": 0xFFFF_FFFF,
         },
@@ -427,8 +426,6 @@ def test_callable_layout_rejects_unbounded_unattested_entry_counts() -> None:
 def test_callable_layout_accepts_unattested_plan_within_artifact_table() -> None:
     facts: dict[str, object] = {
         "callable_table_layout": {
-            "fixed_prefix_base": 0,
-            "fixed_prefix_len": 3,
             "finalized_app_base": 8,
             "app_entry_count": 2,
         },
@@ -440,7 +437,7 @@ def test_callable_layout_accepts_unattested_plan_within_artifact_table() -> None
     assert wasm_link_callable_table._callable_layout_from_wasm_facts(
         facts,
         artifact_role="plan",
-    ) == wasm_link_format.CallableTableLayout(0, 3, 8, 2)
+    ) == wasm_link_format.CallableTableLayout(8, 2)
 
 
 def _wasm_optimizer_identity(
@@ -777,8 +774,6 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
     )
     app_base = table_min or 0
     fixture_layout = {
-        "fixed_prefix_base": 0,
-        "fixed_prefix_len": 0,
         "finalized_app_base": app_base,
         "app_entry_count": 0,
     }
@@ -794,7 +789,7 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
         assert len(layout_payloads) == 1
         payload = layout_payloads[0]
         version, cursor = wasm_link_format._read_varuint(payload, 0)
-        assert version == 1
+        assert version == WASM_CALLABLE_TABLE_LAYOUT_VERSION
         for key in fixture_layout:
             fixture_layout[key], cursor = wasm_link_format._read_varuint(
                 payload, cursor
@@ -973,8 +968,6 @@ class _FixtureWasmFactsProvider:
             else:
                 app_entry_count = layout.app_entry_count
             facts["callable_table_layout"] = {
-                "fixed_prefix_base": layout.fixed_prefix_base,
-                "fixed_prefix_len": layout.fixed_prefix_len,
                 "finalized_app_base": layout.finalized_app_base,
                 "app_entry_count": app_entry_count,
             }
@@ -1328,7 +1321,7 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
             data,
             artifact,
             role=role,
-            layout=wasm_link_format.CallableTableLayout(0, 0, 0, 0)
+            layout=wasm_link_format.CallableTableLayout(0, 0)
             if role != "monolithic"
             else None,
         )
@@ -1366,7 +1359,7 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
         initial,
         path,
         role=role,
-        layout=wasm_link_format.CallableTableLayout(0, 0, 0, 0)
+        layout=wasm_link_format.CallableTableLayout(0, 0)
         if role != "monolithic"
         else None,
     )
@@ -2673,19 +2666,11 @@ def _build_split_link_fixture(
 
     u32 = wasm_link_format._write_varuint
     string = wasm_link_format._write_string
-    reserved = wasm_link_callable_table.WASM_RESERVED_RUNTIME_CALLABLES
-    prefix_base = wasm_link_callable_table.WASM_RESERVED_RUNTIME_CALLABLE_BASE
-    prefix_len = prefix_base + 2 * len(reserved)
-    assert table_min >= prefix_len + 1
-    reserved_names = [
-        name
-        for _index, name, _import, _arity, dispatch in reserved
-        if dispatch == "direct"
-    ]
-    slot_names = [f"fixture_callable_{slot}" for slot in range(prefix_len)]
-    for index, name, _import, _arity, dispatch in reserved:
-        if dispatch == "direct":
-            slot_names[prefix_base + index] = name
+    # The shared runtime's own address-taken functions, from wasm-ld's default
+    # table base. No slot is reserved for runtime callables (HF-699 K3).
+    runtime_entry_count = 4
+    assert table_min >= runtime_entry_count + 1
+    slot_names = [f"fixture_callable_{slot}" for slot in range(runtime_entry_count)]
 
     def module(
         names: list[str],
@@ -2693,12 +2678,12 @@ def _build_split_link_fixture(
         imports: tuple[str, ...] = (),
         native: tuple[str, ...] = (),
         defined_memory: bool = False,
-        active_prefix: bool = False,
+        runtime_entries: bool = False,
         at: int = 0,
         linking: bool = False,
         bindings: dict[str, str] | None = None,
     ) -> bytes:
-        functions = list(dict.fromkeys([*names, *reserved_names, *slot_names]))
+        functions = list(dict.fromkeys([*names, *slot_names]))
         import_edges = [("molt_runtime", name) for name in imports] + [
             ("molt_native", name) for name in native
         ]
@@ -2755,10 +2740,6 @@ def _build_split_link_fixture(
             sections.append((5, b"\x01\x00" + u32(pages)))
         indices = {name: import_count + index for index, name in enumerate(functions)}
         exports = [(wire(name), 0, indices[name]) for name in functions]
-        exports.extend(
-            (f"molt.callable_table.layout.entry.{slot}", 0, indices[name])
-            for slot, name in enumerate(slot_names)
-        )
         for name, symbol in (bindings or {}).items():
             if name != symbol:
                 exports.append((symbol, 0, indices[name]))
@@ -2774,10 +2755,10 @@ def _build_split_link_fixture(
             )
         )
         elements = b"\x00"
-        if active_prefix:
+        if runtime_entries:
             elements = (
                 b"\x01\x00\x41\x01\x0b"
-                + u32(prefix_len)
+                + u32(runtime_entry_count)
                 + b"".join(u32(indices[name]) for name in slot_names)
             )
         sections.append((9, elements))
@@ -2794,7 +2775,10 @@ def _build_split_link_fixture(
                 0,
                 wasm_link_format._build_custom_section(
                     "molt.callable_table.layout",
-                    b"".join(u32(value) for value in (1, 1, prefix_len, table_min, 0)),
+                    b"".join(
+                        u32(value)
+                        for value in (WASM_CALLABLE_TABLE_LAYOUT_VERSION, table_min, 0)
+                    ),
                 ),
             )
         )
@@ -2847,10 +2831,8 @@ def _build_split_link_fixture(
             )
         return wasm_link_operations.build_sections(sections)
 
-    shared_names = {
-        wire(name) for name in [*runtime_names, *reserved_names, *slot_names]
-    }
-    shared = module(runtime_names, defined_memory=True, active_prefix=True)
+    shared_names = {wire(name) for name in [*runtime_names, *slot_names]}
+    shared = module(runtime_names, defined_memory=True, runtime_entries=True)
     if data_symbols:
         shared = _add_data_address_global_exports(
             shared, {name: 4096 for name in data_symbols}
@@ -3119,7 +3101,7 @@ def test_install_callable_table_layout_appends_final_active_override() -> None:
     sections.insert(2, (4, table_payload))
     sections.insert(-1, (9, wasm_link_format._write_varuint(0)))
     module = wasm_link_operations.build_sections(sections)
-    layout = wasm_link_format.CallableTableLayout(3, 2, 8, 0)
+    layout = wasm_link_format.CallableTableLayout(3, 2)
 
     updated = wasm_link_callable_table._install_callable_table_layout(
         module, layout, facts_provider=_facts_provider
@@ -3154,39 +3136,9 @@ def test_install_callable_table_layout_requires_complete_export_authority() -> N
     with pytest.raises(ValueError, match="entry export.*entry.1"):
         wasm_link_callable_table._install_callable_table_layout(
             wasm_link_operations.build_sections(sections),
-            wasm_link_format.CallableTableLayout(3, 2, 8, 0),
+            wasm_link_format.CallableTableLayout(3, 2),
             facts_provider=_facts_provider,
         )
-
-
-def test_install_callable_table_layout_can_publish_app_region_without_fixed_exports() -> (
-    None
-):
-    name = wasm_link_callable_table._callable_entry_export_name(1)
-    sections = wasm_link_operations.parse_sections(_build_exported_runtime_module(name))
-    sections.insert(2, (4, b"\x01\x70\x00\x10"))
-    sections.insert(-1, (9, b"\x00"))
-
-    updated = wasm_link_callable_table._install_callable_table_layout(
-        wasm_link_operations.build_sections(sections),
-        wasm_link_format.CallableTableLayout(3, 1, 8, 1),
-        include_fixed_prefix=False,
-        facts_provider=_facts_provider,
-    )
-    element_payload = next(
-        payload
-        for section_id, payload in wasm_link_operations.parse_sections(updated)
-        if section_id == 9
-    )
-    segment_count, offset = wasm_link_format._read_varuint(element_payload, 0)
-    flags, offset = wasm_link_format._read_varuint(element_payload, offset)
-    assert (segment_count, flags) == (1, 0)
-    base, offset = wasm_link_format._read_varsint(element_payload, offset + 1)
-    assert base == 8
-    assert element_payload[offset] == 0x0B
-    entry_count, offset = wasm_link_format._read_varuint(element_payload, offset + 1)
-    function_index, offset = wasm_link_format._read_varuint(element_payload, offset)
-    assert (entry_count, function_index, offset) == (1, 0, len(element_payload))
 
 
 def _build_native_growth_callable_module() -> bytes:
@@ -3259,14 +3211,13 @@ def _simple_active_function_segments(data: bytes) -> list[tuple[int, list[int]]]
 
 
 def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> None:
-    layout = wasm_link_format.CallableTableLayout(0, 0, 8, 2)
+    layout = wasm_link_format.CallableTableLayout(8, 2)
     module = _build_native_growth_callable_module()
     entry_plan = wasm_link_callable_table._resolve_callable_table_entry_plan(
         module,
         layout,
         entry_symbol_names=None,
-        include_fixed_prefix=False,
-        override_reserved_direct=False,
+        owns_runtime_region=False,
         facts_provider=_facts_provider,
     )
     code_before = next(
@@ -3286,8 +3237,7 @@ def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> 
     published = wasm_link_callable_table._install_callable_table_layout(
         module,
         layout,
-        include_fixed_prefix=False,
-        entry_plan=entry_plan,
+        app_indices=entry_plan.app_indices,
         facts_provider=_facts_provider,
     )
 
@@ -3307,9 +3257,9 @@ def test_native_link_growth_preserves_compiler_slots_and_indirect_callsite() -> 
 @pytest.mark.parametrize(
     ("layout", "expected"),
     [
-        (wasm_link_format.CallableTableLayout(0, 0, 2848, 3130), 5978),
-        (wasm_link_format.CallableTableLayout(1, 81, 2794, 2), 2796),
-        (wasm_link_format.CallableTableLayout(0, 0, 2848, 0), None),
+        (wasm_link_format.CallableTableLayout(2848, 3130), 5978),
+        (wasm_link_format.CallableTableLayout(2794, 2), 2796),
+        (wasm_link_format.CallableTableLayout(2848, 0), None),
     ],
 )
 def test_monolithic_linker_growth_starts_after_compiler_owned_rows(
@@ -3323,9 +3273,8 @@ def test_monolithic_linker_growth_starts_after_compiler_owned_rows(
 
 
 def test_monolithic_callable_merge_preserves_realistic_runtime_gap_and_app() -> None:
-    layout = wasm_link_format.CallableTableLayout(1, 81, 2794, 2)
+    layout = wasm_link_format.CallableTableLayout(2794, 2)
     entry_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        tuple(range(1, 82)),
         (5000, 5001),
         owns_runtime_region=True,
     )
@@ -3348,15 +3297,15 @@ def test_monolithic_callable_merge_preserves_realistic_runtime_gap_and_app() -> 
 
 
 @pytest.mark.parametrize("runtime_base", [1, 10])
-def test_monolithic_empty_prefix_runtime_growth_starts_at_first_occupied_slot(
+def test_monolithic_runtime_growth_starts_at_first_occupied_slot(
     runtime_base: int,
 ) -> None:
     # Slot 1 is wasm-ld's shape after its null-function-pointer hole; slot 10
-    # is the existing Rust publication sibling proving that an empty prefix
-    # declares no stronger occupancy base.
-    layout = wasm_link_format.CallableTableLayout(0, 0, 20, 1)
+    # is the existing Rust publication sibling proving that no runtime region
+    # declares a stronger occupancy base (HF-699 K3).
+    layout = wasm_link_format.CallableTableLayout(20, 1)
     entry_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        (), (200,), owns_runtime_region=True
+        (200,), owns_runtime_region=True
     )
     rows = [
         [runtime_base, 100, 0, 0],
@@ -3368,48 +3317,6 @@ def test_monolithic_empty_prefix_runtime_growth_starts_at_first_occupied_slot(
         wasm_link_callable_table._merge_linked_callable_table(rows, layout, entry_plan)
         == 21
     )
-
-
-def test_monolithic_callable_merge_accepts_prelink_stub_then_publishes_direct_runtime() -> (
-    None
-):
-    sections = wasm_link_operations.parse_sections(
-        _build_exported_runtime_module_many(["compiler_stub", "runtime_direct"])
-    )
-    sections.insert(2, (4, b"\x01\x70\x00\x08"))
-    sections.insert(-1, (9, b"\x00"))
-    module = wasm_link_operations.build_sections(sections)
-    layout = wasm_link_format.CallableTableLayout(1, 1, 8, 0)
-    entry_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        (1,),
-        (),
-        owns_runtime_region=True,
-        preserved_fixed_indices=(0,),
-    )
-
-    assert (
-        wasm_link_callable_table._merge_linked_callable_table(
-            [[1, 0, 0, 0]], layout, entry_plan
-        )
-        == 8
-    )
-    assert (
-        wasm_link_callable_table._merge_linked_callable_table(
-            [[1, 1, 0, 0]], layout, entry_plan
-        )
-        == 8
-    )
-    with pytest.raises(ValueError, match="changed compiler-owned.*slot=1"):
-        wasm_link_callable_table._merge_linked_callable_table(
-            [[1, 2, 0, 0]], layout, entry_plan
-        )
-    published = wasm_link_callable_table._install_callable_table_layout(
-        module,
-        layout,
-        entry_plan=entry_plan,
-        facts_provider=_facts_provider,
-    )
-    assert _simple_active_function_segments(published) == [(1, [1])]
 
 
 def _empty_callable_publication_module() -> bytes:
@@ -3426,79 +3333,50 @@ def _empty_callable_publication_module() -> bytes:
     return wasm_link_operations.build_sections(sections)
 
 
-def test_monolithic_callable_merge_republishes_gc_omitted_fixed_and_app_rows() -> None:
+@pytest.mark.parametrize("owns_runtime_region", [True, False])
+def test_callable_merge_republishes_gc_omitted_app_rows(
+    owns_runtime_region: bool,
+) -> None:
     module = _empty_callable_publication_module()
-    layout = wasm_link_format.CallableTableLayout(1, 1, 8, 1)
+    layout = wasm_link_format.CallableTableLayout(8, 2)
     entry_plan = wasm_link_callable_table._resolve_callable_table_entry_plan(
         module,
         layout,
         entry_symbol_names=None,
-        include_fixed_prefix=True,
-        override_reserved_direct=False,
+        owns_runtime_region=owns_runtime_region,
         facts_provider=_facts_provider,
     )
 
     assert (
         wasm_link_callable_table._merge_linked_callable_table([], layout, entry_plan)
-        == 9
+        == 10
     )
     published = wasm_link_callable_table._install_callable_table_layout(
         module,
         layout,
-        entry_plan=entry_plan,
+        app_indices=entry_plan.app_indices,
         facts_provider=_facts_provider,
     )
-    assert _simple_active_function_segments(published) == [(1, [0]), (8, [1])]
+    assert _simple_active_function_segments(published) == [(8, [0, 1])]
 
 
-def test_split_callable_merge_republishes_gc_omitted_app_row_only() -> None:
-    module = _empty_callable_publication_module()
-    layout = wasm_link_format.CallableTableLayout(1, 1, 8, 1)
-    entry_plan = wasm_link_callable_table._resolve_callable_table_entry_plan(
-        module,
-        layout,
-        entry_symbol_names=None,
-        include_fixed_prefix=False,
-        override_reserved_direct=False,
-        facts_provider=_facts_provider,
-    )
-
-    assert (
-        wasm_link_callable_table._merge_linked_callable_table([], layout, entry_plan)
-        == 9
-    )
-    published = wasm_link_callable_table._install_callable_table_layout(
-        module,
-        layout,
-        include_fixed_prefix=False,
-        override_reserved_direct=False,
-        entry_plan=entry_plan,
-        facts_provider=_facts_provider,
-    )
-    assert _simple_active_function_segments(published) == [(8, [1])]
-
-
-def test_linked_callable_merge_rejects_identity_change_and_unowned_overlap() -> None:
-    layout = wasm_link_format.CallableTableLayout(1, 2, 8, 2)
+def test_linked_callable_merge_rejects_identity_change() -> None:
+    layout = wasm_link_format.CallableTableLayout(8, 2)
     entry_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        (10, 11), (80, 81), owns_runtime_region=True
+        (80, 81), owns_runtime_region=True
     )
     owned_rows = [[1, 10, 0, 0], [2, 11, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]]
 
-    with pytest.raises(ValueError, match="changed compiler-owned.*slot=1"):
+    with pytest.raises(ValueError, match="changed compiler-owned.*slot=8"):
         wasm_link_callable_table._merge_linked_callable_table(
-            [[1, 100, 0, 0], *owned_rows[1:]], layout, entry_plan
-        )
-    with pytest.raises(ValueError, match="without compiler identity.*slot=0"):
-        wasm_link_callable_table._merge_linked_callable_table(
-            [*owned_rows, [0, 0, 0, 0]], layout, entry_plan
+            [*owned_rows[:2], [8, 100, 0, 0], owned_rows[3]], layout, entry_plan
         )
 
 
 def test_linked_callable_merge_rejects_sparse_runtime_and_suffix_growth() -> None:
-    layout = wasm_link_format.CallableTableLayout(1, 2, 8, 2)
+    layout = wasm_link_format.CallableTableLayout(8, 2)
     entry_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        (10, 11), (80, 81), owns_runtime_region=True
+        (80, 81), owns_runtime_region=True
     )
     owned_rows = [[1, 10, 0, 0], [2, 11, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]]
 
@@ -3516,24 +3394,12 @@ def test_linked_callable_merge_rejects_sparse_runtime_and_suffix_growth() -> Non
         wasm_link_callable_table._merge_linked_callable_table(
             [*owned_rows, [4, 40, 0, 0]], layout, entry_plan
         )
-    empty_prefix_layout = wasm_link_format.CallableTableLayout(0, 0, 8, 1)
-    empty_prefix_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        (), (80,), owns_runtime_region=True
-    )
-    with pytest.raises(
-        ValueError, match="runtime callable-table growth is not contiguous"
-    ):
-        wasm_link_callable_table._merge_linked_callable_table(
-            [[1, 10, 0, 0], [3, 30, 0, 0], [8, 80, 0, 0]],
-            empty_prefix_layout,
-            empty_prefix_plan,
-        )
 
 
 def test_split_callable_merge_owns_only_app_region() -> None:
-    layout = wasm_link_format.CallableTableLayout(1, 2, 8, 2)
+    layout = wasm_link_format.CallableTableLayout(8, 2)
     app_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        (), (80, 81), owns_runtime_region=False
+        (80, 81), owns_runtime_region=False
     )
 
     assert (
@@ -3549,16 +3415,6 @@ def test_split_callable_merge_owns_only_app_region() -> None:
             [[1, 10, 0, 0], [8, 80, 0, 0], [9, 81, 0, 0]],
             layout,
             app_plan,
-        )
-    empty_prefix_layout = wasm_link_format.CallableTableLayout(0, 0, 8, 1)
-    empty_prefix_plan = wasm_link_callable_table._CallableTableEntryPlan(
-        (), (80,), owns_runtime_region=False
-    )
-    with pytest.raises(ValueError, match="without compiler identity.*slot=1"):
-        wasm_link_callable_table._merge_linked_callable_table(
-            [[1, 10, 0, 0], [8, 80, 0, 0]],
-            empty_prefix_layout,
-            empty_prefix_plan,
         )
 
 
@@ -6120,7 +5976,6 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
         output_memory_min=None,
         output_table_min=None,
         callable_entry_export_names=(),
-        reserved_runtime_link_exports=(),
     )
     prepared = wasm_link_pipeline._PreparedLinkInputs(
         required_native_direct_symbols=(),
@@ -6346,17 +6201,15 @@ def test_explicit_deploy_runtime_outranks_ambient_and_fails_closed(
 
 
 def test_split_callable_layout_preserves_conservative_app_boundary() -> None:
+    # Runtime callables are keys: the app reserves no runtime prefix, and its
+    # region follows the runtime's last entry (HF-699 K3).
     app_layout = wasm_link_format.CallableTableLayout(
-        fixed_prefix_base=1,
-        fixed_prefix_len=81,
         finalized_app_base=2_794,
         app_entry_count=8_440,
     )
     final_runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
-        runtime_callable_base=1,
         runtime_occupied_end=1_849,
         runtime_table_min=1_849,
-        fixed_prefix_len=81,
     )
 
     assert (
@@ -6370,16 +6223,12 @@ def test_split_callable_layout_preserves_conservative_app_boundary() -> None:
 
 def test_split_callable_layout_rejects_final_runtime_overlap() -> None:
     app_layout = wasm_link_format.CallableTableLayout(
-        fixed_prefix_base=1,
-        fixed_prefix_len=81,
         finalized_app_base=2_794,
         app_entry_count=8_440,
     )
     overlapping_runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
-        runtime_callable_base=1,
         runtime_occupied_end=2_795,
         runtime_table_min=2_795,
-        fixed_prefix_len=81,
     )
 
     with pytest.raises(ValueError, match="overlap the app-owned callable region"):

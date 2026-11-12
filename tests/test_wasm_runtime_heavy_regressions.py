@@ -352,6 +352,130 @@ def test_wasm_runtime_polls_match_cpython(async_polls_build: _AsyncPollsBuild) -
     _assert_no_recursive_mutex_panic(run.stderr)
 
 
+@pytest.fixture(scope="module", params=["linked", "split"])
+def reserved_callables_build(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> _AsyncPollsBuild:
+    """One build per layout of the HF-699 E2 witness, shared by its tests."""
+    layout: WasmWitnessLayout = request.param
+    root = Path(__file__).resolve().parents[1]
+    work = tmp_path_factory.mktemp(f"reserved-callables-{layout}")
+    witness = heavy_wasm_witness("reserved-callables", layout)
+    source = witness.materialize(root, work)
+    manifest = _build_wasm_layout(
+        root, source, work, layout, extra_args=witness.extra_args
+    )
+    return _AsyncPollsBuild(layout, source, work, manifest)
+
+
+def test_wasm_reserved_runtime_callables_match_cpython(
+    reserved_callables_build: _AsyncPollsBuild,
+) -> None:
+    """HF-699 E2: a reserved runtime callable is its key on every target, and
+    a function object resolves the key when it is built. Before E2 a split
+    build dispatched these slots through a host table of names, and a split
+    app that binds the runtime's ``molt_call_indirectN`` to its own export
+    trapped on the empty reserved region (``uninitialized element``)."""
+    root = Path(__file__).resolve().parents[1]
+    build = reserved_callables_build
+    expected = _run_wasm_test_process(
+        [sys.executable, str(build.source)], role="tool", cwd=build.work, check=True
+    ).stdout
+    run = _run_wasm_manifest(root, build.work, build.manifest)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout == expected
+    assert "uninitialized element" not in run.stderr, run.stderr
+    _assert_no_recursive_mutex_panic(run.stderr)
+
+
+def _element_function_indices(module: bytes) -> list[int]:
+    """Function indices of every table-0 element row (active or passive)."""
+    from molt.wasm_artifact import (
+        _read_wasm_varuint,
+        _skip_wasm_init_expr,
+        parse_wasm_sections,
+    )
+
+    indices: list[int] = []
+    for section_id, payload in parse_wasm_sections(module):
+        if section_id != 9:
+            continue
+        count, offset = _read_wasm_varuint(payload, 0)
+        for _ in range(count):
+            flags, offset = _read_wasm_varuint(payload, offset)
+            if flags == 0:
+                offset, _base = _skip_wasm_init_expr(payload, offset)
+            elif flags == 1:
+                assert payload[offset] == 0x00, "funcref element kind"
+                offset += 1
+            else:
+                raise AssertionError(f"unexpected element segment flags {flags}")
+            elem_count, offset = _read_wasm_varuint(payload, offset)
+            for _ in range(elem_count):
+                func_index, offset = _read_wasm_varuint(payload, offset)
+                indices.append(func_index)
+    return indices
+
+
+def test_wasm_app_callable_table_reserves_no_runtime_region(
+    reserved_callables_build: _AsyncPollsBuild,
+) -> None:
+    """HF-699 K3: the app's table reserves no runtime region. It holds no
+    runtime poll and no sentinel, and a reserved runtime callable at most once,
+    as the app-resolver entry of an intrinsic the program names (giving those
+    entries keys is HF-699's follow-up). Before E2 every app table began with
+    the 190-slot prefix: a linked build of this witness held 79 reserved
+    callables there and 20 sentinels."""
+    from collections import Counter
+
+    from molt._wasm_abi_generated import (
+        WASM_POLL_TABLE_IMPORTS,
+        WASM_RESERVED_RUNTIME_CALLABLES,
+    )
+    from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
+    from molt.wasm_artifact import (
+        _read_wasm_varuint,
+        parse_wasm_sections,
+    )
+
+    module = _call_indirect_module(reserved_callables_build.manifest).read_bytes()
+    # Imported functions take the first function indices, in import order.
+    function_imports = [imp for imp in parse_wasm_imports(module) if imp.kind == 0]
+    # Runtime imports carry their physical (attached-context) names.
+    runtime_imports = {
+        wasm_import.name: index
+        for index, wasm_import in enumerate(function_imports)
+        if wasm_import.module == "molt_runtime"
+    }
+
+    def imported(names: list[str]) -> set[int]:
+        physical = {wasm_split_runtime_export_name_for_import(name) for name in names}
+        return {runtime_imports[name] for name in physical if name in runtime_imports}
+
+    polls = imported([name for _slot, name in WASM_POLL_TABLE_IMPORTS])
+    reserved = imported(
+        [name for _i, name, _imp, _a in WASM_RESERVED_RUNTIME_CALLABLES]
+    )
+    # A sentinel is a defined function whose body is only ``unreachable``: the
+    # old prefix filled each disabled slot with one.
+    sentinels: set[int] = set()
+    for section_id, payload in parse_wasm_sections(module):
+        if section_id != 10:
+            continue
+        count, offset = _read_wasm_varuint(payload, 0)
+        for ordinal in range(count):
+            size, offset = _read_wasm_varuint(payload, offset)
+            if payload[offset : offset + size] == b"\x00\x00\x0b":
+                sentinels.add(len(function_imports) + ordinal)
+            offset += size
+    elements = Counter(_element_function_indices(module))
+    assert elements, "the app publishes its own callable table"
+    assert runtime_imports, "the app imports runtime functions by physical name"
+    assert not polls.intersection(elements)
+    assert not sentinels.intersection(elements)
+    assert all(elements[index] == 1 for index in reserved.intersection(elements))
+
+
 # (module (import "host" "hit" (func (param i64 i64) (result i64)))
 #         (func (export "f") (param i64 i64) (result i64)
 #           local.get 0 local.get 1 call 0))

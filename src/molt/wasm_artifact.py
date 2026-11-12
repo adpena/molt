@@ -21,8 +21,6 @@ from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_SECTION_NAME,
     WASM_CALLABLE_TABLE_SECTION_VERSION,
     WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLES,
 )
 
 if TYPE_CHECKING:
@@ -1243,10 +1241,12 @@ def _read_wasm_table_min(path: Path) -> int | None:
 
 @dataclass(frozen=True)
 class WasmSplitRuntimeCallableLayout:
-    runtime_callable_base: int
+    """The shared runtime's table occupancy. The runtime owns only the slots
+    its own element segment publishes; no slot is reserved for runtime
+    callables, which are keys (HF-699 K1, K3)."""
+
     runtime_occupied_end: int
     runtime_table_min: int
-    fixed_prefix_len: int
 
 
 def read_wasm_split_runtime_callable_layout(
@@ -1274,35 +1274,17 @@ def _wasm_split_runtime_callable_layout(
     # an app may not silently switch to a runtime with different table entries.
     if not slots:
         raise ValueError("split runtime active callable-table layout is empty")
-    first_active_slot = min(slots)
     runtime_occupied_end = max(slots) + 1
     if runtime_occupied_end > 0xFFFF_FFFF:
         raise ValueError("split runtime callable-table occupied boundary overflows u32")
-    fixed_prefix_len = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
-        WASM_RESERVED_RUNTIME_CALLABLES
-    )
-    runtime_base = 1 if first_active_slot == fixed_prefix_len + 1 else first_active_slot
-    missing = [
-        slot
-        for slot in range(runtime_base, runtime_base + fixed_prefix_len)
-        if slot not in slots
-    ]
-    reserved_prefix_gap = first_active_slot == runtime_base + fixed_prefix_len
-    if missing and not reserved_prefix_gap:
-        raise ValueError(
-            "split runtime callable-table fixed ABI prefix is not fully published: "
-            f"first missing slot {missing[0]}"
-        )
     if runtime_occupied_end > table_boundary:
         raise ValueError(
             "split runtime callable entries exceed reserved table boundary: "
             f"occupied_end={runtime_occupied_end}, table_min={table_boundary}"
         )
     return WasmSplitRuntimeCallableLayout(
-        runtime_callable_base=runtime_base,
         runtime_occupied_end=runtime_occupied_end,
         runtime_table_min=table_boundary,
-        fixed_prefix_len=fixed_prefix_len,
     )
 
 

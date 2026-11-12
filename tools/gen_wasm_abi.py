@@ -63,7 +63,6 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
     generator_input_files,
     generator_runtime_export_signature_rows,
     load_manifest,
-    reserved_runtime_callable_base,
     runtime_fn_specs,
     runtime_boxed_op_specs,
     runtime_import_return_specs,
@@ -93,7 +92,6 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_JS_SYNTHETIC_ERRNO,
     OUT_WASM_SOCKET_ABI_RS,
     OUT_JS_SOCKET_ABI,
-    OUT_TABLE_LAYOUT_INC,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     REMOVED_GENERATED_FILES,
     ROOT,
@@ -143,7 +141,6 @@ OUTPUT_PATHS: tuple[Path, ...] = (
     OUT_JS_SYNTHETIC_ERRNO,
     OUT_WASM_SOCKET_ABI_RS,
     OUT_JS_SOCKET_ABI,
-    OUT_TABLE_LAYOUT_INC,
     OUT_ALLOWED_IMPORTS,
 )
 
@@ -362,10 +359,6 @@ def _rust_option_str(value: str | None) -> str:
     return "None" if value is None else f'Some("{value}")'
 
 
-def _rust_callable_dispatch(value: str | None) -> str:
-    return "Trampoline" if value == "trampoline" else "Direct"
-
-
 def _render_rs_mod() -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
@@ -412,10 +405,11 @@ def _render_rs_mod() -> str:
             "pub(crate) use numeric_runtime_selector::WASM_NUMERIC_RUNTIME_SELECTORS;\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
-            "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
-            "    RUNTIME_CALLABLE_IMPORTS, RUNTIME_POLL_CALLABLE_KEY_BASE,\n",
-            "    ReservedRuntimeCallableDispatch, poll_table_import_slot, runtime_callable_import,\n",
+            "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,\n",
+            "    RUNTIME_POLL_CALLABLE_KEY_BASE, runtime_callable_import,\n",
             "};\n",
+            "#[cfg(test)]\n",
+            "pub(crate) use runtime_callables::RUNTIME_CALLABLE_KEY_BASE;\n",
             "pub(crate) use static_types::STATIC_FUNC_TYPES;\n",
         ]
     )
@@ -1480,6 +1474,11 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "    pub(crate) table_slot: u32,\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "}\n\n",
+            "/// The key of the reserved runtime callable at `index` is this base\n",
+            "/// plus the index, on every target (HF-699 K1); the runtime's key\n",
+            "/// table agrees.\n",
+            "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = ",
+            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE:016X};\n\n",
             "/// The key of the runtime poll at `table_slot` is this base plus the\n",
             "/// slot, on every target (HF-699 K1); the runtime's key table agrees.\n",
             "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = ",
@@ -1499,20 +1498,6 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
     lines.extend(
         [
             "];\n\n",
-            "#[inline]\n",
-            "pub(crate) const fn poll_table_import_slot(import: WasmRuntimeImport) -> Option<u32> {\n",
-            "    match import {\n",
-        ]
-    )
-    for slot, name in poll_imports:
-        lines.append(
-            f"        {_rust_runtime_import(import_variants, name)} => Some({slot}),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeCallableImportSpec {\n",
             "    pub(crate) runtime_name: &'static str,\n",
@@ -1538,20 +1523,21 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
     lines.append("];\n\n")
     lines.extend(
         [
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum ReservedRuntimeCallableDispatch {\n",
-            "    Direct,\n",
-            "    Trampoline,\n",
-            "}\n\n",
+            "/// A reserved runtime callable. Compiled code names it by its key\n",
+            "/// (`RUNTIME_CALLABLE_KEY_BASE` + `index`), never by a table slot\n",
+            "/// (HF-699 K1, K5).\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct ReservedRuntimeCallableSpec {\n",
             "    pub(crate) index: u32,\n",
             "    pub(crate) runtime_name: &'static str,\n",
-            "    pub(crate) import_name: &'static str,\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) arity: usize,\n",
-            "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
             "    pub(crate) trampoline_abi: RuntimeCallableTrampolineAbi,\n",
+            "}\n\n",
+            "impl ReservedRuntimeCallableSpec {\n",
+            "    pub(crate) const fn key(&self) -> u64 {\n",
+            "        RUNTIME_CALLABLE_KEY_BASE + self.index as u64\n",
+            "    }\n",
             "}\n\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[\n",
         ]
@@ -1564,11 +1550,8 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
                 "    ReservedRuntimeCallableSpec {\n",
                 f"        index: {entry['index']},\n",
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
-                f'        import_name: "{entry["import_name"]}",\n',
                 f"        import: {import_token},\n",
                 f"        arity: {spec['arity']},\n",
-                "        dispatch: ReservedRuntimeCallableDispatch::"
-                f"{_rust_callable_dispatch(entry.get('callable_dispatch'))},\n",
                 "        trampoline_abi: RuntimeCallableTrampolineAbi::"
                 f"{'CallFrame' if spec['trampoline_abi'] == 'call_frame' else 'UnpackArgs'},\n",
                 "    },\n",
@@ -1577,8 +1560,6 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
     lines.extend(
         [
             "];\n\n",
-            "pub(crate) const RESERVED_RUNTIME_CALLABLE_COUNT: u32 =\n",
-            "    RESERVED_RUNTIME_CALLABLE_SPECS.len() as u32;\n\n",
             "#[inline]\n",
             "pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeImport> {\n",
             "    match runtime_name {\n",
@@ -1673,7 +1654,6 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
             "runtime_name": entry["runtime_name"],
             "import_name": entry["import_name"],
             "callable_arity": entry["callable_arity"],
-            "callable_dispatch": entry.get("callable_dispatch", "direct"),
             "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
             "runtime_cfg": import_entry.get("runtime_cfg"),
             "symbol_path": entry["runtime_name"],
@@ -1697,7 +1677,6 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
                 "runtime_name": runtime_name,
                 "import_name": import_name,
                 "callable_arity": entry["callable_arity"],
-                "callable_dispatch": entry.get("callable_dispatch", "direct"),
                 "runtime_cfg": entry.get("runtime_cfg"),
                 "symbol_path": f"crate::{runtime_name}",
             }
@@ -1926,29 +1905,16 @@ def render_runtime_callables_rs(data: dict) -> str:
             "pub(crate) fn runtime_callable_symbol_is_non_callable(symbol_name: &str) -> bool {\n",
             "    NON_RUNTIME_CALLABLE_INTRINSICS.contains(&symbol_name)\n",
             "}\n\n",
+            "/// The largest poll key offset: `poll_table_slot` names a poll's key\n",
+            "/// (`RUNTIME_POLL_CALLABLE_KEY_BASE` + slot), never a table slot.\n",
             "pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = ",
             f"{max((slot for slot, _name in poll_imports), default=0)};\n\n",
-            '#[cfg(target_arch = "wasm32")]\n',
-            "pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = ",
-            f"{reserved_runtime_callable_base(data)};\n",
-            '#[cfg(target_arch = "wasm32")]\n',
-            "pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = ",
-            f"{len(reserved_callables)};\n",
-            '#[cfg(target_arch = "wasm32")]\n',
-            "pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =\n",
-            "    RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum ReservedRuntimeCallableDispatch {\n",
-            "    Direct,\n",
-            "    Trampoline,\n",
-            "}\n\n",
+            "/// A reserved runtime callable: its key is\n",
+            "/// `RUNTIME_CALLABLE_KEY_BASE` + `index` on every target (HF-699 K1).\n",
             "#[derive(Clone, Copy)]\n",
             "pub(crate) struct ReservedRuntimeCallableInfo {\n",
             "    pub(crate) index: u64,\n",
             "    pub(crate) runtime_name: &'static str,\n",
-            "    pub(crate) import_name: &'static str,\n",
-            "    pub(crate) arity: usize,\n",
-            "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum GeneratedBuiltinDefaultValue {\n",
@@ -1987,10 +1953,6 @@ def render_runtime_callables_rs(data: dict) -> str:
                 "    ReservedRuntimeCallableInfo {\n",
                 f"        index: {entry['index']},\n",
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
-                f'        import_name: "{entry["import_name"]}",\n',
-                f"        arity: {entry['callable_arity']},\n",
-                "        dispatch: ReservedRuntimeCallableDispatch::"
-                f"{_rust_callable_dispatch(entry.get('callable_dispatch'))},\n",
                 "    },\n",
             ]
         )
@@ -2088,25 +2050,6 @@ def render_runtime_callables_rs(data: dict) -> str:
         [
             "        _ => None,\n",
             "    }\n",
-            "}\n\n",
-            '#[cfg(target_arch = "wasm32")]\n',
-            "pub(crate) fn reserved_wasm_runtime_callable_info(\n",
-            "    fn_ptr: u64,\n",
-            ") -> Option<(u64, &'static str, &'static str, usize)> {\n",
-            "    let idx = fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)?;\n",
-            "    RESERVED_RUNTIME_CALLABLES\n",
-            "        .iter()\n",
-            "        .find(|entry| entry.index == idx)\n",
-            "        .map(|entry| (entry.index, entry.runtime_name, entry.import_name, entry.arity))\n",
-            "}\n\n",
-            '#[cfg(target_arch = "wasm32")]\n',
-            "pub(crate) fn reserved_wasm_runtime_callable_dispatch_for_index(\n",
-            "    index: u64,\n",
-            ") -> Option<ReservedRuntimeCallableDispatch> {\n",
-            "    RESERVED_RUNTIME_CALLABLES\n",
-            "        .iter()\n",
-            "        .find(|entry| entry.index == index)\n",
-            "        .map(|entry| entry.dispatch)\n",
             "}\n\n",
             "#[rustfmt::skip]\n",
             "pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[\n",
@@ -2276,16 +2219,6 @@ def render_py(data: dict) -> str:
     )
 
 
-def render_table_layout_inc(data: dict) -> str:
-    lines = [_header("//")]
-    lines.append("#[allow(dead_code)]\n")
-    lines.append(
-        "pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = "
-        f"{data['table_layout']['default_app_table_base']};\n"
-    )
-    return "".join(lines)
-
-
 def render_allowed_imports(data: dict) -> str:
     lines = [_header("#")]
     physical = {
@@ -2359,32 +2292,6 @@ def render_js_abi(data: dict) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
-def _js_runtime_callable_abi(data: dict) -> dict[str, object]:
-    """The reserved runtime callable layout, in the manifest browser_embed shape."""
-    reserved_callables = _shared_runtime_callables(data)
-    physical = {
-        row["symbol"]: row["physical_symbol"] for row in runtime_execution_specs(data)
-    }
-    return {
-        "table_layout": {
-            "default_app_table_base": data["table_layout"]["default_app_table_base"],
-            "reserved_runtime_callable_base": reserved_runtime_callable_base(data),
-            "reserved_runtime_callable_count": len(reserved_callables),
-        },
-        "reserved_runtime_callables": [
-            {
-                "index": entry["index"],
-                "runtime_export": physical[entry["runtime_name"]],
-                "import_name": entry["import_name"],
-                "arity": entry["callable_arity"],
-                "dispatch": entry.get("callable_dispatch", "direct"),
-                "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
-            }
-            for entry in reserved_callables
-        ],
-    }
-
-
 def render_js_callable_table_abi(data: dict) -> str:
     payload = json.dumps(
         {
@@ -2393,7 +2300,6 @@ def render_js_callable_table_abi(data: dict) -> str:
             "execution_manifest_required_environment": data["deployment_manifest"][
                 "launch_environment_required_names"
             ],
-            "runtime_callables": _js_runtime_callable_abi(data),
             "execution_context_abi": context_json(data),
             "runtime_execution_abis": {
                 row["symbol"]: {
@@ -2791,7 +2697,6 @@ def render_outputs(data: dict) -> dict[Path, str]:
         render_wasm_socket_abi_rs(data), label="wasm_socket_abi_generated.rs"
     )
     outputs[OUT_JS_SOCKET_ABI] = render_js_socket_abi(data)
-    outputs[OUT_TABLE_LAYOUT_INC] = render_table_layout_inc(data)
     outputs[OUT_ALLOWED_IMPORTS] = render_allowed_imports(data)
     return outputs
 

@@ -148,24 +148,6 @@ pub(super) fn admit_application_host_imports(
     Ok(())
 }
 
-pub(super) fn configure_wasm_table_base(
-    store: &mut Store<HostState>,
-    instance: &Instance,
-    admission: &WasmTableAdmission,
-) -> Result<()> {
-    match admission {
-        WasmTableAdmission::Empty => Ok(()),
-        WasmTableAdmission::Publish { base, export_name } => {
-            let setter = instance.get_typed_func::<i64, ()>(&mut *store, export_name)
-                .with_context(|| format!("MOLT_WASM_TABLE_EXPORT_REQUIRED: missing or malformed canonical molt_set_wasm_table_base export {export_name}"))?;
-            log::debug!("setting wasm table base to {base}");
-            setter
-                .call(&mut *store, i64::from(base.get()))
-                .context("call molt_set_wasm_table_base")
-        }
-    }
-}
-
 pub(super) fn merge_limits(
     left: Option<Limits>,
     right: Option<Limits>,
@@ -610,7 +592,6 @@ mod indirect_dispatch_tests {
                 launch_environment: &[],
                 vfs_envs: &[],
                 guest_args: &[],
-                wasm_table_admission: WasmTableAdmission::Empty,
             },
         )
     }
@@ -854,7 +835,6 @@ mod indirect_dispatch_tests {
                         launch_environment: &[],
                         vfs_envs: &[],
                         guest_args: &[],
-                        wasm_table_admission: WasmTableAdmission::Empty,
                     },
                 )
                 .unwrap_err();
@@ -1044,7 +1024,6 @@ mod indirect_dispatch_tests {
                     launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
-                    wasm_table_admission: WasmTableAdmission::Empty,
                 },
             )
             .unwrap(),
@@ -1128,7 +1107,6 @@ mod indirect_dispatch_tests {
                     launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
-                    wasm_table_admission: WasmTableAdmission::Empty,
                 }
             )
             .unwrap(),

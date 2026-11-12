@@ -69,8 +69,10 @@ def prepare_wasm_codegen_layout(
     data_base = (max(data_bounds) + 64 * 1024 * 1024 + 7) & ~7
     split_app_table_base = None
     if split_runtime:
+        # The app's region follows the runtime's last entry; the runtime
+        # reserves no region for runtime callables (HF-699 K3).
         layout = shared.split_callable_layout()
-        table_base = layout.runtime_callable_base
+        table_base = layout.runtime_table_min
         split_app_table_base = layout.runtime_table_min
     else:
         probe_table = probe.table_min

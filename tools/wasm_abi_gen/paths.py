@@ -56,7 +56,6 @@ BUILTIN_CALLABLES = ROOT / "src/molt/builtin_callables.py"
 RUNTIME_ROOT = ROOT / "runtime"
 CPYTHON_ABI_SOURCE_ROOT = ROOT / "runtime/molt-cpython-abi/src"
 CPYTHON_ABI_VARIADIC_SHIM = ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c"
-OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"
 WASM_ABI_GEN_CACHE = scratch_dir(ROOT, "wasm_abi_gen_cache")
 REMOVED_GENERATED_FILES = (

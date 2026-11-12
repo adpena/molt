@@ -706,7 +706,6 @@ outputs = [
   "wasm/synthetic_errno_generated.js",
   "wasm/socket_abi_generated.js",
   "runtime/molt-runtime-platform/src/wasm_socket_abi_generated.rs",
-  "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]
 source = "tools/wasm_abi_gen/execution_context.py + src/molt/builtin_callables.py + runtime/molt-runtime/src/intrinsics/public_objects.toml + tools/public_objects.py + src/molt/_public_objects_generated.py + runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + src/molt/rust_source_scan.py + tools/generator_io.py + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py + tools/gen_runtime_names.py + runtime/molt-ir/src/tir/runtime_names.toml"

@@ -304,7 +304,6 @@ def test_generated_split_worker_is_default_deny(tmp_path: Path) -> None:
         deployment_manifest=deployment,
         shared_memory_initial_pages=1,
         shared_table_initial=1,
-        shared_table_base=None,
     )
     observed = _observe_generated_worker_environment(
         tmp_path, source, mode="split", deployment=deployment
@@ -344,7 +343,6 @@ def test_generated_split_worker_embeds_complete_resolved_policy(tmp_path: Path) 
         deployment_manifest=deployment,
         shared_memory_initial_pages=1,
         shared_table_initial=1,
-        shared_table_base=None,
     )
     observed = _observe_generated_worker_environment(
         tmp_path, source, mode="split", deployment=deployment

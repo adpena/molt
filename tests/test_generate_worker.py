@@ -16,10 +16,6 @@ from molt._wasm_abi_generated import (
     compiled_execution_symbol,
     runtime_execution_abi,
     ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
-    WASM_DEFAULT_APP_TABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLES,
-    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
 )
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
@@ -51,7 +47,6 @@ def test_worker_generators_reject_incompatible_receiver_before_module_read(
             deployment_manifest=manifest,
             shared_memory_initial_pages=1,
             shared_table_initial=1,
-            shared_table_base=None,
         )
 
 
@@ -60,28 +55,6 @@ def _runtime_symbol(logical: str) -> str:
     if abi is None:
         raise ValueError(f"unregistered worker runtime fixture {logical}")
     return abi.physical_symbol
-
-
-def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
-    return [
-        {
-            "index": index,
-            "runtime_export": _runtime_symbol(runtime_name),
-            "import_name": import_name,
-            "arity": arity,
-            "dispatch": dispatch,
-            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
-                runtime_name
-            ],
-        }
-        for (
-            index,
-            runtime_name,
-            import_name,
-            arity,
-            dispatch,
-        ) in WASM_RESERVED_RUNTIME_CALLABLES
-    ]
 
 
 def test_generate_worker_produces_valid_js(tmp_path):
@@ -267,7 +240,6 @@ def test_generate_split_worker_bootstrap_import_surface() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert 'import "./molt_vfs_browser.js";' in content
@@ -286,7 +258,6 @@ def test_generate_split_worker_contains_vfs_adapter_import() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert 'import "./molt_vfs_browser.js";' in content
@@ -302,7 +273,6 @@ def test_generate_split_worker_contains_vfs_host_imports() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
     )
 
     assert "molt_vfs_read" in content
@@ -320,7 +290,6 @@ def test_generate_split_worker_uses_worker_env_for_static_assets() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "async fetch(request, env, ctx)" in content
@@ -336,7 +305,6 @@ def test_generate_split_worker_defines_utf8_decoder_for_vfs_paths() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "const utf8Decoder = new TextDecoder();" in content
@@ -353,7 +321,6 @@ def test_generate_split_worker_defines_wasi_vfs_errno_and_preopen_state() -> Non
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "ENOENT: WASI_ERRNO_NOENT" in content
@@ -377,7 +344,6 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "path_open() { return 44; }" not in content
@@ -421,14 +387,16 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
     )
 
     assert 'import "./callable_table_abi_generated.js";' in content
     assert 'import "./loader_bridge.js";' in content
     assert 'callableTableFromModule(runtimeModule, "runtime wasm")' in content
-    assert "const tableAdmission = prepareWasmTableAdmission({" in content
-    assert "const appCallableTable = tableAdmission.callableTable;" in content
+    assert "const appCallableTable = readCallableTableAttestation({" in content
+    # Runtime callables are keys: nothing publishes a table base (HF-699 K3).
+    assert "prepareWasmTableAdmission" not in content
+    assert "publishWasmTableAdmission" not in content
+    assert "MOLT_WASM_TABLE_BASE" not in content
     assert (
         'verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");'
         in content
@@ -452,26 +420,26 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
     )
 
     assert (
         f'const callIndirectImportNames = ["{compiled_execution_symbol("molt_call_indirect0")}"'
         in content
     )
-    assert "reservedRuntimeCallablesFromManifest(deploymentManifest)" in content
-    assert "appOwnsReservedTrampoline" not in content
-    assert _runtime_symbol("molt_object_init_subclass") in content
     assert "for (const indirectName of callIndirectImportNames) {" in content
     assert "hostEnv[indirectName] = (context, fnIndex, ...args) => {" in content
-    assert "const idx = Number(fnIndex);" in content
-    assert "const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);" in content
-    assert "const reservedDispatch = planReservedRuntimeDispatch({" in content
-    assert (
-        "const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;"
-        in content
-    )
-    assert "return callReservedRuntimeCallable(" in content
+    # Every index is a slot of the shared table; runtime callables are keys
+    # the runtime resolves itself (HF-699 K1, K3).
+    assert "const dispatchIdx = Number(fnIndex);" in content
+    for retired in (
+        "reservedRuntimeCallables",
+        "remapDefaultAppRuntimeSharedIdx",
+        "planReservedRuntimeDispatch",
+        "callReservedRuntimeCallable",
+        "RESERVED_RUNTIME_CALLABLE_BASE",
+        "DEFAULT_WASM_APP_TABLE_BASE",
+    ):
+        assert retired not in content, retired
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert (
         "const directSignature =\n"
@@ -495,20 +463,20 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         'verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");'
         in content
     )
-    browser_abi = _split_runtime_browser_abi_from_manifest()
-    assert browser_abi["reserved_runtime_callables"] == (
-        _reserved_runtime_callable_manifest_entries()
-    )
+    assert _split_runtime_browser_abi_from_manifest() == {
+        "call_indirect_imports": [
+            compiled_execution_symbol(name)
+            for name in __import__(
+                "molt._wasm_abi_generated", fromlist=["WASM_CALL_INDIRECT_IMPORTS"]
+            ).WASM_CALL_INDIRECT_IMPORTS
+        ]
+    }
 
 
-def test_static_browser_runners_use_the_generated_reserved_callable_layout() -> None:
-    """Every JS host dispatches reserved runtime callables by the generated layout.
-
-    run_wasm.js and browser_host.js used to carry their own base (33) and a
-    24-entry list while the ABI moved to base 30 and 37 entries, so split-runtime
-    calls landed on the wrong runtime callable (``new_class() expects positional
-    arguments tuple`` while constructing a ModuleSpec).
-    """
+def test_loader_bridge_publishes_no_reserved_runtime_callable_dispatch() -> None:
+    """HF-699 E2: runtime callables are keys the runtime resolves itself. The
+    shared host bridge publishes no reserved layout, dispatch or table-base
+    admission, so no host can dispatch a runtime callable by name."""
     from tests.wasm_linked_runner import require_node_binary
 
     root = Path(__file__).resolve().parents[1]
@@ -517,8 +485,9 @@ def test_static_browser_runners_use_the_generated_reserved_callable_layout() -> 
             require_node_binary(),
             "-e",
             "const b = require('./wasm/loader_bridge.js');"
-            "const l = b.runtimeCallableTableLayout(null);"
-            "process.stdout.write(JSON.stringify(l));",
+            "const a = require('./wasm/callable_table_abi_generated.js');"
+            "process.stdout.write(JSON.stringify({bridge: Object.keys(b),"
+            " abi: Object.keys(a)}));",
         ],
         prefix="MOLT_WASM_TEST",
         cwd=root,
@@ -527,82 +496,21 @@ def test_static_browser_runners_use_the_generated_reserved_callable_layout() -> 
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    layout = json.loads(result.stdout)
-    assert layout["defaultAppTableBase"] == WASM_DEFAULT_APP_TABLE_BASE
-    assert layout["reservedRuntimeCallableBase"] == WASM_RESERVED_RUNTIME_CALLABLE_BASE
-    assert layout["reservedRuntimeCallables"] == [
-        {
-            "index": index,
-            "runtimeExport": _runtime_symbol(runtime_name),
-            "importName": import_name,
-            "arity": arity,
-            "dispatch": dispatch,
-            "trampolineAbi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
-                runtime_name
-            ],
-        }
-        for index, runtime_name, import_name, arity, dispatch in (
-            WASM_RESERVED_RUNTIME_CALLABLES
-        )
-    ]
-
-
-def test_loader_bridge_enforces_manifest_reserved_callable_dispatch(tmp_path) -> None:
-    import pytest
-
-    if shutil.which("node") is None:
-        pytest.skip("node is required for loader bridge dispatch test")
-
-    root = Path(__file__).resolve().parents[1]
-    script = tmp_path / "check_reserved_dispatch.js"
-    script.write_text(
-        f"""
-const bridge = require({str(root / "wasm" / "loader_bridge.js")!r});
-const manifest = {{
-  abi: {{
-    browser_embed: {{
-      reserved_runtime_callables: [{{
-        index: 0,
-        runtime_export: 'molt_importlib_import_transaction',
-        import_name: 'molt_importlib_import_transaction',
-        arity: 5,
-        dispatch: 'trampoline',
-      }}],
-    }},
-  }},
-}};
-const entries = bridge.reservedRuntimeCallablesFromManifest(manifest);
-if (entries[0].dispatch !== 'trampoline') {{
-  throw new Error(`unexpected dispatch ${{entries[0].dispatch}}`);
-}}
-const base = {{
-  sharedTableBase: 100,
-  reservedRuntimeCallableBase: 33,
-  reservedRuntimeCallableCount: 1,
-  reservedRuntimeCallables: entries,
-}};
-try {{
-  bridge.planReservedRuntimeDispatch({{ ...base, dispatchIdx: 133 }});
-  throw new Error('direct slot unexpectedly accepted');
-}} catch (err) {{
-  if (!String(err.message || err).includes('trampoline-only')) throw err;
-}}
-const plan = bridge.planReservedRuntimeDispatch({{ ...base, dispatchIdx: 134 }});
-if (!plan.dispatchReservedRuntimeCallable || !plan.reservedRuntimeCallable.trampoline) {{
-  throw new Error('trampoline slot was not routed through reserved callable');
-}}
-""".lstrip(),
-        encoding="utf-8",
-    )
-    run = run_guarded_test_process(
-        ["node", str(script)],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-    assert run.returncode == 0, run.stderr
+    published = json.loads(result.stdout)
+    assert "readCallableTableAttestation" in published["bridge"]
+    for retired in (
+        "callReservedRuntimeCallable",
+        "extractWasmTableBase",
+        "planReservedRuntimeDispatch",
+        "prepareWasmTableAdmission",
+        "publishWasmTableAdmission",
+        "remapDefaultAppRuntimeSharedTableIndex",
+        "reservedRuntimeCallablesFromManifest",
+        "runtimeCallableTableLayout",
+        "runtimeCallableTableLayoutFromAbi",
+    ):
+        assert retired not in published["bridge"], retired
+    assert "runtime_callables" not in published["abi"]
 
 
 def test_loader_bridge_installs_manifest_link_import_traps(tmp_path) -> None:
@@ -683,7 +591,6 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
         runtime_import_names={"function_set_builtin", "string_from_bytes"},
         runtime_export_signatures={
             "function_set_builtin": {"params": ["i64", "i64"], "result": "i64"},
@@ -730,7 +637,6 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         "attached_context": "molt_attached_context",
         "compiled_execution_enter": "molt_compiled_execution_enter",
         "compiled_execution_leave": "molt_compiled_execution_leave",
-        "molt_set_wasm_table_base": "molt_set_wasm_table_base",
     }
     assert result_kinds.keys() == signatures.keys()
     assert exports.keys() == result_kinds.keys() | {
@@ -744,7 +650,7 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     )
     assert "bindRuntimeFunctionImports" in content
     assert "module: appModule," in content
-    assert "prepareWasmTableAdmission" in content
+    assert "readCallableTableAttestation({" in content
     assert "callableTableFromModule(runtimeModule" in content
     assert "const TAG_NONE = 0x0003000000000000n;" in content
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
@@ -881,11 +787,9 @@ def test_static_js_isolate_import_bridges_use_context_and_single_i64_handle() ->
     assert "exports?.molt_runtime_execution_enter" not in run_wasm
     assert "exports?.molt_runtime_execution_leave" not in run_wasm
     assert "  runtimeExportNameForImport," in run_wasm
-    # Reserved callables use the shared dispatcher; direct module imports
-    # retain the name-resolution contract below. The dispatcher's argument and
-    # result semantics execute in test_wasm_reserved_callable_arity.py.
-    assert "return callReservedRuntimeCallable({" in run_wasm
-    assert "entry: reservedRuntimeCallable," in run_wasm
+    # Runtime callables are keys the runtime resolves itself (HF-699 E2);
+    # direct module imports retain the name-resolution contract below.
+    assert "callReservedRuntimeCallable" not in run_wasm
     assert "runtimeExportImportSignature(runtimeExport)" in run_wasm
     assert "entry.name.startsWith('molt_')" not in run_wasm
     assert "`molt_${entry.name}`" not in run_wasm
@@ -898,15 +802,13 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     root = Path(__file__).resolve().parents[1]
     bridge = (root / "wasm/loader_bridge.js").read_text(encoding="utf-8")
     run_wasm = (root / "wasm/run_wasm.js").read_text(encoding="utf-8")
-    assert "const extractWasmTableBase = (buffer) => {" in bridge
     assert "const parseWasmMetadata = (buffer, options = {}) => {" in bridge
-    assert "const reservedRuntimeCallablesFromManifest = (manifest) => {" in bridge
-    assert "extractWasmTableBase," in bridge
+    assert "const readCallableTableAttestation = (" in bridge
+    assert "readCallableTableAttestation," in bridge
     assert "parseWasmMetadata," in bridge
     assert "parseWasmExportFunctionSignatures," in bridge
     assert "requireWasmCallableTable," in bridge
     assert "verifyCallableTableEntries," in bridge
-    assert "reservedRuntimeCallablesFromManifest," in bridge
     assert (
         "const parseWasmImports = (buffer, options = {}) =>\n    parseWasmMetadata(buffer, options).imports;"
         in bridge
@@ -917,7 +819,7 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     )
     assert "const outputMetadata = parseWasmMetadata(wasmBuffer, {" in run_wasm
     assert "exportFunctionSignatures: false," in run_wasm
-    assert "const outputCallableTable = tableAdmission.callableTable;" in run_wasm
+    assert "const outputCallableTable = callableTableAttestation;" in run_wasm
     assert "const runtimeMetadata = parseWasmMetadata(runtimeBuffer);" in run_wasm
     assert (
         "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;"
@@ -927,20 +829,16 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     consumers = {
         "wasm/browser_host.js": (
             "globalThis.MoltWasmLoaderBridge",
-            "prepareWasmTableAdmission,",
-            "publishWasmTableAdmission,",
-            "runtimeCallableTableLayout,",
+            "readCallableTableAttestation,",
         ),
         "wasm/run_wasm.js": (
             "require('./loader_bridge.js')",
             "parseWasmMetadata,",
-            "prepareWasmTableAdmission,",
-            "publishWasmTableAdmission,",
-            "runtimeCallableTableLayout,",
+            "readCallableTableAttestation,",
         ),
         "wasm/browser_embed.js": (
             "globalThis.MoltWasmLoaderBridge",
-            "runtimeCallableTableLayoutFromAbi,",
+            "readCallableTableAttestation,",
         ),
     }
     forbidden_local_authority = (
@@ -952,13 +850,14 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
         "const extractWasmTableBase =",
         "const decodeWasmValType =",
         "const readWasmValTypeVec =",
-        "const reservedRuntimeCallablesFromManifest =",
-        "manifest?.abi?.browser_embed?.reserved_runtime_callables",
-        # The reserved-callable layout is generated; a host copy drifted to a
-        # stale base (33 vs 30) and misdispatched every split-runtime call.
-        "const RESERVED_RUNTIME_CALLABLE_BASE =",
-        "const DEFAULT_WASM_APP_TABLE_BASE =",
-        "reserved_runtime_callable_base",
+        # Runtime callables are keys (HF-699 E2): no host dispatches a
+        # reserved region or publishes a table base.
+        "reservedRuntimeCallable",
+        "reserved_runtime_callable",
+        "RESERVED_RUNTIME_CALLABLE_BASE",
+        "DEFAULT_WASM_APP_TABLE_BASE",
+        "MOLT_WASM_TABLE_BASE",
+        "TableAdmission",
     )
     for rel, required in consumers.items():
         content = (root / rel).read_text(encoding="utf-8")
@@ -1046,58 +945,6 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
     assert "bindRuntimeFunctionImports," in browser_host
     assert "entry.name === 'fast_list_append'" not in browser_host
     assert "entry.name === 'dict_setitem'" not in browser_host
-
-
-def test_effective_split_worker_table_base_uses_backend_authority() -> None:
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    assert (
-        _effective_split_worker_table_base(
-            wasm_table_base=4096,
-            app_callable_table_slots=[4096, 4189],
-        )
-        == 4096
-    )
-
-
-def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
-    import pytest
-
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    with pytest.raises(ValueError, match="requires the bound backend table base"):
-        _effective_split_worker_table_base(
-            wasm_table_base=None,
-            app_callable_table_slots=[4130],
-        )
-
-
-def test_effective_split_worker_table_base_rejects_callable_below_backend_base() -> (
-    None
-):
-    import pytest
-
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    with pytest.raises(ValueError, match="above finalized callable-table slot"):
-        _effective_split_worker_table_base(
-            wasm_table_base=4096,
-            app_callable_table_slots=[4095],
-        )
-
-
-def test_effective_split_worker_table_base_rejects_final_slot_below_backend_base() -> (
-    None
-):
-    import pytest
-
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    with pytest.raises(ValueError, match="above finalized callable-table slot"):
-        _effective_split_worker_table_base(
-            wasm_table_base=4096,
-            app_callable_table_slots=[1024],
-        )
 
 
 def _wasm_vec(items: list[bytes]) -> bytes:
@@ -1341,7 +1188,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         ),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
-        shared_table_base=None,
         runtime_import_names=import_names,
         runtime_export_signatures=runtime_export_signatures,
     )
@@ -1358,7 +1204,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         ),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
-        shared_table_base=None,
         runtime_import_names={"molt_PyArg_ParseTuple"},
         runtime_export_signatures={
             "molt_PyArg_ParseTuple": {
@@ -1705,7 +1550,6 @@ def test_generated_worker_delivers_manifest_policy_through_real_wasi(
             deployment_manifest=deployment,
             shared_memory_initial_pages=1,
             shared_table_initial=1,
-            shared_table_base=32,
         )
     observed = _observe_generated_worker_environment(
         tmp_path, source, mode=mode, deployment=deployment
@@ -1940,7 +1784,6 @@ def test_generated_workers_keep_actual_wasi_and_molt_error_imports_separate(
             ),
             shared_memory_initial_pages=8,
             shared_table_initial=16,
-            shared_table_base=None,
         ),
         encoding="utf-8",
     )

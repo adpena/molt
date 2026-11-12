@@ -39,9 +39,10 @@ pub(crate) use op_loop_runtime_calls::{
     OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, op_loop_runtime_call,
 };
 pub(crate) use pure_profile::pure_profile_skips_import;
+#[cfg(test)]
+pub(crate) use runtime_callables::RUNTIME_CALLABLE_KEY_BASE;
 pub(crate) use runtime_callables::{
-    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    RUNTIME_CALLABLE_IMPORTS, RUNTIME_POLL_CALLABLE_KEY_BASE, ReservedRuntimeCallableDispatch,
-    poll_table_import_slot, runtime_callable_import,
+    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,
+    RUNTIME_POLL_CALLABLE_KEY_BASE, runtime_callable_import,
 };
 pub(crate) use static_types::STATIC_FUNC_TYPES;
