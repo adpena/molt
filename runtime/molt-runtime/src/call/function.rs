@@ -17,156 +17,12 @@ use crate::{
     raise_exception, type_name,
 };
 
-#[cfg(target_arch = "wasm32")]
-use crate::MoltObject;
-#[cfg(target_arch = "wasm32")]
-use crate::{
-    molt_call_indirect0, molt_call_indirect1, molt_call_indirect2, molt_call_indirect3,
-    molt_call_indirect4, molt_call_indirect5, molt_call_indirect6, molt_call_indirect7,
-    molt_call_indirect8, molt_call_indirect9, molt_call_indirect10, molt_call_indirect11,
-    molt_call_indirect12, molt_call_indirect13,
-};
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn wasm_direct_call_table_idx(fn_ptr: u64) -> u64 {
-    crate::builtins::functions::normalize_runtime_callable_ptr(fn_ptr)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn select_wasm_fixed_arity_call_target(direct_target: u64, tramp_ptr: u64) -> u64 {
-    if u32::try_from(direct_target).is_ok() {
-        return direct_target;
-    }
-    if tramp_ptr != 0 {
-        return tramp_ptr;
-    }
-    direct_target
-}
-
-#[cfg(any(test, target_arch = "wasm32"))]
-#[inline]
-pub(crate) fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let direct_target = wasm_direct_call_table_idx(fn_ptr);
-        let normalized_tramp =
-            crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
-        // A `Direct`-dispatch reserved callable must resolve to its direct
-        // table slot on the fixed-arity lane, no matter whether its stored
-        // identity/target/trampoline pointer lands in the direct or trampoline
-        // region.
-        for candidate in [direct_target, fn_ptr, tramp_ptr] {
-            if let Some(direct_slot) =
-                crate::builtins::functions::reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
-                    candidate,
-                )
-            {
-                return direct_slot;
-            }
-        }
-        if crate::builtins::functions::reserved_wasm_runtime_callable_info_for_table_idx(
-            direct_target,
-        )
-        .is_some()
-            && crate::builtins::functions::reserved_wasm_runtime_direct_callable_info_for_table_idx(
-                direct_target,
-            )
-            .is_none()
-            && normalized_tramp != 0
-        {
-            return normalized_tramp;
-        }
-        select_wasm_fixed_arity_call_target(direct_target, normalized_tramp)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = tramp_ptr;
-        fn_ptr
-    }
-}
-
-#[cfg(any(test, target_arch = "wasm32"))]
-#[inline]
-fn fixed_arity_trampoline_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let direct_target = wasm_direct_call_table_idx(fn_ptr);
-        // A `Direct`-dispatch reserved callable must be reached through the
-        // direct table region on the fixed-arity lane. Recognize the callable
-        // whether the stored identity/target/trampoline pointer already sits in
-        // the direct region (`fn_ptr`, `direct_target`) or the trampoline
-        // region — either way the fixed-arity call site emits
-        // `molt_call_indirectN` with N positional args, which the host only
-        // interprets correctly against the direct slot.
-        for candidate in [direct_target, fn_ptr, tramp_ptr] {
-            if let Some(direct_slot) =
-                crate::builtins::functions::reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
-                    candidate,
-                )
-            {
-                return direct_slot;
-            }
-        }
-        let normalized_tramp =
-            crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
-        if normalized_tramp != 0 {
-            return normalized_tramp;
-        }
-        direct_target
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if tramp_ptr != 0 { tramp_ptr } else { fn_ptr }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn fixed_arity_call_requires_trampoline(
-    fn_ptr: u64,
-    tramp_ptr: u64,
-    task_trampoline_needed: bool,
-) -> bool {
-    let direct_target = wasm_direct_call_table_idx(fn_ptr);
-    should_force_trampoline_for_fixed_arity_call(direct_target, tramp_ptr, task_trampoline_needed)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn can_use_fixed_arity_wasm_trampoline(fn_ptr: u64, tramp_ptr: u64) -> bool {
-    let direct = crate::builtins::functions::normalize_runtime_callable_ptr(fn_ptr);
-    let normalized_tramp =
-        crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
-    u32::try_from(direct).is_ok() && u32::try_from(normalized_tramp).is_ok()
-}
-
-#[inline]
-unsafe fn normalized_function_trampoline_ptr(func_ptr: *mut u8, fn_ptr: u64) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let normalized_tramp =
-            crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, unsafe {
-                function_trampoline_ptr(func_ptr)
-            });
-        if normalized_tramp != 0 {
-            return normalized_tramp;
-        }
-        let direct_target = wasm_direct_call_table_idx(fn_ptr);
-        if direct_target != 0 {
-            return direct_target;
-        }
-        u64::MAX
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = fn_ptr;
-        unsafe { function_trampoline_ptr(func_ptr) }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
+/// The executable target of a function object's fixed-arity entry: the target
+/// its construction resolved and cached (HF-699 K4), otherwise the target its
+/// identity resolves to, a runtime key through the generated table or a
+/// published address through the registry. On wasm32 the target is a slot of
+/// the shared table: the runtime's own slot for a runtime callable, the app's
+/// slot for a compiled function.
 #[inline]
 pub(crate) unsafe fn function_required_call_target_ptr(
     func_ptr: *mut u8,
@@ -184,10 +40,10 @@ fn missing_function_call_target(_py: &PyToken<'_>, context: &str, fn_ptr: u64) -
     raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg)
 }
 
-// Construction stores every native function's executable target in the
-// object, so a call reads one word and takes no registry lock. Runtime entries
-// and compiled code alike return one object word.
-#[cfg(not(target_arch = "wasm32"))]
+// Construction stores every function's executable target in the object, so a
+// call reads one word and takes no registry lock. Runtime entries and compiled
+// code alike return one object word. The runtime calls the target itself on
+// every target, never through the app's `molt_call_indirectN` (HF-699 K2).
 macro_rules! call_native_fixed_arity {
     ($py:expr, $func_ptr:expr, $fn_ptr:expr, $fn_ty:ty, ($($arg:expr),* $(,)?)) => {{
         let func: $fn_ty = std::mem::transmute(required_native_call_target!(
@@ -202,54 +58,11 @@ macro_rules! call_native_fixed_arity {
 
 macro_rules! required_native_call_target {
     ($py:expr, $func_ptr:expr, $fn_ptr:expr, $context:expr) => {{
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let Some(call_target) = function_required_call_target_ptr($func_ptr, $fn_ptr) else {
-                return missing_function_call_target($py, $context, $fn_ptr);
-            };
-            call_target
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = $py;
-            let _ = $func_ptr;
-            let _ = $context;
-            let Some(call_target) = crate::provenance::abi::function_ptr($fn_ptr) else {
-                return missing_function_call_target($py, $context, $fn_ptr);
-            };
-            call_target
-        }
+        let Some(call_target) = function_required_call_target_ptr($func_ptr, $fn_ptr) else {
+            return missing_function_call_target($py, $context, $fn_ptr);
+        };
+        call_target
     }};
-}
-
-#[cfg(any(test, target_arch = "wasm32"))]
-#[inline]
-fn should_force_trampoline_for_fixed_arity_call(
-    direct_target: u64,
-    tramp_ptr: u64,
-    task_trampoline_needed: bool,
-) -> bool {
-    if task_trampoline_needed || tramp_ptr == 0 {
-        return task_trampoline_needed;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        // A `Direct`-dispatch reserved callable is dispatched on the fixed-arity
-        // direct lane, never forced onto the trampoline lane — recognize it
-        // whether `direct_target` sits in the direct or trampoline region.
-        if crate::builtins::functions::reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
-            direct_target,
-        )
-        .is_some()
-        {
-            return false;
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = direct_target;
-    }
-    true
 }
 
 fn trace_call_vec_enabled() -> bool {
@@ -280,7 +93,7 @@ unsafe fn trace_function_vec_call(_py: &PyToken<'_>, func_ptr: *mut u8, args: &[
         "<unnamed>".to_string()
     };
     let fn_ptr = unsafe { function_fn_ptr(func_ptr) };
-    let tramp_ptr = unsafe { normalized_function_trampoline_ptr(func_ptr, fn_ptr) };
+    let tramp_ptr = unsafe { function_trampoline_ptr(func_ptr) };
     let closure_bits = unsafe { function_execution_closure_bits(func_ptr) };
     let arity = unsafe { function_arity(func_ptr) };
     eprintln!(
@@ -316,6 +129,10 @@ unsafe fn raise_call_arity_mismatch(
     }
 }
 
+/// A function with a trampoline is called through it on every target: the
+/// trampoline owns argument unpacking, task construction and closure
+/// transport. Only a function without one takes a fixed-arity entry, as a
+/// runtime callable does (its key resolved at construction, HF-699 K4).
 #[inline]
 unsafe fn maybe_call_function_obj_trampoline(
     _py: &PyToken<'_>,
@@ -323,33 +140,8 @@ unsafe fn maybe_call_function_obj_trampoline(
     func_ptr: *mut u8,
     args: &[u64],
 ) -> Option<u64> {
-    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         if function_trampoline_ptr(func_ptr) != 0 {
-            return Some(call_function_obj_trampoline(_py, func_bits, args));
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        let fn_ptr = function_fn_ptr(func_ptr);
-        let tramp_ptr = crate::builtins::functions::normalize_runtime_trampoline_ptr(
-            fn_ptr,
-            function_trampoline_ptr(func_ptr),
-        );
-        let reserved_info = crate::builtins::functions::reserved_wasm_runtime_callable_info(fn_ptr);
-        let Ok(task_trampoline_needed) = function_needs_task_trampoline(_py, func_bits) else {
-            return Some(crate::MoltObject::none().bits());
-        };
-        let force_trampoline =
-            fixed_arity_call_requires_trampoline(fn_ptr, tramp_ptr, task_trampoline_needed);
-        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TRAMPOLINE_POLICY) {
-            eprintln!(
-                "[molt trampoline policy] fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} nargs={} reserved_info={reserved_info:?} force_trampoline={}",
-                args.len(),
-                force_trampoline,
-            );
-        }
-        if force_trampoline {
             return Some(call_function_obj_trampoline(_py, func_bits, args));
         }
     }
@@ -387,8 +179,6 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        #[cfg(target_arch = "wasm32")]
         if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_OBJ1) {
             let name_bits = function_name_bits(_py, func_ptr);
             let mut name = if name_bits != 0 {
@@ -423,7 +213,7 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
                 }
             }
             eprintln!(
-                "[molt call_function_obj1] name={name} file={file} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} arity={arity}"
+                "[molt call_function_obj1] name={name} file={file} fn_ptr={fn_ptr} closure_bits={closure_bits} arity={arity}"
             );
         }
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
@@ -432,29 +222,6 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
         let _invocation =
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect2(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` was read from the function object via `function_fn_ptr`,
-                    // which returns the code pointer set by the compiler during code generation
-                    // (see `emit_call` in wasm.rs). The arity was verified to be 1 above, plus
-                    // closure_bits != 0 so we use the 2-arg signature (closure, arg0). If fn_ptr
-                    // is null or points to a function with a different ABI, this is UB — the
-                    // compiler must emit valid non-null pointers with matching extern "C" ABI.
-                    let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(_py.attached_context(), closure_bits, arg0_bits) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -465,24 +232,6 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
                 )
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect1(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: all published Python callables, including None-returning
-                    // intrinsics, use the boxed-result ABI. Arity == 1, no closure.
-                    let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(_py.attached_context(), arg0_bits) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` is a valid extern "C" function pointer from `function_fn_ptr`.
                 // Arity == 1, no closure, so the 1-arg signature `fn(context, u64) -> i64` matches. The
@@ -657,49 +406,12 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
         let _invocation =
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_OBJ0) {
-                        let name_bits = function_name_bits(_py, func_ptr);
-                        let name = if name_bits != 0 {
-                            string_obj_to_owned(obj_from_bits(name_bits))
-                                .unwrap_or_else(|| "<unnamed>".to_string())
-                        } else {
-                            "<unnamed>".to_string()
-                        };
-                        let target = fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr);
-                        eprintln!(
-                            "[molt call_function_obj0] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} target={target} closure_bits={closure_bits}"
-                        );
-                    }
-                    molt_call_indirect1(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer obtained from
-                    // `function_fn_ptr(func_ptr)`, which reads the code pointer stored in the
-                    // function object by the compiler (see `emit_call` in wasm.rs). Arity == 0
-                    // and closure_bits != 0, so the 1-arg signature `fn(context, u64) -> i64` is correct
-                    // (the single arg is the closure environment). The compiler must guarantee
-                    // fn_ptr is non-null and targets a matching ABI. UB if violated.
-                    let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(_py.attached_context(), closure_bits) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -710,39 +422,6 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
                 )
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_OBJ0) {
-                        let name_bits = function_name_bits(_py, func_ptr);
-                        let name = if name_bits != 0 {
-                            string_obj_to_owned(obj_from_bits(name_bits))
-                                .unwrap_or_else(|| "<unnamed>".to_string())
-                        } else {
-                            "<unnamed>".to_string()
-                        };
-                        let target = fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr);
-                        eprintln!(
-                            "[molt call_function_obj0] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} target={target} closure_bits={closure_bits}"
-                        );
-                    }
-                    molt_call_indirect0(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
-                    // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
-                    // `fn(context) -> i64` is correct. The compiler must guarantee fn_ptr is non-null
-                    // and targets a 0-arg extern "C" function. UB if fn_ptr is null or has a
-                    // different calling convention or arity.
-                    let func: extern "C" fn(u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(_py.attached_context()) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
                 // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
@@ -809,38 +488,12 @@ unsafe fn call_function_obj_bound2(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
         let _invocation =
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect3(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
-                    // `function_fn_ptr(func_ptr)`, set by the compiler during code generation.
-                    // Arity == 2 and closure_bits != 0, so the 3-arg signature
-                    // `fn(context, u64, u64, u64) -> i64` is correct (closure + 2 args). The compiler
-                    // must guarantee fn_ptr is non-null and targets a matching ABI. UB if
-                    // fn_ptr is null or the target has a different parameter count.
-                    let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(_py.attached_context(), closure_bits, arg0_bits, arg1_bits) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -851,27 +504,6 @@ unsafe fn call_function_obj_bound2(
                 )
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect2(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
-                    // `function_fn_ptr`. Arity == 2, no closure, so the 2-arg signature
-                    // `fn(context, u64, u64) -> i64` is correct. The compiler must guarantee fn_ptr is
-                    // non-null and targets a matching ABI. UB if fn_ptr is null or mistyped.
-                    let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(_py.attached_context(), arg0_bits, arg1_bits) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: Same invariant as the wasm32 non-closure path — fn_ptr from
                 // `function_fn_ptr` targets a 2-arg extern "C" function. The compiler must
@@ -926,41 +558,12 @@ unsafe fn call_function_obj_bound3(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
         let _invocation =
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect4(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -971,26 +574,6 @@ unsafe fn call_function_obj_bound3(
                 )
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect3(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(_py.attached_context(), arg0_bits, arg1_bits, arg2_bits) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -1046,47 +629,12 @@ unsafe fn call_function_obj_bound4(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
         let _invocation =
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect5(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -1097,33 +645,6 @@ unsafe fn call_function_obj_bound4(
                 )
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect4(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 = std::mem::transmute(
-                        required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
-                    );
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -1180,49 +701,12 @@ unsafe fn call_function_obj_bound5(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
         let _invocation =
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect6(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -1240,39 +724,6 @@ unsafe fn call_function_obj_bound5(
                 )
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect5(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 call_native_fixed_arity!(
                     _py,
@@ -1333,51 +784,12 @@ unsafe fn call_function_obj_bound6(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
         let _invocation =
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect7(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -1400,41 +812,6 @@ unsafe fn call_function_obj_bound6(
                 ) as u64
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect6(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -1507,8 +884,6 @@ unsafe fn call_function_obj_bound7(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
@@ -1516,45 +891,6 @@ unsafe fn call_function_obj_bound7(
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect8(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -1578,43 +914,6 @@ unsafe fn call_function_obj_bound7(
                 ) as u64
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect7(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -1688,8 +987,6 @@ unsafe fn call_function_obj_bound8(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
@@ -1697,57 +994,6 @@ unsafe fn call_function_obj_bound8(
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect9(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -1772,45 +1018,6 @@ unsafe fn call_function_obj_bound8(
                 ) as u64
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect8(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-                        std::mem::transmute(required_native_call_target!(
-                            _py,
-                            func_ptr,
-                            fn_ptr,
-                            "fixed arity call"
-                        ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -1886,8 +1093,6 @@ unsafe fn call_function_obj_bound9(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
@@ -1895,60 +1100,6 @@ unsafe fn call_function_obj_bound9(
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect10(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -1985,57 +1136,6 @@ unsafe fn call_function_obj_bound9(
                 ) as u64
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect9(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -2113,8 +1213,6 @@ unsafe fn call_function_obj_bound10(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
@@ -2122,63 +1220,6 @@ unsafe fn call_function_obj_bound10(
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect11(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                    ) as u64
-                } else {
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                        // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 let func: extern "C" fn(
                     u64,
@@ -2217,60 +1258,6 @@ unsafe fn call_function_obj_bound10(
                 ) as u64
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect10(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                    ) as u64
-                } else {
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
                 // Arity verified above; signature matches. Compiler guarantees ABI match.
@@ -2361,8 +1348,6 @@ unsafe fn call_function_obj_bound11(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
@@ -2370,66 +1355,6 @@ unsafe fn call_function_obj_bound11(
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect12(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                    ) as u64
-                } else {
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                        // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 let func: extern "C" fn(
                     u64,
@@ -2470,63 +1395,6 @@ unsafe fn call_function_obj_bound11(
                 ) as u64
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect11(
-                        _py.attached_context(),
-                        fixed_arity_trampoline_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                    ) as u64
-                } else {
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                        // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 let func: extern "C" fn(
                     u64,
@@ -2620,8 +1488,6 @@ unsafe fn call_function_obj_bound12(
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_execution_closure_bits(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
@@ -2629,69 +1495,6 @@ unsafe fn call_function_obj_bound12(
             crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect13(
-                        _py.attached_context(),
-                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                        arg11_bits,
-                    ) as u64
-                } else {
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                        // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        closure_bits,
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                        arg11_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 let func: extern "C" fn(
                     u64,
@@ -2734,66 +1537,6 @@ unsafe fn call_function_obj_bound12(
                 ) as u64
             }
         } else {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if tramp_ptr != 0 {
-                    molt_call_indirect12(
-                        _py.attached_context(),
-                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                        arg11_bits,
-                    ) as u64
-                } else {
-                    let func: extern "C" fn(
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        u64,
-                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                        // Arity verified above; signature matches. Compiler guarantees ABI match.
-                    ) -> i64 = std::mem::transmute(required_native_call_target!(
-                        _py,
-                        func_ptr,
-                        fn_ptr,
-                        "fixed arity call"
-                    ));
-                    func(
-                        _py.attached_context(),
-                        arg0_bits,
-                        arg1_bits,
-                        arg2_bits,
-                        arg3_bits,
-                        arg4_bits,
-                        arg5_bits,
-                        arg6_bits,
-                        arg7_bits,
-                        arg8_bits,
-                        arg9_bits,
-                        arg10_bits,
-                        arg11_bits,
-                    ) as u64
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 let func: extern "C" fn(
                     u64,
@@ -2989,11 +1732,7 @@ unsafe fn invoke_function_trampoline(
             // slots. Defaults and keyword binding belong only to the binder.
             return raise_call_arity_mismatch(_py, func_ptr, arity, args.len() as u64);
         }
-        let fn_ptr = function_fn_ptr(func_ptr);
-        let tramp_ptr = crate::builtins::functions::normalize_runtime_trampoline_ptr(
-            fn_ptr,
-            function_trampoline_ptr(func_ptr),
-        );
+        let tramp_ptr = function_trampoline_ptr(func_ptr);
         if tramp_ptr == 0 {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "call arity mismatch");
         }
@@ -3030,6 +1769,7 @@ unsafe fn invoke_function_trampoline(
             } else {
                 "<unnamed>".to_string()
             };
+            let fn_ptr = function_fn_ptr(func_ptr);
             eprintln!(
                 "[molt call trampoline] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} nargs={} execution_kind={:?}",
                 args.len(),
@@ -3037,60 +1777,47 @@ unsafe fn invoke_function_trampoline(
             );
         }
         let res = {
-            #[cfg(target_arch = "wasm32")]
-            {
-                molt_call_indirect3(
-                    _py.attached_context(),
-                    tramp_ptr,
-                    closure_bits,
-                    args.as_ptr() as u64,
-                    args.len() as u64,
-                ) as u64
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                // This lane invokes the *variadic trampoline* ABI
-                // `fn(context, closure_bits, argv_ptr, argc)`, which only the compiled
-                // `..__molt_trampoline_*` entry implements. It MUST resolve
-                // `tramp_ptr` (the trampoline's own address), NOT the function's
-                // fixed-arity `call_target` slot.
-                //
-                // `function_required_call_target_ptr` returns the offset-8
-                // `call_target` slot whenever it is populated, ignoring the
-                // `tramp_ptr` argument. That slot holds the callee's FIXED-ARITY
-                // entry (`fn(context, arg0, arg1, ...)`) — cached there for direct fixed-
-                // arity dispatch by `init_runtime_callable_function_obj`'s
-                // `native_direct_target` path once the app-callable resolver
-                // publishes it. Feeding that fixed-arity entry the variadic ABI
-                // reinterprets `closure_bits` (0 for a plain function) as the
-                // first param and the raw `argv` pointer as the second, so every
-                // argument is silently replaced by junk NaN-box bits — e.g.
-                // `f(1, d=4)` returns `(0.0, <argv-ptr-as-f64>)` instead of
-                // `(1, 4)`. `tramp_ptr` is the trampoline's executable address on
-                // native (`normalize_runtime_trampoline_ptr` is identity here);
-                // resolve it through the runtime-callable registry for
-                // canonicalization and fall back to the raw address.
-                let call_target = if let Some(target) = runtime_callable_target_ptr(tramp_ptr) {
-                    target
-                } else {
-                    let Some(target) = crate::provenance::abi::function_ptr(tramp_ptr) else {
-                        return missing_function_call_target(
-                            _py,
-                            "variadic trampoline call",
-                            tramp_ptr,
-                        );
-                    };
-                    target
+            // This lane invokes the *variadic trampoline* ABI
+            // `fn(context, closure_bits, argv_ptr, argc)`, which only the compiled
+            // `..__molt_trampoline_*` entry implements. It MUST resolve
+            // `tramp_ptr` (the trampoline's own address), NOT the function's
+            // fixed-arity `call_target` slot.
+            //
+            // `function_required_call_target_ptr` returns the offset-8
+            // `call_target` slot whenever it is populated, ignoring the
+            // `tramp_ptr` argument. That slot holds the callee's FIXED-ARITY
+            // entry (`fn(context, arg0, arg1, ...)`) — cached there for direct fixed-
+            // arity dispatch by `init_runtime_callable_function_obj`'s
+            // `native_direct_target` path once the app-callable resolver
+            // publishes it. Feeding that fixed-arity entry the variadic ABI
+            // reinterprets `closure_bits` (0 for a plain function) as the
+            // first param and the raw `argv` pointer as the second, so every
+            // argument is silently replaced by junk NaN-box bits — e.g.
+            // `f(1, d=4)` returns `(0.0, <argv-ptr-as-f64>)` instead of
+            // `(1, 4)`. `tramp_ptr` is a runtime key (a `CallFrame` runtime
+            // callable is its own trampoline, HF-699 K1) or the trampoline's
+            // executable address, an app table slot on wasm32. The runtime
+            // calls either itself on every target, never through the app's
+            // `molt_call_indirectN` (HF-699 K2).
+            let call_target = if let Some(target) = runtime_callable_target_ptr(tramp_ptr) {
+                target
+            } else {
+                let Some(target) = crate::provenance::abi::function_ptr(tramp_ptr) else {
+                    return missing_function_call_target(
+                        _py,
+                        "variadic trampoline call",
+                        tramp_ptr,
+                    );
                 };
-                let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
-                    std::mem::transmute(call_target);
-                func(
-                    _py.attached_context(),
-                    closure_bits,
-                    args.as_ptr() as u64,
-                    args.len() as u64,
-                ) as u64
-            }
+                target
+            };
+            let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(call_target);
+            func(
+                _py.attached_context(),
+                closure_bits,
+                args.as_ptr() as u64,
+                args.len() as u64,
+            ) as u64
         };
         // The trampoline is the raw function-call boundary on every target:
         // fresh results and argument aliases both arrive with the callee's one
@@ -3182,8 +1909,7 @@ pub(crate) unsafe fn call_function_obj_bound_vec(
             && function_trampoline_ptr(func_ptr) == 0
             && function_entry_custody(func_ptr) == EntryCustody::Borrowing
         {
-            // Retain native direct ABI widths through 16 (WASM through 13)
-            // for runtime-created
+            // Retain direct ABI widths through 16 for runtime-created
             // functions without a compiled trampoline. Admission and
             // packing are already complete, including native descriptors.
             return crate::object::ops_builtins::molt_call_func_direct(
@@ -3236,10 +1962,7 @@ pub(crate) unsafe fn call_function_obj_bound_vec(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        enforce_no_pending_on_success, fixed_arity_call_target_ptr,
-        fixed_arity_trampoline_target_ptr, should_force_trampoline_for_fixed_arity_call,
-    };
+    use super::enforce_no_pending_on_success;
     use crate::object::builders::{alloc_dict_with_pairs, alloc_list, alloc_tuple};
     use crate::runtime_flags::{self, RuntimeFlag};
     use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
@@ -3387,28 +2110,6 @@ mod tests {
             dec_ref_bits(_py, empty_tuple_bits);
             dec_ref_bits(_py, name_bits);
         });
-    }
-
-    #[test]
-    fn fixed_arity_call_target_uses_fn_ptr_without_trampoline() {
-        assert_eq!(fixed_arity_call_target_ptr(293, 0), 293);
-    }
-
-    #[test]
-    fn fixed_arity_trampoline_target_prefers_trampoline_slot() {
-        assert_eq!(fixed_arity_trampoline_target_ptr(293, 4097), 4097);
-    }
-
-    #[test]
-    fn fixed_arity_trampoline_target_falls_back_to_direct_slot() {
-        assert_eq!(fixed_arity_trampoline_target_ptr(293, 0), 293);
-    }
-
-    #[test]
-    fn fixed_arity_call_policy_uses_trampoline_when_present() {
-        assert!(should_force_trampoline_for_fixed_arity_call(
-            293, 4097, false
-        ));
     }
 
     #[test]
@@ -4521,22 +3222,6 @@ mod tests {
             dec_ref_bits(_py, list_bits);
             dec_ref_bits(_py, func_bits);
         });
-    }
-
-    #[test]
-    fn fixed_arity_call_policy_uses_vector_path_for_raw_targets_with_trampoline() {
-        assert!(should_force_trampoline_for_fixed_arity_call(
-            u64::from(u32::MAX) + 1,
-            4097,
-            false,
-        ));
-    }
-
-    #[test]
-    fn fixed_arity_call_policy_keeps_task_trampolines_on_vector_path() {
-        assert!(should_force_trampoline_for_fixed_arity_call(
-            293, 4097, true
-        ));
     }
 
     fn spawn_child(test_name: &str, flags: &[(RuntimeFlag, &str)]) -> std::process::Output {

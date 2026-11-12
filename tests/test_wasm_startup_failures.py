@@ -2191,7 +2191,6 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
         deployment_manifest=split_wasm_execution_manifest(module, module),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
     assert_split_worker_runtime_lifecycle(
         source, ROOT / "wasm/runtime_lifecycle.js", tmp_path
@@ -2234,8 +2233,8 @@ def assert_split_worker_runtime_lifecycle(
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {createRuntimeLifetime, combinedError, runtimeExport} = require(lifetimePath);
-const {prepareWasmTableAdmission, publishWasmTableAdmission, requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory} = require(loaderPath);
-const tableAdmission = prepareWasmTableAdmission({module: new WebAssembly.Module(moduleBytes)});
+const {readCallableTableAttestation, requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory} = require(loaderPath);
+readCallableTableAttestation({module: new WebAssembly.Module(moduleBytes)});
 async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const events = [];
   const cleanup = new Error('shutdown failed');
@@ -2253,7 +2252,6 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const runtimeModule = new WebAssembly.Module(moduleBytes);
   const context = {
     createRuntimeLifetime, combinedError, runtimeExceptionPending: () => false,
-    tableAdmission, publishWasmTableAdmission,
     compiledExecutionSymbol: fixtureCompiledSymbol, runtimeExport,
     requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory,
     deploymentManifest: {abi: {runtime_imports: fixtureAbi}},

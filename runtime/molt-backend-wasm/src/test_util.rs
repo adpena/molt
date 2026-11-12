@@ -13,6 +13,6 @@ pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmBodyTestView {
 pub fn reserved_runtime_callable_import_names() -> Vec<&'static str> {
     RESERVED_RUNTIME_CALLABLE_SPECS
         .iter()
-        .map(|spec| spec.import_name)
+        .map(|spec| spec.import.name())
         .collect()
 }

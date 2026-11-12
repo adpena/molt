@@ -18,6 +18,7 @@ WasmWitnessName = Literal[
     "syntax",
     "asyncio",
     "async-polls",
+    "reserved-callables",
     "finder",
     "final-tir",
     "zipimport",
@@ -110,6 +111,63 @@ def asyncio_source(root: Path, tmp_path: Path) -> Path:
 
 
             asyncio.run(main())
+            """
+        ),
+        encoding="utf-8",
+    )
+    return src
+
+
+def reserved_callables_source(root: Path, tmp_path: Path) -> Path:
+    """Builtins called through function objects whose identity is a reserved
+    runtime callable's key: fixed arities, bound methods, a variadic call,
+    keywords, and generator and coroutine methods (HF-699 E2)."""
+    src = tmp_path / "wasm_reserved_callables.py"
+    src.write_text(
+        textwrap.dedent(
+            """\
+            import contextvars
+            import types
+
+            var = contextvars.ContextVar("var", default=1)
+            get = contextvars.ContextVar.get
+            print(get(var), get(var, 9))
+            token = var.set(5)
+            print(var.get(), get(var), get(*(var, 7)))
+            ctx = contextvars.copy_context()
+            print(len(ctx), var in ctx, ctx[var], ctx.get(var))
+            print(ctx.run(lambda a, b, c: a + b + c, 1, 2, 3))
+            var.reset(token)
+            print(var.get())
+            ns = types.SimpleNamespace(a=1, b=2)
+            print(ns.a, ns.b)
+            Klass = types.new_class("Klass", (object,), {})
+            print(Klass.__name__)
+
+
+            def gen():
+                try:
+                    yield 1
+                except ValueError as exc:
+                    yield f"caught {exc}"
+
+
+            g = gen()
+            print(next(g), g.throw(ValueError("boom")))
+
+
+            async def coro():
+                return 42
+
+
+            c = coro()
+            try:
+                c.send(None)
+            except StopIteration as stop:
+                print("returned", stop.value)
+            c2 = coro()
+            c2.close()
+            print("closed")
             """
         ),
         encoding="utf-8",
@@ -352,6 +410,13 @@ HEAVY_WASM_WITNESSES = (
     HeavyWasmWitness(
         "async-polls",
         async_polls_source,
+        "split",
+        ("--build-profile", "dev", "--wasm-profile", "auto"),
+    ),
+    HeavyWasmWitness("reserved-callables", reserved_callables_source),
+    HeavyWasmWitness(
+        "reserved-callables",
+        reserved_callables_source,
         "split",
         ("--build-profile", "dev", "--wasm-profile", "auto"),
     ),

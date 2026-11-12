@@ -196,7 +196,6 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=4096,
     )
 
     assert "\x00" not in worker_js
@@ -206,21 +205,19 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "const stderrDecoder = new TextDecoder();" in worker_js
     # Runtime shutdown and error ordering are executed by the shared witness in
     # test_wasm_startup_failures, including the emitted artifact below.
-    # The declared base reaches the shared admission, which publishes it before
-    # runtime admission; test_wasm_runner_table_base.py
-    # test_hosts_share_callable_table_admission runs this Worker's verdicts.
-    assert "manifest: { ...deploymentManifest, wasm_table_base: 4096 }," in worker_js
-    assert "publishWasmTableAdmission(tableAdmission, rtInstance);" in worker_js
+    # Runtime callables are keys the runtime resolves itself: the Worker reads
+    # the app's attestation and publishes no table base (HF-699 K3).
+    assert "readCallableTableAttestation({" in worker_js
+    assert "wasm_table_base" not in worker_js
+    assert "MOLT_WASM_TABLE_BASE" not in worker_js
     assert (
         'const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";'
         in worker_js
     )
     assert "[WEBGPU_DISPATCH_HOST_IMPORT]: () => -ENOSYS," in worker_js
     assert "const { ENOSYS," in worker_js
-    assert "const planReservedRuntimeDispatch = ({" in worker_js
-    assert "appOwnsReservedTrampoline" not in worker_js
-    assert "dispatchReservedRuntimeCallable" in worker_js
-    assert "reservedDispatch.dispatchReservedRuntimeCallable" in worker_js
+    assert "ReservedRuntime" not in worker_js
+    assert "reservedRuntime" not in worker_js
 
 
 def test_build_isolate_import_ops_initializes_code_slots() -> None:
@@ -881,30 +878,20 @@ class TestSplitRuntimeArtifacts:
         runtime = _require_split_artifact(out_dir, "molt_runtime.wasm")
         assert "molt_module_import" in _collect_export_names(runtime)
 
-    def test_worker_uses_backend_wasm_table_base(self, split_build_a):
+    def test_worker_publishes_no_table_base(
+        self, split_build_a: tuple[Path, object]
+    ) -> None:
+        """Runtime callables are keys, so neither the manifest nor the worker
+        publishes a table base to the runtime (HF-699 K3)."""
         out_dir, _ = split_build_a
-        app_wasm = _require_split_artifact(out_dir, "app.wasm")
         worker_js = _require_split_artifact(out_dir, "worker.js")
         manifest = _require_split_artifact(out_dir, "manifest.json")
 
         manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
-        wasm_table_base = manifest_data["wasm_table_base"]
-        assert wasm_table_base is not None, (
-            "split-runtime manifest must preserve the backend-emitted "
-            "wasm_table_base; table-ref exports are validation facts, not "
-            "fallback authority"
-        )
-
-        entries = wasm_artifact.read_wasm_callable_table_attestation(app_wasm)
-        assert all(entry.slot >= wasm_table_base for entry in entries)
-
+        assert "wasm_table_base" not in manifest_data
         worker_content = worker_js.read_text(encoding="utf-8")
-        assert (
-            f"molt_set_wasm_table_base(BigInt({wasm_table_base}))" in worker_content
-        ), (
-            "worker.js must propagate the backend's wasm_table_base into the runtime; "
-            f"expected {wasm_table_base}"
-        )
+        assert "molt_set_wasm_table_base" not in worker_content
+        assert "MOLT_WASM_TABLE_BASE" not in worker_content
 
 
 @pytest.mark.slow
@@ -1875,12 +1862,6 @@ class TestWorkerJsContent:
         assert "bindRuntimeFunctionImports" in content
         assert "name => runtimeImportExportNames[name] || null" in content
         assert "molt_string_from_bytes" in content
-
-    def test_worker_sets_runtime_table_base(self, split_build_a):
-        content = self._read_worker(split_build_a)
-        assert "molt_set_wasm_table_base" in content, (
-            "worker.js must propagate the computed wasm table base into the runtime"
-        )
 
     def test_worker_runs_runtime_shutdown(self, split_build_a, tmp_path: Path):
         from molt.browser_asset_closure import canonical_wasm_loader_asset_bytes

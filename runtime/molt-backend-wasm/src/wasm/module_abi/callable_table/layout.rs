@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use wasm_encoder::{EntityType, ExportKind, RefType, TableType};
 
-use super::super::poll_table::WasmPollTableLayout;
+use super::super::poll_keys::WasmRuntimePollKeys;
 use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use super::{
     CallableIdentity, WasmCallableTableEntry, WasmCallableTablePlan, WasmCallableTrampolineEntry,
@@ -11,20 +11,16 @@ use super::{
 use crate::wasm::WasmBackend;
 use crate::wasm::module_abi::WasmNativeCallableImports;
 use crate::wasm::module_abi::user_functions::WasmUserFunctionImports;
-use crate::wasm_abi::{
-    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    ReservedRuntimeCallableDispatch, runtime_callable_import, wasm_runtime_import,
-};
-use crate::wasm_table::{
-    WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableSlot, WasmFunctionSymbol,
-};
+use crate::wasm_abi::{runtime_callable_import, wasm_runtime_import};
+use crate::wasm_table::{WasmCallableTableRole, WasmCallableTableSlot, WasmFunctionSymbol};
 use crate::{SimpleIR, TrampolineBehavior, TrampolineKind, TrampolineSpec};
 
+/// The app's callable-table regions. Every slot belongs to the app: runtime
+/// callables and runtime polls are keys (HF-699 K1), so no region is reserved
+/// for the runtime and the table starts at the app base in every layout (K3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CallableTableRegionLayout {
-    fixed_shared_runtime_abi_slot_end: u32,
-    reserved_runtime_callable_table_start: u32,
-    reserved_runtime_trampoline_table_start: u32,
+    keyed_trampoline_table_start: u32,
     compact_builtin_table_start: u32,
     compact_builtin_trampoline_table_start: u32,
     app_callable_resolver_table_start: u32,
@@ -36,7 +32,7 @@ struct CallableTableRegionLayout {
     table_min: u32,
     user_func_start: u32,
     app_callable_resolver_func_index: Option<u32>,
-    reserved_runtime_trampoline_func_start: u32,
+    keyed_trampoline_func_start: u32,
     compact_builtin_trampoline_func_start: u32,
     user_trampoline_start: u32,
 }
@@ -45,19 +41,20 @@ impl CallableTableRegionLayout {
     #[allow(clippy::too_many_arguments)]
     fn build(
         table_base: u32,
-        fixed_shared_runtime_abi_base: Option<u32>,
         user_func_start: u32,
-        poll_table_prefix: u32,
-        reserved_runtime_callable_count: u32,
+        keyed_trampoline_count: u64,
         compact_builtin_count: u64,
         compact_builtin_trampoline_count: u32,
         app_callable_resolver_name_count: u64,
         user_func_count: u64,
         defined_user_func_count: u64,
-        reserved_runtime_trampoline_count: u64,
         native_initializer_count: u64,
         compiled_resolver_entries: bool,
     ) -> Result<Self, String> {
+        let keyed_trampoline_count = checked_u32_count(
+            "keyed runtime callable trampoline count",
+            keyed_trampoline_count,
+        )?;
         let compact_builtin_count = checked_u32_count(
             "compact builtin callable-table count",
             compact_builtin_count,
@@ -69,10 +66,6 @@ impl CallableTableRegionLayout {
         let user_func_count = checked_u32_count("user function count", user_func_count)?;
         let defined_user_func_count =
             checked_u32_count("defined user function count", defined_user_func_count)?;
-        let reserved_runtime_trampoline_count = checked_u32_count(
-            "reserved runtime trampoline count",
-            reserved_runtime_trampoline_count,
-        )?;
         let native_initializer_count =
             checked_u32_count("native initializer count", native_initializer_count)?;
         let resolver_required = app_callable_resolver_name_count != 0 || compiled_resolver_entries;
@@ -86,16 +79,11 @@ impl CallableTableRegionLayout {
             )?
         };
 
-        let reserved_runtime_callable_table_start = poll_table_prefix;
-        let reserved_runtime_trampoline_table_start = checked_add(
-            "reserved runtime callable-table end",
-            reserved_runtime_callable_table_start,
-            reserved_runtime_callable_count,
-        )?;
+        let keyed_trampoline_table_start = 0;
         let compact_builtin_table_start = checked_add(
-            "reserved runtime trampoline-table end",
-            reserved_runtime_trampoline_table_start,
-            reserved_runtime_callable_count,
+            "keyed runtime callable trampoline-table end",
+            keyed_trampoline_table_start,
+            keyed_trampoline_count,
         )?;
         let compact_builtin_trampoline_table_start = checked_add(
             "compact builtin callable-table end",
@@ -130,8 +118,7 @@ impl CallableTableRegionLayout {
             user_func_count,
         )?;
         // Native initializers are imports: they own app table slots, never
-        // defined function indices, and always sit above the fixed runtime
-        // prefix so split runtime/app builds publish them from the app side.
+        // defined function indices.
         let native_initializer_table_start = checked_add(
             "user trampoline-table end",
             user_trampoline_table_start,
@@ -142,32 +129,10 @@ impl CallableTableRegionLayout {
             native_initializer_table_start,
             native_initializer_count,
         )?;
-        let fixed_shared_runtime_abi_slot_end = if fixed_shared_runtime_abi_base.is_some() {
-            compact_builtin_table_start
-        } else {
-            0
-        };
-        if let Some(runtime_base) = fixed_shared_runtime_abi_base {
-            let runtime_prefix_end = checked_add(
-                "fixed shared runtime callable-table boundary",
-                runtime_base,
-                fixed_shared_runtime_abi_slot_end,
-            )?;
-            if runtime_prefix_end > table_base {
-                return Err(format!(
-                    "shared runtime callable-table prefix {runtime_base}..{runtime_prefix_end} overlaps finalized app base {table_base}"
-                ));
-            }
-        }
-        let app_table_len = table_len
-            .checked_sub(fixed_shared_runtime_abi_slot_end)
-            .ok_or_else(|| {
-                "shared runtime callable-table prefix exceeds table length".to_string()
-            })?;
         let table_min = checked_add(
             "finalized app callable-table boundary",
             table_base,
-            app_table_len,
+            table_len,
         )?;
 
         let user_func_end = checked_add(
@@ -176,16 +141,15 @@ impl CallableTableRegionLayout {
             defined_user_func_count,
         )?;
         let app_callable_resolver_func_index = resolver_required.then_some(user_func_end);
-        let builtin_trampoline_start = checked_add(
+        let keyed_trampoline_func_start = checked_add(
             "app callable resolver function end",
             user_func_end,
             u32::from(app_callable_resolver_func_index.is_some()),
         )?;
-        let reserved_runtime_trampoline_func_start = builtin_trampoline_start;
         let compact_builtin_trampoline_func_start = checked_add(
-            "reserved runtime trampoline function end",
-            reserved_runtime_trampoline_func_start,
-            reserved_runtime_trampoline_count,
+            "keyed runtime callable trampoline function end",
+            keyed_trampoline_func_start,
+            keyed_trampoline_count,
         )?;
         let user_trampoline_start = checked_add(
             "compact builtin trampoline function end",
@@ -197,11 +161,8 @@ impl CallableTableRegionLayout {
             user_trampoline_start,
             user_func_count,
         )?;
-
         Ok(Self {
-            fixed_shared_runtime_abi_slot_end,
-            reserved_runtime_callable_table_start,
-            reserved_runtime_trampoline_table_start,
+            keyed_trampoline_table_start,
             compact_builtin_table_start,
             compact_builtin_trampoline_table_start,
             app_callable_resolver_table_start,
@@ -213,7 +174,7 @@ impl CallableTableRegionLayout {
             table_min,
             user_func_start,
             app_callable_resolver_func_index,
-            reserved_runtime_trampoline_func_start,
+            keyed_trampoline_func_start,
             compact_builtin_trampoline_func_start,
             user_trampoline_start,
         })
@@ -293,26 +254,23 @@ impl WasmBackend {
                     self.import_ids[import] != u32::MAX
                 })
                 .collect::<BTreeSet<_>>();
-        let split_runtime_app_table_base = self.options.split_runtime_app_table_base;
-        let table_base = split_runtime_app_table_base.unwrap_or(self.options.table_base);
-        let fixed_shared_runtime_abi_base =
-            split_runtime_app_table_base.map(|_| self.options.table_base);
-        let poll_table = WasmPollTableLayout::build(self.options.runtime_poll_slots);
-        let poll_table_prefix = poll_table.prefix_len();
+        let table_base = self
+            .options
+            .split_runtime_app_table_base
+            .unwrap_or(self.options.table_base);
         // Wrapper functions are part of the defined-function prefix. Emit them
         // before freezing the region layout so every downstream user/trampoline
         // index is derived from the actual next function index, not the
         // pre-wrapper snapshot.
         let builtin_wrapper_indices =
             self.emit_runtime_callable_wrappers(&runtime_callable_plan, reloc_enabled);
-        let table_import_wrappers = poll_table.emit_import_wrappers(self, reloc_enabled);
-        let reserved_runtime_trampoline_count = RESERVED_RUNTIME_CALLABLE_SPECS.len();
         let layout = CallableTableRegionLayout::build(
             table_base,
-            fixed_shared_runtime_abi_base,
             self.func_count,
-            poll_table_prefix,
-            RESERVED_RUNTIME_CALLABLE_COUNT,
+            usize_count(
+                "keyed runtime callable trampoline count",
+                runtime_callable_plan.keyed_trampoline_count(),
+            ),
             usize_count(
                 "compact builtin callable-table count",
                 compact_builtin_table_len,
@@ -329,10 +287,6 @@ impl WasmBackend {
                     .iter()
                     .filter(|function| !function.is_extern)
                     .count(),
-            ),
-            usize_count(
-                "reserved runtime trampoline count",
-                reserved_runtime_trampoline_count,
             ),
             usize_count(
                 "native initializer count",
@@ -362,17 +316,6 @@ impl WasmBackend {
         // (observed as the app-callable-resolver executing the wrong runtime
         // function). Double writes and unwritten slots fail the build loudly.
         let mut slots = WasmCallableTableSlots::new(layout.table_len);
-        for (slot, func_index) in poll_table
-            .initial_table_indices(&table_import_wrappers, &self.import_ids, sentinel_func_idx)
-            .into_iter()
-            .enumerate()
-        {
-            slots.set(
-                usize_index("poll callable-table slot", slot),
-                func_index,
-                "poll table prefix",
-            );
-        }
         let mut func_to_table_idx = BTreeMap::new();
         let mut func_to_index = BTreeMap::new();
         func_to_index.insert(
@@ -387,43 +330,14 @@ impl WasmBackend {
             "molt_sys_set_version_info".to_string(),
             self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SysSetVersionInfo],
         );
-        poll_table.seed_function_table_slots(&mut func_to_table_idx);
+        WasmRuntimePollKeys::new(self.options.runtime_poll_slots)
+            .seed_identities(&mut func_to_table_idx);
 
-        let reserved_runtime_callable_table_start = layout.reserved_runtime_callable_table_start;
-        let reserved_runtime_trampoline_table_start =
-            layout.reserved_runtime_trampoline_table_start;
         let compact_builtin_table_start = layout.compact_builtin_table_start;
         let compact_builtin_trampoline_table_start = layout.compact_builtin_trampoline_table_start;
         let app_callable_resolver_table_start = layout.app_callable_resolver_table_start;
         let user_func_table_start = layout.user_func_table_start;
         let user_trampoline_table_start = layout.user_trampoline_table_start;
-        let split_runtime_shared_abi_slot_end =
-            usize::try_from(layout.fixed_shared_runtime_abi_slot_end)
-                .expect("u32 callable-table prefix must fit usize");
-
-        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
-            let runtime_name = spec.runtime_name.to_string();
-            let import_idx = self.import_ids[spec.import];
-            let direct_target_idx = if spec.dispatch == ReservedRuntimeCallableDispatch::Direct {
-                if import_idx == u32::MAX {
-                    panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
-                }
-                import_idx
-            } else {
-                sentinel_func_idx
-            };
-            let table_slot = region_index(
-                "reserved runtime callable-table slot",
-                reserved_runtime_callable_table_start,
-                spec.index,
-            );
-            func_to_table_idx.insert(
-                runtime_name.clone(),
-                CallableIdentity::TableSlot(table_slot),
-            );
-            func_to_index.insert(runtime_name, direct_target_idx);
-            slots.set(table_slot, direct_target_idx, spec.runtime_name);
-        }
 
         let mut compact_slot = 0u32;
         for callable in runtime_callable_plan.compact_builtin_runtime_callables() {
@@ -465,36 +379,51 @@ impl WasmBackend {
 
         let user_func_start = layout.user_func_start;
         let app_callable_resolver_func_index = layout.app_callable_resolver_func_index;
-        let reserved_runtime_trampoline_func_start = layout.reserved_runtime_trampoline_func_start;
         let compact_builtin_trampoline_func_start = layout.compact_builtin_trampoline_func_start;
         let user_trampoline_start = layout.user_trampoline_start;
 
         let mut func_to_trampoline_idx = BTreeMap::new();
         let mut trampoline_entries = Vec::new();
-        let mut reserved_runtime_trampoline_func_offset = 0u32;
-        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
-            let runtime_name = spec.runtime_name.to_string();
-            let trampoline_table_idx = region_index(
-                "reserved runtime trampoline-table slot",
-                reserved_runtime_trampoline_table_start,
-                spec.index,
+        // A reserved runtime callable named by `builtin_func` is its key
+        // (HF-699 K1). Its trampoline follows native's for the same call
+        // shape: an app trampoline that unpacks argv and calls the import, or
+        // the key itself for an entry that consumes the call frame.
+        let mut keyed_trampoline_offset = 0u32;
+        for callable in runtime_callable_plan.keyed_runtime_callables() {
+            let runtime_name = callable.runtime_name.clone();
+            func_to_table_idx.insert(
+                runtime_name.clone(),
+                CallableIdentity::RuntimeKey(callable.key),
             );
-            func_to_trampoline_idx.insert(runtime_name.clone(), trampoline_table_idx);
-            let import_idx = self.import_ids[spec.import];
-            if import_idx == u32::MAX {
-                panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
+            if !callable.needs_app_trampoline() {
+                func_to_trampoline_idx
+                    .insert(runtime_name, CallableIdentity::RuntimeKey(callable.key));
+                continue;
             }
-            let expected_func_index = region_index(
-                "reserved runtime trampoline function index",
-                reserved_runtime_trampoline_func_start,
-                reserved_runtime_trampoline_func_offset,
+            let import_idx = self.import_ids[callable.import];
+            if import_idx == u32::MAX {
+                panic!("keyed runtime callable import unexpectedly stripped for {runtime_name}");
+            }
+            let trampoline_slot = region_index(
+                "keyed runtime callable trampoline-table slot",
+                layout.keyed_trampoline_table_start,
+                keyed_trampoline_offset,
             );
-            reserved_runtime_trampoline_func_offset = reserved_runtime_trampoline_func_offset
+            let expected_func_index = region_index(
+                "keyed runtime callable trampoline function index",
+                layout.keyed_trampoline_func_start,
+                keyed_trampoline_offset,
+            );
+            keyed_trampoline_offset = keyed_trampoline_offset
                 .checked_add(1)
-                .expect("reserved runtime trampoline function offset overflow");
+                .expect("keyed runtime callable trampoline offset overflow");
+            func_to_trampoline_idx.insert(
+                runtime_name.clone(),
+                CallableIdentity::TableSlot(trampoline_slot),
+            );
             push_trampoline_entry(
                 &mut slots,
-                trampoline_table_idx,
+                trampoline_slot,
                 &mut trampoline_entries,
                 WasmCallableTrampolineEntry {
                     name: runtime_name,
@@ -504,16 +433,14 @@ impl WasmBackend {
                         self,
                         import_symbols,
                         table_base,
-                        fixed_shared_runtime_abi_base,
-                        split_runtime_shared_abi_slot_end,
-                        trampoline_table_idx,
+                        trampoline_slot,
                         expected_func_index,
                         WasmCallableTableRole::Trampoline,
                     ),
                     spec: TrampolineSpec {
-                        arity: spec.arity,
+                        arity: callable.arity,
                         has_closure: false,
-                        kind: TrampolineKind::from(spec.trampoline_abi),
+                        kind: TrampolineKind::from(callable.trampoline_abi),
                         closure_size: 0,
                         target_has_ret: true,
                     },
@@ -545,8 +472,6 @@ impl WasmBackend {
                         self,
                         import_symbols,
                         table_base,
-                        fixed_shared_runtime_abi_base,
-                        split_runtime_shared_abi_slot_end,
                         table_slot,
                         import_idx,
                         WasmCallableTableRole::ResolverEntry,
@@ -559,8 +484,6 @@ impl WasmBackend {
                     self,
                     import_symbols,
                     table_base,
-                    fixed_shared_runtime_abi_base,
-                    split_runtime_shared_abi_slot_end,
                     resolver_slot,
                     resolver_func_index,
                     WasmCallableTableRole::AppCallableResolver,
@@ -590,7 +513,7 @@ impl WasmBackend {
                 compact_builtin_trampoline_table_start,
                 offset,
             );
-            func_to_trampoline_idx.insert(name.clone(), idx);
+            func_to_trampoline_idx.insert(name.clone(), CallableIdentity::TableSlot(idx));
             let expected_func_index = region_index(
                 "compact builtin trampoline function index",
                 compact_builtin_trampoline_func_start,
@@ -615,8 +538,6 @@ impl WasmBackend {
                         self,
                         import_symbols,
                         table_base,
-                        fixed_shared_runtime_abi_base,
-                        split_runtime_shared_abi_slot_end,
                         table_slot,
                         target_func_index,
                         WasmCallableTableRole::DirectCallable,
@@ -663,7 +584,7 @@ impl WasmBackend {
                 user_trampoline_table_start,
                 offset,
             );
-            func_to_trampoline_idx.insert(func_ir.name.clone(), idx);
+            func_to_trampoline_idx.insert(func_ir.name.clone(), CallableIdentity::TableSlot(idx));
             let expected_func_index = region_index(
                 "user trampoline function index",
                 user_trampoline_start,
@@ -704,8 +625,6 @@ impl WasmBackend {
                         self,
                         import_symbols,
                         table_base,
-                        fixed_shared_runtime_abi_base,
-                        split_runtime_shared_abi_slot_end,
                         table_slot,
                         target_func_index,
                         WasmCallableTableRole::DirectCallable,
@@ -751,8 +670,6 @@ impl WasmBackend {
                         self,
                         import_symbols,
                         table_base,
-                        fixed_shared_runtime_abi_base,
-                        split_runtime_shared_abi_slot_end,
                         slot,
                         function_index,
                         WasmCallableTableRole::DirectCallable,
@@ -789,7 +706,10 @@ impl WasmBackend {
                     );
                 }
             }
-            for (name, slot) in &func_to_trampoline_idx {
+            for (name, identity) in &func_to_trampoline_idx {
+                let CallableIdentity::TableSlot(slot) = identity else {
+                    continue;
+                };
                 if *slot == target_slot || table_base + *slot == target_slot {
                     eprintln!(
                         "[molt wasm table-slot] kind=trampoline raw_slot={} table_index={} name={}",
@@ -813,9 +733,7 @@ impl WasmBackend {
 
         WasmCallableTablePlan {
             table_base,
-            fixed_shared_runtime_abi_base,
             table_entries,
-            split_runtime_shared_abi_slot_end,
             func_to_table_idx,
             func_to_index,
             func_to_trampoline_idx,
@@ -863,39 +781,15 @@ fn callable_target(
     backend: &WasmBackend,
     import_symbols: ImportSymbolAuthorities<'_>,
     table_base: u32,
-    fixed_shared_runtime_abi_base: Option<u32>,
-    shared_runtime_abi_slot_end: usize,
     slot: u32,
     func_index: u32,
     role: WasmCallableTableRole,
 ) -> WasmCallableTableSlot {
-    let fixed_prefix_len = u32::try_from(shared_runtime_abi_slot_end)
-        .expect("shared runtime callable-table prefix exceeds wasm32 u32 capacity");
-    let (current_table_index, address) = if slot < fixed_prefix_len {
-        let base = fixed_shared_runtime_abi_base
-            .expect("fixed callable-table slot requires shared runtime base");
-        (
-            base.checked_add(slot)
-                .expect("fixed callable-table address overflow"),
-            WasmCallableTableAddress::FixedSharedRuntimeAbi {
-                finalized_app_base: table_base,
-            },
-        )
-    } else {
-        (
-            table_base
-                .checked_add(slot - fixed_prefix_len)
-                .expect("relocatable callable-table address overflow"),
-            WasmCallableTableAddress::Relocatable(function_symbol(
-                backend,
-                import_symbols,
-                func_index,
-            )),
-        )
-    };
     WasmCallableTableSlot {
-        current_table_index,
-        address,
+        current_table_index: table_base
+            .checked_add(slot)
+            .expect("relocatable callable-table address overflow"),
+        symbol: function_symbol(backend, import_symbols, func_index),
         role,
     }
 }
@@ -985,23 +879,19 @@ mod tests {
 
     fn test_region_layout(
         table_base: u32,
-        fixed_runtime_base: Option<u32>,
         function_base: u32,
         app_resolver_names: u64,
         user_functions: u64,
     ) -> Result<CallableTableRegionLayout, String> {
         CallableTableRegionLayout::build(
             table_base,
-            fixed_runtime_base,
             function_base,
-            3,
-            4,
+            2,
             5,
             5,
             app_resolver_names,
             user_functions,
             user_functions,
-            2,
             0,
             false,
         )
@@ -1009,55 +899,52 @@ mod tests {
 
     #[test]
     fn extern_user_functions_consume_table_slots_but_not_defined_function_indices() {
-        let layout =
-            CallableTableRegionLayout::build(64, None, 100, 3, 4, 5, 5, 2, 7, 5, 2, 0, false)
-                .expect("five definitions plus two extern declarations");
+        let layout = CallableTableRegionLayout::build(64, 100, 2, 5, 5, 2, 7, 5, 0, false)
+            .expect("five definitions plus two extern declarations");
 
-        assert_eq!(layout.user_trampoline_table_start, 31);
-        assert_eq!(layout.table_len, 38);
+        assert_eq!(layout.user_trampoline_table_start, 22);
+        assert_eq!(layout.table_len, 29);
         assert_eq!(layout.app_callable_resolver_func_index, Some(105));
-        assert_eq!(layout.reserved_runtime_trampoline_func_start, 106);
+        assert_eq!(layout.keyed_trampoline_func_start, 106);
         assert_eq!(layout.user_trampoline_start, 113);
     }
 
     #[test]
     fn native_initializers_take_app_owned_table_slots_without_function_indices() {
-        let layout =
-            CallableTableRegionLayout::build(512, Some(1), 100, 3, 4, 5, 5, 2, 7, 5, 2, 3, false)
-                .expect("split layout with three address-taken native initializers");
+        let layout = CallableTableRegionLayout::build(512, 100, 2, 5, 5, 2, 7, 5, 3, false)
+            .expect("layout with three address-taken native initializers");
 
-        // The fixed runtime prefix ends at the compact builtin region (slot 11).
-        assert_eq!(layout.fixed_shared_runtime_abi_slot_end, 11);
-        assert_eq!(layout.native_initializer_table_start, 38);
-        assert_eq!(layout.table_len, 41);
-        // Initializer slots 38..41 publish at app addresses 539..542.
-        assert_eq!(layout.table_min, 542);
+        assert_eq!(layout.native_initializer_table_start, 29);
+        assert_eq!(layout.table_len, 32);
+        // Initializer slots 29..32 publish at app addresses 541..544.
+        assert_eq!(layout.table_min, 544);
         assert_eq!(layout.user_trampoline_start, 113);
     }
 
     #[test]
     fn callable_table_region_layout_derives_every_boundary_once() {
-        let layout = test_region_layout(64, None, 100, 2, 7).expect("valid layout");
+        // The table starts at the app base: no region precedes the keyed
+        // trampolines, since runtime callables and polls are keys (HF-699 K3).
+        let layout = test_region_layout(64, 100, 2, 7).expect("valid layout");
 
-        assert_eq!(layout.reserved_runtime_callable_table_start, 3);
-        assert_eq!(layout.reserved_runtime_trampoline_table_start, 7);
-        assert_eq!(layout.compact_builtin_table_start, 11);
-        assert_eq!(layout.compact_builtin_trampoline_table_start, 16);
-        assert_eq!(layout.app_callable_resolver_table_start, 21);
-        assert_eq!(layout.app_callable_resolver_entry_start, Some(22));
-        assert_eq!(layout.user_func_table_start, 24);
-        assert_eq!(layout.user_trampoline_table_start, 31);
-        assert_eq!(layout.table_len, 38);
-        assert_eq!(layout.table_min, 102);
+        assert_eq!(layout.keyed_trampoline_table_start, 0);
+        assert_eq!(layout.compact_builtin_table_start, 2);
+        assert_eq!(layout.compact_builtin_trampoline_table_start, 7);
+        assert_eq!(layout.app_callable_resolver_table_start, 12);
+        assert_eq!(layout.app_callable_resolver_entry_start, Some(13));
+        assert_eq!(layout.user_func_table_start, 15);
+        assert_eq!(layout.user_trampoline_table_start, 22);
+        assert_eq!(layout.table_len, 29);
+        assert_eq!(layout.table_min, 93);
         assert_eq!(layout.app_callable_resolver_func_index, Some(107));
-        assert_eq!(layout.reserved_runtime_trampoline_func_start, 108);
+        assert_eq!(layout.keyed_trampoline_func_start, 108);
         assert_eq!(layout.compact_builtin_trampoline_func_start, 110);
         assert_eq!(layout.user_trampoline_start, 115);
     }
 
     #[test]
     fn callable_table_region_layout_rejects_count_above_wasm32_capacity() {
-        let error = test_region_layout(0, None, 0, 0, u64::from(u32::MAX) + 1)
+        let error = test_region_layout(0, 0, 0, u64::from(u32::MAX) + 1)
             .expect_err("oversized user function count must fail");
 
         assert!(error.contains("user function count"), "{error}");
@@ -1066,7 +953,7 @@ mod tests {
 
     #[test]
     fn callable_table_region_layout_rejects_resolver_length_overflow() {
-        let error = test_region_layout(0, None, 0, u64::from(u32::MAX), 0)
+        let error = test_region_layout(0, 0, u64::from(u32::MAX), 0)
             .expect_err("resolver header plus entries must not wrap");
 
         assert!(
@@ -1077,7 +964,7 @@ mod tests {
 
     #[test]
     fn callable_table_region_layout_rejects_table_boundary_overflow() {
-        let error = test_region_layout(u32::MAX, None, 0, 0, 1)
+        let error = test_region_layout(u32::MAX, 0, 0, 1)
             .expect_err("table base plus live app region must not wrap");
 
         assert!(
@@ -1088,21 +975,13 @@ mod tests {
 
     #[test]
     fn callable_table_region_layout_rejects_function_boundary_overflow() {
-        let error = test_region_layout(0, None, u32::MAX, 0, 1)
+        let error = test_region_layout(0, u32::MAX, 0, 1)
             .expect_err("function base plus user functions must not wrap");
 
         assert!(
             error.contains("user function-index region end overflow"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn callable_table_region_layout_rejects_fixed_prefix_overlap() {
-        let error = test_region_layout(10, Some(0), 0, 0, 0)
-            .expect_err("fixed runtime prefix must end before the app base");
-
-        assert!(error.contains("overlaps finalized app base"), "{error}");
     }
 
     #[test]

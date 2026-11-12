@@ -12,7 +12,6 @@ from tools.wasm_abi_gen.manifest import (
     generator_cpython_abi_link_import_signatures,
     generator_external_native_artifact_function_signatures,
     generator_external_native_artifact_import_shapes,
-    reserved_runtime_callable_base,
     synthetic_errno_table,
     resolver_error_table,
     wasm_socket_constant_table,
@@ -123,13 +122,6 @@ def render_py(
         lines.append(f'    ({slot}, "{name}"),\n')
     lines.append(")\n\n")
     lines.append(
-        "WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = "
-        f"{reserved_runtime_callable_base(data)}\n\n"
-    )
-    lines.append(
-        f"WASM_DEFAULT_APP_TABLE_BASE: int = {data['table_layout']['default_app_table_base']}\n\n"
-    )
-    lines.append(
         "WASM_CALLABLE_TABLE_SECTION_NAME: str = "
         f"{_py_string(data['callable_table_publication']['section_name'])}\n"
     )
@@ -151,21 +143,15 @@ def render_py(
         f"WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT: int = {callable_table['value_type_format']}\n\n"
     )
     lines.append(
-        "WASM_RESERVED_RUNTIME_CALLABLES: "
-        "tuple[tuple[int, str, str, int, str], ...] = (\n"
+        "WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n"
     )
     for entry in reserved_callables:
         lines.append(
             f'    ({entry["index"]}, "{entry["runtime_name"]}", '
-            f'"{entry["import_name"]}", {entry["callable_arity"]}, '
-            f'"{entry.get("callable_dispatch", "direct")}")'
+            f'"{entry["import_name"]}", {entry["callable_arity"]})'
             ",\n"
         )
     lines.append(")\n\n")
-    lines.append(
-        "WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = "
-        "len(WASM_RESERVED_RUNTIME_CALLABLES)\n\n"
-    )
     # Callable admission/arity is distinct from raw transport signatures, but
     # names and result types already belong to the normalized import authority.
     lines.append("WASM_RUNTIME_CALLABLE_ARITY_BY_IMPORT: dict[str, int] = {\n")

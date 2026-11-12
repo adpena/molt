@@ -171,10 +171,10 @@ def test_cli_wasm_binary_inspection_reads_active_data_end(tmp_path) -> None:
 def test_split_runtime_callable_layout_reads_artifact_once(
     tmp_path, monkeypatch
 ) -> None:
-    fixed_prefix_len = wasm_artifact.WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
-        wasm_artifact.WASM_RESERVED_RUNTIME_CALLABLES
-    )
-    app_base = 1 + fixed_prefix_len + 16
+    # The runtime owns only the slots its element segment publishes, from the
+    # default table base; no runtime-callable region is modeled (HF-699 K3).
+    runtime_entries = 24
+    app_base = 1 + runtime_entries + 16
     import_section = wasm_artifact._write_wasm_varuint(1) + _wasm_import(
         "env",
         "__indirect_function_table",
@@ -189,10 +189,9 @@ def test_split_runtime_callable_layout_reads_artifact_once(
         + b"\x41"
         + wasm_artifact._write_wasm_varuint(1)
         + b"\x0b"
-        + wasm_artifact._write_wasm_varuint(fixed_prefix_len)
+        + wasm_artifact._write_wasm_varuint(runtime_entries)
         + b"".join(
-            wasm_artifact._write_wasm_varuint(index)
-            for index in range(fixed_prefix_len)
+            wasm_artifact._write_wasm_varuint(index) for index in range(runtime_entries)
         )
     )
     wasm_path = tmp_path / "runtime.wasm"
@@ -214,10 +213,10 @@ def test_split_runtime_callable_layout_reads_artifact_once(
     layout = wasm_artifact.read_wasm_split_runtime_callable_layout(wasm_path)
 
     assert reads == 1
-    assert layout.runtime_callable_base == 1
-    assert layout.runtime_occupied_end == 1 + fixed_prefix_len
-    assert layout.runtime_table_min == app_base
-    assert layout.fixed_prefix_len == fixed_prefix_len
+    assert layout == wasm_artifact.WasmSplitRuntimeCallableLayout(
+        runtime_occupied_end=1 + runtime_entries,
+        runtime_table_min=app_base,
+    )
 
 
 def test_cli_wasm_binary_inspection_reads_section_and_function_facts(

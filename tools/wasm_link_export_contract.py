@@ -166,7 +166,6 @@ def _public_output_export_symbol_map(
             for name in (
                 compiled_execution_symbol("molt_host_init"),
                 compiled_execution_symbol("molt_main"),
-                "molt_set_wasm_table_base",
             )
             if name in export_symbol_map
         }

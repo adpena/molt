@@ -666,8 +666,6 @@ class RustWasmFactsProvider:
                     ",".join(
                         str(value)
                         for value in (
-                            layout.fixed_prefix_base,
-                            layout.fixed_prefix_len,
                             layout.finalized_app_base,
                             layout.app_entry_count,
                         )

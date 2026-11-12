@@ -6,7 +6,7 @@
 pub(crate) const CALLABLE_TABLE_SECTION_NAME: &str = "molt.callable_table";
 pub(crate) const CALLABLE_TABLE_SECTION_VERSION: u32 = 1;
 pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = "molt.callable_table.layout";
-pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = 1;
+pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = 2;
 pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = 4;
 pub const WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: &[&str] = &[
     "MOLT_CAPABILITIES",

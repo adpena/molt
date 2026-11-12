@@ -320,7 +320,10 @@ impl MoltRuntimeLifetime {
 
     pub(super) fn validate_context_schema(&mut self, store: &mut Store<HostState>) -> Result<()> {
         if let ContextSchemaAdmission::Offered(fingerprint) = &self.schema {
-            let offered = fingerprint.call(&mut *store, ())? as u64;
+            let offered = fingerprint
+                .call(&mut *store, ())
+                .context("call molt_attached_context_abi_fingerprint")?
+                as u64;
             if offered != ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT {
                 bail!(
                     "MOLT_ATTACHED_CONTEXT_ABI_MISMATCH: runtime fingerprint differs from application schema"

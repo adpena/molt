@@ -187,8 +187,9 @@ pub struct WasmCanonicalExportTypeFact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CallableTableLayout {
-    pub fixed_prefix_base: u32,
-    pub fixed_prefix_len: u32,
+    /// The first app-owned slot. Slots below it belong to the runtime's own
+    /// address-taken functions; no slot is reserved for runtime callables,
+    /// which are keys (HF-699 K3).
     pub finalized_app_base: u32,
     /// Artifact-local app entries; zero for a published shared runtime.
     pub app_entry_count: u32,

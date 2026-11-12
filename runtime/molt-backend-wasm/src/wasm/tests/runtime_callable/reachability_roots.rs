@@ -301,7 +301,7 @@ fn unreachable_runtime_callables_are_not_imported() {
 }
 
 #[test]
-fn poll_table_runtime_callables_remain_table_roots() {
+fn runtime_polls_are_keys_not_import_roots() {
     let func = wasm_test_function(
         "poll_table_roots",
         vec![],
@@ -321,14 +321,16 @@ fn poll_table_runtime_callables_remain_table_roots() {
 
     wasmparser::Validator::new()
         .validate_all(&wasm)
-        .expect("poll-table root module must be valid WASM");
+        .expect("poll key module must be valid WASM");
 
     let imports: BTreeSet<String> = wasm_function_import_names(&wasm).into_iter().collect();
+    // HF-699 K1: compiled code names a runtime poll by its key, so no poll
+    // import is a root of an empty program.
     for spec in POLL_TABLE_IMPORTS {
         let import_name = spec.import.name();
         assert!(
-            imports.contains(import_name),
-            "poll-table root import {import_name} must remain available for slot {}",
+            !imports.contains(import_name),
+            "runtime poll {import_name} is a key (offset {}), not an import root",
             spec.table_slot
         );
     }

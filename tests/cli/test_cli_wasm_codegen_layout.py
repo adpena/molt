@@ -29,7 +29,9 @@ from tests.runtime_build_identity_helper import runtime_wasm_codegen_binding_fix
 @pytest.mark.parametrize(
     ("linked", "split_runtime", "pages", "table_base"),
     [
-        (True, True, 2, 1),
+        # A split app's base follows the runtime's last entry: no slot is
+        # reserved for runtime callables (HF-699 K3).
+        (True, True, 2, 256),
         (True, False, 3, 256),
         (False, False, 2, 256),
     ],
@@ -185,11 +187,11 @@ def test_codegen_and_all_cache_hits_preserve_runtime_layout(
         cache_enabled=cache_tier != "cold",
     )
     assert error is None
-    assert result is not None and result.wasm_table_base == 1
+    assert result is not None and result.wasm_table_base == 256
     assert result.cache_hit is (cache_tier != "cold")
     if cache_tier == "cold":
         assert len(emitted) == 1
-        assert emitted[0]["MOLT_WASM_TABLE_BASE"] == "1"
+        assert emitted[0]["MOLT_WASM_TABLE_BASE"] == "256"
         assert emitted[0]["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "256"
         bound = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
         assert emitted[0]["MOLT_WASM_RUNTIME_POLL_SLOTS"] == str(

@@ -1090,7 +1090,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
 
 
 @pytest.mark.slow
-def test_linked_wasm_exports_table_base_setter_when_available(
+def test_linked_wasm_exports_no_table_base_setter(
     tmp_path: Path,
 ) -> None:
     root = Path(__file__).resolve().parents[1]
@@ -1120,4 +1120,5 @@ def test_linked_wasm_exports_table_base_setter_when_available(
     )
     assert probe.returncode == 0, probe.stderr
     names = json.loads(probe.stdout)
-    assert "molt_set_wasm_table_base" in names
+    # Runtime callables are keys, so no host publishes a table base (HF-699 K3).
+    assert "molt_set_wasm_table_base" not in names

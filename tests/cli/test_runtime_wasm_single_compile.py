@@ -778,11 +778,6 @@ def test_unconsumed_tooling_does_not_change_runtime_source_identity(tmp_path):
 
 
 def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> None:
-    from molt._wasm_abi_generated import (
-        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-        WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
-    )
-
     root = _compiler_root()
     shared, reloc = _specs(root)
     assert shared.fingerprint is not None and reloc.fingerprint is not None
@@ -797,11 +792,8 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
     # ...but the artifacts have distinct content identities (link args differ).
     assert shared.fingerprint["hash"] != reloc.fingerprint["hash"]
     # Shared link flags carry the split-runtime import ABI.
-    table_base = (
-        1
-        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
-        + 2 * WASM_RESERVED_RUNTIME_CALLABLE_COUNT
-    )
+    # The shared runtime links at wasm-ld's default table base: runtime
+    # callables are keys, so it reserves no table region (HF-699 K3).
     assert shared.link_flags == (
         "-C",
         "link-arg=--import-memory",
@@ -811,8 +803,6 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
         "link-arg=--import-table",
         "-C",
         "link-arg=--growable-table",
-        "-C",
-        f"link-arg=--table-base={table_base}",
         *shared.runtime_exports,
     )
     assert reloc.link_flags == reloc.runtime_exports
@@ -2363,10 +2353,6 @@ def test_precompile_build_failures_reach_exact_routing_boundary(
 
 def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
     """Real modules with a typed add export and an independent linking symbol."""
-    from molt._wasm_abi_generated import (
-        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-        WASM_RESERVED_RUNTIME_CALLABLES,
-    )
     from molt.wasm_artifact import _build_wasm_sections
     from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
 
@@ -2382,9 +2368,9 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
         + _wasm_string("memory")
         + b"\x02\x00\x02"
     )
-    prefix = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
-        WASM_RESERVED_RUNTIME_CALLABLES
-    )
+    # The runtime's own address-taken functions: one entry at wasm-ld's
+    # default table base. No slot is reserved for runtime callables.
+    runtime_entries = 1
     # Physical add takes the attached context and both boxed operands.
     signature = b"\x01\x60\x03\x7e\x7e\x7e\x01\x7e"
     code = b"\x01\x04\x00\x42\x00\x0b"
@@ -2395,7 +2381,12 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
                 (2, imports),
                 (3, b"\x01\x00"),
                 (7, b"\x01" + _wasm_string(_physical("molt_add")) + b"\x00\x00"),
-                (9, b"\x01\x00\x41\x01\x0b" + _wasm_u32(prefix) + bytes(prefix)),
+                (
+                    9,
+                    b"\x01\x00\x41\x01\x0b"
+                    + _wasm_u32(runtime_entries)
+                    + bytes(runtime_entries),
+                ),
                 (10, code),
             ]
         )
@@ -2498,7 +2489,9 @@ def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_parsing(
     monkeypatch.setattr(wasm_linking_symbols, "wasm_linking_defined_names", names)
     binding = runtime_wasm_generation.bind_runtime_wasm_codegen(generation, {"add"})
     layout = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
-    assert layout.table_base == 1
+    # The app's region starts at the shared runtime's table minimum (the
+    # fixture imports 256 slots), after the runtime's own entries (HF-699 K3).
+    assert layout.table_base == 256
     assert reads == [generation.shared]
     assert (
         ctx.accept_generation(observed_generation=binding.generation)

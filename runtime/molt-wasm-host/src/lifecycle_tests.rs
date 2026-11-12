@@ -330,7 +330,6 @@ fn lifetime_export_admission_precedes_any_guest_start() {
                     launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
-                    wasm_table_admission: WasmTableAdmission::Empty,
                 },
             )
             .unwrap_err();
@@ -346,8 +345,16 @@ fn lifetime_export_admission_precedes_any_guest_start() {
 #[test]
 fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
     let engine = build_engine().unwrap();
-    for (linked, fail_table_setup) in [(true, true), (false, true), (false, false)] {
-        let runtime_fields = r#"
+    // A setup step after runtime admission fails: the runtime's context
+    // schema check traps, or a split app's start function traps.
+    for (linked, fail_schema_check) in [(true, true), (false, true), (false, false)] {
+        let fingerprint = if fail_schema_check {
+            "i32.const 1 i32.const 0 i32.div_s drop i64.const 0"
+        } else {
+            "i64.const @CONTEXT_FINGERPRINT@"
+        };
+        let runtime_fields = format!(
+            r#"
             (func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param i64))
             (func (export "molt_main_exit_status") (result i64) i64.const 0)
             (func (export "molt_runtime_execution_enter") (result i64) unreachable)
@@ -358,10 +365,8 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
  i64.const 0)
 (func (export "molt_exception_pending_detached") (result i64)
  i64.const 0)
-            (func (export "molt_set_wasm_table_base") (param i64)
-                i32.const 1 i32.const 0 i32.div_s drop)
 
-        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) {fingerprint})
         (func (export "molt_attached_context") (result i64) i64.const 32768)
         (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
@@ -370,7 +375,8 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
             local.get $scope i64.const 1 i64.ne if unreachable end)
 
 
-"#;
+"#
+        );
         let runtime = (!linked).then(|| {
             Module::new(
                 &engine,
@@ -385,12 +391,12 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
         } else {
             r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#
         };
-        let core_start = if fail_table_setup {
+        let core_start = if fail_schema_check {
             ""
         } else {
             "(func $start i32.const 1 i32.const 0 i32.div_s drop) (start $start)"
         };
-        let app_runtime_fields = if linked { runtime_fields } else { "" };
+        let app_runtime_fields = if linked { runtime_fields.as_str() } else { "" };
         let application = Module::new(
             &engine,
             crate::execution_fixture::render(format!(
@@ -420,14 +426,6 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
                 launch_environment: &[],
                 vfs_envs: &[],
                 guest_args: &[],
-                wasm_table_admission: if fail_table_setup {
-                    WasmTableAdmission::Publish {
-                        base: std::num::NonZeroU32::new(4096).unwrap(),
-                        export_name: "molt_set_wasm_table_base".to_string(),
-                    }
-                } else {
-                    WasmTableAdmission::Empty
-                },
             },
         )
         .unwrap_err();
@@ -440,8 +438,8 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
         let text = format!("{error:#}");
         assert!(text.contains("finalize Molt application runtime"), "{text}");
         assert!(
-            text.contains(if fail_table_setup {
-                "call molt_set_wasm_table_base"
+            text.contains(if fail_schema_check {
+                "call molt_attached_context_abi_fingerprint"
             } else {
                 "instantiate output"
             }),
@@ -645,7 +643,6 @@ fn failed_runtime_schema_offer_keeps_the_published_cleanup_owner() {
                 launch_environment: &[],
                 vfs_envs: &[],
                 guest_args: &[],
-                wasm_table_admission: WasmTableAdmission::Empty,
             },
         )
         .unwrap_err();

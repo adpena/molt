@@ -942,10 +942,6 @@ def runtime_wasm_codegen_binding_fixture(
     root: Path, *, seed: str = "pair", pages: int = 2
 ):
     """An admitted pair with real memory/table facts for compiler consumers."""
-    from molt._wasm_abi_generated import (
-        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-        WASM_RESERVED_RUNTIME_CALLABLES,
-    )
     from molt.cli.runtime_wasm_generation import (
         bind_runtime_wasm_codegen,
         publish_runtime_wasm_generation,
@@ -953,10 +949,10 @@ def runtime_wasm_codegen_binding_fixture(
     from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
 
     def _runtime_module(table_min: int, pages: int) -> bytes:
-        """An actual module with an imported table/memory and a complete ABI prefix."""
-        prefix = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
-            WASM_RESERVED_RUNTIME_CALLABLES
-        )
+        """An actual module with an imported table/memory and its own address-taken
+        functions from the default table base; no slot is reserved for runtime
+        callables (HF-699 K3)."""
+        entries = 24
         imports = (
             b"\x02"
             + _wasm_string("env")
@@ -972,7 +968,7 @@ def runtime_wasm_codegen_binding_fixture(
             (1, b"\x01\x60\x00\x00"),
             (2, imports),
             (3, b"\x01\x00"),
-            (9, b"\x01\x00\x41\x01\x0b" + _wasm_u32(prefix) + bytes(prefix)),
+            (9, b"\x01\x00\x41\x01\x0b" + _wasm_u32(entries) + bytes(entries)),
             (10, b"\x01\x02\x00\x0b"),
         )
         return b"\x00asm\x01\x00\x00\x00" + b"".join(

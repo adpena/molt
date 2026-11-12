@@ -1,4 +1,9 @@
-"""Callable-table layout, identity reconciliation, and publication authority."""
+"""Callable-table layout, identity reconciliation, and publication authority.
+
+The table holds the runtime's own address-taken functions and, after them,
+the app's region. No slot is reserved for runtime callables: they are keys
+the runtime resolves itself (HF-699 K1, K3).
+"""
 
 from __future__ import annotations
 
@@ -7,13 +12,8 @@ from tools.wasm_link_fact_provider import WasmFactsProvider
 from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
-from molt._wasm_abi_generated import (
-    WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME,
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLES,
-)
+from molt._wasm_abi_generated import WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME
 from molt.wasm_artifact import WasmSplitRuntimeCallableLayout
-from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 from tools.wasm_link_format import CallableTableLayout, _read_varuint, _write_varuint
 from tools.wasm_link_facts import callable_table_entry_rows
 from tools.wasm_link_operations import build_sections, parse_sections
@@ -29,12 +29,7 @@ def _callable_layout_from_wasm_facts(
         return None
     if not isinstance(raw_layout, dict):
         raise ValueError("WASM facts callable_table_layout must be an object or null")
-    names = (
-        "fixed_prefix_base",
-        "fixed_prefix_len",
-        "finalized_app_base",
-        "app_entry_count",
-    )
+    names = ("finalized_app_base", "app_entry_count")
     values = tuple(raw_layout.get(name) for name in names)
     if not all(
         isinstance(value, int)
@@ -85,10 +80,7 @@ def _callable_layout_from_wasm_facts(
         ):
             raise ValueError("WASM facts table-0 minimum is invalid")
         table_zero_minimum = minimum
-    required_end = max(
-        layout.fixed_prefix_base + layout.fixed_prefix_len,
-        layout.finalized_app_base + layout.app_entry_count,
-    )
+    required_end = layout.finalized_app_base + layout.app_entry_count
     if (table_zero_minimum is None and required_end != 0) or (
         table_zero_minimum is not None and required_end > table_zero_minimum
     ):
@@ -103,30 +95,16 @@ def _reconcile_split_callable_layout(
     app_layout: CallableTableLayout,
     runtime_layout: WasmSplitRuntimeCallableLayout,
 ) -> CallableTableLayout:
-    if (
-        app_layout.fixed_prefix_base != runtime_layout.runtime_callable_base
-        or app_layout.fixed_prefix_len != runtime_layout.fixed_prefix_len
-    ):
-        raise ValueError(
-            "app compiler callable prefix disagrees with the executable runtime: "
-            f"app=({app_layout.fixed_prefix_base},{app_layout.fixed_prefix_len}) "
-            f"runtime=({runtime_layout.runtime_callable_base},"
-            f"{runtime_layout.fixed_prefix_len})"
-        )
+    """The final split layout: the app's region after the runtime's own
+    entries. Neither side reserves a runtime region (HF-699 K3)."""
     if runtime_layout.runtime_occupied_end > app_layout.finalized_app_base:
         raise ValueError(
             "runtime callable entries overlap the app-owned callable region: "
             f"runtime_occupied_end={runtime_layout.runtime_occupied_end}, "
             f"app_base={app_layout.finalized_app_base}"
         )
-    reconciled = CallableTableLayout(
-        runtime_layout.runtime_callable_base,
-        runtime_layout.fixed_prefix_len,
-        app_layout.finalized_app_base,
-        app_layout.app_entry_count,
-    )
-    reconciled.validate()
-    return reconciled
+    app_layout.validate()
+    return app_layout
 
 
 def _callable_entry_export_name(slot: int) -> str:
@@ -143,98 +121,61 @@ def _monolithic_linked_callable_growth_base(
 ) -> int | None:
     """Return the first slot wasm-ld may allocate for address-taken functions.
 
-    A compiler-owned fixed prefix or app row is immutable across the final
-    monolithic link.  Linker-created table entries therefore belong after the
-    entire published app region.  A truly empty layout has no occupancy anchor,
-    so preserve wasm-ld's compact default allocation in that case.
+    A compiler-owned app row is immutable across the final monolithic link.
+    Linker-created table entries therefore belong after the entire published
+    app region. An empty app region has no occupancy anchor, so preserve
+    wasm-ld's compact default allocation in that case.
     """
 
     layout.validate()
-    if layout.fixed_prefix_len == 0 and layout.app_entry_count == 0:
+    if layout.app_entry_count == 0:
         return None
     return _callable_app_end(layout)
 
 
 class _CallableTableEntryPlan:
-    __slots__ = (
-        "app_indices",
-        "fixed_indices",
-        "owns_runtime_region",
-        "preserved_fixed_indices",
-    )
+    """The final function of each app slot, and whether this link also owns
+    the runtime's own entries below the app base (a monolithic link does; a
+    split app does not)."""
+
+    __slots__ = ("app_indices", "owns_runtime_region")
 
     def __init__(
         self,
-        fixed_indices: tuple[int, ...],
         app_indices: tuple[int, ...],
         *,
         owns_runtime_region: bool,
-        preserved_fixed_indices: tuple[int, ...] | None = None,
     ) -> None:
-        self.fixed_indices = fixed_indices
-        self.preserved_fixed_indices = (
-            fixed_indices
-            if preserved_fixed_indices is None
-            else preserved_fixed_indices
-        )
         self.app_indices = app_indices
         self.owns_runtime_region = owns_runtime_region
 
     def slot_function_indices(self, layout: CallableTableLayout) -> dict[int, int]:
         layout.validate()
-        if len(self.fixed_indices) not in (0, layout.fixed_prefix_len):
-            raise ValueError(
-                "callable-table fixed entry plan disagrees with the published layout: "
-                f"functions={len(self.fixed_indices)}, entries={layout.fixed_prefix_len}"
-            )
         if len(self.app_indices) != layout.app_entry_count:
             raise ValueError(
                 "callable-table app entry plan disagrees with the published layout: "
                 f"functions={len(self.app_indices)}, entries={layout.app_entry_count}"
             )
         return {
-            **{
-                layout.fixed_prefix_base + offset: function_index
-                for offset, function_index in enumerate(self.fixed_indices)
-            },
-            **{
-                layout.finalized_app_base + offset: function_index
-                for offset, function_index in enumerate(self.app_indices)
-            },
+            layout.finalized_app_base + offset: function_index
+            for offset, function_index in enumerate(self.app_indices)
         }
 
-    def slot_allowed_function_indices(
-        self, layout: CallableTableLayout
-    ) -> dict[int, frozenset[int]]:
-        allowed = {
-            slot: frozenset((function_index,))
-            for slot, function_index in self.slot_function_indices(layout).items()
-        }
-        if len(self.preserved_fixed_indices) != len(self.fixed_indices):
-            raise ValueError(
-                "callable-table preserved fixed identity plan disagrees with "
-                "the publication plan"
-            )
-        for offset, function_index in enumerate(self.preserved_fixed_indices):
-            slot = layout.fixed_prefix_base + offset
-            allowed[slot] = allowed[slot] | frozenset((function_index,))
-        return allowed
 
-
-def _resolve_callable_table_entry_plan(
+def _resolve_app_entry_indices(
     data: bytes,
     layout: CallableTableLayout,
     *,
     entry_symbol_names: Sequence[str] | None,
-    include_fixed_prefix: bool,
-    override_reserved_direct: bool,
     facts_provider: WasmFactsProvider,
-) -> _CallableTableEntryPlan:
-    total_entry_count = layout.fixed_prefix_len + layout.app_entry_count
-    if entry_symbol_names is not None and len(entry_symbol_names) != total_entry_count:
+) -> tuple[int, ...]:
+    if (
+        entry_symbol_names is not None
+        and len(entry_symbol_names) != layout.app_entry_count
+    ):
         raise ValueError(
             "callable-table entry symbol count disagrees with the published layout: "
-            f"symbols={len(entry_symbol_names)}, entries={total_entry_count}"
+            f"symbols={len(entry_symbol_names)}, entries={layout.app_entry_count}"
         )
     exports = facts_provider(data).function_exports
     named_indices: dict[str, set[int]] = {}
@@ -276,61 +217,25 @@ def _resolve_callable_table_entry_plan(
             )
         return function_index
 
-    preserved_fixed_indices = (
-        tuple(resolve_entry(slot) for slot in range(layout.fixed_prefix_len))
-        if include_fixed_prefix
-        else ()
-    )
-    fixed_indices = preserved_fixed_indices
-    app_indices = tuple(
-        resolve_entry(slot)
-        for slot in range(layout.fixed_prefix_len, total_entry_count)
-    )
-    reserved_end = WASM_RESERVED_RUNTIME_CALLABLE_BASE + len(
-        WASM_RESERVED_RUNTIME_CALLABLES
-    )
-    if (
-        include_fixed_prefix
-        and WASM_RESERVED_RUNTIME_CALLABLE_BASE < len(fixed_indices) < reserved_end
-    ):
-        raise ValueError("callable table truncates reserved runtime callable region")
-    if (
-        include_fixed_prefix
-        and override_reserved_direct
-        and len(fixed_indices) >= reserved_end
-    ):
-        mutable_fixed_indices = list(fixed_indices)
-        for (
-            index,
-            runtime_name,
-            _import_name,
-            _arity,
-            dispatch,
-        ) in WASM_RESERVED_RUNTIME_CALLABLES:
-            if dispatch != "direct":
-                continue
-            logical_slot = WASM_RESERVED_RUNTIME_CALLABLE_BASE + index
-            physical = wasm_split_runtime_export_name_for_import(runtime_name)
-            if physical is None:
-                raise ValueError(
-                    f"reserved runtime callable lacks execution ABI: {runtime_name}"
-                )
-            runtime_function_index = exports.get(physical)
-            if runtime_function_index is None:
-                candidates = named_indices.get(physical, set())
-                if len(candidates) == 1:
-                    runtime_function_index = next(iter(candidates))
-            if runtime_function_index is None:
-                raise ValueError(
-                    f"linked wasm is missing reserved runtime export {physical}"
-                )
-            mutable_fixed_indices[logical_slot] = runtime_function_index
-        fixed_indices = tuple(mutable_fixed_indices)
+    return tuple(resolve_entry(slot) for slot in range(layout.app_entry_count))
+
+
+def _resolve_callable_table_entry_plan(
+    data: bytes,
+    layout: CallableTableLayout,
+    *,
+    entry_symbol_names: Sequence[str] | None,
+    owns_runtime_region: bool,
+    facts_provider: WasmFactsProvider,
+) -> _CallableTableEntryPlan:
     return _CallableTableEntryPlan(
-        fixed_indices,
-        app_indices,
-        owns_runtime_region=include_fixed_prefix,
-        preserved_fixed_indices=preserved_fixed_indices,
+        _resolve_app_entry_indices(
+            data,
+            layout,
+            entry_symbol_names=entry_symbol_names,
+            facts_provider=facts_provider,
+        ),
+        owns_runtime_region=owns_runtime_region,
     )
 
 
@@ -341,14 +246,11 @@ def _merge_linked_callable_table(
 ) -> int:
     """Merge compiler-owned entries with final linker growth.
 
-    Fixed shared-runtime entries may be present in both the compiler output and
-    the relocatable runtime.  That overlap is valid only when both inputs resolve
-    to the same canonical post-link function identity.  A monolithic link may
-    also contain contiguous runtime-owned growth between the fixed prefix and the
-    finalized app base.  With no fixed prefix there is no ABI occupancy anchor,
-    so that region begins at its first observed runtime slot.  App entries are
-    already embedded in code as table immediates and must retain their canonical
-    identities.  Native/future linked entries form a second contiguous suffix at
+    A monolithic link contains the runtime's own address-taken functions as
+    contiguous growth below the finalized app base. No runtime slot is fixed,
+    so that region begins at its first observed slot. App entries are already
+    embedded in code as table immediates and must retain their canonical
+    identities. Native/future linked entries form a second contiguous suffix at
     the immutable pre-link app end.
     """
 
@@ -377,9 +279,9 @@ def _merge_linked_callable_table(
             )
         rows_by_slot[slot] = (function_index, type_index, role)
 
-    expected_owned = entry_plan.slot_allowed_function_indices(layout)
+    expected_owned = entry_plan.slot_function_indices(layout)
     app_end = _callable_app_end(layout)
-    for slot, expected_function_indices in expected_owned.items():
+    for slot, expected_function_index in expected_owned.items():
         actual = rows_by_slot.get(slot)
         if actual is None:
             # wasm-ld GC may omit an element row even though the canonical
@@ -387,23 +289,19 @@ def _merge_linked_callable_table(
             # publication authority and will restore this slot immediately
             # after the merge check.
             continue
-        if actual[0] not in expected_function_indices:
+        if actual[0] != expected_function_index:
             raise ValueError(
                 "linked WASM changed compiler-owned callable-table identity: "
-                f"slot={slot}, expected_functions={sorted(expected_function_indices)}, "
+                f"slot={slot}, expected_function={expected_function_index}, "
                 f"actual_function={actual[0]}"
             )
 
-    fixed_end = layout.fixed_prefix_base + layout.fixed_prefix_len
     runtime_growth_slots: list[int] = []
     suffix_growth_slots: list[int] = []
     for slot in rows_by_slot:
         if slot in expected_owned:
             continue
-        if (
-            entry_plan.owns_runtime_region
-            and fixed_end <= slot < layout.finalized_app_base
-        ):
+        if entry_plan.owns_runtime_region and slot < layout.finalized_app_base:
             runtime_growth_slots.append(slot)
             continue
         if slot < app_end:
@@ -413,18 +311,11 @@ def _merge_linked_callable_table(
             )
         suffix_growth_slots.append(slot)
     runtime_growth_slots.sort()
-    # An empty fixed prefix owns no starting slot. wasm-ld reserves slot zero
-    # for the null function pointer, while other valid producers may leave a
-    # larger leading hole. In that shape the first observed runtime row is the
-    # artifact-local occupancy base; a non-empty ABI prefix remains anchored at
-    # its declared end.
-    runtime_growth_base = (
-        fixed_end
-        if layout.fixed_prefix_len > 0 or not runtime_growth_slots
-        else runtime_growth_slots[0]
-    )
+    # wasm-ld reserves slot zero for the null function pointer, while other
+    # valid producers may leave a larger leading hole, so the first observed
+    # runtime row is the artifact-local occupancy base.
     for offset, slot in enumerate(runtime_growth_slots):
-        expected_slot = runtime_growth_base + offset
+        expected_slot = runtime_growth_slots[0] + offset
         if slot != expected_slot:
             raise ValueError(
                 "linked WASM runtime callable-table growth is not contiguous from "
@@ -444,7 +335,7 @@ def _merge_linked_callable_table(
 
 def _write_varsint32(value: int) -> bytes:
     if value < -(1 << 31) or value >= 1 << 31:
-        raise ValueError("callable-table fixed prefix base must fit i32")
+        raise ValueError("callable-table app base must fit i32")
     out = bytearray()
     remaining = value
     while True:
@@ -463,25 +354,20 @@ def _install_callable_table_layout(
     layout: CallableTableLayout,
     *,
     entry_symbol_names: Sequence[str] | None = None,
-    include_fixed_prefix: bool = True,
-    override_reserved_direct: bool = True,
-    entry_plan: _CallableTableEntryPlan | None = None,
+    app_indices: tuple[int, ...] | None = None,
     facts_provider: WasmFactsProvider,
 ) -> bytes:
-    total_entry_count = layout.fixed_prefix_len + layout.app_entry_count
-    if total_entry_count == 0:
+    """Append the app region as one final active element segment at the app
+    base, so the published entries override whatever the link left there."""
+    if layout.app_entry_count == 0:
         return data
-    if entry_plan is None:
-        entry_plan = _resolve_callable_table_entry_plan(
+    if app_indices is None:
+        app_indices = _resolve_app_entry_indices(
             data,
             layout,
             entry_symbol_names=entry_symbol_names,
-            include_fixed_prefix=include_fixed_prefix,
-            override_reserved_direct=override_reserved_direct,
             facts_provider=facts_provider,
         )
-    fixed_indices = entry_plan.fixed_indices
-    app_indices = entry_plan.app_indices
     sections = parse_sections(data)
     element_indices = [
         index
@@ -490,26 +376,19 @@ def _install_callable_table_layout(
     ]
     if len(element_indices) != 1:
         raise ValueError(
-            "linked wasm must contain exactly one element section before fixed-prefix publication"
+            "linked wasm must contain exactly one element section before callable-table publication"
         )
     section_index = element_indices[0]
     section_id, payload = sections[section_index]
     segment_count, segment_offset = _read_varuint(payload, 0)
-    added_segment_count = int(bool(fixed_indices)) + int(bool(app_indices))
-    appended = bytearray(_write_varuint(segment_count + added_segment_count))
+    appended = bytearray(_write_varuint(segment_count + 1))
     appended.extend(payload[segment_offset:])
-    for base, indices in (
-        (layout.fixed_prefix_base, fixed_indices),
-        (layout.finalized_app_base, app_indices),
-    ):
-        if not indices:
-            continue
-        appended.extend(_write_varuint(0))
-        appended.append(0x41)
-        appended.extend(_write_varsint32(base))
-        appended.append(0x0B)
-        appended.extend(_write_varuint(len(indices)))
-        for function_index in indices:
-            appended.extend(_write_varuint(function_index))
+    appended.extend(_write_varuint(0))
+    appended.append(0x41)
+    appended.extend(_write_varsint32(layout.finalized_app_base))
+    appended.append(0x0B)
+    appended.extend(_write_varuint(len(app_indices)))
+    for function_index in app_indices:
+        appended.extend(_write_varuint(function_index))
     sections[section_index] = (section_id, bytes(appended))
     return build_sections(sections)

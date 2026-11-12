@@ -126,8 +126,6 @@ fn streaming_publication_replaces_sections_and_self_validates() {
 #[test]
 fn publication_returns_complete_facts_for_exact_output_in_every_role() {
     let layout = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 2,
         finalized_app_base: 20,
         app_entry_count: 99,
     };
@@ -178,8 +176,6 @@ fn publication_returns_complete_facts_for_exact_output_in_every_role() {
 #[test]
 fn monolithic_publication_replaces_stale_pre_link_layout_from_final_elements() {
     let stale_layout = CallableTableLayout {
-        fixed_prefix_base: 0,
-        fixed_prefix_len: 0,
         finalized_app_base: 7,
         app_entry_count: 99,
     };
@@ -199,8 +195,6 @@ fn monolithic_publication_replaces_stale_pre_link_layout_from_final_elements() {
     assert_eq!(
         facts.callable_table_layout,
         Some(CallableTableLayout {
-            fixed_prefix_base: 0,
-            fixed_prefix_len: 0,
             finalized_app_base: 7,
             app_entry_count: 1,
         })
@@ -208,11 +202,9 @@ fn monolithic_publication_replaces_stale_pre_link_layout_from_final_elements() {
 }
 
 #[test]
-fn runtime_publication_accepts_owned_entries_beyond_required_fixed_prefix() {
+fn runtime_publication_accepts_its_own_entries_below_the_app_base() {
     let base = module_with_callable_slots(&[10, 11, 12, 19]);
     let layout = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 2,
         finalized_app_base: 20,
         app_entry_count: 3,
     };
@@ -240,8 +232,6 @@ fn runtime_publication_accepts_owned_entries_beyond_required_fixed_prefix() {
 fn split_runtime_publication_is_independent_of_final_app_entry_count() {
     let runtime = module_with_callable_slots(&[10, 11, 12, 19]);
     let plan = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 2,
         finalized_app_base: 20,
         app_entry_count: 1,
     };
@@ -317,8 +307,6 @@ fn split_runtime_publication_is_independent_of_final_app_entry_count() {
 fn app_publication_derives_final_count_after_native_link_growth() {
     let base = module_with_callable_slots(&[20, 21, 22, 23]);
     let stale_pre_link_layout = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 2,
         finalized_app_base: 20,
         app_entry_count: 2,
     };
@@ -342,11 +330,9 @@ fn app_publication_derives_final_count_after_native_link_growth() {
 }
 
 #[test]
-fn app_publication_rejects_runtime_owned_prefix_entries() {
+fn app_publication_rejects_runtime_owned_entries() {
     let base = module_with_callable_slots(&[10, 20]);
     let layout = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 1,
         finalized_app_base: 20,
         app_entry_count: 1,
     };
@@ -358,7 +344,7 @@ fn app_publication_rejects_runtime_owned_prefix_entries() {
         CallableTableArtifactRole::App,
         &mut published,
     )
-    .expect_err("split app must not republish runtime-owned fixed slots");
+    .expect_err("split app must not republish runtime-owned slots");
 
     assert!(error.contains("runtime-owned callable slot 10"), "{error}");
 }
@@ -367,8 +353,6 @@ fn app_publication_rejects_runtime_owned_prefix_entries() {
 fn monolithic_publication_derives_final_app_count_after_native_link_growth() {
     let base = module_with_callable_slots(&[10, 11, 12, 19, 20, 21, 22, 23]);
     let stale_pre_link_layout = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 2,
         finalized_app_base: 20,
         app_entry_count: 2,
     };
@@ -392,11 +376,9 @@ fn monolithic_publication_derives_final_app_count_after_native_link_growth() {
 }
 
 #[test]
-fn monolithic_publication_accepts_runtime_entries_before_app_without_fixed_prefix() {
+fn monolithic_publication_accepts_runtime_entries_before_the_app_base() {
     let base = module_with_callable_slots(&[10, 20]);
     let layout = CallableTableLayout {
-        fixed_prefix_base: 0,
-        fixed_prefix_len: 0,
         finalized_app_base: 20,
         app_entry_count: 1,
     };
@@ -414,50 +396,18 @@ fn monolithic_publication_accepts_runtime_entries_before_app_without_fixed_prefi
 }
 
 #[test]
-fn publication_rejects_noncanonical_empty_fixed_prefix_base() {
-    let base = module_with_callable_slots(&[20]);
+fn runtime_publication_rejects_app_overlap() {
     let layout = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 0,
         finalized_app_base: 20,
         app_entry_count: 1,
     };
     let mut published = Vec::new();
-
     let error = scan_and_write_callable_table_attestation(
-        &base,
+        &module_with_callable_slots(&[10, 11, 20]),
         Some(layout),
-        CallableTableArtifactRole::App,
+        CallableTableArtifactRole::Runtime,
         &mut published,
     )
-    .expect_err("reject noncanonical empty fixed prefix");
-
-    assert!(
-        error.contains("empty callable-table fixed prefix"),
-        "{error}"
-    );
-}
-
-#[test]
-fn runtime_publication_rejects_incomplete_prefix_and_app_overlap() {
-    let layout = CallableTableLayout {
-        fixed_prefix_base: 10,
-        fixed_prefix_len: 2,
-        finalized_app_base: 20,
-        app_entry_count: 1,
-    };
-    for (slots, message) in [
-        (vec![10, 12], "runtime fixed prefix"),
-        (vec![10, 11, 20], "reaches finalized app base"),
-    ] {
-        let mut published = Vec::new();
-        let error = scan_and_write_callable_table_attestation(
-            &module_with_callable_slots(&slots),
-            Some(layout),
-            CallableTableArtifactRole::Runtime,
-            &mut published,
-        )
-        .expect_err("reject invalid runtime ownership");
-        assert!(error.contains(message), "{error}");
-    }
+    .expect_err("reject invalid runtime ownership");
+    assert!(error.contains("reaches finalized app base"), "{error}");
 }

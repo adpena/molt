@@ -22,8 +22,6 @@ from typing import (
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
     WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
     compiled_execution_symbol,
 )
 from molt._wasm_runtime_exports import (
@@ -483,8 +481,6 @@ def _compute_runtime_wasm_build_spec(
             "link-arg=--import-table",
             "-C",
             "link-arg=--growable-table",
-            "-C",
-            f"link-arg=--table-base={1 + WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * WASM_RESERVED_RUNTIME_CALLABLE_COUNT}",
         )
         link_flags = (*shared_import_flags, *runtime_exports)
     effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE

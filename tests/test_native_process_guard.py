@@ -285,6 +285,8 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
             900.0,
             950.0,
             1000.0,
+            1050.0,
+            1100.0,
         ]
     )
     monkeypatch.setattr(preparation, "monotonic", lambda: next(times))
@@ -321,6 +323,8 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
         300.0,
         250.0,
         200.0,
+        150.0,
+        100.0,
     ]
     assert all(kw["check"] and kw["capture_output"] for _, kw in calls)
     for args, _ in calls[1:3]:
@@ -348,6 +352,8 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
         "wasm-asyncio-linked",
         "wasm-async-polls-linked",
         "wasm-async-polls-split",
+        "wasm-reserved-callables-linked",
+        "wasm-reserved-callables-split",
         "wasm-finder-linked",
         "wasm-finder-split",
         "wasm-final-tir-linked",
