@@ -152,11 +152,9 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let alias: AliasAnalysisResult = am.get::<AliasAnalysis>(func).clone();
     let mem: MemorySsaResult = am.get::<MemorySSA>(func).clone();
     let tree = am.get::<ImmediateDoms>(func).clone();
-    // Strict-CFG reachability (terminator-only). A forwarded `Copy(source)`
-    // emitted into a block reachable only via exception edges, sourced from a
-    // value defined in a strict-CFG block, would make the post-lowering
-    // verifier (`verify_lir`, dominance over the strict subgraph) reject the
-    // new operand — exactly the guard `gvn.rs` applies to cross-block copies.
+    // Strict-CFG reachability (terminator-only): forwarded copies stay within
+    // blocks reachable via terminators, the same conservative rule `gvn.rs`
+    // applies to cross-block copies (it came from the deleted LIR verifier).
     let strict_reachable = am.get::<StrictReachable>(func).clone();
 
     // Map every stored memory version to the (target_root, offset, value) it

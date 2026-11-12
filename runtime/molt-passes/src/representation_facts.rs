@@ -32,8 +32,7 @@ fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
 
 /// The backend-neutral construction of the value-keyed representation lattice
 /// map: the **single source of truth** for TIR `ValueId` carrier
-/// classification, consumed identically by the LLVM backend and the WASM/LIR
-/// backend.
+/// classification, consumed by every backend.
 ///
 /// Every defined `ValueId` has a conservative carrier. Only exact scalar
 /// provenance raises bool/f64 into [`Repr::Bool`] / [`Repr::FloatUnboxed`];
@@ -830,10 +829,10 @@ fn non_heap_values_in_domain(
 ///
 /// **Block arguments (phis) are deliberately excluded from the direct seed.** A
 /// phi is raised to `RawI64Safe` only by [`propagate_raw_i64_identity_values`]'s
-/// all-incomings-raw rule. This is a hard soundness requirement of the LIR
-/// lowering (`lower_to_lir`): a `RawI64Safe` (`I64`) phi slot must never be fed a
-/// `MaybeBigInt`/`DynBox` incoming, or the lowering would emit an unsound unbox
-/// of a possible heap BigInt. Seeding a phi directly from its own proven range
+/// all-incomings-raw rule. This is a hard soundness requirement of every
+/// backend that holds a phi raw: a `RawI64Safe` (`I64`) phi slot must never be
+/// fed a `MaybeBigInt`/`DynBox` incoming, or the backend would emit an unsound
+/// unbox of a possible heap BigInt. Seeding a phi directly from its own proven range
 /// would bypass that check (the phi can be range-proven while a back-edge
 /// incoming is not yet/never proven, e.g. an ambiguous multi-latch loop whose
 /// update value is unrecognised). For the canonical induction variable the

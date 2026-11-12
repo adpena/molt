@@ -149,7 +149,6 @@ pub struct TirPipelineRunOptions<'a> {
     pub cache_flavor: TirPipelineCacheFlavor,
     pub cache: TirCacheLocation,
     pub process_externs: bool,
-    pub verify_lir: bool,
     pub tir_dump: bool,
     pub tir_stats: bool,
     pub progress_prefix: Option<&'a str>,
@@ -683,7 +682,6 @@ where
                     && let Some(cached_tir_func) =
                         super::serialize::deserialize_tir_function(&cached_bytes)
                 {
-                    verify_lir_if_requested(&cached_tir_func, options.verify_lir);
                     let cached_ops = project_simple_ir.then(|| {
                         let ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir_func);
                         assert!(
@@ -738,7 +736,6 @@ where
                                 &options.target_info,
                                 options.tir_dump,
                                 options.tir_stats,
-                                options.verify_lir,
                                 project_simple_ir,
                             )
                         })
@@ -1061,7 +1058,6 @@ fn optimize_tir_input(
     target_info: &TargetInfo,
     tir_dump: bool,
     tir_stats: bool,
-    verify_lir: bool,
     project_simple_ir: bool,
 ) -> TirOptimizationOutput {
     let idx = input.index;
@@ -1099,7 +1095,6 @@ fn optimize_tir_input(
             );
         }
     }
-    verify_lir_if_requested(&tir_func, verify_lir);
     let ops = project_simple_ir.then(|| {
         let ops = super::lower_to_simple::lower_to_simple_ir(&tir_func);
         trace_tir_function_stage(&func_name, "after_lower_to_simple", ops.len());
@@ -1115,43 +1110,6 @@ fn optimize_tir_input(
         content_hash,
         simple_ops: ops,
         tir_func,
-    }
-}
-
-fn verify_lir_if_requested(tir_func: &TirFunction, verify_lir: bool) {
-    if !verify_lir {
-        return;
-    }
-    let func_name = &tir_func.name;
-    let lir_func = super::lower_to_lir::lower_function_to_lir(tir_func);
-    if trace_tir_function_enabled(func_name) {
-        eprintln!(
-            "[TIR-TRACE] {func_name} after_lower_to_lir: blocks={} ops={}",
-            lir_func.blocks.len(),
-            lir_func
-                .blocks
-                .values()
-                .map(|block| block.ops.len())
-                .sum::<usize>()
-        );
-    }
-    if let Err(errors) = super::verify_lir::verify_lir_function(&lir_func) {
-        panic!(
-            "[LIR] verification failed for '{}': {:?}",
-            func_name, errors
-        );
-    }
-    #[cfg(debug_assertions)]
-    {
-        let repr_violations = super::verify_lir_repr::verify_register_passable(&lir_func);
-        if !repr_violations.is_empty() {
-            eprintln!(
-                "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
-                repr_violations.len(),
-                func_name,
-                repr_violations,
-            );
-        }
     }
 }
 
@@ -1210,7 +1168,6 @@ mod tests {
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
             cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
             process_externs: false,
-            verify_lir: false,
             tir_dump: false,
             tir_stats: false,
             progress_prefix: None,
@@ -2063,7 +2020,6 @@ mod tests {
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
             cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
             process_externs: false,
-            verify_lir: false,
             tir_dump: false,
             tir_stats: false,
             progress_prefix: None,
@@ -2194,7 +2150,6 @@ mod tests {
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
             cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
             process_externs: false,
-            verify_lir: false,
             tir_dump: false,
             tir_stats: false,
             progress_prefix: None,
@@ -2262,7 +2217,6 @@ mod tests {
                 cache_flavor: TirPipelineCacheFlavor::FactGraph,
                 cache: TirCacheLocation::Directory(cache_dir.clone()),
                 process_externs: false,
-                verify_lir: false,
                 tir_dump: false,
                 tir_stats: false,
                 progress_prefix: None,

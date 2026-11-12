@@ -2239,7 +2239,7 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
     assert "pub struct VectorizeOpcodeFacts" in rendered
     table_block = rendered.split("fn opcode_vectorize_facts_table", maxsplit=1)[
         1
-    ].split("pub enum LirVerifyRule", maxsplit=1)[0]
+    ].split("pub enum ReprRawI64FullDeoptSeedRule", maxsplit=1)[0]
 
     def vectorize_arm(opcode: str) -> str:
         match = re.search(
@@ -2358,108 +2358,6 @@ def test_vectorize_opcode_facts_validation_rejects_drift() -> None:
         assert "reduction requires body='scalar_arithmetic'" in str(exc)
     else:
         raise AssertionError("non-arithmetic vectorize reduction owner was accepted")
-
-
-def test_lir_verify_rules_delegate_to_generated_table() -> None:
-    """LIR verifier owns invariants; op_kinds.toml owns opcode dispatch."""
-    gen = _gen()
-    data = gen.load_table()
-    rendered = gen.render_rs(data)
-    verify_lir = _read_rs_module_cluster(tir_path("verify_lir.rs"))
-
-    expected_rows = {
-        "BoxVal": "box_value",
-        "UnboxVal": "unbox_value",
-        "Add": "checked_i64_arithmetic",
-        "Sub": "checked_i64_arithmetic",
-        "Mul": "checked_i64_arithmetic",
-        "Bool": "truthy_materialization",
-    }
-    assert {
-        row["opcode"]: row["rule"] for row in data["lir_verify_rules"]
-    } == expected_rows
-
-    variant = {
-        "box_value": "BoxValue",
-        "unbox_value": "UnboxValue",
-        "checked_i64_arithmetic": "CheckedI64Arithmetic",
-        "truthy_materialization": "TruthyMaterialization",
-    }
-    assert "pub enum LirVerifyRule" in rendered
-    table_block = rendered.split("fn opcode_lir_verify_rule_table", maxsplit=1)[
-        1
-    ].split("pub enum GvnNumberingRole", maxsplit=1)[0]
-    for opcode, rule in expected_rows.items():
-        expected = f"LirVerifyRule::{variant[rule]}"
-        assert f"OpCode::{opcode} => {expected}," in table_block
-    for opcode in ("Div", "ConstInt", "Call", "StoreAttr"):
-        assert f"OpCode::{opcode} => LirVerifyRule::None," in table_block
-
-    production = verify_lir.split("#[cfg(test)]", maxsplit=1)[0]
-    assert "opcode_lir_verify_rule_table(op.tir_op.opcode)" in production
-    verify_loop = production.split("fn verify_ops", maxsplit=1)[1].split(
-        "fn verify_op_surface",
-        maxsplit=1,
-    )[0]
-    assert "match op.tir_op.opcode" not in verify_loop
-    assert "OpCode::Add | OpCode::Sub | OpCode::Mul" not in verify_loop
-    assert (
-        "LirVerifyRule::CheckedI64Arithmetic => {\n"
-        "                    verify_checked_i64_arithmetic"
-    ) in verify_loop
-
-
-def test_lir_verify_rule_validation_rejects_drift() -> None:
-    gen = _gen()
-    data = gen.load_table()
-    opcodes = {row["name"] for row in data["opcode"]}
-
-    bad_rule = json.loads(json.dumps(data))
-    bad_rule["lir_verify_rules"][0]["rule"] = "maybe_box"
-    try:
-        gen._validate_opcode_rule_rows(
-            bad_rule,
-            "lir_verify_rules",
-            opcodes,
-            gen._LIR_VERIFY_RULES,
-            "LIR verifier rule",
-        )
-    except gen.OpKindTableError as exc:
-        assert "LIR verifier rule must be one of" in str(exc)
-    else:
-        raise AssertionError("bad LIR verifier rule was accepted")
-
-    duplicate_rule = json.loads(json.dumps(data))
-    duplicate_rule["lir_verify_rules"].append(
-        json.loads(json.dumps(duplicate_rule["lir_verify_rules"][0]))
-    )
-    try:
-        gen._validate_opcode_rule_rows(
-            duplicate_rule,
-            "lir_verify_rules",
-            opcodes,
-            gen._LIR_VERIFY_RULES,
-            "LIR verifier rule",
-        )
-    except gen.OpKindTableError as exc:
-        assert "duplicate lir_verify_rules opcode" in str(exc)
-    else:
-        raise AssertionError("duplicate LIR verifier rule was accepted")
-
-    unknown_opcode = json.loads(json.dumps(data))
-    unknown_opcode["lir_verify_rules"][0]["opcode"] = "VerifyMaybe"
-    try:
-        gen._validate_opcode_rule_rows(
-            unknown_opcode,
-            "lir_verify_rules",
-            opcodes,
-            gen._LIR_VERIFY_RULES,
-            "LIR verifier rule",
-        )
-    except gen.OpKindTableError as exc:
-        assert "opcode 'VerifyMaybe' is not a known OpCode" in str(exc)
-    else:
-        raise AssertionError("unknown LIR verifier opcode was accepted")
 
 
 def test_value_range_rule_validation_rejects_drift() -> None:
@@ -3771,87 +3669,11 @@ def test_refcount_balance_roles_delegate_to_generated_table() -> None:
     assert "OpCode::DecRef =>" not in production
 
 
-def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
-    """Raw-i64 arithmetic lowering policy belongs to the op-kind registry."""
-    gen = _gen()
-    data = gen.load_table()
-    rendered = gen.render_rs(data)
-    lower_to_lir = _read_rs_module_cluster(tir_path("lower_to_lir.rs"))
-
-    overflow_box_dispatch = {
-        "Add",
-        "Div",
-        "FloorDiv",
-        "InplaceAdd",
-        "InplaceMul",
-        "InplaceSub",
-        "Mod",
-        "Mul",
-        "Neg",
-        "Sub",
-    }
-    checked_triples = {"Add", "Mul", "Sub"}
-    assert set(data["i64_overflow_box_dispatch_opcodes"]) == overflow_box_dispatch
-    assert set(data["i64_checked_overflow_triple_opcodes"]) == checked_triples
-    assert checked_triples < overflow_box_dispatch
-
-    overflow_table_block = rendered.split(
-        "fn opcode_requires_i64_overflow_box_dispatch_table"
-    )[1].split("fn opcode_supports_i64_checked_overflow_triple_table")[0]
-    checked_table_block = rendered.split(
-        "fn opcode_supports_i64_checked_overflow_triple_table"
-    )[1].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
-    for row in data["opcode"]:
-        overflow_bool = "true" if row["name"] in overflow_box_dispatch else "false"
-        checked_bool = "true" if row["name"] in checked_triples else "false"
-        assert f"OpCode::{row['name']} => {overflow_bool}," in overflow_table_block
-        assert f"OpCode::{row['name']} => {checked_bool}," in checked_table_block
-
-    overflow_table_name = "opcode_requires_i64_overflow_box_dispatch_table"
-    checked_table_name = "opcode_supports_i64_checked_overflow_triple_table"
-    assert overflow_table_name in lower_to_lir
-    assert checked_table_name in lower_to_lir
-
-    start = lower_to_lir.index("fn lower_op(")
-    brace = lower_to_lir.index("{", start)
-    depth = 0
-    end = brace
-    for i in range(brace, len(lower_to_lir)):
-        if lower_to_lir[i] == "{":
-            depth += 1
-        elif lower_to_lir[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    lower_body = lower_to_lir[start:end]
-    assert overflow_table_name in lower_body
-    assert "OpCode::InplaceAdd" not in lower_body
-    assert "OpCode::FloorDiv" not in lower_body
-
-    start = lower_to_lir.index("fn lowers_to_checked_i64_arithmetic(")
-    brace = lower_to_lir.index("{", start)
-    depth = 0
-    end = brace
-    for i in range(brace, len(lower_to_lir)):
-        if lower_to_lir[i] == "{":
-            depth += 1
-        elif lower_to_lir[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    helper_body = lower_to_lir[start:end]
-    assert checked_table_name in helper_body
-    assert "OpCode::Add | OpCode::Sub | OpCode::Mul" not in helper_body
-
-
 def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     """Raw-i64 zero-divisor proof requirements have one opcode authority."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    lower_to_lir = _read_rs_module_cluster(tir_path("lower_to_lir.rs"))
     licm = _read_rs_module_cluster(tir_path("passes/licm.rs"))
     check_exception = _read_rs_module_cluster(
         tir_path("passes/check_exception_elim.rs")
@@ -3880,7 +3702,6 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
 
     zero_table_name = "opcode_requires_i64_zero_divisor_guard_table"
     shift_table_name = "opcode_requires_i64_shift_count_guard_table"
-    assert zero_table_name in lower_to_lir
     assert zero_table_name in check_exception
     assert zero_table_name in licm
     assert shift_table_name in licm
@@ -3891,7 +3712,6 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     assert "OpCode::Shl | OpCode::Shr" not in representation_facts
 
     for source, fn_name in (
-        (lower_to_lir, "fn lower_op("),
         (check_exception, "fn op_may_raise("),
         (licm, "fn throw_condition_disproven("),
     ):
@@ -3963,7 +3783,7 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
         1
     ].split("fn opcode_is_structured_scf_marker_table")[0]
     scf_block = rendered.split("fn opcode_is_structured_scf_marker_table")[1].split(
-        "fn opcode_requires_i64_overflow_box_dispatch_table"
+        "fn opcode_requires_i64_zero_divisor_guard_table"
     )[0]
     label_block = rendered.split("fn opcode_has_exception_label_attr_table")[1].split(
         "fn opcode_is_exception_transfer_edge_table"

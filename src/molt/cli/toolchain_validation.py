@@ -667,7 +667,7 @@ def _planned_validate_steps(
                 "--test",
                 "entry_block_param_shadow",
                 "--test",
-                "lir_loop_and_join_regressions",
+                "loop_and_join_regressions",
                 "--test",
                 "native_extern_linkage",
                 "--test",

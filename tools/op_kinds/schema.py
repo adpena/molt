@@ -240,12 +240,6 @@ _VECTOR_REDUCTION_RULES = {
     "min": "Min",
     "max": "Max",
 }
-_LIR_VERIFY_RULES = {
-    "box_value": "BoxValue",
-    "unbox_value": "UnboxValue",
-    "checked_i64_arithmetic": "CheckedI64Arithmetic",
-    "truthy_materialization": "TruthyMaterialization",
-}
 _REPR_RAW_I64_FULL_DEOPT_SEED_RULES = {
     "checked_result0": "CheckedResultZero",
     "const_int_not_inline_safe": "ConstIntNotInlineSafe",
@@ -484,8 +478,6 @@ _OPCODE_FACT_SETS = (
     "exception_handling_opcodes",
     "exception_handler_region_opcodes",
     "structured_scf_marker_opcodes",
-    "i64_overflow_box_dispatch_opcodes",
-    "i64_checked_overflow_triple_opcodes",
     "i64_zero_divisor_guard_opcodes",
     "i64_shift_count_guard_opcodes",
     "gvn_always_numberable_opcodes",
@@ -546,7 +538,6 @@ __all__ = (
     "_GENERATOR_FUSION_POLL_ROLE_SETS",
     "_GVN_NUMBERING_ROLE_SETS",
     "_GVN_VALUE_KEY_KINDS",
-    "_LIR_VERIFY_RULES",
     "_LITERAL_PAYLOAD_KINDS",
     "_MODULE_CONCURRENCY_MARKER_SOURCE_ROLES",
     "_MODULE_SLOT_ACCESS_ROLES",

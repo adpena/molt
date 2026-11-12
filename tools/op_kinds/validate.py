@@ -28,7 +28,6 @@ from .schema import (
     _GENERATOR_FUSION_POLL_ROLE_SETS,
     _GVN_NUMBERING_ROLE_SETS,
     _GVN_VALUE_KEY_KINDS,
-    _LIR_VERIFY_RULES,
     _LITERAL_PAYLOAD_KINDS,
     _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES,
     _MODULE_SLOT_ACCESS_ROLES,
@@ -805,13 +804,6 @@ def load_table(table_path: Path = TABLE) -> dict:
     _validate_range_devirt_roles(data, seen_opcodes)
     _validate_generator_fusion_iter_use_roles(data, seen_opcodes)
     _validate_vectorize_opcode_facts(data, seen_opcodes)
-    _validate_opcode_rule_rows(
-        data,
-        "lir_verify_rules",
-        seen_opcodes,
-        _LIR_VERIFY_RULES,
-        "LIR verifier rule",
-    )
     _validate_opcode_rule_rows(
         data,
         "repr_raw_i64_full_deopt_seed_rules",

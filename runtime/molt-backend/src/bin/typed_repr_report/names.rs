@@ -1,14 +1,18 @@
-use molt_backend::tir::lir::LirRepr;
 use molt_backend::tir::types::TirType;
+use molt_ir::repr::Repr;
 
-pub(crate) fn repr_name(repr: LirRepr) -> &'static str {
+/// Report spelling of a carrier. `dynbox` is the name call_fact_coverage.py
+/// treats as untyped.
+pub(crate) fn repr_name(repr: Repr) -> &'static str {
     match repr {
-        LirRepr::DynBox => "dynbox",
-        LirRepr::Ref64 => "ref64",
-        LirRepr::Immortal64 => "immortal64",
-        LirRepr::I64 => "i64",
-        LirRepr::F64 => "f64",
-        LirRepr::Bool1 => "bool1",
+        Repr::Never => "never",
+        Repr::RawI64FullDeopt => "raw_i64_full_deopt",
+        Repr::RawI64Safe => "raw_i64_safe",
+        Repr::Bool => "bool",
+        Repr::MaybeBigInt => "maybe_bigint",
+        Repr::FloatUnboxed => "float_unboxed",
+        Repr::BoxedImmortal => "boxed_immortal",
+        Repr::DynBox => "dynbox",
     }
 }
 

@@ -31,7 +31,6 @@ pub(super) fn run_tir_pipeline(
                 cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Wasm,
                 cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
                 process_externs: false,
-                verify_lir: false,
                 tir_dump,
                 tir_stats,
                 progress_prefix: Some("MOLT_WASM"),

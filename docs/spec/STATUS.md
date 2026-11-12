@@ -281,10 +281,9 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   analysis no longer owns private allocation/refcount kind sets.
 - Raw-i64 division-family exception custody is also registry-owned:
   `i64_zero_divisor_guard_opcodes` generates the exhaustive
-  `opcode_requires_i64_zero_divisor_guard_table` classifier consumed by LIR
-  lowering and `check_exception_elim`, so boxed-dispatch retention and
-  nonzero-divisor exception elimination share one authority for `div`,
-  `floordiv`, and `mod`.
+  `opcode_requires_i64_zero_divisor_guard_table` classifier consumed by LICM
+  and `check_exception_elim`, so hoisting and nonzero-divisor exception
+  elimination share one authority for `div`, `floordiv`, and `mod`.
 - Raw-i64 machine-shift count safety is registry-owned:
   `i64_shift_count_guard_opcodes` generates the exhaustive
   `opcode_requires_i64_shift_count_guard_table` classifier consumed by LICM's
@@ -369,10 +368,6 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   live Copy refinement, min/max pattern validation, lane typing, and hint
   emission, not private body-eligibility, annotation-target, or reduction opcode
   lists.
-- Representation-aware LIR verifier dispatch is registry-owned:
-  `lir_verify_rules` generates the exhaustive `opcode_lir_verify_rule_table`
-  consumed by `verify_lir.rs`. The verifier owns hook invariants and
-  diagnostics, not private BoxVal/UnboxVal/arithmetic/CallBuiltin dispatch.
 - TIR pass fuzzing generation shape is registry-owned:
   `fuzz_tir_opcode_shapes` generates `FUZZ_TIR_OPCODE_SHAPES` and
   `opcode_fuzz_tir_operand_count_table` plus

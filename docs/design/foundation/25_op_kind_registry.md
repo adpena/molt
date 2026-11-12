@@ -566,10 +566,6 @@ SSA attr transport is generated too:
 `simpleir_kind_preserves_original_kind_for_ssa`. `ssa.rs` owns live value
 resolution and attr insertion while the registry owns string payload key routing
 and mapped `_original_kind` preservation spellings.
-Representation-aware LIR verifier dispatch is generated as a rule lattice:
-`lir_verify_rules` feeds `opcode_lir_verify_rule_table`, so `verify_lir.rs`
-owns BoxVal/UnboxVal/arithmetic/truthy-materialization invariant checks and
-diagnostics without carrying a private opcode dispatch list.
 The TIR pass fuzzer's fixed-shape opcode palette is registry-owned too:
 `fuzz_tir_opcode_shapes` generates `FUZZ_TIR_OPCODE_SHAPES`,
 `opcode_fuzz_tir_operand_count_table`, and
@@ -639,12 +635,13 @@ and module-slot promotion consume that table instead of carrying private
 generator/async opcode sets. `lowered_state_machine_body_opcodes` separately
 feeds `opcode_is_lowered_state_machine_body_table`, the opcode half of
 `TirFunction::has_state_machine` beside the non-opcode `StateDispatch`
-terminator check. Raw-i64 LIR arithmetic also uses generated opcode facts:
+terminator check. Raw-i64 arithmetic also uses generated opcode facts:
 `overflow_peel_guard_compare_opcodes` and `overflow_peel_body_pure_opcodes`
 feed overflow-peel legality predicates, so the dual-loop BigInt continuation
 does not carry pass-local guard/body opcode allowlists beside the registry.
-`i64_overflow_box_dispatch_opcodes` owns boxed-dispatch overflow custody, while
-`i64_checked_overflow_triple_opcodes` owns checked-overflow triple eligibility.
+(`i64_overflow_box_dispatch_opcodes`, `i64_checked_overflow_triple_opcodes`
+and `lir_verify_rules` were deleted on 2026-11-11 with their last consumer,
+the LIR lowering and verifier.)
 Boxed augmented-assignment dispatch is generated too:
 `boxed_runtime_inplace_dispatch_opcodes` feeds
 `opcode_uses_boxed_runtime_inplace_dispatch_table`, so LLVM lowering asks the
@@ -964,7 +961,7 @@ carrier classes, generic arithmetic and container indexing do not satisfy a
 check. A discharged guard with an output becomes an identity alias. Split-field
 deforestation consumes the same proof and keeps guards whose outputs still need
 the materialized object. Positive tag admission is a separate shared fact: a
-unique dominating i64 literal tag lets native, LLVM, generic WASM and LIR-fast
+unique dominating i64 literal tag lets native, LLVM and WASM
 execute the guard call only when a per-activation runtime profile flag is set.
 The flag is stable within a runtime epoch and is never inferred from the compiler's
 environment. Every executed mismatch remains counted when profiling is enabled;

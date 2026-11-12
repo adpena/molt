@@ -78,9 +78,8 @@ self-commits or invents an external scheduling authority.
   opts into diagnostics. `--molt-edited-source` supplies an explicit edit pair.
 
 ### Audit / repr (the evidence engine)
-- `runtime/molt-backend/src/bin/typed_repr_report.rs` — per-function scalar-repr +
-  alloc-site audit (the substrate for the coupled Repr-trace / molt-check).
-- `runtime/molt-backend/src/tir/verify_lir_repr.rs` — register-passability invariant.
+- `runtime/molt-backend/src/bin/typed_repr_report.rs` — per-function carrier
+  counts from the representation plan over final TIR (`tools/representation_report.py`).
 
 ### Build / run (always use these, never a raw binary)
 - `python -m molt build --release ...` — the perf-gate build profile (default `dev`

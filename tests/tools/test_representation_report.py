@@ -13,64 +13,54 @@ from tools import representation_report as mod
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 
+SCALAR_REPRS = {"raw_i64_safe", "raw_i64_full_deopt", "bool", "float_unboxed"}
+BOXED_REPRS = {"maybe_bigint", "boxed_immortal", "dynbox"}
+
+
 def _backend_report(
     *,
     values_by_repr: dict[str, int] | None = None,
     opcodes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    values_by_repr = values_by_repr or {"i64": 3, "dynbox": 1}
+    values_by_repr = values_by_repr or {"raw_i64_safe": 3, "dynbox": 1}
     scalar_values = sum(
-        count
-        for repr_name, count in values_by_repr.items()
-        if repr_name in {"i64", "f64", "bool1"}
+        count for name, count in values_by_repr.items() if name in SCALAR_REPRS
     )
-    reference_values = sum(
-        count
-        for repr_name, count in values_by_repr.items()
-        if repr_name in {"ref64", "dynbox"}
+    boxed_values = sum(
+        count for name, count in values_by_repr.items() if name in BOXED_REPRS
     )
     opcodes = opcodes or {
         "Add": {
             "total": 1,
-            "result_reprs": {"i64": 1},
-            "operand_repr_tuples": {"i64,i64": 1},
+            "result_reprs": {"raw_i64_safe": 1},
+            "operand_repr_tuples": {"raw_i64_safe,raw_i64_safe": 1},
             "boxed_result_values": 0,
         }
     }
+    stats = {
+        "values_by_repr": values_by_repr,
+        "values_by_type": {"i64": values_by_repr.get("raw_i64_safe", 0)},
+        "scalar_values": scalar_values,
+        "boxed_values": boxed_values,
+        "opcodes": opcodes,
+    }
     return {
-        "schema": "molt.typed_repr_report.v1",
+        "schema": "molt.typed_repr_report.v2",
         "verified": True,
         "functions": [
             {
                 "name": "f",
                 "blocks": 1,
                 "passes": [],
-                "stats": {
-                    "values_by_repr": values_by_repr,
-                    "values_by_type": {"i64": values_by_repr.get("i64", 0)},
-                    "scalar_values": scalar_values,
-                    "reference_values": reference_values,
-                    "boxed_values": values_by_repr.get("dynbox", 0),
-                    "opcodes": opcodes,
-                },
-                "verification": {"lir_errors": [], "repr_violations": []},
+                "stats": stats,
+                "verification": {"tir_errors": []},
             }
         ],
-        "aggregate": {
-            "functions": 1,
-            "values_by_repr": values_by_repr,
-            "values_by_type": {"i64": values_by_repr.get("i64", 0)},
-            "scalar_values": scalar_values,
-            "reference_values": reference_values,
-            "boxed_values": values_by_repr.get("dynbox", 0),
-            "lir_errors": 0,
-            "repr_violations": 0,
-            "opcodes": opcodes,
-        },
+        "aggregate": {"functions": 1, **stats, "tir_errors": 0},
     }
 
 
-def test_analyze_file_delegates_to_backend_lir_reporter(
+def test_analyze_file_delegates_to_backend_reporter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "sample.py"
@@ -106,7 +96,7 @@ def test_analyze_file_delegates_to_backend_lir_reporter(
     assert "function_metadata" not in captured["ir"]
     assert "function_metadata" in captured["frontend_ir"]
     assert captured["ir"]["functions"] is captured["frontend_ir"]["functions"]
-    assert report.report["aggregate"]["values_by_repr"]["i64"] == 3
+    assert report.report["aggregate"]["values_by_repr"]["raw_i64_safe"] == 3
 
 
 def test_backend_command_uses_typed_repr_report_binary(
@@ -130,16 +120,16 @@ def test_backend_command_uses_typed_repr_report_binary(
     assert command[7:10] == ["--bin", "typed_repr_report", "--"]
     assert captured["kwargs"]["cwd"] == mod.REPO_ROOT
     assert json.loads(captured["kwargs"]["input"]) == {"functions": []}
-    assert report["schema"] == "molt.typed_repr_report.v1"
+    assert report["schema"] == "molt.typed_repr_report.v2"
 
 
 def test_backend_failure_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args[0], 2, stdout="", stderr="bad LIR")
+        return subprocess.CompletedProcess(args[0], 2, stdout="", stderr="bad TIR")
 
     monkeypatch.setattr(mod.harness_memory_guard, "guarded_completed_process", fake_run)
 
-    with pytest.raises(mod.BackendReportError, match="bad LIR"):
+    with pytest.raises(mod.BackendReportError, match="bad TIR"):
         mod.run_backend_report({"functions": []})
 
 
@@ -151,10 +141,10 @@ def test_json_output_aggregates_backend_reports(
     first.write_text("def f():\n    return 1\n", encoding="utf-8")
     second.write_text("def g():\n    return 2\n", encoding="utf-8")
     reports = [
-        mod.FileReport(first, _backend_report(values_by_repr={"i64": 2})),
+        mod.FileReport(first, _backend_report(values_by_repr={"raw_i64_safe": 2})),
         mod.FileReport(
             second,
-            _backend_report(values_by_repr={"bool1": 1, "ref64": 2, "dynbox": 1}),
+            _backend_report(values_by_repr={"bool": 1, "maybe_bigint": 2, "dynbox": 1}),
         ),
     ]
 
@@ -166,23 +156,26 @@ def test_json_output_aggregates_backend_reports(
     payload = json.loads(capsys.readouterr().out)
     assert payload["type_hints"] == "check"
     assert payload["aggregate"]["values_by_repr"] == {
-        "bool1": 1,
+        "bool": 1,
         "dynbox": 1,
-        "i64": 2,
-        "ref64": 2,
+        "maybe_bigint": 2,
+        "raw_i64_safe": 2,
     }
     assert payload["aggregate"]["scalar_values"] == 3
-    assert payload["aggregate"]["reference_values"] == 3
-    assert payload["aggregate"]["boxed_values"] == 1
+    assert payload["aggregate"]["boxed_values"] == 3
+    assert payload["aggregate"]["tir_errors"] == 0
 
 
-def test_text_output_reports_reference_values(
+def test_text_output_reports_boxed_values(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "sample.py"
     source.write_text("def f():\n    return 1\n", encoding="utf-8")
     report = mod.FileReport(
-        source, _backend_report(values_by_repr={"i64": 1, "ref64": 1, "dynbox": 1})
+        source,
+        _backend_report(
+            values_by_repr={"raw_i64_safe": 1, "maybe_bigint": 1, "dynbox": 1}
+        ),
     )
     monkeypatch.setattr(mod, "analyze_file", lambda path, type_hints: report)
 
@@ -191,18 +184,18 @@ def test_text_output_reports_reference_values(
     assert rc == 0
     output = capsys.readouterr().out
     assert "scalar_values=1" in output
-    assert "reference_values=2" in output
-    assert "ref64" in output
+    assert "boxed_values=2" in output
+    assert "maybe_bigint" in output
 
 
-def test_markdown_output_documents_ref64_as_reference_lane(
+def test_markdown_output_documents_maybe_bigint_as_boxed_lane(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "sample.py"
     source.write_text("def f():\n    return 1\n", encoding="utf-8")
     markdown = tmp_path / "report.md"
     report = mod.FileReport(
-        source, _backend_report(values_by_repr={"i64": 1, "ref64": 1})
+        source, _backend_report(values_by_repr={"raw_i64_safe": 1, "maybe_bigint": 1})
     )
     monkeypatch.setattr(mod, "analyze_file", lambda path, type_hints: report)
 
@@ -211,19 +204,19 @@ def test_markdown_output_documents_ref64_as_reference_lane(
     assert rc == 0
     text = markdown.read_text(encoding="utf-8")
     assert "<!-- GENERATED by tools/representation_report.py --update-doc." in text
-    assert "| `ref64` | reference |" in text
+    assert "| `maybe_bigint` | boxed |" in text
     assert "- scalar_values: `1`" in text
-    assert "- reference_values: `1`" in text
+    assert "- boxed_values: `1`" in text
 
 
 def test_update_doc_uses_default_generated_report_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    doc_path = tmp_path / "backend_lir_representation.generated.md"
+    doc_path = tmp_path / "backend_representation.generated.md"
     monkeypatch.setattr(mod, "DEFAULT_MARKDOWN_PATH", doc_path)
     report = mod.FileReport(
         tmp_path / "sample.py",
-        _backend_report(values_by_repr={"bool1": 1, "ref64": 1}),
+        _backend_report(values_by_repr={"bool": 1, "maybe_bigint": 1}),
     )
     monkeypatch.setattr(mod, "analyze_file", lambda path, type_hints: report)
 
@@ -232,4 +225,4 @@ def test_update_doc_uses_default_generated_report_path(
     assert rc == 0
     text = doc_path.read_text(encoding="utf-8")
     assert "- scalar_values: `1`" in text
-    assert "- reference_values: `1`" in text
+    assert "- boxed_values: `1`" in text

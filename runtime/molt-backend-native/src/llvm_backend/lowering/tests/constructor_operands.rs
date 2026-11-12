@@ -2291,7 +2291,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
             facts
                 .repr_by_value
-                .insert(view_id.unwrap(), crate::Repr::RawI64FullDeopt);
+                .insert(view_id.unwrap(), molt_ir::repr::Repr::RawI64FullDeopt);
             backend.function_repr_facts.insert(func.name.clone(), facts);
         }
         functions.push(func);

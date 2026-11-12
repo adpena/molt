@@ -5,7 +5,6 @@ from .primitive_effects import comparison_warning_pairs
 from .schema import (
     _BOXED_ALLOCATION_LAYOUT_RULES,
     _COUNTED_LOOP_COMPARISON_ROLES,
-    _LIR_VERIFY_RULES,
     _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES,
     _MODULE_SLOT_ACCESS_ROLES,
     _RANGE_DEVIRT_ROLES,
@@ -702,43 +701,6 @@ def _render_vectorize_opcode_facts(opcodes: list[dict], data: dict) -> str:
             f"reduction_rule: {reduction_variant}, "
             f"annotation_target: {annotation} }},\n"
         )
-    lines.append("    }\n}\n")
-    return "".join(lines)
-
-
-def _render_lir_verify_rule(opcodes: list[dict], data: dict) -> str:
-    rule_by_opcode = {
-        row["opcode"]: row["rule"] for row in data.get("lir_verify_rules", [])
-    }
-    lines = [
-        "/// Representation-aware LIR verifier hook by opcode. This table owns\n",
-        "/// verifier dispatch membership; verify_lir.rs owns each hook's invariant\n",
-        "/// implementation and diagnostics.\n",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub enum LirVerifyRule {\n",
-        "    None,\n",
-    ]
-    for variant in sorted(_LIR_VERIFY_RULES.values()):
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "/// LIR verifier hook by opcode. EXHAUSTIVE over OpCode so new opcodes\n",
-            "/// cannot silently miss representation-aware verification dispatch.\n",
-            "#[inline]\n",
-            "pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {\n",
-            "    match opcode {\n",
-        ]
-    )
-    for row in opcodes:
-        name = row["name"]
-        rule = rule_by_opcode.get(name)
-        variant = (
-            f"LirVerifyRule::{_LIR_VERIFY_RULES[rule]}"
-            if rule is not None
-            else "LirVerifyRule::None"
-        )
-        lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)
 

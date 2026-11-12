@@ -161,7 +161,6 @@ impl SimpleBackend {
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
                     cache: self.tir_cache.clone(),
                     process_externs: false,
-                    verify_lir: false,
                     tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),
                     tir_stats: env_setting(BackendEnv::TIR_OPT_STATS).as_deref() == Some("1"),
                     progress_prefix: Some("MOLT_BACKEND(llvm)"),

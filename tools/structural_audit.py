@@ -562,7 +562,6 @@ _CRITICAL_FILE_HINTS = (
     "effects",
     "exception",
     "ownership",
-    "lower_to_lir",
     "function_compiler",
     "llvm_backend",
     "wasm.rs",

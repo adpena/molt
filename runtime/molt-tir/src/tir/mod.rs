@@ -1,11 +1,6 @@
-pub mod lir;
-pub mod lir_printer;
-pub mod lower_to_lir;
 pub mod mlir_compat;
 pub mod pipeline_cache;
 pub mod tests_roundtrip;
-pub mod verify_lir;
-pub mod verify_lir_repr;
 pub use molt_ir::tir::{
     blocks, call_targets, cfg, cfg_liveness, clone_support, dominators, function, numeric_facts,
     op_kinds_generated, op_semantics, ops, printer, serialize, simple_def_use, ssa, target_info,
@@ -34,7 +29,6 @@ pub use self::fact_graph::{
     FactGraphSummary, FactProducer, FactSourceSite, ValueFactNode,
 };
 pub use self::function::{TirFunction, TirModule};
-pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 pub use self::numeric_facts::{IntRange, ScevExpr, TripCount};
 pub use self::ops::{AttrDict, Dialect, OpCode, TirOp};
 pub use self::target_info::{

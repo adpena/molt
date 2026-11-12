@@ -66,10 +66,15 @@ fn assert_function_compiled(bytes: &[u8], func_name: &str) {
 /// Mach-O (macOS) prefixes C-ABI symbols with a leading underscore in the
 /// object's symbol table (`_foo`), while ELF (Linux) does not (`foo`). The
 /// `object` crate surfaces the raw table name, so accept either form to keep
-/// the assertion target-portable.
+/// the assertion target-portable. A compiled function's physical symbol
+/// carries the attached execution-context ABI suffix.
 fn symbol_matches(symbol_name: Option<&str>, func_name: &str) -> bool {
+    let physical = format!(
+        "{func_name}{}",
+        molt_codegen_abi::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX
+    );
     match symbol_name {
-        Some(name) => name == func_name || name.strip_prefix('_') == Some(func_name),
+        Some(name) => name == physical || name.strip_prefix('_') == Some(physical.as_str()),
         None => false,
     }
 }
@@ -82,8 +87,6 @@ fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
     refine_types(&mut typed);
     verify_function(&typed).expect("typed TIR must verify");
     eprintln!("TYPED_TIR_DEBUG: {typed:#?}");
-    let lir_debug = molt_backend::tir::lower_to_lir::lower_function_to_lir(&typed);
-    eprintln!("LIR_DEBUG: {lir_debug:#?}");
     let round_tripped = lower_to_simple_ir(&typed);
     eprintln!("ROUNDTRIPPED_SIMPLE_DEBUG: {round_tripped:#?}");
     let ir = SimpleIR {

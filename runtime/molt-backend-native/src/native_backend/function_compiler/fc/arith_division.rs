@@ -33,21 +33,14 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
 /// is not representable in `i64` at all. The raw fast paths below therefore
 /// require that the operand pair `(i64::MIN, -1)` never reaches them.
 ///
-/// That precondition is a NON-LOCAL invariant established upstream, from two
-/// authorities that only admit the raw machine div/mod op for operands proven
-/// to fit the 47-bit inline window `[-(2^46), 2^46-1]` (which excludes
-/// `i64::MIN`, and whose closure excludes the `2**63` result):
-///   * TIR->LIR lowering forces `Div`/`FloorDiv`/`Mod` over raw-i64 carriers to
-///     the boxed runtime dispatch UNLESS value-range proves every operand AND
-///     the result `fits_inline_int47`
-///     (`opcode_requires_i64_overflow_box_dispatch_table` +
-///     `opcode_requires_i64_zero_divisor_guard_table`, both pinned for the
-///     div/mod family by `divmod_raw_lane_is_gated_for_intmin_safety`).
-///   * carrier propagation raises a direct numeric op's result to `RawI64Safe`
-///     ONLY when every operand is already `RawI64Safe`; `FloorDiv`/`Mod` never
-///     produce the full-range `RawI64FullDeopt` carrier (that tier is reserved
-///     for `CheckedAdd`/`CheckedMul` overflow-peel results). See
-///     `direct_numeric_repr_for_tir_op`.
+/// That precondition is a NON-LOCAL invariant established upstream by carrier
+/// propagation, which admits the raw machine div/mod op only for operands
+/// proven to fit the 47-bit inline window `[-(2^46), 2^46-1]` (which excludes
+/// `i64::MIN`, and whose closure excludes the `2**63` result): it raises a
+/// direct numeric op's result to `RawI64Safe` ONLY when every operand is
+/// already `RawI64Safe`, and `FloorDiv`/`Mod` never produce the full-range
+/// `RawI64FullDeopt` carrier (that tier is reserved for `CheckedAdd`/
+/// `CheckedMul` overflow-peel results). See `direct_numeric_repr_for_tir_op`.
 ///
 /// This guard makes that non-local invariant LOCAL and CHECKED: in debug builds
 /// of the compiler it emits a loud `trapnz` if `(i64::MIN, -1)` ever reaches the

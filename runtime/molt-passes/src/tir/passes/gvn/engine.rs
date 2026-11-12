@@ -31,12 +31,13 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let tree = am.get::<ImmediateDoms>(func).clone();
     let dom_children = am.get::<DomChildren>(func).clone();
 
-    // Strict-CFG reachability (terminator-only). Cross-block replacements are
-    // only safe when the use site is reachable via terminators — that is the
-    // reachability `verify_lir` uses; emitting `Copy(leader)` into a block
-    // reachable only through exception edges would make the verifier reject the
-    // new operand. Blocks reachable only via exception edges still get
-    // intra-block GVN (their leaders never escape their own scope).
+    // Strict-CFG reachability (terminator-only). Cross-block replacements stay
+    // within blocks reachable via terminators. The rule came from the deleted
+    // LIR verifier, which computed dominance over that subgraph; the TIR
+    // verifier checks executable dominance (exception edges included), which
+    // this rule implies, so it is conservative, not required. Blocks reachable
+    // only via exception edges still get intra-block GVN (their leaders never
+    // escape their own scope).
     let strict_reachable = am.get::<StrictReachable>(func).clone();
     let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
@@ -241,14 +242,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             .unwrap_or(func.entry_block);
                         // Cross-block dedup additionally requires that BOTH
                         // the leader's defining block AND the use block are
-                        // reachable via strict-CFG terminator successors.
-                        // The LIR verifier computes dominance only over that
-                        // subgraph; emitting `Copy(leader)` into a block
-                        // outside it would cause `verify_lir` to reject the
-                        // new operand.  Intra-block replacements (same block
-                        // for def and use) bypass the strict-CFG check
-                        // because verification handles same-block uses by
-                        // op-index ordering rather than dominator lookup.
+                        // reachable via strict-CFG terminator successors
+                        // (the conservative rule above). Intra-block
+                        // replacements (same block for def and use) bypass
+                        // the strict-CFG check because verification handles
+                        // same-block uses by op-index ordering rather than
+                        // dominator lookup.
                         let cross_block = leader_block != bid;
                         let strict_ok = !cross_block
                             || (strict_reachable.contains(&leader_block)

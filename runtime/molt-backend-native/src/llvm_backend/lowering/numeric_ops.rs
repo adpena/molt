@@ -1277,7 +1277,9 @@ mod numeric_family_tests {
             // machine float operation's zero, NaN and remainder-sign rules.
             let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
             for value in [ValueId(0), ValueId(1), result] {
-                facts.repr_by_value.insert(value, crate::Repr::FloatUnboxed);
+                facts
+                    .repr_by_value
+                    .insert(value, molt_ir::repr::Repr::FloatUnboxed);
             }
             backend.function_repr_facts.insert(func.name.clone(), facts);
             try_lower_tir_to_llvm(&func, &backend).unwrap();

@@ -9,7 +9,6 @@ pub(crate) fn function_stats_json(stats: &FunctionStats) -> Value {
         "values_by_repr": stats.values_by_repr,
         "values_by_type": stats.values_by_type,
         "scalar_values": stats.scalar_values,
-        "reference_values": stats.reference_values,
         "boxed_values": stats.boxed_values,
         "opcodes": stats.opcodes.iter().map(|(name, opcode)| {
             (name.clone(), json!({
@@ -24,30 +23,24 @@ pub(crate) fn function_stats_json(stats: &FunctionStats) -> Value {
 
 pub(crate) fn aggregate_functions(functions: &[Value]) -> Value {
     let mut stats = FunctionStats::default();
-    let mut lir_errors = 0usize;
-    let mut repr_violations = 0usize;
+    let mut tir_errors = 0usize;
 
     for function in functions {
         let function_stats = &function["stats"];
         merge_count_map(&mut stats.values_by_repr, &function_stats["values_by_repr"]);
         merge_count_map(&mut stats.values_by_type, &function_stats["values_by_type"]);
         stats.scalar_values += function_stats["scalar_values"].as_u64().unwrap_or(0) as usize;
-        stats.reference_values += function_stats["reference_values"].as_u64().unwrap_or(0) as usize;
         stats.boxed_values += function_stats["boxed_values"].as_u64().unwrap_or(0) as usize;
         merge_opcode_maps(&mut stats.opcodes, &function_stats["opcodes"]);
 
-        lir_errors += function["verification"]["lir_errors"]
-            .as_array()
-            .map_or(0, Vec::len);
-        repr_violations += function["verification"]["repr_violations"]
+        tir_errors += function["verification"]["tir_errors"]
             .as_array()
             .map_or(0, Vec::len);
     }
 
     let mut aggregate = function_stats_json(&stats);
     aggregate["functions"] = json!(functions.len());
-    aggregate["lir_errors"] = json!(lir_errors);
-    aggregate["repr_violations"] = json!(repr_violations);
+    aggregate["tir_errors"] = json!(tir_errors);
     aggregate
 }
 

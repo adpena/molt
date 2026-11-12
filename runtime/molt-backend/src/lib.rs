@@ -35,12 +35,6 @@ pub use molt_backend_native::llvm_backend;
 pub use molt_backend_native::{
     CompileOutput, NativeBackendModuleContext, SimpleBackend, prepare_native_application_ir,
 };
-/// The representation lattice element (the orthogonal carrier axis to
-/// `TirType`). Re-exported publicly because it appears in the signature of the
-/// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR
-/// convergence), which the WASM/LIR codegen path drives with the proven
-/// `repr_by_value`.
-pub use molt_ir::repr::Repr;
 pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;
 pub use molt_ir::stdlib_module_symbols::{
     parse_stdlib_module_symbols, stdlib_module_symbols_from_env,

@@ -34,7 +34,6 @@ pub(crate) fn emit_fact_graph_for_ir(
             cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::FactGraph,
             cache: molt_backend::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
             process_externs: false,
-            verify_lir: false,
             tir_dump: false,
             tir_stats: false,
             progress_prefix: None,

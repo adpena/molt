@@ -616,7 +616,7 @@ Read these first instead of rediscovering project structure:
     `libmolt` work.
   - `docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md`
     routes third-party ecosystem claims.
-  - `docs/spec/areas/compiler/backend_lir_representation.generated.md` and
+  - `docs/spec/areas/compiler/backend_representation.generated.md` and
     `docs/spec/areas/compiler/luau_support_matrix.generated.md` route backend
     representation and Luau support evidence.
 

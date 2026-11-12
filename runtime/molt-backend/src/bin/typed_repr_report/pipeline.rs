@@ -4,7 +4,6 @@ use serde_json::{Value, json};
 
 use super::input::read_input;
 use super::json_report::{aggregate_functions, function_stats_json};
-use super::names::{repr_name, type_name};
 use super::stats::collect_function_stats;
 
 pub(crate) fn run() -> Result<(Value, bool), String> {
@@ -18,27 +17,26 @@ pub(crate) fn run() -> Result<(Value, bool), String> {
             rewrite_phi(func);
         }
 
-        let mut tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(func);
+        // The production sequence (pipeline_cache::optimize_tir_input), so the
+        // counts are the carriers a native build's backend receives.
+        let target = molt_backend::tir::target_info::TargetInfo::native_release_fast();
+        let mut tir_func =
+            molt_backend::tir::lower_from_simple::lower_to_tir_for_target(func, &target);
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
-        let pass_stats = molt_backend::tir::passes::run_pipeline_with_translation_validation(
-            &mut tir_func,
-            &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
-        );
+        let pass_stats = molt_backend::tir::passes::run_pipeline(&mut tir_func, &target);
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
-        let lir_func = molt_backend::tir::lower_to_lir::lower_function_to_lir(&tir_func);
-
-        let lir_errors = molt_backend::tir::verify_lir::verify_lir_function(&lir_func)
+        let ranges = molt_backend::representation_plan::value_range_for(&tir_func);
+        let repr = molt_backend::representation_plan::repr_by_value_for(&tir_func, Some(&ranges));
+        let tir_errors = molt_backend::tir::verify::verify_function(&tir_func)
             .err()
             .unwrap_or_default();
-        let repr_violations =
-            molt_backend::tir::verify_lir_repr::verify_register_passable(&lir_func);
-        if !lir_errors.is_empty() || !repr_violations.is_empty() {
+        if !tir_errors.is_empty() {
             verified = false;
         }
 
         function_reports.push(json!({
-            "name": lir_func.name,
-            "blocks": lir_func.blocks.len(),
+            "name": tir_func.name,
+            "blocks": tir_func.blocks.len(),
             "passes": pass_stats.iter().map(|stat| {
                 json!({
                     "name": stat.name,
@@ -47,18 +45,9 @@ pub(crate) fn run() -> Result<(Value, bool), String> {
                     "ops_added": stat.ops_added,
                 })
             }).collect::<Vec<_>>(),
-            "stats": function_stats_json(&collect_function_stats(&lir_func)),
+            "stats": function_stats_json(&collect_function_stats(&tir_func, &repr)),
             "verification": {
-                "lir_errors": lir_errors.iter().map(|err| format!("{err:?}")).collect::<Vec<_>>(),
-                "repr_violations": repr_violations.iter().map(|violation| {
-                    json!({
-                        "block": violation.block.0,
-                        "value": violation.value_id.0,
-                        "expected_type": type_name(&violation.expected_type),
-                        "expected_repr": repr_name(violation.expected_repr),
-                        "actual_repr": repr_name(violation.actual_repr),
-                    })
-                }).collect::<Vec<_>>(),
+                "tir_errors": tir_errors.iter().map(|err| format!("{err:?}")).collect::<Vec<_>>(),
             },
         }));
     }
@@ -66,7 +55,7 @@ pub(crate) fn run() -> Result<(Value, bool), String> {
     let aggregate = aggregate_functions(&function_reports);
     Ok((
         json!({
-            "schema": "molt.typed_repr_report.v1",
+            "schema": "molt.typed_repr_report.v2",
             "verified": verified,
             "functions": function_reports,
             "aggregate": aggregate,

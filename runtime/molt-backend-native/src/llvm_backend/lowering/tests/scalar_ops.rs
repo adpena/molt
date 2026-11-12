@@ -270,7 +270,7 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
             lowering
                 .repr_facts
                 .repr_by_value
-                .insert(ValueId(0), crate::Repr::RawI64Safe);
+                .insert(ValueId(0), molt_ir::repr::Repr::RawI64Safe);
         }
         lowering.lower_op(
             func.entry_block,
@@ -335,7 +335,7 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     lowering
         .repr_facts
         .repr_by_value
-        .insert(ValueId(1), crate::Repr::RawI64FullDeopt);
+        .insert(ValueId(1), molt_ir::repr::Repr::RawI64FullDeopt);
     lowering.emit_unbox(&TirOp {
         origin: None,
         runtime: None,
@@ -775,7 +775,7 @@ fn lower_unary_carrier_fixture(
     opcode: OpCode,
     operand_ty: TirType,
     operand_bits: u64,
-    result_repr: Option<crate::Repr>,
+    result_repr: Option<molt_ir::repr::Repr>,
 ) -> (String, TirType) {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
@@ -1079,7 +1079,12 @@ fn not_in_releases_the_owned_membership_result() {
 #[test]
 fn unary_proven_numeric_lanes_keep_raw_results() {
     for (opcode, operand, expected, result_repr) in [
-        (OpCode::Neg, 42_i64, -42_i64, Some(crate::Repr::RawI64Safe)),
+        (
+            OpCode::Neg,
+            42_i64,
+            -42_i64,
+            Some(molt_ir::repr::Repr::RawI64Safe),
+        ),
         (OpCode::Pos, i64::MIN, i64::MIN, None),
         (OpCode::BitNot, i64::MIN, i64::MAX, None),
     ] {
@@ -1153,7 +1158,9 @@ fn lower_i64_comparison() {
     // comparison through the runtime. Prove the two parameters here.
     let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     for v in [ValueId(0), ValueId(1)] {
-        facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
+        facts
+            .repr_by_value
+            .insert(v, molt_ir::repr::Repr::RawI64Safe);
     }
     backend.function_repr_facts.insert(func.name.clone(), facts);
 
@@ -1228,7 +1235,7 @@ fn lower_box_i64() {
         let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
         facts
             .repr_by_value
-            .insert(ValueId(0), crate::Repr::RawI64Safe);
+            .insert(ValueId(0), molt_ir::repr::Repr::RawI64Safe);
         backend.function_repr_facts.insert(func.name.clone(), facts);
 
         // This test owns an explicitly boxed destination ABI. Inferred
@@ -1383,7 +1390,9 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
     // their own lowering; the proof here is for the phi + the two op results.
     let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     for v in [s_phi, shl, band] {
-        facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
+        facts
+            .repr_by_value
+            .insert(v, molt_ir::repr::Repr::RawI64Safe);
     }
     backend.function_repr_facts.insert(func.name.clone(), facts);
 
@@ -1568,7 +1577,7 @@ fn identity_uses_canonical_object_words() {
                         lowering
                             .repr_facts
                             .repr_by_value
-                            .insert(id, crate::Repr::RawI64Safe);
+                            .insert(id, molt_ir::repr::Repr::RawI64Safe);
                     }
                     lowering.values.insert(id, value);
                     lowering.value_types.insert(id, ty);
