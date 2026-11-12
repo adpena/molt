@@ -336,6 +336,18 @@ pub(crate) fn notify_pending_calls() {
     raw_errno::set(saved);
 }
 
+/// Ask the GIL holder to hand the GIL over at its next poll (CPython
+/// `SET_GIL_DROP_REQUEST`). Called by a waiter that does not hold the GIL;
+/// the admission window keeps the runtime's eval breaker alive for the store.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn notify_gil_drop_request() {
+    with_admitted_state(|signal| {
+        signal
+            .pending_work
+            .request(crate::state::pending_work::PendingWorkKind::GilDropRequest);
+    });
+}
+
 /// Wait until every notifier admitted before the caller's withdrawal has left.
 /// Admitted bodies never block, so the wait is bounded by their scheduling.
 /// The GIL is released first when this thread holds it through ordinary TLS

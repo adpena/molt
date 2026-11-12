@@ -10,6 +10,9 @@ pub(crate) enum PendingWorkKind {
     GarbageCollection = 2,
     PoolRetirement = 4,
     PendingCalls = 8,
+    /// A thread waited a switch interval for the GIL (CPython
+    /// `_PY_GIL_DROP_REQUEST_BIT`); the holder's next poll hands it over.
+    GilDropRequest = 16,
 }
 
 /// One aligned word, shared by a runtime's producers and lent to compiled code
@@ -38,6 +41,12 @@ impl PendingWork {
         if remains() {
             self.request(kind);
         }
+    }
+
+    /// Clear `kind` and report whether it was requested. For a request with
+    /// no source to recheck: a producer after the RMW sets the bit again.
+    pub(crate) fn take(&self, kind: PendingWorkKind) -> bool {
+        self.0.fetch_and(!(kind as u32), Ordering::AcqRel) & kind as u32 != 0
     }
 
     pub(crate) fn word_ptr(&self) -> *const AtomicU32 {
