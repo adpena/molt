@@ -446,9 +446,8 @@ impl WasmBackend {
         let mut layout_payload = Vec::new();
         crate::wasm_abi_generated::callable_table::CALLABLE_TABLE_LAYOUT_VERSION
             .encode(&mut layout_payload);
-        // No fixed runtime prefix (HF-699 K3): base and length are zero.
-        0u32.encode(&mut layout_payload);
-        0u32.encode(&mut layout_payload);
+        // Layout v2 names the app region only: runtime callables are keys, so
+        // no runtime prefix exists (HF-699 K3).
         plan.table_base.encode(&mut layout_payload);
         (app_entries.len() as u32).encode(&mut layout_payload);
         WasmCallableTableElements {

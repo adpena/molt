@@ -2191,7 +2191,6 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
         deployment_manifest=split_wasm_execution_manifest(module, module),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
     assert_split_worker_runtime_lifecycle(
         source, ROOT / "wasm/runtime_lifecycle.js", tmp_path

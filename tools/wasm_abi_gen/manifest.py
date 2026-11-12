@@ -208,22 +208,6 @@ def _parse_call_indirect_import_arity(name: str) -> int | None:
     return arity if str(arity) == suffix else None
 
 
-def reserved_runtime_callable_base(data: dict) -> int:
-    """First shared-table slot after the poll table: the reserved callable region.
-
-    Rust, Python and JavaScript hosts all render this one value; none of them
-    may restate the formula or a copy of its result.
-    """
-    return 1 + max(
-        (
-            entry["poll_table_slot"]
-            for entry in data["import"]
-            if "poll_table_slot" in entry
-        ),
-        default=0,
-    )
-
-
 def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
     imports: list[tuple[int, str]] = []
     for entry in data.get("link_allowed_import", []):
@@ -877,6 +861,9 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
         callable_arity = entry.get("callable_arity")
         lir_arity = lir_arities.get(entry["name"])
         op_loop_arity = op_loop_arities.get(entry["name"])
+        # No table slot exists for a runtime callable (HF-699 K3);
+        # ``callable_dispatch = "trampoline"`` now only keeps a callable out
+        # of the boxed-call set, so backends never call it by position.
         direct = entry.get("callable_dispatch", "direct") == "direct"
         compiler_boxed = explicit or lir_arity is not None or op_loop_arity is not None
         if not compiler_boxed and not (callable_arity is not None and direct):
@@ -2243,7 +2230,6 @@ MANIFEST_FIELDS = frozenset(
         "static_type",
         "strip_import_prefix_rule",
         "strip_import_rule",
-        "table_layout",
         "wasi_errno",
         "wasi_errno_alias",
         "synthetic_errno",
@@ -2563,14 +2549,6 @@ def validate_loaded_manifest(
     if data.get("resolver_status") != {"encoding": "signed-i32-v1"}:
         raise WasmAbiManifestError("unsupported resolver status encoding")
     wasm_socket_constant_table(data)
-    table_layout = data.get("table_layout")
-    if not isinstance(table_layout, dict):
-        raise WasmAbiManifestError("manifest must define [table_layout]")
-    default_app_table_base = table_layout.get("default_app_table_base")
-    if not isinstance(default_app_table_base, int) or default_app_table_base <= 0:
-        raise WasmAbiManifestError(
-            "[table_layout].default_app_table_base must be positive"
-        )
     callable_table_publication = data.get("callable_table_publication")
     if not isinstance(callable_table_publication, dict):
         raise WasmAbiManifestError("manifest must define [callable_table_publication]")

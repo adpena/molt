@@ -82,14 +82,11 @@ non_runtime_callable_intrinsic = [
   "molt_json_parse_scalar",
 ]
 
-[table_layout]
-default_app_table_base = 256
-
 [callable_table_publication]
 section_name = "molt.callable_table"
 version = 1
 layout_section_name = "molt.callable_table.layout"
-layout_version = 1
+layout_version = 2
 active_element_role = 0
 # Each value type is encoded as ``byte_length + canonical wasm bytes``. This
 # preserves typed-reference encodings without a second type registry.
@@ -99,8 +96,7 @@ value_type_format = 1
 # Runtime callables reachable from the numpy/scipy extension-init and later
 # fixed-arity dispatch surfaces. This is deliberately cross-checked against
 # [[reserved_runtime_callable]]: adding a later witness-facing callable without
-# reserving its callable + trampoline slots must fail manifest validation rather
-# than surfacing as an out-of-range table index in the witness.
+# giving it a runtime callable key must fail manifest validation.
 reserved_runtime_callables = [
   "molt_type_call",
   "molt_type_new",
@@ -6958,7 +6954,6 @@ essential_exports = [
   "molt_table",
   "molt_traceback_format_exc",
   "molt_type_tag_of_bits",
-  "molt_set_wasm_table_base",
   "__indirect_function_table",
 ]
 
@@ -7099,7 +7094,6 @@ host_exports = [
   "molt_sequence_getitem",
   "molt_sequence_length",
   "molt_sequence_setitem",
-  "molt_set_wasm_table_base",
   "molt_shutdown",
   "molt_stream_new",
   "molt_stream_send",
@@ -9213,7 +9207,6 @@ boundary_entries = [
   "molt_runtime_shutdown",
   "molt_set_app_callable_resolver",
   "molt_set_argv",
-  "molt_set_wasm_table_base",
   "molt_shutdown",
   "molt_str_richcompare",
   "molt_tuple_richcompare",

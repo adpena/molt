@@ -92,7 +92,6 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_JS_SYNTHETIC_ERRNO,
     OUT_WASM_SOCKET_ABI_RS,
     OUT_JS_SOCKET_ABI,
-    OUT_TABLE_LAYOUT_INC,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     REMOVED_GENERATED_FILES,
     ROOT,
@@ -142,7 +141,6 @@ OUTPUT_PATHS: tuple[Path, ...] = (
     OUT_JS_SYNTHETIC_ERRNO,
     OUT_WASM_SOCKET_ABI_RS,
     OUT_JS_SOCKET_ABI,
-    OUT_TABLE_LAYOUT_INC,
     OUT_ALLOWED_IMPORTS,
 )
 
@@ -1840,7 +1838,6 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
             "runtime_name": entry["runtime_name"],
             "import_name": entry["import_name"],
             "callable_arity": entry["callable_arity"],
-            "callable_dispatch": entry.get("callable_dispatch", "direct"),
             "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
             "runtime_cfg": import_entry.get("runtime_cfg"),
             "symbol_path": entry["runtime_name"],
@@ -1864,7 +1861,6 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
                 "runtime_name": runtime_name,
                 "import_name": import_name,
                 "callable_arity": entry["callable_arity"],
-                "callable_dispatch": entry.get("callable_dispatch", "direct"),
                 "runtime_cfg": entry.get("runtime_cfg"),
                 "symbol_path": f"crate::{runtime_name}",
             }
@@ -2405,16 +2401,6 @@ def render_py(data: dict) -> str:
     )
 
 
-def render_table_layout_inc(data: dict) -> str:
-    lines = [_header("//")]
-    lines.append("#[allow(dead_code)]\n")
-    lines.append(
-        "pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = "
-        f"{data['table_layout']['default_app_table_base']};\n"
-    )
-    return "".join(lines)
-
-
 def render_allowed_imports(data: dict) -> str:
     lines = [_header("#")]
     physical = {
@@ -2893,7 +2879,6 @@ def render_outputs(data: dict) -> dict[Path, str]:
         render_wasm_socket_abi_rs(data), label="wasm_socket_abi_generated.rs"
     )
     outputs[OUT_JS_SOCKET_ABI] = render_js_socket_abi(data)
-    outputs[OUT_TABLE_LAYOUT_INC] = render_table_layout_inc(data)
     outputs[OUT_ALLOWED_IMPORTS] = render_allowed_imports(data)
     return outputs
 

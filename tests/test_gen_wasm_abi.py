@@ -28,7 +28,6 @@ _MANIFEST_CACHE_BASELINE: dict | None = None
 _RENDERED_RS_MODULES_CACHE: dict[str, str] | None = None
 _RENDERED_RUNTIME_CALLABLES_CACHE: str | None = None
 _RENDERED_PY_CACHE: str | None = None
-_RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
 
 
 def _physical_runtime_symbol(data: dict, logical: str) -> str:
@@ -1172,7 +1171,6 @@ def _install_gen_cache(gen, patch: pytest.MonkeyPatch) -> None:
     uncached_render_rs_modules = gen.render_rs_modules
     uncached_render_runtime_callables_rs = gen.render_runtime_callables_rs
     uncached_render_py = gen.render_py
-    uncached_render_table_layout_inc = gen.render_table_layout_inc
     uncached_render_allowed_imports = gen.render_allowed_imports
 
     def load_manifest_cached():
@@ -1208,16 +1206,6 @@ def _install_gen_cache(gen, patch: pytest.MonkeyPatch) -> None:
             return _RENDERED_PY_CACHE
         return uncached_render_py(data)
 
-    def render_table_layout_inc_cached(data: dict) -> str:
-        global _RENDERED_TABLE_LAYOUT_INC_CACHE
-        if data is _MANIFEST_CACHE:
-            if _RENDERED_TABLE_LAYOUT_INC_CACHE is None:
-                _RENDERED_TABLE_LAYOUT_INC_CACHE = uncached_render_table_layout_inc(
-                    data
-                )
-            return _RENDERED_TABLE_LAYOUT_INC_CACHE
-        return uncached_render_table_layout_inc(data)
-
     def render_allowed_imports_cached(data: dict) -> str:
         global _RENDERED_ALLOWED_IMPORTS_CACHE
         if data is _MANIFEST_CACHE:
@@ -1232,7 +1220,6 @@ def _install_gen_cache(gen, patch: pytest.MonkeyPatch) -> None:
         gen, "render_runtime_callables_rs", render_runtime_callables_rs_cached
     )
     patch.setattr(gen, "render_py", render_py_cached)
-    patch.setattr(gen, "render_table_layout_inc", render_table_layout_inc_cached)
     patch.setattr(gen, "render_allowed_imports", render_allowed_imports_cached)
 
 
@@ -1240,13 +1227,11 @@ def _reset_render_caches() -> None:
     global _RENDERED_RS_MODULES_CACHE
     global _RENDERED_RUNTIME_CALLABLES_CACHE
     global _RENDERED_PY_CACHE
-    global _RENDERED_TABLE_LAYOUT_INC_CACHE
     global _RENDERED_ALLOWED_IMPORTS_CACHE
 
     _RENDERED_RS_MODULES_CACHE = None
     _RENDERED_RUNTIME_CALLABLES_CACHE = None
     _RENDERED_PY_CACHE = None
-    _RENDERED_TABLE_LAYOUT_INC_CACHE = None
     _RENDERED_ALLOWED_IMPORTS_CACHE = None
 
 
@@ -1785,9 +1770,10 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "callable_arity" not in imports_by_name["runtime_shutdown"]
     assert {
         "molt_runtime_shutdown",
-        "molt_set_wasm_table_base",
         "molt_gpu_matmul_contiguous",
     } <= host_exports
+    # Runtime callables are keys, so no host publishes a table base (HF-699).
+    assert "molt_set_wasm_table_base" not in host_exports
     assert host_export_signatures["molt_bool_from_i32"] == {
         "name": "molt_bool_from_i32",
         "params": ["i32"],
@@ -2019,14 +2005,14 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
             "runtime_name": entry["runtime_name"],
             "import_name": entry["import_name"],
             "callable_arity": entry["callable_arity"],
-            "callable_dispatch": entry["callable_dispatch"],
             "trampoline_abi": entry["trampoline_abi"],
         }
         for entry in shared_callables[: len(reserved_callables)]
     ] == [
         {
-            **entry,
-            "callable_dispatch": entry.get("callable_dispatch", "direct"),
+            **{
+                key: value for key, value in entry.items() if key != "callable_dispatch"
+            },
             "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
         }
         for entry in reserved_callables
@@ -2057,7 +2043,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "runtime_name": "molt_importlib_import_transaction",
         "import_name": "importlib_import_transaction",
         "callable_arity": 5,
-        "callable_dispatch": "trampoline",
         "trampoline_abi": "unpack_args",
         "runtime_cfg": None,
         "symbol_path": "molt_importlib_import_transaction",
@@ -2067,7 +2052,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "runtime_name": "molt_importlib_module_spec_init",
         "import_name": "importlib_module_spec_init",
         "callable_arity": 5,
-        "callable_dispatch": "direct",
         "trampoline_abi": "unpack_args",
         "runtime_cfg": None,
         "symbol_path": "molt_importlib_module_spec_init",
@@ -2082,11 +2066,11 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "molt_types_bootstrap" not in rendered_runtime
     assert (
         '(23, "molt_importlib_import_transaction", '
-        '"importlib_import_transaction", 5, "trampoline")' in gen.render_py(data)
+        '"importlib_import_transaction", 5)' in gen.render_py(data)
     )
     assert (
         '(24, "molt_importlib_module_spec_init", '
-        '"importlib_module_spec_init", 5, "direct")' in gen.render_py(data)
+        '"importlib_module_spec_init", 5)' in gen.render_py(data)
     )
 
     broken_marker = copy.deepcopy(data)
@@ -2210,7 +2194,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert (
         "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_reserved_rs
     )
-    assert "ReservedRuntimeCallableDispatch::Trampoline" in rendered_rs
+    # A reserved callable has no table slot, so no dispatch mode (HF-699 K1).
+    assert "ReservedRuntimeCallableDispatch" not in rendered_rs
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
     callable_import_match = rendered_reserved_rs.split(
         "pub(crate) fn runtime_callable_import", 1
@@ -2245,11 +2230,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "locale_getdefaultlocale" not in rendered_py
     assert "ReservedRuntimeCallableSpec" in rendered_rs
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
-    assert "ReservedRuntimeCallableDispatch" in rendered_rs
     assert "RuntimeCallableTrampolineAbi" in rendered_rs
     assert "RuntimeCallableResult" not in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_SPECS" in rendered_rs
-    assert "RESERVED_RUNTIME_CALLABLE_COUNT" in rendered_rs
+    assert "RESERVED_RUNTIME_CALLABLE_COUNT" not in rendered_rs
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "runtime_callable_returns_void_from_target_ptr" not in rendered_runtime_rs
@@ -3424,7 +3408,10 @@ def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matcher
     assert "DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES" not in host_surface
 
 
-def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
+def test_wasm_abi_manifest_owns_runtime_callable_keys() -> None:
+    """Runtime polls and reserved runtime callables are keys: a poll's
+    ``poll_table_slot`` and a callable's ``index`` are key offsets, and no
+    projection names a table base or a reserved region (HF-699 K1, K3)."""
     gen = gen_wasm_abi
     data = gen.load_manifest()
 
@@ -3475,7 +3462,6 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
-    rendered_table_layout = gen.render_table_layout_inc(data)
     assert "PollTableImportSpec" in rendered_rs
     assert "POLL_TABLE_IMPORTS" in rendered_rs
     assert "import: WasmRuntimeImport::AsyncSleepPoll" in rendered_rs
@@ -3487,12 +3473,12 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "POLL_TABLE_FUNCS" not in rendered_rs
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
     assert '(27, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
-    assert "WASM_DEFAULT_APP_TABLE_BASE" in rendered_py
+    assert "table_layout" not in data
     assert data["callable_table_publication"] == {
         "section_name": "molt.callable_table",
         "version": 1,
         "layout_section_name": "molt.callable_table.layout",
-        "layout_version": 1,
+        "layout_version": 2,
         "active_element_role": 0,
         "value_type_format": 1,
     }
@@ -3506,22 +3492,12 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     ):
         assert name in rendered_py
     assert "WASM_TABLE_REF_EXPORT_PREFIX" not in rendered_py
-    assert "WASM_TABLE_REF_EXPORT_PREFIX" not in rendered_table_layout
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_BASE" in rendered_py
-
-    callable_layout = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs"
-    ).read_text(encoding="utf-8")
-    assert (
-        "poll_table.seed_function_table_slots(&mut func_to_table_idx)"
-        in callable_layout
-    )
-    assert "for spec in RESERVED_RUNTIME_CALLABLE_SPECS" in callable_layout
-    assert (
-        "table_base\n                .checked_add(slot - fixed_prefix_len)"
-        in callable_layout
-    )
-    assert "WasmCallableTableAddress::FixedSharedRuntimeAbi" in callable_layout
+    for retired in (
+        "WASM_RESERVED_RUNTIME_CALLABLE_BASE",
+        "WASM_DEFAULT_APP_TABLE_BASE",
+        "WASM_RESERVED_RUNTIME_CALLABLE_COUNT",
+    ):
+        assert retired not in rendered_py, retired
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:

@@ -47,7 +47,6 @@ def test_worker_generators_reject_incompatible_receiver_before_module_read(
             deployment_manifest=manifest,
             shared_memory_initial_pages=1,
             shared_table_initial=1,
-            shared_table_base=None,
         )
 
 
@@ -241,7 +240,6 @@ def test_generate_split_worker_bootstrap_import_surface() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert 'import "./molt_vfs_browser.js";' in content
@@ -260,7 +258,6 @@ def test_generate_split_worker_contains_vfs_adapter_import() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert 'import "./molt_vfs_browser.js";' in content
@@ -276,7 +273,6 @@ def test_generate_split_worker_contains_vfs_host_imports() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
     )
 
     assert "molt_vfs_read" in content
@@ -294,7 +290,6 @@ def test_generate_split_worker_uses_worker_env_for_static_assets() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "async fetch(request, env, ctx)" in content
@@ -310,7 +305,6 @@ def test_generate_split_worker_defines_utf8_decoder_for_vfs_paths() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "const utf8Decoder = new TextDecoder();" in content
@@ -327,7 +321,6 @@ def test_generate_split_worker_defines_wasi_vfs_errno_and_preopen_state() -> Non
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "ENOENT: WASI_ERRNO_NOENT" in content
@@ -351,7 +344,6 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=None,
     )
 
     assert "path_open() { return 44; }" not in content
@@ -395,7 +387,6 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
     )
 
     assert 'import "./callable_table_abi_generated.js";' in content
@@ -429,7 +420,6 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
     )
 
     assert (
@@ -601,7 +591,6 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         ),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
-        shared_table_base=32,
         runtime_import_names={"function_set_builtin", "string_from_bytes"},
         runtime_export_signatures={
             "function_set_builtin": {"params": ["i64", "i64"], "result": "i64"},
@@ -958,58 +947,6 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
     assert "entry.name === 'dict_setitem'" not in browser_host
 
 
-def test_effective_split_worker_table_base_uses_backend_authority() -> None:
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    assert (
-        _effective_split_worker_table_base(
-            wasm_table_base=4096,
-            app_callable_table_slots=[4096, 4189],
-        )
-        == 4096
-    )
-
-
-def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
-    import pytest
-
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    with pytest.raises(ValueError, match="requires the bound backend table base"):
-        _effective_split_worker_table_base(
-            wasm_table_base=None,
-            app_callable_table_slots=[4130],
-        )
-
-
-def test_effective_split_worker_table_base_rejects_callable_below_backend_base() -> (
-    None
-):
-    import pytest
-
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    with pytest.raises(ValueError, match="above finalized callable-table slot"):
-        _effective_split_worker_table_base(
-            wasm_table_base=4096,
-            app_callable_table_slots=[4095],
-        )
-
-
-def test_effective_split_worker_table_base_rejects_final_slot_below_backend_base() -> (
-    None
-):
-    import pytest
-
-    from molt.cli.wasm import _effective_split_worker_table_base
-
-    with pytest.raises(ValueError, match="above finalized callable-table slot"):
-        _effective_split_worker_table_base(
-            wasm_table_base=4096,
-            app_callable_table_slots=[1024],
-        )
-
-
 def _wasm_vec(items: list[bytes]) -> bytes:
     import molt.wasm_artifact as wasm_artifact
 
@@ -1251,7 +1188,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         ),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
-        shared_table_base=None,
         runtime_import_names=import_names,
         runtime_export_signatures=runtime_export_signatures,
     )
@@ -1268,7 +1204,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         ),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
-        shared_table_base=None,
         runtime_import_names={"molt_PyArg_ParseTuple"},
         runtime_export_signatures={
             "molt_PyArg_ParseTuple": {
@@ -1615,7 +1550,6 @@ def test_generated_worker_delivers_manifest_policy_through_real_wasi(
             deployment_manifest=deployment,
             shared_memory_initial_pages=1,
             shared_table_initial=1,
-            shared_table_base=32,
         )
     observed = _observe_generated_worker_environment(
         tmp_path, source, mode=mode, deployment=deployment
@@ -1850,7 +1784,6 @@ def test_generated_workers_keep_actual_wasi_and_molt_error_imports_separate(
             ),
             shared_memory_initial_pages=8,
             shared_table_initial=16,
-            shared_table_base=None,
         ),
         encoding="utf-8",
     )

@@ -4,4 +4,4 @@
 // DO NOT EDIT BY HAND.
 
 pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = "molt.callable_table.layout";
-pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = 1;
+pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = 2;

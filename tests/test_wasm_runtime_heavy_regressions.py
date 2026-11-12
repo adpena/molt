@@ -429,40 +429,50 @@ def test_wasm_app_callable_table_reserves_no_runtime_region(
     from collections import Counter
 
     from molt._wasm_abi_generated import (
-        WASM_CALL_INDIRECT_IMPORTS,
         WASM_POLL_TABLE_IMPORTS,
         WASM_RESERVED_RUNTIME_CALLABLES,
     )
-    from molt.wasm_artifact import parse_wasm_exports
+    from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
+    from molt.wasm_artifact import (
+        _read_wasm_varuint,
+        parse_wasm_sections,
+    )
 
     module = _call_indirect_module(reserved_callables_build.manifest).read_bytes()
     # Imported functions take the first function indices, in import order.
     function_imports = [imp for imp in parse_wasm_imports(module) if imp.kind == 0]
+    # Runtime imports carry their physical (attached-context) names.
     runtime_imports = {
         wasm_import.name: index
         for index, wasm_import in enumerate(function_imports)
         if wasm_import.module == "molt_runtime"
     }
-    polls = {
-        runtime_imports[name]
-        for _slot, name in WASM_POLL_TABLE_IMPORTS
-        if name in runtime_imports
-    }
-    reserved = {
-        runtime_imports[import_name]
-        for _index, _name, import_name, _arity, _dispatch in (
-            WASM_RESERVED_RUNTIME_CALLABLES
-        )
-        if import_name in runtime_imports
-    }
-    exports = {
-        export.name: export.index for export in parse_wasm_exports(module, kind=0)
-    }
-    sentinel = exports[WASM_CALL_INDIRECT_IMPORTS[0]] + len(WASM_CALL_INDIRECT_IMPORTS)
+
+    def imported(names: list[str]) -> set[int]:
+        physical = {wasm_split_runtime_export_name_for_import(name) for name in names}
+        return {runtime_imports[name] for name in physical if name in runtime_imports}
+
+    polls = imported([name for _slot, name in WASM_POLL_TABLE_IMPORTS])
+    reserved = imported(
+        [name for _i, name, _imp, _a in WASM_RESERVED_RUNTIME_CALLABLES]
+    )
+    # A sentinel is a defined function whose body is only ``unreachable``: the
+    # old prefix filled each disabled slot with one.
+    sentinels: set[int] = set()
+    for section_id, payload in parse_wasm_sections(module):
+        if section_id != 10:
+            continue
+        count, offset = _read_wasm_varuint(payload, 0)
+        for ordinal in range(count):
+            size, offset = _read_wasm_varuint(payload, offset)
+            if payload[offset : offset + size] == b"\x00\x00\x0b":
+                sentinels.add(len(function_imports) + ordinal)
+            offset += size
     elements = Counter(_element_function_indices(module))
     assert elements, "the app publishes its own callable table"
+    assert runtime_imports, "the app imports runtime functions by physical name"
     assert not polls.intersection(elements)
-    assert sentinel not in elements
+    assert not sentinels.intersection(elements)
     assert all(elements[index] == 1 for index in reserved.intersection(elements))
 
 

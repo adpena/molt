@@ -466,9 +466,7 @@ def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_reso
     )
     assert f"link-arg=--export-if-defined={_physical('molt_runtime_init')}" in flags
     assert f"link-arg=--export-if-defined={_physical('molt_runtime_shutdown')}" in flags
-    assert (
-        f"link-arg=--export-if-defined={_physical('molt_set_wasm_table_base')}" in flags
-    )
+    assert not any("molt_set_wasm_table_base" in flag for flag in flags)
     assert (
         f"link-arg=--export-if-defined={_physical('molt_ssl_cert_none')}" not in flags
     )
@@ -553,9 +551,7 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
     flags = wasm_runtime_export_link_args(required_imports)
     assert f"link-arg=--export-if-defined={_physical('molt_runtime_init')}" in flags
     assert f"link-arg=--export-if-defined={_physical('molt_runtime_shutdown')}" in flags
-    assert (
-        f"link-arg=--export-if-defined={_physical('molt_set_wasm_table_base')}" in flags
-    )
+    assert not any("molt_set_wasm_table_base" in flag for flag in flags)
     for name in (
         "molt_stream_new",
         "molt_stream_send",

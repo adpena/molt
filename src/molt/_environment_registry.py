@@ -8011,7 +8011,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_TABLE_BASE",
       "output_neutral": false,
       "owner": "src/molt/cli/backend_compile.py",
-      "summary": "Function-table base index (u32) shared by the wasm backend and the wasm32 runtime: molt build strips any inherited value and sets it for the backend from the bound runtime layout, tools/bench_wasm.py sets it from the runtime's table minimum, and molt-wasm-host, wasm/run_wasm.js, and the browser host pass the detected table base to the guest environment only when it is unset, where the runtime reads it as a positive integer; values that do not parse fall back to the built-in default.",
+      "summary": "Function-table base index (u32) of the app's callable region for the wasm backend: molt build strips any inherited value and sets it for the backend from the bound runtime layout, and tools/bench_wasm.py sets it from the runtime's table minimum. The runtime never reads it: runtime callables are keys, so no host publishes a table base (HF-699).",
       "values": []
     },
     {

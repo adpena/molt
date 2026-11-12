@@ -139,7 +139,6 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_sequence_getitem",
     "molt_sequence_length",
     "molt_sequence_setitem",
-    "molt_set_wasm_table_base",
     "molt_shutdown",
     "molt_stream_new",
     "molt_stream_send",

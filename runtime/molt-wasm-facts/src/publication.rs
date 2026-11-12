@@ -76,8 +76,6 @@ pub fn scan_and_write_callable_table_attestation(
             layout
         }
         (None, CallableTableArtifactRole::Monolithic) => CallableTableLayout {
-            fixed_prefix_base: 0,
-            fixed_prefix_len: 0,
             finalized_app_base: entries.first().map_or(0, |entry| entry.slot),
             app_entry_count: u32::try_from(entries.len())
                 .map_err(|_| "callable-table entry count exceeds u32")?,

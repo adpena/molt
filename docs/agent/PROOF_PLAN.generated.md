@@ -394,7 +394,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `rust-source-scan-consumers` | 5 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `build-early-cutoff` | 10 | 0 |
-| `runtime-wasm-signatures` | 28 | 1 |
+| `runtime-wasm-signatures` | 27 | 1 |
 | `runtime-cargo-input-custody` | 59 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |

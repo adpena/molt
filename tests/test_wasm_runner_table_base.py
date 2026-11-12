@@ -275,7 +275,7 @@ def _wasm_from_wat(
     name: str,
     wat: str,
     *,
-    callable_layout: tuple[int, int, int, int] | None = None,
+    callable_layout: tuple[int, int] | None = None,
     empty_callable_table: bool = False,
     callable_table_payload: bytes | None = None,
 ) -> Path:
@@ -383,8 +383,6 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
             ("missing", "MOLT_WASM_TABLE_ATTESTATION_MISSING"),
             ("malformed", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
             ("malformed-slot", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
-            ("missing-export", "MOLT_WASM_TABLE_EXPORT_REQUIRED"),
-            ("zero-base", "MOLT_WASM_TABLE_BASE_REQUIRED"),
             ("malformed-layout", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
             ("missing-indirect-export", "molt_call_indirect012habE"),
         )
@@ -399,14 +397,12 @@ def test_hosts_share_callable_table_admission(
 ) -> None:
     """Actual guest guards prove each host's callable-table admission.
 
-    Every host refuses a missing or malformed attestation. The JS hosts publish
-    no table base (HF-699 E2): runtime callables are keys the runtime resolves
-    itself, so the guest asserts its setter never ran. The Rust deployment host
-    still publishes until its table-base chain is deleted with HF-198's paths.
+    Every host refuses a missing or malformed attestation. No host publishes a
+    table base (HF-699 K3): runtime callables are keys the runtime resolves
+    itself, so the guest asserts that the retired setter never ran. Only the
+    Rust host scans the layout section, so only it refuses a malformed one.
     """
-    publishes = host in {"rust", "rust-split"}
-    if not publishes and case in {"missing-export", "zero-base", "malformed-layout"}:
-        # Without publication there is no export, base or layout to refuse.
+    if case == "malformed-layout" and host not in {"rust", "rust-split"}:
         expected = None
     split = host in {
         "node-split",
@@ -416,7 +412,7 @@ def test_hosts_share_callable_table_admission(
         "split-worker",
     }
     nonempty = case != "empty"
-    base = 0 if case == "zero-base" else 4
+    base = 4
     # Split imports introduce () -> i64 as type zero; $ref is the next type.
     ref_type_index = int(split)
     payload = b"".join(
@@ -467,22 +463,11 @@ def test_hosts_share_callable_table_admission(
                 WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
             )
         )
-    check = (
-        "global.get $published i64.const 4 i64.ne if unreachable end"
-        if publishes
-        and case in {"nonempty", "nonempty-layout", "nonempty-attested", "zero-base"}
-        else ""
-        if publishes
-        else "global.get $published i64.const 0 i64.ne if unreachable end"
-    )
-    setter = (
-        ""
-        if case == "missing-export"
-        else f"""
-      (func (export "{"molt_set_wasm_table_base" if "worker" in host else "publish_base"}") (param i64)
-        {"local.get 0 global.set $published" if nonempty else "unreachable"})
+    check = "global.get $published i64.const 0 i64.ne if unreachable end"
+    setter = """
+      (func (export "molt_set_wasm_table_base") (param i64)
+        local.get 0 global.set $published)
     """
-    )
     indirect_export = (
         f'(func (export "{compiled_execution_symbol("molt_call_indirect0")}") (param i64))'
         if case == "missing-indirect-export"
@@ -555,7 +540,7 @@ def test_hosts_share_callable_table_admission(
             if case == "malformed-layout"
             else b"".join(
                 _write_varuint(value)
-                for value in (WASM_CALLABLE_TABLE_LAYOUT_VERSION, 0, 0, base, 1)
+                for value in (WASM_CALLABLE_TABLE_LAYOUT_VERSION, base, 1)
             )
         )
         section = _write_varuint(len(name)) + name + layout
@@ -568,8 +553,6 @@ def test_hosts_share_callable_table_admission(
         else _linked_manifest(wasm)
     )
     data = json.loads(manifest.read_text(encoding="utf-8"))
-    if nonempty and case not in {"nonempty-layout", "nonempty-attested"}:
-        data["wasm_table_base"] = base
     data["abi"] = {
         "linked_self_imports": [],
         "runtime_imports": {
@@ -586,9 +569,6 @@ def test_hosts_share_callable_table_admission(
                 "attached_context": "molt_attached_context",
                 "compiled_execution_enter": "molt_compiled_execution_enter",
                 "compiled_execution_leave": "molt_compiled_execution_leave",
-                "molt_set_wasm_table_base": (
-                    "molt_set_wasm_table_base" if "worker" in host else "publish_base"
-                ),
             },
         },
     }
@@ -658,9 +638,6 @@ def test_hosts_share_callable_table_admission(
                 deployment_manifest=data,
                 shared_memory_initial_pages=1,
                 shared_table_initial=8,
-                shared_table_base=base
-                if nonempty and case not in {"nonempty-layout", "nonempty-attested"}
-                else None,
                 runtime_import_names={_runtime_symbol("molt_runtime_init")},
             ),
             encoding="utf-8",
@@ -772,7 +749,6 @@ def _stderr_guest_manifest(
           (import "env" "__indirect_function_table" (table 1 funcref))
           {wasi_import}
           (export "memory" (memory 0))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           {writer} {lifecycle}
           (data (i32.const 320) "runtime|")
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
@@ -1268,7 +1244,6 @@ def test_direct_split_runner_shares_runtime_memory_with_app_wasi(
           (import "env" "__indirect_function_table" (table 2 funcref))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (type $runtime_init_indirect (func (param i64) (result i64)))
           (func $runtime_table_entry (param $context i64) (result i64)
             i64.const 0)
@@ -1392,7 +1367,6 @@ def test_direct_split_runner_reads_call_dispatch_argv_in_shared_memory(
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
           (global $heap (mut i32) (i32.const 2048))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_scratch_alloc")}") (param $context i64) (param $size i64) (result i64)
             (local $ptr i32)
             global.get $heap
@@ -1534,7 +1508,6 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
           (func (export "{_runtime_symbol("molt_call_func_dispatch")}") (param $context i64)
@@ -1663,7 +1636,6 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
           (func (export "{_runtime_symbol("molt_guarded_class_def")}") (param $context i64)
@@ -1756,7 +1728,6 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
           (func (export "{_runtime_symbol("molt_closure_load")}") (param $context i64) (param i64 i64) (result i64)
@@ -1851,7 +1822,6 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
           (import "env" "__indirect_function_table" (table 5 funcref))
           (import "env" "{compiled_execution_symbol("molt_call_indirect3")}"
             (func $call_indirect3 (param $context i64) (param i64 i64 i64 i64) (result i64)))
-          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             call $fixture_context
             i64.const 4

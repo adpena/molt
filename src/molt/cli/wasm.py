@@ -30,7 +30,6 @@ from molt._wasm_runtime_exports import (
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
 __all__ = (
-    "_effective_split_worker_table_base",
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
     "_runtime_export_name_for_import_from_manifest",
@@ -40,27 +39,6 @@ __all__ = (
     "_runtime_import_signatures_from_manifest",
     "_split_runtime_browser_abi_from_manifest",
 )
-
-
-def _effective_split_worker_table_base(
-    *,
-    wasm_table_base: int | None,
-    app_callable_table_slots: Iterable[int],
-) -> int:
-    if wasm_table_base is None:
-        raise ValueError(
-            "split-runtime publication requires the bound backend table base"
-        )
-    callable_slots = sorted(set(app_callable_table_slots))
-    below_base = [slot for slot in callable_slots if slot < wasm_table_base]
-    if below_base:
-        first_callable_slot = callable_slots[0]
-        raise ValueError(
-            "backend wasm_table_base "
-            f"{wasm_table_base} is above finalized callable-table slot "
-            f"{below_base[0]} (first callable slot {first_callable_slot})"
-        )
-    return wasm_table_base
 
 
 def _runtime_import_signatures_from_manifest(
@@ -226,7 +204,6 @@ def _generate_split_worker_js(
     deployment_manifest: Mapping[str, object],
     shared_memory_initial_pages: int,
     shared_table_initial: int,
-    shared_table_base: int | None,
     runtime_import_names: Iterable[str] | None = None,
     runtime_export_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> str:

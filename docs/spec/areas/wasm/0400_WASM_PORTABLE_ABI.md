@@ -105,23 +105,28 @@ stores the key as an `i64` constant. The runtime resolves a key through its
 generated key tables when it builds a function object or resumes a task, and
 calls the resolved target itself. The shared table reserves no runtime region:
 the runtime owns the slots its own element segment publishes, and the app owns
-the slots after them. Every `molt_call_indirectN` an app exports traps on an
-index above `u32::MAX`, so a stray key never reaches a live slot.
+the slots after them. The shared runtime links at wasm-ld's default table base,
+and the app's region starts at the runtime's table minimum. Every
+`molt_call_indirectN` an app exports traps on an index above `u32::MAX`, so a
+stray key never reaches a live slot.
 
-Hosts therefore publish no table base and dispatch no runtime callable by name.
-A host's `molt_call_indirectN` binding serves shared-table slots only.
+Hosts therefore publish no table base and dispatch no runtime callable by name;
+the runtime exports no table-base setter and reads no table-base environment
+variable. A host's `molt_call_indirectN` binding serves shared-table slots only.
 `readCallableTableAttestation` in `wasm/loader_bridge.js` reads the app's (or
 the linked module's) `molt.callable_table` attestation for Node, browser,
 minimal embeds and both Worker generators; hosts use it for the signatures of
-attested entries. A missing or malformed attestation fails with
+attested entries. The Rust host admits the main module's and the shared
+runtime's attestations through `molt_wasm_facts::scan_attested_callable_table`.
+A missing or malformed attestation fails with
 `MOLT_WASM_TABLE_ATTESTATION_MISSING` or `MOLT_WASM_TABLE_ATTESTATION_MALFORMED`;
 parser failures cannot become absent metadata.
 
-Until its table-base chain is deleted with HF-198's paths (HF-699 E2), the Rust
-deployment host still admits a table base through
-`molt_wasm_facts::admit_callable_table` and calls the runtime's
-`molt_set_wasm_table_base`, which no longer has a consumer. The host-parity guest
-oracle in `tests/test_wasm_runner_table_base.py` exercises both verdict sets.
+The `molt.callable_table.layout` section (version 2) records only the app's
+region: its finalized base and its entry count. Slots below the base belong to
+the runtime's own address-taken functions. The host-parity guest oracle in
+`tests/test_wasm_runner_table_base.py` proves every host's verdicts and that no
+host calls a table-base setter.
 
 ### Attached execution ABI
 

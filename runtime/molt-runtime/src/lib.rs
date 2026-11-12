@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_5a9b7d4f57f52f50_gil_v10")]
+#[unsafe(export_name = "molt_generated_object_abi_a229df9be5a8e025_gil_v11")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,7 +34,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_5a9b7d4f57f52f50_free_threaded_v10")]
+#[unsafe(export_name = "molt_generated_object_abi_a229df9be5a8e025_free_threaded_v11")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // Read-only semantic identity. Callable construction uses fn_addr! below to

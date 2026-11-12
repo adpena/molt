@@ -11424,7 +11424,6 @@
           "runtime/molt-gpu/**",
           "runtime/molt-gpu-runtime/**",
           "runtime/build_support/**",
-          "runtime/wasm_table_layout.inc",
           "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
           "tools/wasm_abi_gen/**",
           "Cargo.toml",

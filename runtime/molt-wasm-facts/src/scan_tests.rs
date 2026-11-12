@@ -188,8 +188,6 @@ fn relocated_data_symbol_module(
             name: Cow::Borrowed(CALLABLE_TABLE_LAYOUT_SECTION_NAME),
             data: Cow::Owned(crate::layout::encode_callable_table_layout(
                 CallableTableLayout {
-                    fixed_prefix_base: 0,
-                    fixed_prefix_len: 0,
                     finalized_app_base: 0,
                     app_entry_count: 0,
                 },
@@ -287,8 +285,6 @@ fn final_publication_refuses_valid_relocatable_inputs_in_every_role() {
             let error = scan_and_write_callable_table_attestation(
                 &module,
                 Some(CallableTableLayout {
-                    fixed_prefix_base: 0,
-                    fixed_prefix_len: 0,
                     finalized_app_base: 0,
                     app_entry_count: 0,
                 }),
@@ -1201,59 +1197,27 @@ fn validates_matching_callable_table_attestation() {
 }
 
 #[test]
-fn host_admission_requires_valid_attestation_and_positive_published_region() {
-    use crate::{CallableTableAdmission as Admission, CallableTableAdmissionError as Error};
+fn host_admission_requires_a_valid_attestation() {
+    use crate::CallableTableAdmissionError as Error;
     let valid = module_with_callable_table(&[callable_table_attestation(7, 0, 0)]);
+    let facts = crate::scan_attested_callable_table(&valid).expect("admit valid attestation");
     assert_eq!(
-        crate::admit_callable_table(&valid, None),
-        Ok(Admission::Publish {
-            base: std::num::NonZeroU32::new(7).unwrap()
-        })
+        facts
+            .callable_table_entries
+            .iter()
+            .map(|entry| entry.slot)
+            .collect::<Vec<_>>(),
+        vec![7]
     );
     assert_eq!(
-        crate::admit_callable_table(&valid, Some(0)),
-        Err(Error::BaseRequired)
-    );
-    assert_eq!(
-        crate::admit_callable_table(&valid, Some(8)),
-        Err(Error::BaseAboveBinary {
-            declared: 8,
-            binary: 7
-        })
-    );
-    assert_eq!(
-        crate::admit_callable_table(&module_with_callable_table(&[]), None),
-        Err(Error::Missing)
+        crate::scan_attested_callable_table(&module_with_callable_table(&[])).unwrap_err(),
+        Error::Missing
     );
     let malformed = module_with_callable_table(&[vec![0x80]]);
     assert!(matches!(
-        crate::admit_callable_table(&malformed, None),
+        crate::scan_attested_callable_table(&malformed),
         Err(Error::Malformed(_))
     ));
-
-    let mut empty = Module::new();
-    empty.section(&CustomSection {
-        name: Cow::Borrowed(CALLABLE_TABLE_SECTION_NAME),
-        data: Cow::Owned(
-            [
-                CALLABLE_TABLE_SECTION_VERSION,
-                CALLABLE_TABLE_VALUE_TYPE_FORMAT,
-                0,
-                0,
-            ]
-            .into_iter()
-            .flat_map(|value| {
-                let mut encoded = Vec::new();
-                value.encode(&mut encoded);
-                encoded
-            })
-            .collect(),
-        ),
-    });
-    assert_eq!(
-        crate::admit_callable_table(&empty.finish(), Some(999)),
-        Ok(Admission::Empty)
-    );
 }
 
 #[test]
@@ -1274,7 +1238,7 @@ fn rejects_stale_or_duplicate_callable_table_attestations() {
     );
 
     let mut layout_payload = Vec::new();
-    for value in [1u32, 0, 0, 0, 0] {
+    for value in [crate::CALLABLE_TABLE_LAYOUT_VERSION, 0, 0] {
         value.encode(&mut layout_payload);
     }
     let mut duplicate_layout = Module::new();

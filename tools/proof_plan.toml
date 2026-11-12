@@ -5331,7 +5331,6 @@ globs = [
   "runtime/molt-runtime/**", "runtime/molt-runtime-*/**", "runtime/molt-stdlib-*/**",
   "runtime/molt-obj-model/**", "runtime/molt-codegen-abi/**", "runtime/molt-cpython-abi/**",
   "runtime/molt-gpu/**", "runtime/molt-gpu-runtime/**", "runtime/build_support/**",
-  "runtime/wasm_table_layout.inc",
   "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml", "tools/wasm_abi_gen/**",
   "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
   "LICENSE", "include/molt/**", "vendor/rust/**",

@@ -289,12 +289,15 @@ Stages (each lands one whole family; no build sees two identities for one callab
   - The 2 `CallFrame` callables (`molt_cpython_abi_cext_call_trampoline`,
     `molt_dataclasses_init_trampoline`) are called directly: the trampoline lane resolves a key
     and calls the entry with `(closure, argv, argc)`.
-  - The manifest's `callable_dispatch = "trampoline"` only chose whether a reserved direct slot
-    held the import; with no slot it has no consumer.
+  - The manifest's `callable_dispatch = "trampoline"` no longer selects a slot. It keeps one
+    consumer the design census missed: `runtime_boxed_call_specs` keeps such a callable out of
+    the boxed-call set (`runtime_fn_specs`). The two rows stay for that; the Python and
+    shared-callable projections drop the field.
 
   On wasm32 the runtime calls every resolved target itself: `call/function.rs` takes native's
   fixed-arity path on every target (`required_native_call_target!`, `call_native_fixed_arity!`),
-  and `object/ops_builtins.rs::molt_guarded_call_dispatch` no longer routes through
+  its trampoline lane resolves a key or calls the app's trampoline slot directly, and
+  `object/ops_builtins.rs::molt_guarded_call_dispatch` no longer routes through
   `molt_call_indirectN`. Deleted with their consumers: the reserved slot arithmetic in
   `function_abi.rs` and `call/function.rs` (`normalize_runtime_callable_ptr`,
   `normalize_runtime_trampoline_ptr`, `fixed_arity_call_target_ptr` and the region tests); the
@@ -309,14 +312,22 @@ Stages (each lands one whole family; no build sees two identities for one callab
   reserved callables, both app-resolver entries of intrinsics the stdlib names (main: 79).
   App-resolver entries for reserved callables keep slots, as on native; giving them keys is the
   K1 follow-up.
-  The deletions that edit HF-198's paths wait for HF-198 to land: `--table-base=191`
-  (`runtime_wasm_build_spec.py`), `include_fixed_prefix` and the reserved link exports
-  (`wasm_link_pipeline.py`), the generated `WASM_RESERVED_RUNTIME_CALLABLE_BASE`, the manifest's
-  `[table_layout]`, `callable_dispatch` and `molt_set_wasm_table_base` rows, the Rust host's
-  table-base chain (`runtime_bridge.rs`, `wasi_env.rs`, `wasm_scan.rs`, `path_resolver.rs`,
-  `molt-wasm-facts` admission and layout prefix fields), the runtime's `wasm_table_base` and
-  `molt_set_wasm_table_base`, and the prefix fixtures in those tests. The census of every deleted
-  site is in the design record (`logs/agents/hf699-split-runtime-keys/design-rev3.md`).
+  After HF-198 landed, E2 deleted the table-base chain too: the shared runtime links at wasm-ld's
+  default table base (no `--table-base=191`); the runtime exports no `molt_set_wasm_table_base`
+  and reads no `MOLT_WASM_TABLE_BASE`; `runtime/wasm_table_layout.inc` and its generator are gone;
+  the manifest has no `[table_layout]` and no setter rows; the generated
+  `WASM_RESERVED_RUNTIME_CALLABLE_BASE`, `WASM_DEFAULT_APP_TABLE_BASE` and
+  `WASM_RESERVED_RUNTIME_CALLABLE_COUNT` are gone; `include_fixed_prefix`, the fixed-index entry
+  plan and the reserved link exports are gone from the link tools; the split worker and manifest
+  publish no `wasm_table_base`. The `molt.callable_table.layout` section is version 2 and records
+  the app region only (base, count) in the backend, `molt-wasm-facts`, the facts CLI and the link
+  tools. The Rust host admits both modules' attestations
+  (`molt_wasm_facts::scan_attested_callable_table`) and publishes nothing:
+  `admit_callable_table`, `WasmTableAdmission` and `configure_wasm_table_base` are deleted.
+  Dropping the setter from the attached-context boundary set changed the schema fingerprint, so
+  the generated-object ABI is revision 11. The Rust host runs split modules: its split cells in
+  `tests/test_wasm_runner_table_base.py` and the split package test
+  (`test_wasm_importlib_package_bootstrap.py::..._split_direct`) execute through it.
 
 Tests (CPython is the oracle):
 - `tests/test_wasm_runtime_heavy_regressions.py::test_wasm_runtime_polls_match_cpython`: sleep,
@@ -325,8 +336,7 @@ Tests (CPython is the oracle):
   `molt_call_indirect1` traps, and the function at the key's low 32 bits never runs; a call with
   that slot reaches it. The probe drives the app object each build emits (linked and split), since
   neither final module exports these functions: in a linked module wasm-ld binds the runtime's
-  imports to them (its name section names the trapping frame `molt_call_indirect1`), and a split
-  host serves those imports itself until E2.
+  imports to them (its name section names the trapping frame `molt_call_indirect1`).
 - The repaired DB parity fixture (grants `db.read,time`, rethrows the operation error) no longer
   traps on split, but deadlocks: `run()` is synchronous and the DB host answers through `fetch`
   promises that cannot settle inside synchronous WASM. It lands with an asynchronous browser run
@@ -334,9 +344,13 @@ Tests (CPython is the oracle):
 - E2: `test_wasm_reserved_runtime_callables_match_cpython` (a builtin through a function object
   at two arities, a starred call, bound methods, a variadic `Context.run`, keywords, and
   generator and coroutine methods; linked and split) and
-  `test_wasm_app_callable_table_reserves_no_runtime_region` (the app's table holds no runtime poll
-  and no sentinel, and a reserved callable at most once, as an app-resolver entry) in the same file; the backend's `keyed_callables` tests (a
-  `builtin_func` stores the key; `UnpackArgs` gets an app trampoline, `CallFrame` none).
+  `test_wasm_app_callable_table_reserves_no_runtime_region` (the app's table holds no runtime
+  poll and no `unreachable`-only sentinel, and a reserved callable at most once, as an
+  app-resolver entry) in the same file; the backend's `keyed_callables` tests (a `builtin_func`
+  stores the key; `UnpackArgs` gets an app trampoline, `CallFrame` none); the host-parity oracle
+  `tests/test_wasm_runner_table_base.py::test_hosts_share_callable_table_admission` (every host,
+  linked and split, refuses a missing or malformed attestation and never calls a table-base
+  setter).
 
 ## Skeleton of the end state
 

@@ -21,10 +21,7 @@ fn expected_fixed_exports(enabled_features: &[&str]) -> BTreeSet<String> {
     let source = fs::read_to_string(manifest_dir.join("src/wasm_abi_exports.rs"))
         .expect("read wasm_abi_exports.rs");
     let enabled_features = enabled_features.iter().copied().collect::<BTreeSet<_>>();
-    let mut names = BTreeSet::from([
-        "molt_runtime_shutdown".to_string(),
-        "molt_set_wasm_table_base".to_string(),
-    ]);
+    let mut names = BTreeSet::from(["molt_runtime_shutdown".to_string()]);
     let mut gated_feature: Option<String> = None;
     for line in source.lines() {
         let trimmed = line.trim();

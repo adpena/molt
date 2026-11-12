@@ -330,7 +330,6 @@ struct LoadedGuestOptions<'a> {
     launch_environment: &'a [(String, String)],
     vfs_envs: &'a [(String, String)],
     guest_args: &'a [String],
-    wasm_table_admission: WasmTableAdmission,
 }
 
 fn execute_loaded_guest(
@@ -344,7 +343,6 @@ fn execute_loaded_guest(
         launch_environment,
         vfs_envs,
         guest_args,
-        wasm_table_admission,
     } = options;
     let indirect_calls = validate_execution_imports(kind, output_module, runtime_module)?;
     let is_wasi_command = matches!(
@@ -378,9 +376,6 @@ fn execute_loaded_guest(
                 runtime,
             })?;
         }
-    }
-    if !is_wasi_command {
-        wasm_table_admission.validate_export(runtime_module.unwrap_or(output_module))?;
     }
     let runtime_imports = RuntimeImportPlan::new(output_module, runtime_module)?;
     let output_mem = memory_limits(output_module);
@@ -419,7 +414,6 @@ fn execute_loaded_guest(
                 vfs_envs,
                 guest_args,
                 (!matches!(kind, LoadedGuestKind::WasiCommand)).then_some("wasi"),
-                (!is_wasi_command).then_some(&wasm_table_admission),
             )?,
             memory: None,
             call_indirect: Arc::default(),
@@ -523,7 +517,6 @@ fn execute_loaded_guest(
                 .expect("published runtime lifetime")
                 .validate_context_schema(&mut store)?;
             validate_instance_context_memory(&mut store, &runtime_instance)?;
-            configure_wasm_table_base(&mut store, &runtime_instance, &wasm_table_admission)?;
             runtime_imports.bind(&mut linker, &mut store, &runtime_instance)?;
             Some(runtime_instance)
         } else {
@@ -562,7 +555,6 @@ fn execute_loaded_guest(
                 .as_mut()
                 .expect("published runtime lifetime")
                 .validate_context_schema(&mut store)?;
-            configure_wasm_table_base(&mut store, &output_instance, &wasm_table_admission)?;
         }
         if !is_wasi_command {
             register_isolate_exports(&mut store, &output_instance)?;
@@ -682,7 +674,6 @@ fn run() -> Result<GuestTermination> {
         use_linked,
         is_wasi_command,
         launch_environment,
-        table_config,
     ) = match resolved {
         ResolvedExecution::MoltApplication(ResolvedExecutionModules {
             manifest_path,
@@ -690,7 +681,6 @@ fn run() -> Result<GuestTermination> {
             runtime,
             linked,
             launch_environment,
-            table_config,
         }) => (
             Some(manifest_path),
             main,
@@ -698,17 +688,8 @@ fn run() -> Result<GuestTermination> {
             linked,
             false,
             launch_environment,
-            table_config,
         ),
-        ResolvedExecution::WasiCommand { module } => (
-            None,
-            module,
-            None,
-            true,
-            true,
-            Vec::new(),
-            WasmTableConfig::default(),
-        ),
+        ResolvedExecution::WasiCommand { module } => (None, module, None, true, true, Vec::new()),
         ResolvedExecution::WasiCommandManifest(command) => {
             let engine = build_engine()?;
             let command = command.load(&engine)?;
@@ -726,18 +707,12 @@ fn run() -> Result<GuestTermination> {
                     launch_environment: command.launch_environment(),
                     vfs_envs: &vfs_envs,
                     guest_args: &guest_args,
-                    wasm_table_admission: WasmTableAdmission::Empty,
                 },
             );
         }
     };
-    let wasm_table_admission = if is_wasi_command {
-        WasmTableAdmission::Empty
-    } else {
-        admit_wasm_table(&main_source, runtime_source.as_ref(), table_config)?
-    };
-
     if !is_wasi_command {
+        admit_callable_tables(&main_source, runtime_source.as_ref())?;
         validate_application_context_source(&main_source, runtime_source.as_ref())?;
     }
     let engine = build_engine()?;
@@ -779,7 +754,6 @@ fn run() -> Result<GuestTermination> {
             vfs_envs: &vfs_envs,
             launch_environment: &launch_environment,
             guest_args: &guest_args,
-            wasm_table_admission,
         },
     )
 }

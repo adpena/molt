@@ -1,5 +1,3 @@
-#[cfg(target_arch = "wasm32")]
-use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 
 // Builtin callable policy tags are generated from builtin_callables.py.
@@ -9,55 +7,6 @@ pub const BIND_KIND_TYPE_NEW_INIT: i64 = 4;
 // Rust-only projections of explicit CFunctionConvention declarations.
 pub const BIND_KIND_FIXED_NOARGS: i64 = 5;
 pub const BIND_KIND_FIXED_ONE_OBJECT: i64 = 6;
-
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../wasm_table_layout.inc"
-));
-
-#[cfg(target_arch = "wasm32")]
-static WASM_TABLE_BASE_RUNTIME: AtomicU64 = AtomicU64::new(WASM_TABLE_BASE_FALLBACK);
-
-#[cfg(target_arch = "wasm32")]
-fn wasm_table_base_from_env() -> Option<u64> {
-    static ENV_BASE: OnceLock<Option<u64>> = OnceLock::new();
-    *ENV_BASE.get_or_init(|| {
-        std::env::var("MOLT_WASM_TABLE_BASE")
-            .ok()
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .filter(|base| *base > 0)
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn wasm_table_base() -> u64 {
-    let base = WASM_TABLE_BASE_RUNTIME.load(std::sync::atomic::Ordering::Relaxed);
-    if base > 0 && base != WASM_TABLE_BASE_FALLBACK {
-        base
-    } else if let Some(env_base) = wasm_table_base_from_env() {
-        WASM_TABLE_BASE_RUNTIME.store(env_base, std::sync::atomic::Ordering::Relaxed);
-        env_base
-    } else if base > 0 {
-        base
-    } else {
-        WASM_TABLE_BASE_FALLBACK
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_set_wasm_table_base(base: u64) {
-    if base > 0 {
-        WASM_TABLE_BASE_RUNTIME.store(base, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[inline]
-#[allow(dead_code)]
-pub const fn wasm_table_base() -> u64 {
-    WASM_TABLE_BASE_FALLBACK
-}
 
 pub const MAX_SMALL_LIST: usize = 16;
 pub const ITER_EXHAUSTED: usize = usize::MAX;
