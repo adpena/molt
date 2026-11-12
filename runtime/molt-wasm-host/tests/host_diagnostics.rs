@@ -117,10 +117,16 @@ fn actual_precompile_command_roundtrips_through_source_bound_loader() {
 #[test]
 fn actual_manifest_precompile_resolves_every_member_without_executing_guest() {
     let fixture = ArtifactFixture::new();
-    let app_bytes = b"(module (func $start unreachable) (start $start))";
-    let runtime_bytes = b"(module)";
-    let app = fixture.write("app.wat", app_bytes);
-    let runtime = fixture.write("runtime.wat", runtime_bytes);
+    // A split application declares the attached-context schema and shares the
+    // runtime's one imported memory; the host checks both before compiling.
+    let app_bytes = &execution_fixture::application_bytes(
+        r#"(module (import "env" "memory" (memory 1))
+            (func $start unreachable) (start $start))"#,
+    );
+    let runtime_bytes = &wat::parse_str(r#"(module (import "env" "memory" (memory 1)))"#)
+        .expect("valid runtime fixture");
+    let app = fixture.write("app.wasm", app_bytes);
+    let runtime = fixture.write("runtime.wasm", runtime_bytes);
     let descriptor = |path: &std::path::Path, bytes: &[u8]| {
         serde_json::json!({
             "path":path.file_name().unwrap().to_str().unwrap(),
@@ -259,17 +265,21 @@ fn upstream_compiler_timings_are_available_through_the_actual_host() {
 #[test]
 fn actual_manifest_command_sdk_and_indirect_dispatch_keep_command_exit_semantics() {
     let fixture = ArtifactFixture::new();
-    let bytes = br#"(module
+    // The attached dispatch import takes the context first, then the index.
+    let rendered = execution_fixture::render(
+        r#"(module
       (import "env" "molt_os_close_host" (func $close (param i64) (result i32)))
       (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $dispatch (param i64) (param i64) (result i64)))
       (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
       (memory (export "memory") 1)
       (table (export "__indirect_function_table") 2 funcref)
-      (func $target (result i64) i64.const 42) (elem (i32.const 1) $target)
+      (func $target (param i64) (result i64) i64.const 42) (elem (i32.const 1) $target)
       (func (export "_start")
         i64.const -1 call $close i32.const -9 i32.ne if unreachable end
-        i64.const 1 call $dispatch i64.const 42 i64.ne if unreachable end
-        i32.const 23 call $exit))"#;
+        i64.const 32768 i64.const 1 call $dispatch i64.const 42 i64.ne if unreachable end
+        i32.const 23 call $exit))"#,
+    );
+    let bytes = rendered.as_bytes();
     let (source, manifest) = fixture.command_manifest("command.wat", bytes);
     let artifact = fixture.path().join("command.molt.cwasm");
     let compiled = host()

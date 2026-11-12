@@ -47,9 +47,8 @@ use crate::{
     function_globals_bits, function_set_closure_bits, function_set_globals_bits,
     function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
     molt_cpython_abi_cext_call_trampoline_admitted, molt_getattr_builtin_attached_body,
-    molt_getitem_method_attached_body, molt_iter_attached_body, molt_trace_enter_slot,
-    obj_from_bits, object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64,
-    type_name,
+    molt_getitem_method_attached_body, molt_iter_attached_body, obj_from_bits, object_class_bits,
+    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_name,
 };
 mod compile_codeop;
 mod function_abi;

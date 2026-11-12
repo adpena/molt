@@ -589,14 +589,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_sys_set_version_info",
             crate::molt_sys_set_version_info as *const (),
         )),
-        "molt_trace_enter_slot" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_trace_enter_slot",
-            crate::molt_trace_enter_slot as *const (),
-        )),
-        "molt_trace_exit" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_trace_exit",
-            crate::molt_trace_exit as *const (),
-        )),
         "molt_trace_set_line" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_trace_set_line",
             crate::molt_trace_set_line as *const (),

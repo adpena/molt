@@ -198,7 +198,7 @@ impl WasmFunctionFramePlan {
                     })
                     .then_some(-1)
             })
-            .map(|slot| {
+            .map(|_| {
                 let local = local_count;
                 local_types.push(ValType::I32);
                 local_types.push(ValType::I64);
@@ -206,7 +206,6 @@ impl WasmFunctionFramePlan {
                 super::WasmFrameHomes {
                     local,
                     displaced: local + 1,
-                    slots: slot + 1,
                     at_entry: !func_ir
                         .ops
                         .iter()
@@ -261,6 +260,12 @@ impl WasmFunctionFramePlan {
                 control_plan,
                 tail_call_eligible: tail_call_eligible && const_anchors.is_empty(),
                 owned_frame_attempt,
+                frame_shape: func_ir
+                    .ops
+                    .iter()
+                    .find(|op| op.kind == molt_ir::OpKind::TraceEnterSlot)
+                    .and_then(|op| op.value)
+                    .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value),
                 frame_homes,
                 python_eh_boundary: false,
                 dispatch_locals,

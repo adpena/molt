@@ -108,6 +108,8 @@ def test_native_main_stub_leaves_python_frame_custody_to_generated_code() -> Non
         "molt_frame_pop",
         "molt_trace_enter",
         "molt_trace_exit",
+        "molt_frame_record_enter",
+        "molt_frame_record_exit",
     ):
         assert symbol not in rendered
 

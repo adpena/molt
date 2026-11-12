@@ -942,10 +942,6 @@ static HOME_ORIGINS: AtomicU64 = AtomicU64::new(0);
 fn home_pair() -> (u64, u64) {
     unsafe { (core::ptr::addr_of!(HOME[0]).read(), core::ptr::addr_of!(HOME[1]).read()) }
 }
-fn molt_frame_homes(slots: u64) -> u64 {
-    assert_eq!(slots, 1);
-    core::ptr::addr_of_mut!(HOME) as u64
-}
 fn molt_exception_frame_origin(homes: u64) -> u64 {
     assert_eq!(homes, core::ptr::addr_of_mut!(HOME) as u64, "Origin names the lending activation");
     assert!(pending(), "only a taken Origin edge captures");
@@ -1508,13 +1504,14 @@ fn molt_refcount_admission() -> u64 { 0 }
 
 // This provider owns a stable record and the token header passed through every
 // compiled/runtime entry. No TLS lookup supplies either address.
-static FIXTURE_THREAD_RECORD: [u64; 16] = [0; 16];
-fn fixture_thread_record() -> u64 { core::ptr::addr_of!(FIXTURE_THREAD_RECORD) as u64 }
-
-#[export_name = "molt_frame_homes@EXECUTION_SUFFIX@"]
-pub extern "C" fn molt_frame_homes_attached(context: u64, slots: u64) -> u64 {
-    assert_eq!(context, fixed_execution_context(), "molt_frame_homes forwards its attached context");
-    molt_frame_homes(slots)
+static mut FIXTURE_THREAD_RECORD: [u64; 16] = [0; 16];
+// The compiled bodies run inside one executing frame: the record's frame-top
+// word (THREAD_RECORD_FRAME_TOP_OFFSET, word 3) names its homes.
+fn fixture_thread_record() -> u64 {
+    unsafe {
+        FIXTURE_THREAD_RECORD[3] = core::ptr::addr_of_mut!(HOME) as u64;
+    }
+    core::ptr::addr_of!(FIXTURE_THREAD_RECORD) as u64
 }
 
 #[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]

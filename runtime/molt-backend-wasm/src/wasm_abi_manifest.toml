@@ -716,17 +716,24 @@ type = 0
 runtime_name = "molt_frame_locals_begin"
 callable_arity = 0
 
-# Backend-only frame binding storage. The homes lender takes a raw slot count
-# and returns a raw linear-memory address, never an object: 0 when the frame
-# entry failed or the frame has too few homes, with an exception pending. A
-# home read takes one home's raw address and returns the binding borrowed from
-# the home; a home take moves the binding out and returns it owned. `locals()`
-# returns an owned dict.
+# Backend-only frame records and binding storage. The record entry takes a
+# raw code slot id and returns the linked record's raw base address, never an
+# object: 0 when nothing was linked, with an exception pending. The record
+# exit takes that base. Compiled code calls them only off its inline push and
+# pop. A home read takes one home's raw address and returns the binding
+# borrowed from the home; a home take moves the binding out and returns it
+# owned. `locals()` returns an owned dict.
 [[import]]
-name = "frame_homes"
-runtime_name = "molt_frame_homes"
+name = "frame_record_enter"
+runtime_name = "molt_frame_record_enter"
 type = 2
 return_contract = "raw_bits"
+
+[[import]]
+name = "frame_record_exit"
+runtime_name = "molt_frame_record_exit"
+type = 2
+return_contract = "borrowed_object"
 
 [[import]]
 name = "frame_home_load"
@@ -1220,9 +1227,9 @@ callable_arity = 3
 
 [[import]]
 name = "class_frame_exit"
-type = 0
+type = 2
 runtime_name = "molt_class_frame_exit"
-callable_arity = 0
+callable_arity = 1
 
 [[import]]
 name = "frame_class_locals_set"
@@ -1880,20 +1887,6 @@ return_contract = "raw_bits"
 name = "refcount_admission"
 type = 0
 return_contract = "raw_bits"
-
-[[import]]
-name = "trace_enter_slot"
-type = 2
-runtime_name = "molt_trace_enter_slot"
-callable_arity = 1
-return_contract = "borrowed_object"
-
-[[import]]
-name = "trace_exit"
-type = 0
-runtime_name = "molt_trace_exit"
-callable_arity = 0
-return_contract = "borrowed_object"
 
 [[import]]
 name = "trace_set_line"

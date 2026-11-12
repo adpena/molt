@@ -380,9 +380,12 @@ def test_gpu_descriptor_projects_captured_body_aliases_and_binding_obligations()
             encoding="utf-8"
         )
     )[0]
+    # The kernel's code owner, and its synchronous frame's shape: five homes
+    # (a, b, c, n, tid) cleared in ascending order.
     assert captured["ops"][0] == {
         "kind": "trace_enter_slot",
         "s_value": captured["symbol"],
+        "value": 5,
     }
     result = project_kernel_ops(captured["params"], captured["ops"])
     assert "unsupported" not in result

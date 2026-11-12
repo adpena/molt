@@ -8132,10 +8132,6 @@
       "context": "Attached",
       "physical_symbol": "molt_frame_home_take__molt_context_a8c6010e2cbb56a1"
     },
-    "molt_frame_homes": {
-      "context": "Attached",
-      "physical_symbol": "molt_frame_homes__molt_context_a8c6010e2cbb56a1"
-    },
     "molt_frame_locals_begin": {
       "context": "Attached",
       "physical_symbol": "molt_frame_locals_begin__molt_context_a8c6010e2cbb56a1"
@@ -8207,6 +8203,14 @@
     "molt_frame_locals_set": {
       "context": "Attached",
       "physical_symbol": "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_frame_record_enter": {
+      "context": "Attached",
+      "physical_symbol": "molt_frame_record_enter__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_frame_record_exit": {
+      "context": "Attached",
+      "physical_symbol": "molt_frame_record_exit__molt_context_a8c6010e2cbb56a1"
     },
     "molt_frozenset_add": {
       "context": "Attached",
@@ -16300,14 +16304,6 @@
       "context": "Attached",
       "physical_symbol": "molt_tokenize_scan__molt_context_a8c6010e2cbb56a1"
     },
-    "molt_trace_enter_slot": {
-      "context": "Attached",
-      "physical_symbol": "molt_trace_enter_slot__molt_context_a8c6010e2cbb56a1"
-    },
-    "molt_trace_exit": {
-      "context": "Attached",
-      "physical_symbol": "molt_trace_exit__molt_context_a8c6010e2cbb56a1"
-    },
     "molt_trace_set_line": {
       "context": "Attached",
       "physical_symbol": "molt_trace_set_line__molt_context_a8c6010e2cbb56a1"
@@ -19484,9 +19480,10 @@
     "frame_context_set": "molt_frame_context_set__molt_context_a8c6010e2cbb56a1",
     "frame_home_load": "molt_frame_home_load__molt_context_a8c6010e2cbb56a1",
     "frame_home_take": "molt_frame_home_take__molt_context_a8c6010e2cbb56a1",
-    "frame_homes": "molt_frame_homes__molt_context_a8c6010e2cbb56a1",
     "frame_locals_begin": "molt_frame_locals_begin__molt_context_a8c6010e2cbb56a1",
     "frame_locals_set": "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1",
+    "frame_record_enter": "molt_frame_record_enter__molt_context_a8c6010e2cbb56a1",
+    "frame_record_exit": "molt_frame_record_exit__molt_context_a8c6010e2cbb56a1",
     "frozenset_add": "molt_frozenset_add__molt_context_a8c6010e2cbb56a1",
     "frozenset_new": "molt_frozenset_new__molt_context_a8c6010e2cbb56a1",
     "func_new": "molt_func_new__molt_context_a8c6010e2cbb56a1",
@@ -22253,7 +22250,6 @@
     "molt_frame_f_locals_get__molt_context_a8c6010e2cbb56a1": "molt_frame_f_locals_get__molt_context_a8c6010e2cbb56a1",
     "molt_frame_home_load__molt_context_a8c6010e2cbb56a1": "molt_frame_home_load__molt_context_a8c6010e2cbb56a1",
     "molt_frame_home_take__molt_context_a8c6010e2cbb56a1": "molt_frame_home_take__molt_context_a8c6010e2cbb56a1",
-    "molt_frame_homes__molt_context_a8c6010e2cbb56a1": "molt_frame_homes__molt_context_a8c6010e2cbb56a1",
     "molt_frame_locals_begin__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_begin__molt_context_a8c6010e2cbb56a1",
     "molt_frame_locals_proxy_contains__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_proxy_contains__molt_context_a8c6010e2cbb56a1",
     "molt_frame_locals_proxy_copy__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_proxy_copy__molt_context_a8c6010e2cbb56a1",
@@ -22272,6 +22268,8 @@
     "molt_frame_locals_proxy_update__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_proxy_update__molt_context_a8c6010e2cbb56a1",
     "molt_frame_locals_proxy_values__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_proxy_values__molt_context_a8c6010e2cbb56a1",
     "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1",
+    "molt_frame_record_enter__molt_context_a8c6010e2cbb56a1": "molt_frame_record_enter__molt_context_a8c6010e2cbb56a1",
+    "molt_frame_record_exit__molt_context_a8c6010e2cbb56a1": "molt_frame_record_exit__molt_context_a8c6010e2cbb56a1",
     "molt_frozenset_add__molt_context_a8c6010e2cbb56a1": "molt_frozenset_add__molt_context_a8c6010e2cbb56a1",
     "molt_frozenset_builtin__molt_context_a8c6010e2cbb56a1": "molt_frozenset_builtin__molt_context_a8c6010e2cbb56a1",
     "molt_frozenset_copy_method__molt_context_a8c6010e2cbb56a1": "molt_frozenset_copy_method__molt_context_a8c6010e2cbb56a1",
@@ -24385,8 +24383,6 @@
     "molt_tk_widget_bind_callback_unregister__molt_context_a8c6010e2cbb56a1": "molt_tk_widget_bind_callback_unregister__molt_context_a8c6010e2cbb56a1",
     "molt_token_payload__molt_context_a8c6010e2cbb56a1": "molt_token_payload__molt_context_a8c6010e2cbb56a1",
     "molt_tokenize_scan__molt_context_a8c6010e2cbb56a1": "molt_tokenize_scan__molt_context_a8c6010e2cbb56a1",
-    "molt_trace_enter_slot__molt_context_a8c6010e2cbb56a1": "molt_trace_enter_slot__molt_context_a8c6010e2cbb56a1",
-    "molt_trace_exit__molt_context_a8c6010e2cbb56a1": "molt_trace_exit__molt_context_a8c6010e2cbb56a1",
     "molt_trace_set_line__molt_context_a8c6010e2cbb56a1": "molt_trace_set_line__molt_context_a8c6010e2cbb56a1",
     "molt_traceback_exception_chain_payload__molt_context_a8c6010e2cbb56a1": "molt_traceback_exception_chain_payload__molt_context_a8c6010e2cbb56a1",
     "molt_traceback_exception_suppress_context__molt_context_a8c6010e2cbb56a1": "molt_traceback_exception_suppress_context__molt_context_a8c6010e2cbb56a1",
@@ -25577,8 +25573,6 @@
     "tk_widget_bind_callback_unregister": "molt_tk_widget_bind_callback_unregister__molt_context_a8c6010e2cbb56a1",
     "token_payload": "molt_token_payload__molt_context_a8c6010e2cbb56a1",
     "tokenize_scan": "molt_tokenize_scan__molt_context_a8c6010e2cbb56a1",
-    "trace_enter_slot": "molt_trace_enter_slot__molt_context_a8c6010e2cbb56a1",
-    "trace_exit": "molt_trace_exit__molt_context_a8c6010e2cbb56a1",
     "trace_set_line": "molt_trace_set_line__molt_context_a8c6010e2cbb56a1",
     "traceback_exception_chain_payload": "molt_traceback_exception_chain_payload__molt_context_a8c6010e2cbb56a1",
     "traceback_exception_suppress_context": "molt_traceback_exception_suppress_context__molt_context_a8c6010e2cbb56a1",

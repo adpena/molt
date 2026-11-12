@@ -625,9 +625,9 @@ const TRUE:u64=@TRUE@;
 const FALSE:u64=@FALSE@;
 const METHOD_NULL:u64=@METHOD_NULL@;
 #[export_name="@ABI@"] pub static ABI:u8=0;
-#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64 }
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64 }
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0 };
+static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0 };
 static ATTEMPTS:AtomicU64=AtomicU64::new(0);
 static FAIL:AtomicU64=AtomicU64::new(0);
 static CALLS:AtomicU64=AtomicU64::new(0);
@@ -690,7 +690,7 @@ pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: 
     molt_async_work_poll_and_exception_pending()
 }
 pub fn molt_async_work_poll_and_exception_pending() ->u64 {molt_exception_pending_fast()}
-fn fixture_thread_record() ->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
+fn fixture_thread_record() ->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; PENDING_RECORD.frame_top = core::ptr::addr_of_mut!(HOME) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
 #[export_name = "molt_is_truthy@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_is_truthy(_context: u64, _arg0: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -836,15 +836,8 @@ static HOME_ORIGINS: AtomicU64 = AtomicU64::new(0);
 fn home_pair() -> (u64, u64) {
     unsafe { (core::ptr::addr_of!(HOME[0]).read(), core::ptr::addr_of!(HOME[1]).read()) }
 }
-#[export_name = "molt_frame_homes@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_frame_homes(_context: u64, _arg0: u64) -> u64 {
-    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_frame_homes(_arg0)
-}
-pub fn molt_frame_homes(slots: u64) -> u64 {
-    assert_eq!(slots, 1);
-    core::ptr::addr_of_mut!(HOME) as u64
-}
+// The compiled bodies run inside one executing frame: the thread record's
+// frame-top word names its homes.
 #[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_exception_frame_origin(_context: u64, _arg0: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");

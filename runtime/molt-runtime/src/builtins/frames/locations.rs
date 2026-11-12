@@ -23,7 +23,7 @@ impl LocationId {
         Self(word)
     }
 
-    pub(crate) fn word(self) -> u64 {
+    pub(crate) const fn word(self) -> u64 {
         self.0
     }
 

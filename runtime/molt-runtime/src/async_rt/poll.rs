@@ -602,7 +602,7 @@ mod tests {
         let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
         crate::with_attached_entry_nopanic!(__attached_py, _py, {
-            crate::molt_trace_enter_slot_attached_body(_py, 0);
+            crate::builtins::frames::compiled_entry::enter(_py, 0);
             let globals = crate::builtins::frames::frame_stack_active_globals_bits();
             let task = std::ptr::with_exposed_provenance_mut::<u8>(task_address as usize);
             assert_eq!(
@@ -615,7 +615,7 @@ mod tests {
                 crate::object::aux_header::object_frame_builtins_bits(task),
                 "resume must use captured builtins, not the mutated globals entry",
             );
-            crate::molt_trace_exit_attached_body(_py);
+            crate::builtins::frames::compiled_entry::exit(_py);
             globals as i64
         })
     }
@@ -750,7 +750,7 @@ mod tests {
 
                 let caller_fn = invoked(caller);
                 let calling = FrameInvocationGuard::for_function(py, caller_fn);
-                crate::molt_trace_enter_slot_attached_body(py, 0);
+                crate::builtins::frames::compiled_entry::enter(py, 0);
                 for _ in 0..2 {
                     assert_eq!(
                         unsafe { super::call_poll_fn(py, poll, ptr) } as u64,
@@ -839,7 +839,7 @@ mod tests {
                         dec_ref_bits(py, owner);
                     }
                 }
-                crate::molt_trace_exit_attached_body(py);
+                crate::builtins::frames::compiled_entry::exit(py);
                 drop(calling);
                 release(caller_fn);
                 dec_ref_bits(py, task);
@@ -866,7 +866,7 @@ mod tests {
             }
             let caller_fn = invoked(caller);
             let calling = FrameInvocationGuard::for_function(py, caller_fn);
-            crate::molt_trace_enter_slot_attached_body(py, 0);
+            crate::builtins::frames::compiled_entry::enter(py, 0);
             let native_task = crate::molt_task_new_attached_body(
                 py,
                 poll,
@@ -880,7 +880,7 @@ mod tests {
                 crate::object::aux_header::object_frame_code_bits(native_ptr),
                 0
             );
-            crate::molt_trace_exit_attached_body(py);
+            crate::builtins::frames::compiled_entry::exit(py);
             drop(calling);
             release(caller_fn);
             dec_ref_bits(py, native_task);

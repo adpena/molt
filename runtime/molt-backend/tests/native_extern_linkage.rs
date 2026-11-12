@@ -255,11 +255,17 @@ fn native_object_retains_exact_generated_object_abi_import() {
     }
 }
 
+/// A symbol of the object names `logical_name` when it is that name (data and
+/// anchors) or the compiled function's physical execution symbol, which
+/// carries the attached execution context (its one authority is
+/// `compiled_execution_symbol`). Mach-O prefixes an underscore.
 fn object_symbol_matches<'data, S: ObjectSymbol<'data>>(symbol: &S, logical_name: &str) -> bool {
-    symbol
-        .name()
-        .ok()
-        .is_some_and(|name| name == logical_name || name.strip_prefix('_') == Some(logical_name))
+    let physical = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(logical_name);
+    symbol.name().ok().is_some_and(|name| {
+        [logical_name, physical.as_str()]
+            .iter()
+            .any(|expected| name == *expected || name.strip_prefix('_') == Some(*expected))
+    })
 }
 
 #[test]

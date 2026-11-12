@@ -22,6 +22,8 @@ mod module_metadata;
 pub use module_metadata::*;
 mod block_builder;
 pub(crate) use block_builder::*;
+mod frame_record;
+pub(crate) use frame_record::*;
 mod refcount;
 pub(crate) use refcount::*;
 mod variables;

@@ -1296,11 +1296,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # All consumers share one namespace owner. Only bodies proved to run
         # no callbacks or reflection retain their bindings solely in SSA.
         class_import_state = self._capture_class_import_state()
-        # Entry owns an attempted-entry marker even on failure. Open cleanup
-        # first so both entry failure and every body exit consume it once.
+        # Open cleanup first so entry failure and every body exit run it once.
+        # The exit names the body's code: it pops only this body's frame, so
+        # a failed entry that linked none pops nothing.
         frame_scope = self._enter_frame_restore_scope(
             lambda: self._emit_intrinsic_call(
-                "molt_class_frame_exit", [], type_hint="None"
+                "molt_class_frame_exit", [body_code], type_hint="None"
             )
         )
         self._emit_intrinsic_call(

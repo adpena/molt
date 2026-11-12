@@ -40,16 +40,20 @@ static EXPECTED_CONTEXT: AtomicU64 = AtomicU64::new(0);
 fn check_context(context: u64) {{
     assert_eq!(context, EXPECTED_CONTEXT.load(Ordering::SeqCst), "compiled entry must forward borrowed context");
 }}
-#[unsafe(export_name = "{trace_enter}")] pub extern "C" fn molt_trace_enter_slot(context: u64, slot: u64) -> u64 {{
+const RECORD_BASE: u64 = 0x5eed_0000;
+#[unsafe(export_name = "{frame_enter}")] pub extern "C" fn molt_frame_record_enter(context: u64, slot: u64) -> u64 {{
     check_context(context);
-    OBSERVED.store(slot, Ordering::SeqCst); 0
+    OBSERVED.store(slot, Ordering::SeqCst); RECORD_BASE
 }}
-#[unsafe(export_name = "{trace_exit}")] pub extern "C" fn molt_trace_exit(context: u64) -> u64 {{
+#[unsafe(export_name = "{frame_exit}")] pub extern "C" fn molt_frame_record_exit(context: u64, base: u64) -> u64 {{
     check_context(context);
+    assert_eq!(base, RECORD_BASE, "the exit names the record its entry linked");
     EXITS.fetch_add(1, Ordering::SeqCst); 0
 }}
 #[unsafe(export_name = "{pending_fast}")] pub extern "C" fn molt_exception_pending_fast(context: u64) -> u64 {{ check_context(context); 0 }}
 #[unsafe(export_name = "{work_poll}")] pub extern "C" fn molt_async_work_poll_and_exception_pending(context: u64) -> u64 {{ check_context(context); 0 }}
+// The cold edge of an Origin check; nothing raises here, so it is never taken.
+#[unsafe(export_name = "{frame_origin}")] pub extern "C" fn molt_exception_frame_origin(context: u64, _homes: u64) -> u64 {{ check_context(context); unreachable!() }}
 #[used] #[unsafe(export_name = "{abi}")] pub static ABI: u8 = 0;
 unsafe extern "C" {{
     #[link_name = "{init_sys}"] fn molt_init_sys(context: u64) -> u64;
@@ -76,10 +80,11 @@ fn main() {{
 }}
 "#,
             abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
-            trace_enter = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_trace_enter_slot").unwrap().physical_symbol,
-            trace_exit = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_trace_exit").unwrap().physical_symbol,
+            frame_enter = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_frame_record_enter").unwrap().physical_symbol,
+            frame_exit = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_frame_record_exit").unwrap().physical_symbol,
             pending_fast = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_pending_fast").unwrap().physical_symbol,
             work_poll = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_async_work_poll_and_exception_pending").unwrap().physical_symbol,
+            frame_origin = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_frame_origin").unwrap().physical_symbol,
             init_sys = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_init_sys"),
             context_record_offset = molt_codegen_abi::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
             exception_offset = molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET,

@@ -72,7 +72,13 @@ def _plan_module_code_slots(
                 )
             if kind in {"code_slot_set", "trace_enter_slot"}:
                 symbol = op.get("s_value")
-                if symbol not in local_symbols or op.get("value") is not None:
+                value = op.get("value")
+                # A frame entry may carry its synchronous frame's home count
+                # and clear order; the symbol alone is the code identity.
+                frame_shape = (
+                    kind == "trace_enter_slot" and type(value) is int and value >= 0
+                )
+                if symbol not in local_symbols or not (value is None or frame_shape):
                     raise ValueError(
                         f"Missing canonical code owner {symbol!r} in module {module_name}"
                     )

@@ -1055,12 +1055,14 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
         assert contracts[name] == "raw_bits"
         entry = next(entry for entry in data["import"] if entry["name"] == name)
         assert "callable_arity" not in entry
+    # The frame entry returns its record's raw base; the exit returns None.
+    assert contracts["frame_record_enter"] == "raw_bits"
     for kind in (
-        "trace_enter_slot",
-        "trace_exit",
+        "frame_record_exit",
         "trace_set_line",
     ):
         assert contracts[kind] == "borrowed_object"
+    assert not {"trace_enter_slot", "trace_exit", "frame_homes"} & set(contracts)
     boxed_names = {
         row["runtime_name"] for row in manifest.runtime_boxed_call_specs(data)
     }

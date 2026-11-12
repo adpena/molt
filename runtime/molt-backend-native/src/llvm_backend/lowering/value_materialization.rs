@@ -84,10 +84,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             builder.position_at_end(entry);
         }
         let slot = builder
-            .build_alloca(self.backend.context.bool_type(), "owned_frame_entered")
+            .build_alloca(self.backend.context.i64_type(), "owned_frame_base")
             .unwrap();
         builder
-            .build_store(slot, self.backend.context.bool_type().const_zero())
+            .build_store(slot, self.backend.context.i64_type().const_zero())
             .unwrap();
         self.owned_frame_entered = Some(slot);
     }
@@ -96,49 +96,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let Some(slot) = self.owned_frame_entered else {
             return;
         };
-        let source = self
+        let i64_ty = self.backend.context.i64_type();
+        let base = self
             .backend
             .builder
-            .get_insert_block()
-            .expect("return block");
-        let active = self
-            .backend
-            .builder
-            .build_load(self.backend.context.bool_type(), slot, "frame_entered")
+            .build_load(i64_ty, slot, "frame_base")
             .unwrap()
             .into_int_value();
-        let pop = self
-            .backend
-            .context
-            .append_basic_block(self.llvm_fn, "owned_frame_exit");
-        let done = self
-            .backend
-            .context
-            .append_basic_block(self.llvm_fn, "owned_frame_exited");
-        self.all_llvm_blocks.extend([pop, done]);
+        // Retire the custody before releasing homes can call Python again.
         self.backend
             .builder
-            .build_conditional_branch(active, pop, done)
+            .build_store(slot, i64_ty.const_zero())
             .unwrap();
-        self.record_llvm_edge(source, pop);
-        self.record_llvm_edge(source, done);
-        self.backend.builder.position_at_end(pop);
-        // Retire the credit before releasing homes can call Python again.
-        self.backend
-            .builder
-            .build_store(slot, self.backend.context.bool_type().const_zero())
-            .unwrap();
-        let exit = self.ensure_runtime_i64_fn("molt_trace_exit", 0);
-        self.backend
-            .builder
-            .build_execution_call(exit, &[], "trace_exit")
-            .unwrap();
-        self.backend
-            .builder
-            .build_unconditional_branch(done)
-            .unwrap();
-        self.record_llvm_edge(pop, done);
-        self.backend.builder.position_at_end(done);
+        // The pop body tests the base itself: a failed entry pops nothing.
+        let shape = self.frame_shape();
+        self.emit_frame_record_pop(base, shape);
     }
 
     pub(super) fn program_slot_id(

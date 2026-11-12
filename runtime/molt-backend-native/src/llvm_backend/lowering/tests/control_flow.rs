@@ -81,29 +81,41 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
     backend.module.verify().unwrap();
     let ir = function.print_to_string().to_string();
     assert_eq!(
-        ir.matches_execution("@molt_trace_enter_slot(").count(),
+        ir.matches_execution("@molt_frame_record_enter(").count(),
         1,
         "{ir}"
     );
     assert_eq!(
-        ir.matches_execution("@molt_trace_exit(").count(),
+        ir.matches_execution("@__molt_frame_pop_linked(").count(),
         3,
         "every return needs its own guarded closure: {ir}"
     );
     assert_eq!(
-        ir.matches_execution("store i1 true").count(),
+        ir.matches_execution("store i64 %frame_record_enter, ptr %owned_frame_base")
+            .count(),
         1,
-        "only a returned entry attempt grants a balancing credit: {ir}"
+        "only the entry's own record base grants a pop: {ir}"
     );
     assert_eq!(
-        ir.matches_execution("store i1 false").count(),
+        ir.matches_execution("store i64 0, ptr %owned_frame_base")
+            .count(),
         4,
-        "one initial empty credit, retired before each potential pop: {ir}"
+        "one initial empty base, retired before each potential pop: {ir}"
+    );
+    // The pop body tests the base, so an early exit does not pop the caller.
+    let module_ir = backend.module.print_to_string().to_string();
+    let pop_body = module_ir
+        .split("define ")
+        .find(|body| body.starts_with("internal void @__molt_frame_pop_linked"))
+        .expect("frame pop body");
+    assert!(
+        pop_body.contains("icmp ne i64") && pop_body.contains("br i1 %word_test"),
+        "{pop_body}"
     );
     assert_eq!(
-        ir.matches_execution("br i1 %frame_entered").count(),
-        3,
-        "early exits must not pop the caller: {ir}"
+        pop_body.matches("molt_frame_record_exit").count(),
+        1,
+        "{pop_body}"
     );
 }
 
@@ -414,39 +426,26 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "{ir}"
             );
             assert!(
-                allocation_ir.contains_execution("store i1 true"),
-                "frame credit must precede allocation: {ir}"
+                allocation_ir.contains_execution("store i64 %frame_record_enter"),
+                "the frame's record base must precede allocation: {ir}"
+            );
+            let retire = ready_ir
+                .find("store i64 0, ptr %owned_frame_base")
+                .expect("cleanup retires the record base");
+            let pop = ready_ir
+                .find("@__molt_frame_pop_linked")
+                .expect("cleanup must reach the guarded frame exit");
+            assert!(
+                retire < pop,
+                "retire the record base before finalizers: {ir}"
             );
             assert!(
-                ready_ir.contains_execution(
-                    "br i1 %frame_entered, label %owned_frame_exit, label %owned_frame_exited"
-                ),
-                "cleanup must reach guarded frame exit: {ir}"
-            );
-            let pop_ir = block_ir(
-                blocks
-                    .iter()
-                    .find(|bb| block_ir(bb).contains_execution("@molt_trace_exit("))
-                    .expect("owned frame exit"),
-            );
-            assert!(
-                pop_ir.contains_execution("store i1 false")
-                    && pop_ir.contains_execution("br label %owned_frame_exited"),
-                "retire the frame credit before finalizers: {ir}"
-            );
-            let return_ir = block_ir(
-                blocks
-                    .iter()
-                    .find(|bb| bb.get_name().to_str().unwrap() == "owned_frame_exited")
-                    .expect("return after frame closure"),
-            );
-            assert!(
-                return_ir.contains_execution(&format!("ret i64 %{call_name}")),
+                ready_ir.contains_execution(&format!("ret i64 %{call_name}")),
                 "boxed result must survive unchanged: {ir}"
             );
             assert!(
                 !ready_ir.contains_execution("inttoptr")
-                    && !ready_ir.contains_execution("store i64"),
+                    && ready_ir.matches_execution("store i64").count() == 1,
                 "{ir}"
             );
             assert!(

@@ -1369,7 +1369,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_class_frame_exit",
-        arity: 0,
+        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -11178,16 +11178,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_trace_enter_slot",
-        arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_trace_exit",
-        arity: 0,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_trace_set_line",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -18717,10 +18707,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_frame_home_take__molt_context_a8c6010e2cbb56a1",
         },
-        "molt_frame_homes" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_frame_homes__molt_context_a8c6010e2cbb56a1",
-        },
         "molt_frame_locals_begin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_frame_locals_begin__molt_context_a8c6010e2cbb56a1",
@@ -18792,6 +18778,14 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_frame_locals_set" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_frame_record_enter" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_frame_record_enter__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_frame_record_exit" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_frame_record_exit__molt_context_a8c6010e2cbb56a1",
         },
         "molt_frozenset_add" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -26884,14 +26878,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_tokenize_scan" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_tokenize_scan__molt_context_a8c6010e2cbb56a1",
-        },
-        "molt_trace_enter_slot" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_trace_enter_slot__molt_context_a8c6010e2cbb56a1",
-        },
-        "molt_trace_exit" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_trace_exit__molt_context_a8c6010e2cbb56a1",
         },
         "molt_trace_set_line" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
