@@ -493,6 +493,8 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
             (binary, false)
         }
         OpCode::Not | OpCode::Bool => (unary, false),
+        // A raw i64 payload in, a raw f64 out: no boxed int is observed.
+        OpCode::IntToFloat => (unary, false),
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => (binary_result, true),
         OpCode::Pos | OpCode::BitNot => (unary_result, true),
         // Late-TIR primitives read their operands as boxed words. UnboxInlineInt

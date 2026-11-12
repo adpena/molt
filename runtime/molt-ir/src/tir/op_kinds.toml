@@ -1459,6 +1459,7 @@ gvn_always_numberable_opcodes = [
     "UnboxInlineInt",
     "IsFloatWord",
     "UnboxFloatWord",
+    "IntToFloat",
     "IsBoolWord",
     "UnboxBoolWord",
     "BoxInlineInt",
@@ -1527,6 +1528,7 @@ final_tir_opcodes = [
     "UnboxInlineInt",
     "IsFloatWord",
     "UnboxFloatWord",
+    "IntToFloat",
     "IsBoolWord",
     "UnboxBoolWord",
     "BoxInlineInt",
@@ -1629,9 +1631,10 @@ sccp_constant_eval_rules = [
 ]
 
 # fast_path_expansion_rules: the ops the late lowering stage of TIR expands on
-# boxed words (HF-821). Each takes an inline-int arm and a float arm where it
-# has one; multiplication has only the float arm until its int arm can test
-# overflow. Anything else takes the op's own runtime entry.
+# boxed words (HF-821). Each takes an inline-int arm where it has one, a float
+# arm, and two mixed arms that convert the int payload exactly (IntToFloat);
+# true division converts both ints and leaves a zero divisor to the runtime,
+# which raises ZeroDivisionError. Anything else takes the op's own runtime entry.
 fast_path_expansion_rules = [
     { opcode = "Add", rule = "numeric_add" },
     { opcode = "InplaceAdd", rule = "numeric_add" },
@@ -1639,6 +1642,7 @@ fast_path_expansion_rules = [
     { opcode = "InplaceSub", rule = "numeric_sub" },
     { opcode = "Mul", rule = "numeric_mul" },
     { opcode = "InplaceMul", rule = "numeric_mul" },
+    { opcode = "Div", rule = "numeric_true_div" },
     { opcode = "Eq", rule = "numeric_compare" },
     { opcode = "Ne", rule = "numeric_compare" },
     { opcode = "Lt", rule = "numeric_compare" },
@@ -3663,7 +3667,7 @@ result_absorbs_operands = false
 # IsFloatWord is total: true iff the word is a float (its quiet-NaN prefix is
 # not the tag space). UnboxFloatWord is total and meaningful where IsFloatWord
 # holds: the word's bits as an f64. A boxed float is its own bits, so the
-# inverse is BoxVal of an f64, which canonicalizes NaN and cannot raise.
+# inverse is BoxVal of an f64 (runtime spec 2.1.1), which cannot raise.
 [[opcode]]
 name = "IsFloatWord"
 may_call_python = false
@@ -3678,6 +3682,21 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "UnboxFloatWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["f64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# IntToFloat is a raw i64 as the nearest f64. On an inline-int payload
+# (|x| < 2**46) it is exact, so a mixed int and float operation computes what
+# CPython computes: the int converted, then the float operation (HF-821).
+[[opcode]]
+name = "IntToFloat"
 may_call_python = false
 operand_arity = 1
 operand_independent_result_types = ["f64"]
