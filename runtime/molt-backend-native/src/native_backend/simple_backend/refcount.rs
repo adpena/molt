@@ -2,7 +2,7 @@ use super::*;
 use molt_codegen_abi::inline_refcount::{
     RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
 };
-use molt_codegen_abi::word::{WordBuilder, WordComparison};
+use molt_codegen_abi::word::{BranchBuilder, WordBuilder, WordComparison};
 
 /// Function-local imports and the admission belonging to this exact body.
 /// Keeping the invocation fact here makes helpers consume the entry's value
@@ -106,6 +106,74 @@ pub(crate) fn emit_global_slot_read(
     })
 }
 
+/// The Cranelift builder a native word builder spells into.
+trait CraneliftWords<'b> {
+    fn cranelift(&mut self) -> &mut FunctionBuilder<'b>;
+}
+
+impl<'b> CraneliftWords<'b> for NativeWords<'_, 'b> {
+    fn cranelift(&mut self) -> &mut FunctionBuilder<'b> {
+        self.builder
+    }
+}
+
+impl<'b> CraneliftWords<'b> for NativeRefcountBuilder<'_, 'b> {
+    fn cranelift(&mut self) -> &mut FunctionBuilder<'b> {
+        self.words.builder
+    }
+}
+
+/// `BranchBuilder::choose` in Cranelift: a branch to a hot block and a cold
+/// block that join with one i64 parameter. Both native builders use it.
+fn cranelift_choose<'b, S: CraneliftWords<'b>>(
+    s: &mut S,
+    condition: Value,
+    yes: impl FnOnce(&mut S) -> Value,
+    no: impl FnOnce(&mut S) -> Value,
+) -> Value {
+    let yes_block = s.cranelift().create_block();
+    let no_block = s.cranelift().create_block();
+    let join = s.cranelift().create_block();
+    s.cranelift().append_block_param(join, types::I64);
+    s.cranelift()
+        .ins()
+        .brif(condition, yes_block, &[], no_block, &[]);
+    s.cranelift().seal_block(yes_block);
+    s.cranelift().seal_block(no_block);
+    s.cranelift().set_cold_block(no_block);
+    s.cranelift().switch_to_block(yes_block);
+    let taken = yes(s);
+    s.cranelift().ins().jump(join, &[taken.into()]);
+    s.cranelift().switch_to_block(no_block);
+    let fallback = no(s);
+    s.cranelift().ins().jump(join, &[fallback.into()]);
+    s.cranelift().seal_block(join);
+    s.cranelift().switch_to_block(join);
+    s.cranelift().block_params(join)[0]
+}
+
+impl BranchBuilder for NativeWords<'_, '_> {
+    fn choose(
+        &mut self,
+        condition: Value,
+        yes: impl FnOnce(&mut Self) -> Value,
+        no: impl FnOnce(&mut Self) -> Value,
+    ) -> Value {
+        cranelift_choose(self, condition, yes, no)
+    }
+}
+
+impl BranchBuilder for NativeRefcountBuilder<'_, '_> {
+    fn choose(
+        &mut self,
+        condition: Value,
+        yes: impl FnOnce(&mut Self) -> Value,
+        no: impl FnOnce(&mut Self) -> Value,
+    ) -> Value {
+        cranelift_choose(self, condition, yes, no)
+    }
+}
+
 #[cfg(feature = "native-backend")]
 impl molt_codegen_abi::global_slot::SlotBuilder for NativeRefcountBuilder<'_, '_> {
     fn load_word(&mut self, address: Value, offset: i32) -> Value {
@@ -113,33 +181,6 @@ impl molt_codegen_abi::global_slot::SlotBuilder for NativeRefcountBuilder<'_, '_
             .builder
             .ins()
             .load(types::I64, MemFlagsData::new(), address, offset)
-    }
-    fn choose(
-        &mut self,
-        condition: Value,
-        yes: impl FnOnce(&mut Self) -> Value,
-        no: impl FnOnce(&mut Self) -> Value,
-    ) -> Value {
-        let yes_block = self.words.builder.create_block();
-        let no_block = self.words.builder.create_block();
-        let join = self.words.builder.create_block();
-        self.words.builder.append_block_param(join, types::I64);
-        self.words
-            .builder
-            .ins()
-            .brif(condition, yes_block, &[], no_block, &[]);
-        self.words.builder.seal_block(yes_block);
-        self.words.builder.seal_block(no_block);
-        self.words.builder.set_cold_block(no_block);
-        self.words.builder.switch_to_block(yes_block);
-        let taken = yes(self);
-        self.words.builder.ins().jump(join, &[taken.into()]);
-        self.words.builder.switch_to_block(no_block);
-        let fallback = no(self);
-        self.words.builder.ins().jump(join, &[fallback.into()]);
-        self.words.builder.seal_block(join);
-        self.words.builder.switch_to_block(join);
-        self.words.builder.block_params(join)[0]
     }
     fn retain(&mut self, word: Value) {
         emit_refcount(&mut *self.words.builder, word, self.site);

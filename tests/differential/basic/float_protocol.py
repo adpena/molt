@@ -715,7 +715,11 @@ for spec in ("%.65536f", "%.65536e", "%.65537g", "%#.65537g"):
 text = format(1j, ".65536f")
 print("large-complex-precision", len(text), text[:12], text[-12:], text.count("0"))
 
-for value in (-1, 0x110000, 1 << 40, 1 << 200):
+# format(n, "c") reads n as a C long first, so a value that fits an LP64 long
+# but not an ILP32 one (1 << 40) errs differently on wasm32, as CPython does
+# there (spec 0190: the target's C data model). These values err the same on
+# every target: 0x110000 fits any long, 1 << 200 fits none.
+for value in (-1, 0x110000, 1 << 200):
     try:
         outcome = ("ok", format(value, "c"))
     except Exception as error:

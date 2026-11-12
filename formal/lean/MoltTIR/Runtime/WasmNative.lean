@@ -29,9 +29,6 @@ open MoltTIR.Runtime
 /-- Pointer mask: lower 48 bits (from molt-obj-model/src/lib.rs:20). -/
 def POINTER_MASK : UInt64 := 0x0000ffffffffffff
 
-/-- Canonical NaN bits (from molt-obj-model/src/lib.rs:24). -/
-def CANONICAL_NAN_BITS : UInt64 := 0x7ff0000000000001
-
 /-- Int width: 47 bits (from molt-obj-model/src/lib.rs:22). -/
 def INT_WIDTH : Nat := 47
 
@@ -178,8 +175,11 @@ theorem wasm_is_ptr_equiv (v : UInt64) :
     (v &&& QNAN_TAG_MASK = QNAN_TAG_PTR) ↔ IsPtr v := by
   unfold IsPtr QNAN_TAG_PTR; rw [qnan_tag_mask_eq, tag_check_eq]
 
-/-- NaN canonicalization: CANONICAL_NAN_BITS is a float (not tagged). -/
-theorem canonical_nan_is_float : IsFloat CANONICAL_NAN_BITS := by
-  unfold IsFloat CANONICAL_NAN_BITS QNAN; native_decide
+/-- The WASM float test `(v & QNAN_TAG_MASK) < QNAN | TAG_INT` is IsFloat:
+    the WASM box is a bit reinterpret, so a NaN keeps its bits iff its tag
+    field is clear (runtime spec 2.1.1). -/
+theorem wasm_is_float_equiv (v : UInt64) :
+    (v &&& QNAN_TAG_MASK < QNAN ||| TAG_INT) ↔ IsFloat v := by
+  unfold IsFloat FIRST_TAG_BOUNDARY; rw [qnan_tag_mask_eq, tag_check_eq]
 
 end MoltTIR.Runtime.WasmNative

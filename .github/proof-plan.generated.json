@@ -807,6 +807,7 @@
         "tests/test_falcon_ocr_prompt_contract.py/**",
         "tests/test_wasm_link_validation.py/**",
         "tests/test_wasm_control_flow.py/**",
+        "tests/test_wasm_determinism.py/**",
         "tests/test_wasm_longdouble_printf_link.py/**",
         "tests/cli/test_native_symbol_authority.py/**",
         "tests/test_browser_vfs.py/**",
@@ -4488,6 +4489,7 @@
       "id": "wasm.test.control-flow",
       "pytest": [
         "tests/test_wasm_control_flow.py",
+        "tests/test_wasm_determinism.py",
         "tests/test_wasm_longdouble_printf_link.py",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive"
       ],

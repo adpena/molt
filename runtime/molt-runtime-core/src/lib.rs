@@ -700,6 +700,10 @@ pub mod ffi {
         #[link_name = molt_codegen_abi::attached_symbol!("molt_float_from_obj")]
         pub fn molt_float_from_obj(context: u64, val_bits: u64) -> u64;
 
+        /// The boxed word for a float that keeps its bits (runtime spec 2.1.1).
+        #[link_name = molt_codegen_abi::attached_symbol!("__molt_float_result_bits")]
+        pub fn __molt_float_result_bits(context: u64, val: f64) -> u64;
+
         // -- Fast-path bound-method dispatch ----------------------------------
 
         /// Fast-path `list.append(elem)` via bound method bits.
@@ -831,6 +835,14 @@ pub fn rt_int(py: &PyToken, value: i64) -> u64 {
 #[inline]
 pub fn rt_float(value: f64) -> u64 {
     MoltObject::from_float(value).bits()
+}
+
+/// Box a float that keeps its bits: a value read from external bits
+/// (`struct`, `array`, a math result) rather than computed (runtime spec
+/// 2.1.1, HF-833). Only a payload or negative quiet NaN allocates.
+#[inline]
+pub fn rt_float_result_bits(py: &PyToken, value: f64) -> u64 {
+    unsafe { ffi::__molt_float_result_bits(py.attached_context(), value) }
 }
 
 /// Allocate a tuple from a slice of NaN-boxed elements.
