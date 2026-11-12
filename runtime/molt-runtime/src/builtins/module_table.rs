@@ -35,10 +35,10 @@ use crate::{
 // Structural gate: tests/test_module_registry_gates.py asserts these
 // constants equal the Python authority's. Bump both in the same arc.
 
-pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 5;
-const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD5");
-const MODULE_REGISTRY_HEADER_BYTES: usize = 56;
-const MODULE_REGISTRY_ROW_BYTES: usize = 48;
+pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 6;
+const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD6");
+const MODULE_REGISTRY_HEADER_BYTES: usize = 64;
+const MODULE_REGISTRY_ROW_BYTES: usize = 56;
 const NO_MODULE_ID: u32 = u32::MAX;
 
 const MODULE_KIND_SOURCE: u8 = 0;
@@ -98,6 +98,27 @@ pub(crate) struct CompiledModuleSpec {
     pub(crate) namespace_portions: Option<NamespacePortions>,
 }
 
+/// A row's global slot layout (call_anatomy.md 4.5): strictly sorted UTF-8
+/// names, each length-prefixed; slot k of the module's namespace table is the
+/// k-th name. Borrowed from the validated registry blob.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GlobalLayoutNames(&'static [u8]);
+
+impl GlobalLayoutNames {
+    pub(crate) fn iter(self) -> impl Iterator<Item = &'static [u8]> {
+        let mut remaining = self.0;
+        std::iter::from_fn(move || {
+            if remaining.is_empty() {
+                return None;
+            }
+            let len = u32::from_le_bytes(remaining[..4].try_into().unwrap()) as usize;
+            let name = &remaining[4..4 + len];
+            remaining = &remaining[4 + len..];
+            Some(name)
+        })
+    }
+}
+
 /// Ordered UTF-8 directories borrowed from a validated namespace registry row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NamespacePortions(&'static [u8]);
@@ -127,6 +148,8 @@ pub(crate) struct ModuleRegistry {
     origins_len: usize,
     portions_off: usize,
     portions_len: usize,
+    globals_off: usize,
+    globals_len: usize,
     digest: [u8; 16],
 }
 
@@ -194,6 +217,17 @@ impl ModuleRegistry {
         let len = Self::read_u32(unsafe { row.add(40) }) as usize;
         NamespacePortions(unsafe {
             std::slice::from_raw_parts(self.base.add(self.portions_off + off), len)
+        })
+    }
+
+    /// The global slot layout of row `id`.
+    pub(crate) fn globals_of(&self, id: u32) -> GlobalLayoutNames {
+        debug_assert!(id < self.count);
+        let row = self.row_base(id);
+        let off = Self::read_u32(unsafe { row.add(48) }) as usize;
+        let len = Self::read_u32(unsafe { row.add(52) }) as usize;
+        GlobalLayoutNames(unsafe {
+            std::slice::from_raw_parts(self.base.add(self.globals_off + off), len)
         })
     }
 
@@ -294,6 +328,8 @@ impl ModuleRegistry {
             .map_err(|_| "module registry origin table exceeds the target address space")?;
         let portions_len = usize::try_from(Self::read_u64(unsafe { base.add(48) }))
             .map_err(|_| "module registry portions table exceeds the target address space")?;
+        let globals_len = usize::try_from(Self::read_u64(unsafe { base.add(56) }))
+            .map_err(|_| "module registry globals table exceeds the target address space")?;
         let names_off = usize::try_from(count)
             .ok()
             .and_then(|count| count.checked_mul(MODULE_REGISTRY_ROW_BYTES))
@@ -305,9 +341,12 @@ impl ModuleRegistry {
         let portions_off = origins_off
             .checked_add(origins_len)
             .ok_or("module registry origin table offset overflow")?;
-        let total_len = portions_off
+        let globals_off = portions_off
             .checked_add(portions_len)
             .ok_or("module registry portions table offset overflow")?;
+        let total_len = globals_off
+            .checked_add(globals_len)
+            .ok_or("module registry globals table offset overflow")?;
         base.addr()
             .checked_add(total_len)
             .ok_or("module registry address range overflow")?;
@@ -319,6 +358,8 @@ impl ModuleRegistry {
             origins_len,
             portions_off,
             portions_len,
+            globals_off,
+            globals_len,
             digest,
         };
         // Validate every row once so all later reads are infallible.
@@ -396,6 +437,40 @@ impl ModuleRegistry {
                     ));
                 }
                 portions = &portions[length..];
+            }
+            let global_off = Self::read_u32(unsafe { row_base.add(48) }) as usize;
+            let global_len = Self::read_u32(unsafe { row_base.add(52) }) as usize;
+            if global_off
+                .checked_add(global_len)
+                .is_none_or(|end| end > registry.globals_len)
+            {
+                return Err(format!(
+                    "module registry row {id} globals span exceeds the globals table"
+                ));
+            }
+            let mut layout = registry.globals_of(id).0;
+            let mut previous_global: Option<&[u8]> = None;
+            while !layout.is_empty() {
+                let Some(length) = layout.get(..4) else {
+                    return Err(format!("module registry row {id} truncated global length"));
+                };
+                let length = u32::from_le_bytes(length.try_into().unwrap()) as usize;
+                layout = &layout[4..];
+                let Some(name) = layout.get(..length) else {
+                    return Err(format!("module registry row {id} truncated global name"));
+                };
+                let dunder = name.len() > 4 && name.starts_with(b"__") && name.ends_with(b"__");
+                if name.is_empty()
+                    || dunder
+                    || std::str::from_utf8(name).is_err()
+                    || previous_global.is_some_and(|previous| previous >= name)
+                {
+                    return Err(format!(
+                        "module registry row {id} globals must be strictly sorted non-dunder UTF-8 names"
+                    ));
+                }
+                previous_global = Some(name);
+                layout = &layout[length..];
             }
             if row.kind == MODULE_KIND_NAMESPACE_PARENT {
                 if portion_len == 0

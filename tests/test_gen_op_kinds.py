@@ -1430,10 +1430,14 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "Pow": "dynbox",
         "IsInlineInt": "bool",
         "UnboxInlineInt": "i64",
+        "IsFloatWord": "bool",
+        "UnboxFloatWord": "f64",
         "IsBoolWord": "bool",
         "UnboxBoolWord": "bool",
         "BoxInlineInt": "dynbox",
         "CodeIs": "bool",
+        "GlobalSlotBase": "i64",
+        "GlobalSlotGet": "dynbox",
         "ModuleSlot": "i64",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
@@ -2669,9 +2673,13 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "UnboxVal",
         "IsInlineInt",
         "UnboxInlineInt",
+        "IsFloatWord",
+        "UnboxFloatWord",
         "IsBoolWord",
         "UnboxBoolWord",
         "BoxInlineInt",
+        "ModuleSlot",
+        "GlobalSlotBase",
     }
     expected_type_gated = {
         "Add",
@@ -2737,6 +2745,11 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
             "key": "str_attr",
             "attrs": ["expected_type", "ty"],
         },
+        "ModuleSlot": {
+            "opcode": "ModuleSlot",
+            "key": "str_attr",
+            "attrs": ["s_value"],
+        },
     }
     expected_value_keyed = set(expected_value_keyed_rows)
     expected_proven_seeds = expected_value_keyed - {"ConstBigInt"}
@@ -2785,6 +2798,7 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "ConstStr": "StrAttr",
         "ConstBytes": "BytesAttr",
         "TypeGuard": "StrAttr",
+        "ModuleSlot": "StrAttr",
     }
     expected_attr_consts = {
         "ConstInt": 'const GVN_VALUE_KEY_ATTRS_CONST_INT: &[&str] = &["value"];',
@@ -2803,6 +2817,7 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "TypeGuard": (
             'const GVN_VALUE_KEY_ATTRS_TYPE_GUARD: &[&str] = &["expected_type", "ty"];'
         ),
+        "ModuleSlot": 'const GVN_VALUE_KEY_ATTRS_MODULE_SLOT: &[&str] = &["s_value"];',
     }
     for opcode, variant in expected_key_variants.items():
         const_decl = expected_attr_consts[opcode]

@@ -102,6 +102,7 @@ mod constant_ops;
 mod container_ops;
 #[cfg(feature = "llvm")]
 mod frame_record;
+mod global_slot;
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
@@ -535,13 +536,13 @@ struct FunctionLowering<'ctx, 'func> {
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
     refcount_admission: std::cell::Cell<Option<inkwell::values::IntValue<'ctx>>>,
-    poll_context: Option<(
-        inkwell::values::PointerValue<'ctx>,
-        inkwell::values::PointerValue<'ctx>,
-    )>,
-    /// The function polls for async work, so it holds the thread record
-    /// (`poll_context`) and tests the pending-exception byte inline.
-    polls_async_work: bool,
+    /// This invocation's thread record, read once from the execution context
+    /// in the entry block (`thread_record`). Every compiled function takes
+    /// the context, so every function reads execution state through it.
+    thread_record: Option<inkwell::values::PointerValue<'ctx>>,
+    /// The runtime's pending-work word the record lends, read once after the
+    /// record (`pending_work_ptr`); only functions that poll read it.
+    pending_work_ptr: Option<inkwell::values::PointerValue<'ctx>>,
 }
 
 #[cfg(feature = "llvm")]
@@ -588,16 +589,6 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
 ) -> FunctionValue<'ctx> {
     try_lower_tir_to_llvm_with_pgo(func, backend, pgo_branch_weights)
         .unwrap_or_else(|err| panic!("{err}"))
-}
-
-/// Whether any operation of `func` reads the pending-work word (a poll or an
-/// `AsyncWorkPending` test). Such a function materializes the thread record
-/// once, in its entry block.
-#[cfg(feature = "llvm")]
-fn function_polls_async_work(func: &TirFunction) -> bool {
-    func.blocks
-        .values()
-        .any(|block| block.ops.iter().any(TirOp::reads_pending_work_word))
 }
 
 /// Like [`try_lower_tir_to_llvm`] but accepts optional PGO branch weights.
@@ -653,8 +644,8 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
         refcount_admission: std::cell::Cell::new(None),
-        poll_context: None,
-        polls_async_work: function_polls_async_work(func),
+        thread_record: None,
+        pending_work_ptr: None,
     };
 
     // 2. Create LLVM basic blocks for each TIR block.

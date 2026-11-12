@@ -321,6 +321,7 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::ModuleDelGlobalIfPresent
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
+        | OpKind::GlobalSlotGet
         | OpKind::ModuleGetName
         | OpKind::ModuleImport
         | OpKind::ModuleImportFrom

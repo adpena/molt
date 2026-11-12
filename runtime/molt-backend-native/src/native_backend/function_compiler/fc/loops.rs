@@ -102,7 +102,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     debug_loop_cfg: Option<&str>,
     debug_block_origins: Option<&str>,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
-    local_exc_pending_fast: FuncRef,
+    local_exc_pending: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
     local_dec_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
@@ -673,7 +673,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
             // and the loop would spin forever appending garbage (OOM).
             //
             // Gating the break on the sacrosanct
-            // `molt_exception_pending_fast` flag (the same predicate
+            // `molt_exception_pending` answer (the same predicate
             // CHECK_EXCEPTION uses) makes the break un-foldable: no
             // SCCP/copy-prop can ever prove a constant for the runtime
             // exception flag, so the loop-exit edge always survives.
@@ -715,7 +715,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 let cond_bool = emit_exception_pending_condition(
                     &mut *builder,
                     module.target_config().pointer_type(),
-                    local_exc_pending_fast,
+                    local_exc_pending,
                     exc_flag_ptr_slot,
                 );
                 let cleanup_block = builder.create_block();

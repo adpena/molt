@@ -1194,6 +1194,18 @@ runtime_name = "molt_guard_builtin_bindings"
 callable_arity = 1
 
 [[import]]
+name = "global_slot_base"
+type = 2
+runtime_name = "molt_global_slot_base"
+callable_arity = 1
+
+[[import]]
+name = "global_slot_set"
+type = 10
+runtime_name = "molt_global_slot_set"
+callable_arity = 5
+
+[[import]]
 name = "build_class_builtin"
 type = 3
 runtime_name = "molt_build_class_builtin"
@@ -6373,7 +6385,6 @@ essential_exports = [
   "molt_exception_last_pending",
   "molt_exception_message",
   "molt_exception_pending",
-  "molt_exception_pending_fast",
   "molt_handle_resolve",
   "molt_header_size",
   "molt_index",
@@ -6453,7 +6464,7 @@ host_exports = [
   "molt_exception_kind",
   "molt_exception_last_pending",
   "molt_exception_message",
-  "molt_exception_pending_fast",
+  "molt_exception_pending",
   "molt_float_as_f64",
   "molt_float_from_f64",
   "molt_gil_acquire",

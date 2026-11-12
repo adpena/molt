@@ -3539,7 +3539,7 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
         "molt_stream_close",
         "molt_stream_drop",
         "molt_int_from_i64",
-        "molt_exception_pending_fast",
+        "molt_exception_pending",
         "molt_dec_ref_obj",
     }
     assert stream_host_exports <= set(policy["essential_exports"])

@@ -605,6 +605,21 @@ pub struct OpIR {
     /// operation is in-range.  Codegen can skip the runtime bounds check
     /// and emit a straight-line element access.
     pub bce_safe: Option<bool>,
+    /// The module global slot this read or store names (call_anatomy.md
+    /// 4.5): slot `index` of `module`'s layout in the module registry. Only
+    /// the generated `GLOBAL_SLOT_KINDS` carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_slot: Option<GlobalSlotRef>,
+}
+
+/// One module global slot: the owning module's registry name and the slot's
+/// index in that module's layout. Module identity stays symbolic until final
+/// emission, as `module_slot` does, so reusable objects carry no dense id.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalSlotRef {
+    pub module: String,
+    pub index: u32,
 }
 /// Parse only at transport admission, preserving actionable retirement hints.
 fn deserialize_wire_kind<'de, D: serde::Deserializer<'de>>(
@@ -673,6 +688,7 @@ impl OpIR {
             end_col_offset: Default::default(),
             source_line: Default::default(),
             bce_safe: Default::default(),
+            global_slot: None,
         }
     }
 }
@@ -2149,6 +2165,10 @@ mod json_parse_tests {
             end_col_offset: Some(14),
             source_line: Some(15),
             bce_safe: Some(true),
+            global_slot: Some(super::GlobalSlotRef {
+                module: "demo".to_string(),
+                index: 4,
+            }),
         };
 
         let encoded = serde_json::to_value(&op).expect("serialize OpIR transport");
@@ -3087,6 +3107,46 @@ mod json_parse_tests {
 
         assert!(err.contains("invalid SimpleIR contract"));
         assert!(err.contains("unsupported container_type `list_int`"));
+    }
+
+    #[test]
+    fn global_slot_is_typed_kind_scoped_and_survives_the_tir_round_trip() {
+        let accepted = SimpleIR::from_json_str(
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":["m","n"],"ops":[{"kind":"module_get_global","args":["m","n"],"out":"v","global_slot":{"module":"demo","index":3}},{"kind":"ret_void"}]}]}"#,
+        )
+        .expect("a slotted read parses");
+        let op = &accepted.functions[0].ops[0];
+        assert_eq!(
+            op.global_slot,
+            Some(super::GlobalSlotRef {
+                module: "demo".into(),
+                index: 3
+            })
+        );
+        let mut tir = crate::tir::ops::TirOp {
+            origin: None,
+            runtime: None,
+            dialect: crate::tir::ops::Dialect::Molt,
+            opcode: crate::tir::ops::OpCode::ModuleGetGlobal,
+            operands: Vec::new(),
+            results: Vec::new(),
+            attrs: Default::default(),
+            source_span: None,
+        };
+        tir.set_global_slot(op.global_slot.as_ref());
+        assert_eq!(tir.global_slot(), op.global_slot);
+        tir.set_global_slot(None);
+        assert_eq!(tir.global_slot(), None);
+
+        let wrong_op = SimpleIR::from_json_str(
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":[],"ops":[{"kind":"const_none","global_slot":{"module":"demo","index":0},"out":"value"}]}]}"#,
+        )
+        .expect_err("a global slot must not leak onto other op families");
+        assert!(wrong_op.contains("cannot carry global_slot"), "{wrong_op}");
+        let malformed = SimpleIR::from_json_str(
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":["m","n"],"ops":[{"kind":"module_get_global","args":["m","n"],"out":"v","global_slot":{"module":"demo"}}]}]}"#,
+        );
+        assert!(malformed.is_err(), "a slot without an index is rejected");
     }
 
     #[test]

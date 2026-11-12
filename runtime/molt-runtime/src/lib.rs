@@ -678,6 +678,7 @@ pub use crate::builtins::lzma::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::module_table::molt_module_initialization_spec;
 pub use crate::builtins::modules::*;
+pub use crate::builtins::namespace_slots::{molt_global_slot_base, molt_global_slot_set};
 pub(crate) use crate::builtins::numbers::{
     ComplexParts, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref,
     bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_strict,

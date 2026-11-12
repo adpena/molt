@@ -231,6 +231,39 @@ fn molt_gil() -> &'static Mutex<()> {
     &GLOBAL_GIL
 }
 
+/// Take the GIL as CPython's `take_gil` does. Compiled code holds the GIL
+/// for as long as it runs and gives it up only around blocking calls, so a
+/// waiter that is not served within the switch interval sets the drop
+/// request in the runtime's eval breaker. The holder's next generated poll
+/// services it (`yield_gil_to_waiter`) and `unlock_fair` hands the mutex to
+/// the queued waiter. Without the request a loop that never blocks starves
+/// every other thread.
+#[cfg(not(target_arch = "wasm32"))]
+fn take_gil(tls: &ExecutionTls) -> MutexGuard<'static, ()> {
+    let gil = molt_gil();
+    if let Some(guard) = gil.try_lock() {
+        return guard;
+    }
+    let interval = crate::builtins::sys_ext::gil_switch_interval(tls.bound_state.get());
+    loop {
+        if let Some(guard) = gil.try_lock_for(interval) {
+            return guard;
+        }
+        crate::builtins::signal_ext::notify_gil_drop_request();
+    }
+}
+
+/// The holder's half of a drop request, at a generated poll: release the
+/// GIL to the waiter that asked and take it back in turn.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn yield_gil_to_waiter() {
+    drop(GilReleaseGuard::suspend());
+}
+
+/// Single-threaded wasm has no waiter; no producer sets the request there.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn yield_gil_to_waiter() {}
+
 /// Whether this guard still owns its normal depth unit or transferred it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
@@ -356,7 +389,7 @@ impl GilGuard {
             return nested;
         }
 
-        let guard = molt_gil().lock();
+        let guard = take_gil(tls);
         tls.native_gil.install(guard);
         tls.gil_depth.set(1);
         Self {
@@ -531,7 +564,7 @@ impl Drop for GilReleaseGuard {
             !tls.native_gil.persistent.get(),
             "GIL restore found another persistent owner"
         );
-        let guard = molt_gil().lock();
+        let guard = take_gil(tls);
         tls.native_gil.install(guard);
         tls.gil_depth.set(saved.depth);
         tls.native_gil.persistent.set(saved.persistent);

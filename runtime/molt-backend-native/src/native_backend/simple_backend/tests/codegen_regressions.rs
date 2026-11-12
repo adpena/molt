@@ -690,12 +690,24 @@ fn assert_branch_preserves_parameter_without_phi(function: &Function, parameter:
     let mut branches = 0;
     for block in function.layout.blocks() {
         for inst in function.layout.block_insts(block) {
-            if let InstructionData::Brif { blocks, .. } = &function.dfg.insts[inst] {
-                branches += 1;
-                for destination in blocks {
-                    assert_eq!(
-                        destination.args(&function.dfg.value_lists).count(),
-                        0,
+            // No conditional edge carries the parameter itself. Other
+            // arguments are legal: the exception check's inline byte test
+            // passes its answer to the confirm join (invariant J1).
+            let destinations: &[cranelift_codegen::ir::BlockCall] = match &function.dfg.insts[inst]
+            {
+                InstructionData::Brif { blocks, .. } => {
+                    branches += 1;
+                    blocks
+                }
+                _ => &[],
+            };
+            for destination in destinations {
+                for argument in destination.args(&function.dfg.value_lists) {
+                    let carries_parameter = argument
+                        .as_value()
+                        .is_some_and(|value| value_originates_only_from(function, value, expected));
+                    assert!(
+                        !carries_parameter,
                         "immutable parameter needs no incoming phi transport: {}",
                         function.display()
                     );

@@ -453,6 +453,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         end_col_offset: _,
         source_line: _,
         bce_safe: _,
+        global_slot,
         exception_edge: _,
         exception_source: _,
         frame_location: _,
@@ -478,6 +479,9 @@ fn op_heap_bytes(op: &OpIR) -> usize {
             custody.capacity() * std::mem::size_of::<crate::ParameterCustody>()
         })
         + text(type_hint)
+        + global_slot
+            .as_ref()
+            .map_or(0, |slot| slot.module.capacity())
 }
 
 #[cfg(test)]

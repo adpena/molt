@@ -167,7 +167,7 @@ fn slice_bounds_share_the_fixed_aggregate_transaction_without_range_storage() {
         let count = |symbol: &str| import_calls(&function, &ids, symbol).len();
         // One box per distinct bound, each followed by the first-failure stop.
         assert_eq!(count("molt_int_from_i64"), 2, "{}", function.display());
-        assert_eq!(count("molt_exception_pending_fast"), 2);
+        assert_eq!(count("molt_exception_pending"), 2);
         // Both minted owners are released after the constructor retained them,
         // and a discarded slice is released by the owned-result sink.
         assert_eq!(count("molt_dec_ref_obj"), 2 + usize::from(out.is_none()));
@@ -192,7 +192,7 @@ fn omitted_slice_bounds_are_none_direct_arguments() {
         let (function, ids) = lower_slice_new(bounds, Some("result"));
         let count = |symbol: &str| import_calls(&function, &ids, symbol).len();
         assert_eq!(count("molt_int_from_i64"), bounds.len());
-        assert_eq!(count("molt_exception_pending_fast"), bounds.len());
+        assert_eq!(count("molt_exception_pending"), bounds.len());
         assert!(function.sized_stack_slots.is_empty());
         let &[constructor] = import_calls(&function, &ids, "molt_slice_new").as_slice() else {
             panic!("one slice constructor:\n{}", function.display());
@@ -239,7 +239,7 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
         });
     let count = |symbol: &str| import_calls(&function, &ids, symbol).len();
     assert_eq!(count("molt_int_from_i64"), 2, "{}", function.display());
-    assert_eq!(count("molt_exception_pending_fast"), 2);
+    assert_eq!(count("molt_exception_pending"), 2);
     let &[call] = import_calls(&function, &ids, "molt_dict_set").as_slice() else {
         panic!("one runtime call:\n{}", function.display());
     };
@@ -325,7 +325,7 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
                 "{kind}"
             );
             assert_eq!(
-                import_calls(&function, &ids, "molt_exception_pending_fast").len(),
+                import_calls(&function, &ids, "molt_exception_pending").len(),
                 2,
                 "{kind}"
             );

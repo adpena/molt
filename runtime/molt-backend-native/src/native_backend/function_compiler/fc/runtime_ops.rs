@@ -32,7 +32,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    local_exc_pending_fast: FuncRef,
+    local_exc_pending: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
     work_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
     nbc: &crate::NanBoxConsts,
@@ -65,12 +65,12 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     match op.kind {
         OpKind::ExceptionPending => {
             // Read the runtime exception-pending flag as a boolean value:
-            // `molt_exception_pending_fast() != 0`. Produced by the TIR
+            // `molt_exception_pending() != 0`. Produced by the TIR
             // `ExceptionPending` op and consumed by loop-exit branches.
             let cond_bool = emit_exception_pending_condition(
                 &mut *builder,
                 module.target_config().pointer_type(),
-                local_exc_pending_fast,
+                local_exc_pending,
                 exc_flag_ptr_slot,
             );
             let raw_bool = builder.ins().uextend(types::I64, cond_bool);

@@ -23,7 +23,6 @@ const ADMISSION_PARAM: u32 = 2;
 const WORDS: u32 = 40;
 const PREDICATES: u32 = 16;
 const FIRST_WORD: u32 = 3;
-const FIRST_PREDICATE: u32 = FIRST_WORD + WORDS;
 
 /// Function indices of the two generated transition bodies of one module.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,9 +74,7 @@ pub(in crate::wasm) fn emit_refcount_bodies(backend: &mut WasmBackend, reloc: bo
         std::rc::Rc::make_mut(&mut backend.execution_call_abis)
             .register_attached(index, &[ValType::I64; 2]);
         backend.funcs.function(type_idx);
-        let mut locals = vec![ValType::I64; WORDS as usize];
-        locals.extend(std::iter::repeat_n(ValType::I32, PREDICATES as usize));
-        let mut func = Function::new_with_locals_types(locals);
+        let mut func = Function::new_with_locals_types(WasmRefcountBuilder::scratch_locals());
         func.attach_context(3, backend.execution_call_abis.clone());
         generate_body(
             &mut BodySink {
@@ -111,14 +108,14 @@ pub(in crate::wasm) fn emit_refcount(
     emit_call(func, reloc, imports.refcount_body(operation));
 }
 
-struct BodySink<'a> {
-    func: &'a mut Function,
-    reloc: bool,
-    imports: &'a TrackedImportIds,
+pub(in crate::wasm) struct BodySink<'a> {
+    pub(in crate::wasm) func: &'a mut Function,
+    pub(in crate::wasm) reloc: bool,
+    pub(in crate::wasm) imports: &'a TrackedImportIds,
 }
 
 impl BodySink<'_> {
-    fn push(&mut self, instruction: Instruction<'static>) {
+    pub(in crate::wasm) fn push(&mut self, instruction: Instruction<'static>) {
         self.func.instruction(&instruction);
     }
 
@@ -136,12 +133,7 @@ fn generate_body(sink: &mut BodySink<'_>, operation: RefcountOperation) {
     // A successful/no-op transition exits the outer block around that call.
     sink.push(Instruction::Block(BlockType::Empty));
     sink.push(Instruction::Block(BlockType::Empty));
-    let mut b = WasmRefcountBuilder {
-        sink,
-        word_count: 0,
-        predicate_count: 0,
-        depth: 0,
-    };
+    let mut b = WasmRefcountBuilder::new(sink, FIRST_WORD);
     generate_refcount(
         &mut b,
         WORD_PARAM,
@@ -156,20 +148,43 @@ fn generate_body(sink: &mut BodySink<'_>, operation: RefcountOperation) {
     b.sink.push(Instruction::End);
 }
 
-struct WasmRefcountBuilder<'s, 'a> {
-    sink: &'s mut BodySink<'a>,
+/// The WASM spelling of the shared word generators over one generated body:
+/// each word or predicate is a fresh local in a fixed scratch pool that
+/// starts at `first_word` (`WORDS` i64 locals, then `PREDICATES` i32 locals).
+pub(in crate::wasm) struct WasmRefcountBuilder<'s, 'a> {
+    pub(in crate::wasm) sink: &'s mut BodySink<'a>,
+    first_word: u32,
     word_count: u32,
     predicate_count: u32,
     depth: u32,
 }
 
+impl<'s, 'a> WasmRefcountBuilder<'s, 'a> {
+    pub(in crate::wasm) fn new(sink: &'s mut BodySink<'a>, first_word: u32) -> Self {
+        Self {
+            sink,
+            first_word,
+            word_count: 0,
+            predicate_count: 0,
+            depth: 0,
+        }
+    }
+
+    /// The body's scratch locals after its parameters.
+    pub(in crate::wasm) fn scratch_locals() -> Vec<ValType> {
+        let mut locals = vec![ValType::I64; WORDS as usize];
+        locals.extend(std::iter::repeat_n(ValType::I32, PREDICATES as usize));
+        locals
+    }
+}
+
 impl WasmRefcountBuilder<'_, '_> {
-    fn word(&mut self) -> u32 {
+    pub(in crate::wasm) fn word(&mut self) -> u32 {
         assert!(
             self.word_count < WORDS,
             "shared RC generator exhausted its word scratch"
         );
-        let slot = FIRST_WORD + self.word_count;
+        let slot = self.first_word + self.word_count;
         self.word_count += 1;
         self.sink.push(Instruction::LocalSet(slot));
         slot
@@ -179,15 +194,15 @@ impl WasmRefcountBuilder<'_, '_> {
             self.predicate_count < PREDICATES,
             "shared RC generator exhausted predicate scratch"
         );
-        let slot = FIRST_PREDICATE + self.predicate_count;
+        let slot = self.first_word + WORDS + self.predicate_count;
         self.predicate_count += 1;
         self.sink.push(Instruction::LocalSet(slot));
         slot
     }
-    fn get(&mut self, slot: u32) {
+    pub(in crate::wasm) fn get(&mut self, slot: u32) {
         self.sink.push(Instruction::LocalGet(slot));
     }
-    fn address(&mut self, pointer: u32, offset: i32) {
+    pub(in crate::wasm) fn address(&mut self, pointer: u32, offset: i32) {
         self.get(pointer);
         self.sink.push(Instruction::I64Const(offset as i64));
         self.sink.push(Instruction::I64Add);

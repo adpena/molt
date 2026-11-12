@@ -40,7 +40,7 @@ extern "C" fn dec_ref(ctx: u64, _: u64) {
 extern "C" fn inc_ref(ctx: u64, _: u64) {
     assert_context(ctx);
 }
-extern "C" fn exception_pending_fast(ctx: u64) -> u64 {
+extern "C" fn exception_pending(ctx: u64) -> u64 {
     assert_context(ctx);
     0
 }
@@ -81,8 +81,8 @@ fn provider() -> BTreeMap<&'static str, usize> {
             inc_ref as extern "C" fn(u64, u64) as usize,
         ),
         (
-            physical("molt_exception_pending_fast"),
-            exception_pending_fast as extern "C" fn(u64) -> u64 as usize,
+            physical("molt_exception_pending"),
+            exception_pending as extern "C" fn(u64) -> u64 as usize,
         ),
         (
             physical("molt_int_from_i64"),

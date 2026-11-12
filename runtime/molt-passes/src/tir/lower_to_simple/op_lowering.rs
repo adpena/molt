@@ -731,6 +731,25 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
         }),
+        // The base is the runtime entry's ordinary call on the SimpleIR wire:
+        // every SimpleIR backend already lowers a runtime call by symbol.
+        OpCode::GlobalSlotBase => Some(OpIR {
+            kind: molt_ir::OpKind::Call,
+            s_value: Some(
+                molt_ir::runtime_fn_generated::RuntimeFn::GlobalSlotBase
+                    .symbol()
+                    .to_string(),
+            ),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::new(molt_ir::OpKind::Call)
+        }),
+        OpCode::GlobalSlotGet => Some(OpIR {
+            kind: molt_ir::OpKind::GlobalSlotGet,
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::new(molt_ir::OpKind::GlobalSlotGet)
+        }),
         OpCode::ModuleGetName => Some(OpIR {
             kind: molt_ir::OpKind::ModuleGetName,
             args: Some(operand_args(op)),

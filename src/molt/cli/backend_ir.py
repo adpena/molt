@@ -41,6 +41,7 @@ from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.frontend_integration import (
     _register_global_code_id_with_state,
     _validate_class_definition_references_with_state,
+    stamp_global_slots,
 )
 from molt.cli.models import (
     _FrontendIntegrationState,
@@ -477,6 +478,7 @@ def _build_module_registry(
     native_module_init_specs: Sequence[_ExternalNativeModuleInitSpec],
     generated_native_init_modules: Collection[str],
     spawn_enabled: bool,
+    global_layouts: Mapping[str, tuple[str, ...]],
 ) -> ModuleRegistry:
     """Derive the per-build ModuleRegistry from the binary-image closure plan.
 
@@ -520,6 +522,7 @@ def _build_module_registry(
                 is_package=module_graph[name].name == "__init__.py",
                 # The origin is the module's own reported path (HF-372).
                 origin=logical_source_path_by_module[name],
+                globals=global_layouts.get(name, ()),
             )
         )
     for name, portions in sorted(namespace_portions_by_module.items()):
@@ -590,6 +593,7 @@ def _build_module_registry(
                 # no separate trampoline init on the registry lane.
                 init_symbol=SimpleTIRGenerator.module_init_symbol(entry_module),
                 origin=logical_source_path_by_module[entry_module],
+                globals=global_layouts.get(entry_module, ()),
             )
         )
     return build_module_registry(entries)
@@ -2238,6 +2242,7 @@ def _prepare_backend_ir(
                 native_module_init_specs=native_module_init_specs,
                 generated_native_init_modules=generated_native_init_modules,
                 spawn_enabled=spawn_enabled,
+                global_layouts=integration_state.global_layouts,
             )
         except ValueError as exc:
             return None, fail(
@@ -2245,6 +2250,14 @@ def _prepare_backend_ir(
                 json_output,
                 command="build",
             )
+        # Compiled global slot sites (call_anatomy.md 4.5): the registry row
+        # carries each module's layout, so only registered modules are stamped.
+        stamp_global_slots(
+            functions,
+            integration_state.module_functions,
+            integration_state.global_layouts,
+            {row.name for row in module_registry.rows},
+        )
         if module_table_lane:
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
             if rewrite_issue is not None:

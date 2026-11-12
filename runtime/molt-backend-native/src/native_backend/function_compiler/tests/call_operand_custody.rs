@@ -672,24 +672,18 @@ pub fn molt_int_from_i64(raw:i64) ->u64 {
  let (word,owner)=if raw==(1_i64<<62){(0x7ffc000000000101,&FIRST)}else{assert_eq!(raw,(1_i64<<62)+(1_i64<<31));(0x7ffc000000000102,&SECOND)};
  assert_eq!(owner.swap(1,SeqCst),0,"repeated value rematerialized");word
 }
-#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) ->u64 {
-    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_exception_pending_fast()
-}
-pub fn molt_exception_pending_fast() ->u64 {u64::from(ERROR.load(SeqCst)!=0)}
 #[export_name = "molt_exception_pending@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_exception_pending(_context: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_exception_pending()
 }
-pub fn molt_exception_pending() ->u64 {molt_exception_pending_fast()}
+pub fn molt_exception_pending() ->u64 {u64::from(ERROR.load(SeqCst)!=0)}
 #[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_async_work_poll_and_exception_pending()
 }
-pub fn molt_async_work_poll_and_exception_pending() ->u64 {molt_exception_pending_fast()}
+pub fn molt_async_work_poll_and_exception_pending() ->u64 {molt_exception_pending()}
 fn fixture_thread_record() ->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; PENDING_RECORD.frame_top = core::ptr::addr_of_mut!(HOME) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
 #[export_name = "molt_is_truthy@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_is_truthy(_context: u64, _arg0: u64) ->u64 {

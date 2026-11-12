@@ -477,18 +477,14 @@ impl SimpleBackend {
             RuntimeFn::IncRefObj,
         );
 
-        // Import the exception-pending function for check_exception.
-        // The inline flag load optimization is applied lazily at the
-        // first check_exception site to avoid Cranelift block ordering
-        // issues with the entry block.
-        let local_exc_pending_fast = import_func_ref(
+        // The runtime reader that confirms a set pending-exception byte
+        // (`emit_exception_pending_condition`).
+        let local_exc_pending = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            "molt_exception_pending_fast",
-            &[],
-            &[types::I64],
+            RuntimeFn::ExceptionPending,
         );
         // The context header supplies the thread record once per invocation;
         // keep it in a dedicated stack slot. Inline
@@ -501,12 +497,7 @@ impl SimpleBackend {
         // introducing block params. Generated async-work polls bypass the
         // pure-exception lane in `handle_exception_control_op` and call the
         // eval-breaker observer.
-        let has_exc_handling = function_exception_label_id.is_some();
-        let inline_exc_disabled = env_setting(BackendEnv::MOLT_BACKEND_INLINE_EXC_DISABLED)
-            .as_deref()
-            .map(parse_truthy_env)
-            .unwrap_or(false);
-        let inline_exception_checks = has_exc_handling && !inline_exc_disabled;
+        let inline_exception_checks = function_exception_label_id.is_some();
         let makes_direct_python_calls = func_ir
             .ops
             .iter()
@@ -1599,7 +1590,7 @@ impl SimpleBackend {
                             &mut sealed_blocks,
                             &vars,
                             representation_plan,
-                            local_exc_pending_fast,
+                            local_exc_pending,
                             exc_flag_ptr_slot,
                             work_ptr_slot,
                             &nbc,
@@ -1943,7 +1934,7 @@ impl SimpleBackend {
                             &last_use,
                             &mut cleanup_roots,
                             local_dec_ref_obj,
-                            local_exc_pending_fast,
+                            local_exc_pending,
                             exc_flag_ptr_slot,
                             cold_frame_homes,
                             pending_work_slots,
@@ -2022,7 +2013,7 @@ impl SimpleBackend {
                             debug_loop_cfg.as_deref(),
                             debug_block_origins.as_deref(),
                             &maybe_debug_seal,
-                            local_exc_pending_fast,
+                            local_exc_pending,
                             exc_flag_ptr_slot,
                             local_dec_ref_obj,
                             &nbc,

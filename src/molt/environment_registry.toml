@@ -310,14 +310,6 @@ owner = "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs
 summary = "Runs the Cranelift IR verifier during native codegen; 1/true/yes/on enable and any other value disables, while unset enables it only in debug builds of molt-backend."
 
 [[variable]]
-name = "MOLT_BACKEND_INLINE_EXC_DISABLED"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
-summary = "Disables the inline exception-pending flag pointer in native function codegen so exception checks call into the runtime instead; 1/true/yes/on enable, and molt forwards it to the backend daemon as a codegen input."
-
-[[variable]]
 name = "MOLT_BACKEND_LIBCALL_CALL_CONV"
 audience = "user"
 kind = "string"

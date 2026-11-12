@@ -24,6 +24,7 @@ pub use attached_context_generated::*;
 pub mod boxed_word;
 pub mod c_width;
 pub mod frame_record;
+pub mod global_slot;
 pub mod inline_refcount;
 pub mod word;
 
@@ -114,6 +115,11 @@ pub const QNAN_TAG_BOOL_I64: i64 = (QNAN | TAG_BOOL) as i64;
 pub const QNAN_TAG_NONE_I64: i64 = (QNAN | TAG_NONE) as i64;
 pub const QNAN_TAG_PTR_I64: i64 = (QNAN | TAG_PTR) as i64;
 pub const QNAN_TAG_PENDING_I64: i64 = (QNAN | TAG_PENDING) as i64;
+
+/// The word in a module namespace slot whose name is unbound
+/// (call_anatomy.md 4.5). It is never a Python value: the async pending word
+/// carries payload 0, and every slot reader branches on this word before use.
+pub const NAMESPACE_SLOT_UNBOUND: u64 = QNAN | TAG_PENDING | 1;
 
 // ListIntStorage (#[repr(C)]) field offsets. Must match
 // runtime/molt-runtime/src/object/layout.rs.

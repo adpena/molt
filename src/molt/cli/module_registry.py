@@ -20,15 +20,16 @@ same arc for any layout change.
 
 Blob layout (little-endian, 8-byte aligned):
 
-    header (HEADER_BYTES = 56):
-        0..8    magic       u64  = b"MOLTMOD5"
+    header (HEADER_BYTES = 64):
+        0..8    magic       u64  = b"MOLTMOD6"
         8..12   schema      u32
         12..16  count       u32
         16..32  digest      [u8; 16]  (first 16 bytes of the registry sha256)
         32..40  names_len   u64
         40..48  origins_len u64
         48..56  portions_len u64
-    rows (count * ROW_BYTES = 48 each):
+        56..64  globals_len u64
+    rows (count * ROW_BYTES = 56 each):
         0..4    name_off    u32   (byte offset into the names blob)
         4..8    name_len    u32
         8..16   init_ptr    u64   (function-address relocation; 0 = no init lane)
@@ -42,10 +43,15 @@ Blob layout (little-endian, 8-byte aligned):
         36..40  portions_off u32  (byte offset into the portions blob)
         40..44  portions_len u32
         44..48  reserved    u32 = 0
+        48..52  globals_off u32   (byte offset into the globals blob)
+        52..56  globals_len u32
     names: concatenated UTF-8 module names in id (sorted-name) order
     origins: concatenated UTF-8 canonical source origins in id order
     portions: ordered namespace directories, each a u32 byte length followed
               by UTF-8 bytes; each namespace row owns one contiguous span
+    globals: each row's global slot layout (``ModuleRegistryEntry.globals``):
+             strictly sorted names, each a u32 byte length followed by UTF-8
+             bytes; slot k of a module namespace table is the k-th name
 
 Row ``id`` assignment is the sorted order of canonical dotted names, so the
 names blob is itself sorted and the runtime resolves name→id with a plain
@@ -62,11 +68,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-MODULE_REGISTRY_SCHEMA_VERSION = 5
+MODULE_REGISTRY_SCHEMA_VERSION = 6
 MODULE_REGISTRY_BLOB_SYMBOL = "molt_module_registry_blob"
-MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD5", "little")
-MODULE_REGISTRY_HEADER_BYTES = 56
-MODULE_REGISTRY_ROW_BYTES = 48
+MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD6", "little")
+MODULE_REGISTRY_HEADER_BYTES = 64
+MODULE_REGISTRY_ROW_BYTES = 56
 MODULE_REGISTRY_ROW_INIT_PTR_OFFSET = 8
 NO_MODULE_ID = 0xFFFF_FFFF
 
@@ -93,6 +99,23 @@ _KIND_CODES: Mapping[ModuleRegistryKind, int] = {
 # source modules fully re-execute. The runtime extension initializer owns
 # phase-aware reinit: legacy single-phase m_size==-1 uses its first successful
 # dict snapshot; reinitializable single-phase and multi-phase modules rerun.
+def is_dunder_name(name: str) -> bool:
+    """Dunder names keep the by-name namespace path (metadata windows, PEP
+    649 hooks, ModuleType descriptors); they never receive a global slot."""
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
+def _valid_global_layout(names: object) -> bool:
+    return (
+        isinstance(names, tuple)
+        and all(
+            isinstance(name, str) and name and not is_dunder_name(name)
+            for name in names
+        )
+        and list(names) == sorted(set(names))
+    )
+
+
 def _row_deps(value: object) -> tuple[object, ...]:
     if isinstance(value, list | tuple):
         return tuple(value)
@@ -151,8 +174,16 @@ class ModuleRegistryEntry:
     is_package: bool = False
     origin: str = ""
     portions: tuple[str, ...] = ()
+    # The module namespace's global slot layout: strictly sorted non-dunder
+    # names (call_anatomy.md 4.5). Slot k of the runtime table is globals[k].
+    globals: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not _valid_global_layout(self.globals):
+            raise ValueError(
+                f"module registry entry '{self.name}' globals must be strictly "
+                "sorted non-dunder names"
+            )
         if self.kind not in _KIND_CODES:
             raise ValueError(
                 f"module registry entry '{self.name}' has unknown kind '{self.kind}'"
@@ -216,6 +247,7 @@ class ModuleRegistryRow:
     deps: tuple[str, ...] = ()
     origin: str = ""
     portions: tuple[str, ...] = ()
+    globals: tuple[str, ...] = ()
 
     @property
     def leaf_attr(self) -> str:
@@ -276,6 +308,7 @@ class ModuleRegistry:
                     "deps": list(row.deps),
                     "origin": row.origin,
                     "portions": list(row.portions),
+                    "globals": list(row.globals),
                 }
                 for row in self.rows
             ],
@@ -306,9 +339,11 @@ class ModuleRegistry:
         names_blob = bytearray()
         origins_blob = bytearray()
         portions_blob = bytearray()
+        globals_blob = bytearray()
         name_spans: list[tuple[int, int]] = []
         origin_spans: list[tuple[int, int]] = []
         portion_spans: list[tuple[int, int]] = []
+        global_spans: list[tuple[int, int]] = []
         for row in self.rows:
             encoded = row.name.encode("utf-8")
             name_spans.append((len(names_blob), len(encoded)))
@@ -322,8 +357,14 @@ class ModuleRegistry:
                 portions_blob.extend(struct.pack("<I", len(encoded_portion)))
                 portions_blob.extend(encoded_portion)
             portion_spans.append((start, len(portions_blob) - start))
+            start = len(globals_blob)
+            for name in row.globals:
+                encoded_name = name.encode("utf-8")
+                globals_blob.extend(struct.pack("<I", len(encoded_name)))
+                globals_blob.extend(encoded_name)
+            global_spans.append((start, len(globals_blob) - start))
         header = struct.pack(
-            "<QII16sQQQ",
+            "<QII16sQQQQ",
             MODULE_REGISTRY_MAGIC,
             self.schema,
             len(self.rows),
@@ -331,6 +372,7 @@ class ModuleRegistry:
             len(names_blob),
             len(origins_blob),
             len(portions_blob),
+            len(globals_blob),
         )
         assert len(header) == MODULE_REGISTRY_HEADER_BYTES
         rows_blob = bytearray()
@@ -338,14 +380,16 @@ class ModuleRegistry:
         for row, (name_off, name_len), (origin_off, origin_len), (
             portions_off,
             portions_len,
-        ) in zip(self.rows, name_spans, origin_spans, portion_spans):
+        ), (globals_off, globals_len) in zip(
+            self.rows, name_spans, origin_spans, portion_spans, global_spans
+        ):
             row_base = MODULE_REGISTRY_HEADER_BYTES + len(rows_blob)
             if row.init_symbol:
                 relocs.append(
                     (row_base + MODULE_REGISTRY_ROW_INIT_PTR_OFFSET, row.init_symbol)
                 )
             packed = struct.pack(
-                "<IIQIIBBHIIIII",
+                "<IIQIIBBHIIIIIII",
                 name_off,
                 name_len,
                 0,  # init_ptr: relocation-filled
@@ -359,6 +403,8 @@ class ModuleRegistry:
                 portions_off,
                 portions_len,
                 0,
+                globals_off,
+                globals_len,
             )
             assert len(packed) == MODULE_REGISTRY_ROW_BYTES
             rows_blob.extend(packed)
@@ -368,6 +414,7 @@ class ModuleRegistry:
             + bytes(names_blob)
             + bytes(origins_blob)
             + bytes(portions_blob)
+            + bytes(globals_blob)
         )
         return blob, tuple(relocs)
 
@@ -392,6 +439,7 @@ def registry_digest_for_rows(
             "deps": list(_row_deps(row.get("deps", ()))),
             "origin": row.get("origin", ""),
             "portions": list(_row_deps(row.get("portions", ()))),
+            "globals": list(_row_deps(row.get("globals", ()))),
         }
         for row in rows
     ]
@@ -485,6 +533,7 @@ def build_module_registry(
                 deps=tuple(sorted(set(entry.deps))),
                 origin=entry.origin,
                 portions=entry.portions,
+                globals=entry.globals,
             )
         )
     digest = registry_digest_for_rows(
@@ -501,6 +550,7 @@ def build_module_registry(
                 "deps": row.deps,
                 "origin": row.origin,
                 "portions": row.portions,
+                "globals": row.globals,
             }
             for row in rows
         ),
@@ -573,6 +623,14 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
                 )
         elif portions:
             problems.append(f"non-namespace registry row {row_name!r} carries portions")
+        global_layout = row.get("globals")
+        if not isinstance(global_layout, list) or not _valid_global_layout(
+            tuple(global_layout)
+        ):
+            problems.append(
+                f"row {row_name!r} globals must be a required strictly sorted list "
+                "of non-dunder names"
+            )
         valid_flags = (
             type(flags) is int
             and 0 <= flags <= 0xFF
@@ -617,6 +675,7 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
                 "deps": _row_deps(row.get("deps", ())),
                 "origin": row.get("origin", ""),
                 "portions": _row_deps(portions),
+                "globals": _row_deps(global_layout),
             }
         )
         expected_parent = (

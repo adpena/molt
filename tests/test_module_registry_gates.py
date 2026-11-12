@@ -302,7 +302,8 @@ def test_module_registry_blob_layout_matches_schema() -> None:
         + count * authority.MODULE_REGISTRY_ROW_BYTES
     )
     (portions_len,) = struct.unpack_from("<Q", blob, 48)
-    assert len(blob) == rows_end + names_len + origins_len + portions_len
+    (globals_len,) = struct.unpack_from("<Q", blob, 56)
+    assert len(blob) == rows_end + names_len + origins_len + portions_len + globals_len
     # Name table is the sorted id-order concatenation (binary-search contract).
     names = blob[rows_end : rows_end + names_len].decode("utf-8")
     offset = 0
@@ -383,7 +384,7 @@ def test_namespace_registry_portions_are_ordered_typed_digest_and_wire_facts() -
     # Independent wire oracle: ordered length-prefixed directories, no origin.
     assert blob[-20:] == b"\x06\x00\x00\x00/a/pkg\x06\x00\x00\x00/b/pkg"
     assert struct.unpack_from("<Q", blob, 40) == (0,)
-    assert struct.unpack_from("<II", blob, 56 + 36) == (0, 20)
+    assert struct.unpack_from("<II", blob, 64 + 36) == (0, 20)
     payload["rows"][0]["portions"].reverse()
     assert any(
         "registry_digest mismatch" in problem
@@ -410,6 +411,136 @@ def test_namespace_registry_portions_are_ordered_typed_digest_and_wire_facts() -
             ModuleRegistryEntry(**fields)
 
 
+def test_global_slot_layout_is_a_sorted_typed_digest_and_wire_fact() -> None:
+    def registry(names: tuple[str, ...]) -> authority.ModuleRegistry:
+        return build_module_registry(
+            [
+                ModuleRegistryEntry(
+                    name="demo",
+                    kind="source",
+                    has_location=True,
+                    is_stdlib_provider=False,
+                    init_symbol="molt_init_demo",
+                    origin="/app/demo.py",
+                    globals=names,
+                ),
+            ]
+        )
+
+    first = registry(("count", "math"))
+    assert first.digest != registry(("count",)).digest
+    payload = first.registry_json_payload()
+    assert check_registry_json_payload(payload) == []
+    assert payload["rows"][0]["globals"] == ["count", "math"]
+    blob, _ = first._blob_and_relocs()
+    # Independent wire oracle: the header's globals length, the row span, and
+    # the length-prefixed names at the end of the blob.
+    wire = b"\x05\x00\x00\x00count\x04\x00\x00\x00math"
+    assert blob.endswith(wire)
+    assert struct.unpack_from("<Q", blob, 56) == (len(wire),)
+    assert struct.unpack_from("<II", blob, 64 + 48) == (0, len(wire))
+    payload["rows"][0]["globals"] = ["math", "count"]
+    assert any("globals" in problem for problem in check_registry_json_payload(payload))
+    for names in (("math", "count"), ("x", "x"), ("__name__",), ("",)):
+        with pytest.raises(ValueError):
+            registry(names)
+
+
+def test_module_global_layout_collects_the_module_body_names() -> None:
+    from molt.cli.frontend_integration import module_global_layout
+
+    def const(out: str, value: str) -> dict[str, str]:
+        return {"kind": "const_str", "out": out, "s_value": value}
+
+    funcs = [
+        {
+            "name": "chunk",
+            "params": ["__molt_module_obj__"],
+            "ops": [
+                const("a", "total"),
+                {"kind": "module_get_global", "args": ["m", "a"], "out": "v"},
+                const("b", "__name__"),
+                {"kind": "module_set_attr", "args": ["__molt_module_obj__", "b", "v"]},
+                const("c", "index"),
+                {"kind": "module_set_attr", "args": ["__molt_module_obj__", "c", "v"]},
+                const("d", "gone"),
+                {"kind": "module_del_global", "args": ["__molt_module_obj__", "d"]},
+                const("x", "foreign"),
+                {"kind": "module_set_attr", "args": ["other_module", "x", "v"]},
+            ],
+        },
+        {
+            "name": "f",
+            "ops": [
+                {"kind": "call", "s_value": "molt_globals_builtin", "out": "g"},
+                const("e", "counter"),
+                {"kind": "dict_set", "args": ["g", "e", "v"]},
+                const("f", "unrelated"),
+                {"kind": "dict_set", "args": ["other", "f", "v"]},
+            ],
+        },
+    ]
+    assert module_global_layout(funcs) == ("counter", "gone", "index", "total")
+
+
+def test_global_slot_stamps_name_each_slotted_read_and_store() -> None:
+    from molt.cli.frontend_integration import module_global_layout, stamp_global_slots
+
+    def const(out: str, value: str) -> dict[str, str]:
+        return {"kind": "const_str", "out": out, "s_value": value}
+
+    chunk = {
+        "name": "chunk",
+        "params": ["__molt_module_obj__"],
+        "ops": [
+            const("a", "total"),
+            {"kind": "module_get_global", "args": ["__molt_module_obj__", "a"]},
+            const("b", "index"),
+            {"kind": "module_set_attr", "args": ["__molt_module_obj__", "b", "v"]},
+            const("c", "__doc__"),
+            {"kind": "module_set_attr", "args": ["__molt_module_obj__", "c", "v"]},
+            const("d", "gone"),
+            {"kind": "module_del_global", "args": ["__molt_module_obj__", "d"]},
+        ],
+    }
+    func = {
+        "name": "f",
+        "ops": [
+            {"kind": "call", "s_value": "molt_globals_builtin", "out": "g"},
+            const("e", "total"),
+            {"kind": "dict_set", "args": ["g", "e", "v"]},
+        ],
+    }
+    layout = module_global_layout([chunk, func])
+    assert layout == ("gone", "index", "total")
+    functions = [chunk, func]
+    stamp_global_slots(functions, {"demo": [chunk, func]}, {"demo": layout}, {"demo"})
+    # Copy-on-write: the admitted bodies are unchanged; the program holds copies.
+    assert all("global_slot" not in op for body in (chunk, func) for op in body["ops"])
+    assert functions[0] is not chunk and functions[1] is not func
+    stamped = [
+        (op["kind"], op.get("global_slot"))
+        for body in functions
+        for op in body["ops"]
+        if op["kind"] != "const_str" and op["kind"] != "call"
+    ]
+    assert stamped == [
+        ("module_get_global", {"module": "demo", "index": 2}),
+        ("module_set_attr", {"module": "demo", "index": 1}),
+        ("module_set_attr", None),
+        ("module_del_global", None),
+        ("dict_set", {"module": "demo", "index": 2}),
+    ]
+    # A module without a registry row keeps every op by name.
+    other = {
+        "name": "o",
+        "ops": [const("a", "x"), {"kind": "module_get_global", "args": ["m", "a"]}],
+    }
+    program = [other]
+    stamp_global_slots(program, {"other": [other]}, {"other": ("x",)}, {"demo"})
+    assert program[0] is other
+
+
 # ─── G7: one writer, one reader — constants synchronized ────────────────────
 
 
@@ -426,9 +557,9 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
     )
     assert (
         _rust_const(reader, "MODULE_REGISTRY_MAGIC")
-        == 'u64::from_le_bytes(*b"MOLTMOD5")'
+        == 'u64::from_le_bytes(*b"MOLTMOD6")'
     )
-    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD5", "little")
+    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD6", "little")
     assert _rust_const(reader, "MODULE_REGISTRY_HEADER_BYTES") == str(
         authority.MODULE_REGISTRY_HEADER_BYTES
     )
@@ -477,6 +608,7 @@ def test_module_registry_file_provenance_uses_existing_namespace_plan() -> None:
         native_module_init_specs=(),
         generated_native_init_modules=(),
         spawn_enabled=False,
+        global_layouts={},
     )
     for name in ("entry", "__main__", "sys"):
         assert registry.row_of(name).flags & authority.MODULE_FLAG_HAS_LOCATION
@@ -520,6 +652,7 @@ def test_registry_provider_role_comes_from_resolved_source_not_module_or_path_sp
             native_module_init_specs=(),
             generated_native_init_modules=(),
             spawn_enabled=False,
+            global_layouts={},
         )
         assert (
             bool(

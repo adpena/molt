@@ -596,6 +596,8 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::ModuleGetAttr
         | OpCode::ModuleImportFrom
         | OpCode::ModuleGetGlobal
+        | OpCode::GlobalSlotBase
+        | OpCode::GlobalSlotGet
         | OpCode::ModuleGetName
         | OpCode::ModuleSetAttr
         | OpCode::ModuleDelGlobal

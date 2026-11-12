@@ -1164,16 +1164,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_BACKEND_INLINE_EXC_DISABLED",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-      "summary": "Disables the inline exception-pending flag pointer in native function codegen so exception checks call into the runtime instead; 1/true/yes/on enable, and molt forwards it to the backend daemon as a codegen input.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "",
       "kind": "string",
       "name": "MOLT_BACKEND_LIBCALL_CALL_CONV",

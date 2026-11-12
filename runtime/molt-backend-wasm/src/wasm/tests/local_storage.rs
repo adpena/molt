@@ -236,6 +236,7 @@ for (const test of config.cases) {
     imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
       (() => { throw new Error(test.name + ': unexpected runtime call ' + entry.name); });
   }
+  initializeConfirmingRecord(imports.env.memory);
   const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
   assert.equal(app[compiledSymbol('molt_main')](executionContext, first, second), BigInt(test.expected), test.name);
 }

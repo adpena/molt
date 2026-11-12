@@ -378,10 +378,6 @@ pub(crate) fn molt_exception_pending_attached_body(_py: &crate::PyToken<'_>) -> 
     crate::with_attached_entry_nopanic!(_py, _py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-pub(crate) fn molt_exception_pending_fast_attached_body(_py: &crate::PyToken<'_>) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, _py, { if exception_pending(_py) { 1 } else { 0 } })
-}
-
 /// Explicit eval-breaker observer used only by generated call-return and loop-
 /// backedge polls. Pure exception predicates above remain non-reentrant.
 pub(crate) fn molt_async_work_poll_and_exception_pending_attached_body(
@@ -446,6 +442,11 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
             PendingWorkKind::PendingCalls,
             molt_cpython_abi::api::pending_calls::has_pending_calls,
         );
+    }
+    // CPython `_Py_HandlePending` last: a thread that waited the switch
+    // interval gets the GIL here, at a generated poll.
+    if state.pending_work.take(PendingWorkKind::GilDropRequest) {
+        crate::concurrency::gil::yield_gil_to_waiter();
     }
     drain_failed || exception_pending(_py)
 }

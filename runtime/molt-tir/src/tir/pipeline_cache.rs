@@ -297,6 +297,7 @@ pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
         non_escaping_tuple_scalarization,
         cold_origin_frame_location,
         final_lowering,
+        module_global_slots,
     } = lowering;
     let hot_functions = profile_data.as_ref().map_or_else(
         || "none".to_string(),
@@ -313,7 +314,7 @@ pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
         concat!(
             "target={};profile={:?};extern={};",
             "numeric_bigint={};numeric_literal={:?};numeric_divmod={};numeric_power={};",
-            "runtime_requirements={};lowering_tuple_scalarization={};lowering_cold_origin_location={};lowering_final={};",
+            "runtime_requirements={};lowering_tuple_scalarization={};lowering_cold_origin_location={};lowering_final={};lowering_global_slots={};",
             "pgo_hot_functions={};",
             "int_binop={};branch_mispredict={};call_overhead={};",
             "inline={};inline_hot={};pgo_hot={};",
@@ -333,6 +334,7 @@ pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
         non_escaping_tuple_scalarization,
         cold_origin_frame_location,
         final_lowering.as_str(),
+        module_global_slots,
         hot_functions,
         int_binop_cost,
         branch_mispredict_cost,

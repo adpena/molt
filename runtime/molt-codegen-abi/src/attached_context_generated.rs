@@ -1428,7 +1428,6 @@ macro_rules! attached_symbol {
     ("molt_exception_new_builtin_one") => { "molt_exception_new_builtin_one__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_new_from_class") => { "molt_exception_new_from_class__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_pending") => { "molt_exception_pending__molt_context_a8c6010e2cbb56a1" };
-    ("molt_exception_pending_fast") => { "molt_exception_pending_fast__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_pop") => { "molt_exception_pop__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_prepare_raise") => { "molt_exception_prepare_raise__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_push") => { "molt_exception_push__molt_context_a8c6010e2cbb56a1" };
@@ -1696,6 +1695,8 @@ macro_rules! attached_symbol {
     ("molt_glob_has_magic") => { "molt_glob_has_magic__molt_context_a8c6010e2cbb56a1" };
     ("molt_glob_iter") => { "molt_glob_iter__molt_context_a8c6010e2cbb56a1" };
     ("molt_glob_translate") => { "molt_glob_translate__molt_context_a8c6010e2cbb56a1" };
+    ("molt_global_slot_base") => { "molt_global_slot_base__molt_context_a8c6010e2cbb56a1" };
+    ("molt_global_slot_set") => { "molt_global_slot_set__molt_context_a8c6010e2cbb56a1" };
     ("molt_globals_builtin") => { "molt_globals_builtin__molt_context_a8c6010e2cbb56a1" };
     ("molt_gpu_barrier") => { "molt_gpu_barrier__molt_context_a8c6010e2cbb56a1" };
     ("molt_gpu_block_dim") => { "molt_gpu_block_dim__molt_context_a8c6010e2cbb56a1" };

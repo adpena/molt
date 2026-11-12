@@ -567,6 +567,16 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_global_slot_base",
+        import: WasmRuntimeImport::GlobalSlotBase,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_global_slot_set",
+        import: WasmRuntimeImport::GlobalSlotSet,
+        arity: 5,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_build_class_builtin",
         import: WasmRuntimeImport::BuildClassBuiltin,
         arity: 2,
@@ -12848,6 +12858,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_cell_gt" => Some(WasmRuntimeImport::CellGt),
         "molt_cell_ge" => Some(WasmRuntimeImport::CellGe),
         "molt_guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
+        "molt_global_slot_base" => Some(WasmRuntimeImport::GlobalSlotBase),
+        "molt_global_slot_set" => Some(WasmRuntimeImport::GlobalSlotSet),
         "molt_build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
         "molt_class_builder_check" => Some(WasmRuntimeImport::ClassBuilderCheck),
         "molt_class_body_builtins" => Some(WasmRuntimeImport::ClassBodyBuiltins),

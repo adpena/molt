@@ -227,7 +227,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "30f86cc3e18e77c6ed2cf861dc99d35bdbbd2b21688fb94e819b26181204d75f",
+      "sha256": "409b57680be5d27687512a77a620787292af0d81d4f1de300aceff36cee38103",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -456,7 +456,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "c1b43963670a96719b07e8de3ddce594ce851cf699161e4b85fce85c806141ca",
+      "sha256": "d560d946a30ec8b88a561b6895b2d2af89da4bf159adaebb171e94b6c468e695",
       "source_type": "script"
     },
     "socket_abi_generated.js": {
@@ -510,7 +510,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "6a441a720fba16335b629c57a1f77bf1a9fc99b089e6b41a3e040a1a9b6d923a",
+      "sha256": "36cacadeee903ed750016b7bdfa69bb053e6ef75e7bdf4693c4abaa79be88fb8",
       "source_type": "data"
     }
   },
