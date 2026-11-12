@@ -412,6 +412,13 @@ Follow-ups this design does not do (the integrator assigns them):
 - **LLVM.** `runtime_imports::runtime_function` is the one declaration path (lookup by the
   generated linker symbol, else declare); `LlvmRuntimeImports` caches it by dense index.
   `get_execution_function` became `get_compiled_function`: it never consults the runtime table.
+- **Measured (R1).** LLVM release builds, macOS arm64, `/usr/bin/time -l` instructions retired,
+  three interleaved runs each, base `8346f34eb0` (main) against the lane merged onto it; median
+  base -> lane: `bench_fib` 1,505,171,199 -> 1,504,572,669 (-0.04%); `bench_method_defaults`
+  (2,000,000) 6,223,744,878 -> 6,205,546,401 (-0.29%); `bench_calls` 1,305,890,348 ->
+  1,306,326,272 (+0.03%); `spectral_norm` (400) 19,783,244,311 -> 19,785,977,200 (+0.01%). Every
+  delta is inside the run-to-run spread; outputs are identical. Dropping `willreturn` from
+  impure entries costs nothing measurable here.
 - **Not done here (follow-ups).** The calling convention is still chosen by the attached-context
   symbol suffix in `build_execution_call` (LLVM) and `complete_attached_calls` (Cranelift); the
   typed `RuntimeCallee` of section 4.3 is not implemented. Task construction still selects a
