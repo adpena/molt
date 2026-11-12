@@ -12,7 +12,7 @@ serde_json = { workspace = true, optional = true }
 molt-host-process = { path = "../molt-host-process", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 wasmparser = "0.262.0"
-wasm-encoder = { version = "0.262.0", features = ["wasmparser"] }
+wasm-encoder = { version = "0.263.0", features = ["wasmparser"] }
 
 # The library remains usable without host executable admission dependencies.
 [features]
