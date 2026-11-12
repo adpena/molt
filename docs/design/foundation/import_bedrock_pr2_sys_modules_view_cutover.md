@@ -2,7 +2,7 @@
 
 Status: source implementation; native/WASM runtime qualification remains pending.
 Owner: module initialization, publication, import and runtime lifecycle.
-Registry schema 5 (`MOLTMOD5`) carries explicit file-location and stdlib-provider
+Registry schema 6 (`MOLTMOD6`) carries explicit file-location and stdlib-provider
 provenance in the existing flags byte; its native/LLVM/WASM projections share
 that authority. `ModuleSourceRole` is projected by the canonical metadata
 constructor from resolved compiler source paths and the actual stdlib root.

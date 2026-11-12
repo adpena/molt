@@ -32,14 +32,22 @@ the process signal/pending-call route belongs to the primary runtime.
 | Reason | Publication boundary | Readiness authority |
 | --- | --- | --- |
 | Signals | `SignalRuntimeState::record_delivery` | signal pending slots / tripped summary |
+| GIL drop request | `concurrency::gil::take_gil`, after a waiter's switch interval (`signal_ext::notify_gil_drop_request`) | the bit itself (`PendingWork::take`) |
 | GC | allocation threshold scheduling and resource-failure rearm | `GcRuntimeState.pending` |
 | Pool retirement | `schedule_stopped_pool` | stopped FIFO / `stopped_pending` |
 | C pending calls | `Py_AddPendingCall`'s existing notification hook, after ring publication | ready ring head |
 
 Signal-route publication also adopts calls queued during runtime initialization.
 Asyncio cancellation remains a task/scheduler transition at suspension points;
-it is not an additional producer serviced by `service_async_work`. There is no
-GIL-drop request in that service path to invent a bit for.
+it is not an additional producer serviced by `service_async_work`.
+
+The GIL drop request (CPython `_PY_GIL_DROP_REQUEST_BIT`) has no source to
+recheck: a waiter that `try_lock_for(switch interval)` does not serve sets the
+bit, and the holder's service clears it with `take`, then suspends and
+reacquires the GIL; `unlock_fair` hands the mutex to the queued waiter. A
+waiter that is still queued after the clear sets the bit again one interval
+later. The request travels through the primary runtime's word, so a GIL holder
+running inside an isolate does not see it (unverified cell).
 
 Each producer publishes its source, then performs a release `fetch_or` of its
 reason. Only after the service attempt does the consumer perform an acquire-release

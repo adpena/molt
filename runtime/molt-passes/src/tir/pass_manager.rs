@@ -560,6 +560,26 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
     PassManager::new(passes, target_info)
 }
 
+/// Compiled module global slot sites (call_anatomy.md 4.5): rewrite each
+/// stamped global read and store, then merge each module's per-activation
+/// base (GVN) and hoist it out of loops (LICM). Runs on every target whose
+/// backend lowers `GlobalSlotGet`, before the late lowering stage and drops.
+pub fn run_global_slot_sites(func: &mut TirFunction, target_info: &TargetInfo) -> bool {
+    use Mutates::*;
+    if !target_info.lowering.module_global_slots
+        || passes::global_slot_sites::run(func).total_changes() == 0
+    {
+        return false;
+    }
+    let cleanup: Vec<Box<dyn TirPass>> = vec![
+        pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am)),
+        pass("licm", Cfg, |f, am, _tti| passes::licm::run(f, am)),
+        pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
+    ];
+    PassManager::new(cleanup, target_info.clone()).run(func);
+    true
+}
+
 /// The late lowering stage of TIR (HF-821), for targets whose backend consumes
 /// final TIR. Expansion runs as its own pipeline, so the post-pipeline function
 /// and exception-region verification checks it before anything else runs.

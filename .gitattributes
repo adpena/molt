@@ -229,6 +229,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/modules/runpy.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/modules/type_attributes.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/modules/type_protocol.rs" merge=binary
+"/runtime/molt-runtime/src/attached_exports_generated/builtins/namespace_slots.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/operator/basic_ops.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/operator/getter_objects.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/operator/sequence_ops.rs" merge=binary

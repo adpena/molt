@@ -203,7 +203,7 @@ unleashed trade** (and if traded, what guarantee is surrendered).
 |---|---|---|---|
 | B1 | **Bytecode-step atomicity** (`L.append(x)` is one indivisible step; `i += 1` on a shared int is *not*, exactly as CPython) | byte-identical: the GIL makes each bytecode/intrinsic boundary a serialization point; observable interleavings match CPython | **traded.** Under free-threading, only *individual container ops* are atomic (per-object lock, §3.4). Multi-op sequences (`d[k] += 1`) are NOT atomic — same hazard CPython 3.13t has. Documented: "compound ops need explicit locks under unleashed." |
 | B2 | **`threading.local` semantics** | per-thread isolation, value dies with thread (§2-f: today's impl has a teardown-timing gap to close) | unchanged — TLS is *more* natural under free-threading; no trade |
-| B3 | **GIL switch interval / fairness** (`sys.setswitchinterval`, default 5ms; a CPU-bound thread yields so others progress) | byte-identical: molt must implement a real switch interval (§2-a: TODAY MISSING — this is the largest DEFAULT-tier gap) | **N/A** — free-threading has no GIL to switch; threads run on real cores. The switch interval becomes a no-op (documented). |
+| B3 | **GIL switch interval / fairness** (`sys.setswitchinterval`, default 5ms; a CPU-bound thread yields so others progress) | byte-identical: molt implements a real switch interval (§2-a, 2026-11-11) | **N/A** — free-threading has no GIL to switch; threads run on real cores. The switch interval becomes a no-op (documented). |
 | B4 | **Object identity & `id()` across threads** | stable (GIL-serialized allocation) | unchanged — `id()` is the address; biased RC does not move objects. No trade. |
 | B5 | **`__del__` / finalizer timing & thread** | runs at RC-zero on the thread that drops the last ref, GIL-held (parity) | **traded.** Under free-threading, the dropping thread may differ and `__del__` may run *concurrently* with other threads' code (CPython 3.13t has the same property). The finalizer-ordering guarantee within a thread is kept; cross-thread ordering is surrendered. |
 | B6 | **Signal delivery** (handler runs on the **main thread** only, between bytecodes, via a pending flag) | byte-identical: §2-d audits the signal path; the pending-flag-checked-by-main-thread model must hold | unchanged — signals are still main-thread-only under free-threading (CPython keeps this). No trade. |
@@ -237,24 +237,21 @@ asked to drop it after the interval (via `eval_breaker` / `gil_drop_request`) so
 another runnable thread can acquire it. Without this, a tight-loop thread starves
 all others.
 
-**molt at HEAD:** `concurrency/gil.rs` is a plain `Mutex<()>` with **no switch
-interval**. A molt thread running a tight Python loop holds `PREINIT_GIL` and
-never voluntarily yields — the only release points are explicit `GilReleaseGuard`
-blocking-IO sections (§2-b) and the (rare) re-acquire on a fresh `GilGuard::new()`
-after a full release. **Two CPU-bound `threading.Thread`s in molt do not
-fair-share; one runs to completion, then the other.** This is the single largest
-default-tier parity break. CPython programs that rely on cooperative progress of
-multiple CPU-bound threads (rare but real — e.g., a watchdog thread) will hang or
-starve under molt.
-
-**Fix (§5-P0):** a real switch-interval. The compiler already emits periodic
-safepoint checks for other reasons (the async `eval_breaker`-equivalent); thread
-the GIL-drop-request through the same safepoint. On the safepoint, if
-`now - gil_acquired_at > switch_interval` AND another thread is waiting, the
-holding thread drops and immediately re-requests the GIL (round-robin via a
-ticket/`Condvar` fairness queue, replacing the bare `Mutex` with a fair lock).
-This is a **default-tier** fix — it must land for parity regardless of the
-unleashed tier.
+**molt (implemented 2026-11-11):** CPython's model, on the existing eval
+breaker. `concurrency::gil::take_gil` serves both GIL acquisitions: a waiter
+that `try_lock_for(sys.getswitchinterval())` does not serve sets
+`PendingWorkKind::GilDropRequest` in the runtime's pending-work word. Every
+generated call-return and back-edge poll already tests that word inline; the
+cold service (`service_async_work`) clears the bit and suspends and reacquires
+the GIL, and `parking_lot`'s `unlock_fair` hands the mutex to the queued waiter.
+The uncontended acquire stays one `try_lock`. Before this, a compiled loop that
+never blocked starved every other thread: a thread could not even start, and a
+signal raised on another thread waited for the busy loop to end.
+Proof: `tests/differential/stdlib/threading_gil_switch_interval.py` and
+`signal_dispatch_safepoints.py` (native and LLVM). Unverified cells: a holder
+inside an isolate (the request reaches the primary runtime's word only), and
+a holder in a long runtime call with no poll (as CPython C code, it yields at
+its next poll). No fairness bench measures the maximum stall yet.
 
 ### 2-b. Blocking-IO GIL-release coverage — IMPORTANCE 3 × GAP 2 = **6 (HIGH)**
 
@@ -824,7 +821,7 @@ beat. Baselines: CPython 3.12 (GIL), CPython 3.13t (free-threaded), Go 1.22
 | Bench | Rung | Metric | Baseline to beat | molt target |
 |---|---|---|---|---|
 | `bench_thread_spawn` | (a) | `Thread()` create+start+join latency | CPython 3.12 ~50–80µs/thread | **< CPython** (real OS thread; molt's lean `RuntimeState` init should match or beat) |
-| `bench_gil_fairness` | (a) | 2 CPU-bound threads: max stall of either thread | CPython 3.12 fair within switch interval (5ms) | **fair within molt's switch interval** (§2-a); TODAY: FAILS (one starves) — this bench *defines done* for §2-a |
+| `bench_gil_fairness` | (a) | 2 CPU-bound threads: max stall of either thread | CPython 3.12 fair within switch interval (5ms) | **fair within molt's switch interval** (§2-a); not written yet. The drop request landed 2026-11-11 and its differential proves both threads progress; this bench still owns the stall bound |
 | `bench_blocking_io_release` | (b) | thread A `f.read()` on slow FIFO + thread B compute: B's throughput during A's block | CPython 3.12: B runs full speed (GIL released) | **B runs full speed**; TODAY: FAILS (io.rs holds GIL, §2-b) — defines done for §2-b |
 | `bench_lock_uncontended` | (e/2-e) | uncontended `lock.acquire()/release()` throughput | CPython 3.12 `_thread.lock` (1 atomic CAS) | **≥ CPython** (the §2-e fast path) |
 | `bench_lock_contended` | (e) | 8 threads hammering 1 lock | CPython 3.12 / 3.13t | **≥ CPython 3.13t** |
@@ -849,10 +846,9 @@ Phases are ordered by (parity-first, then superpower, then the deep tier).
 
 ### P0 — Default-tier parity completion (the GIL is not done)
 
-**Scope:** (a) GIL switch interval + fairness (§2-a) — replace the bare
-`PREINIT_GIL` `Mutex` acquire with a **fair lock + safepoint-driven drop-request**
-(round-robin via a ticket/Condvar queue); wire the drop-request into the existing
-compiler safepoint. (b) Blocking-IO GIL release (§2-b) — wrap `io.rs`
+**Scope:** (a) GIL switch interval + fairness (§2-a) — done 2026-11-11: the
+drop request rides the existing poll; `unlock_fair` gives the handoff, so no
+ticket queue was needed. (b) Blocking-IO GIL release (§2-b) — wrap `io.rs`
 read/write/readall/readline/writelines (`io.rs:3777,4014,4243,4784,5012,6432,6608`)
 and `subprocess_ext.rs` blocking waits in `GilReleaseGuard`.
 

@@ -347,6 +347,8 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::StateBlockStart => "state_block_start",
         OpCode::StateBlockEnd => "state_block_end",
         OpCode::ModuleSlot => "module_slot",
+        OpCode::GlobalSlotBase => "global_slot_base",
+        OpCode::GlobalSlotGet => "global_slot_get",
         OpCode::ConstInt => "const_int",
         OpCode::ConstBigInt => "const_bigint",
         OpCode::ConstFloat => "const_float",

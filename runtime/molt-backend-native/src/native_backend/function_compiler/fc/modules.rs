@@ -15,6 +15,7 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::ModuleGetAttr,
     OpKind::ModuleImportFrom,
     OpKind::ModuleGetGlobal,
+    OpKind::GlobalSlotGet,
     OpKind::ModuleDelGlobal,
     OpKind::ModuleDelGlobalIfPresent,
     OpKind::ModuleGetName,
@@ -332,6 +333,51 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_bits]);
             let res = builder.inst_results(call)[0];
+            if let Some(out__) = simple_ir_out_result(op) {
+                def_var_named(&mut *builder, vars, out__, res);
+            }
+        }
+        OpKind::GlobalSlotGet => {
+            // Operands: [base, module, name]; the read's meaning is the shared
+            // generator's (molt_codegen_abi::global_slot).
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let mut operand = |name: &str| {
+                *var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    name,
+                    representation_plan,
+                )
+                .expect("global slot operand")
+            };
+            let base = operand(&args[0]);
+            let module_bits = operand(&args[1]);
+            let name_bits = operand(&args[2]);
+            let index = op
+                .global_slot
+                .as_ref()
+                .expect("global_slot_get carries its slot")
+                .index;
+            let callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                molt_ir::runtime_fn_generated::RuntimeFn::ModuleGetGlobal.symbol(),
+                &[types::I64, types::I64],
+                &[types::I64],
+            );
+            let cold = module.declare_func_in_func(callee, builder.func);
+            let res = crate::native_backend::simple_backend::emit_global_slot_read(
+                builder,
+                base,
+                index,
+                local_inc_ref_obj,
+                cold,
+                &[module_bits, name_bits],
+            );
             if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }

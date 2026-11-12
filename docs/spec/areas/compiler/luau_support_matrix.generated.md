@@ -10,11 +10,11 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 
 ## Summary
 
-- `compile-error`: `85`
+- `compile-error`: `86`
 - `implemented-exact`: `192`
 - `implemented-target-limited`: `19`
 - `not-admitted`: `237`
-- `total`: `533`
+- `total`: `534`
 
 ## Matrix
 
@@ -274,6 +274,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `get_item` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_iter` | `implemented-target-limited` | Runtime-call contract `molt_iter_checked`. Requires a proven deterministic scalar/container carrier and the Python numeric source type; unknown carriers are rejected. |
 | `getframe` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `global_slot_get` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `goto` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `gpu_barrier` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `gpu_block_dim` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |

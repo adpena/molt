@@ -225,6 +225,12 @@ pub struct SimpleIrLoweringFeatures {
     /// Whether the late lowering stage of TIR expands fast paths for this
     /// target's backend (HF-821).
     pub final_lowering: FinalLowering,
+    /// Whether stamped module global reads and stores become compiled slot
+    /// sites (call_anatomy.md 4.5): the backend lowers `GlobalSlotGet` by the
+    /// shared `molt_codegen_abi::global_slot` generator. A free-threaded
+    /// runtime hands every activation the all-unbound slot words, so its
+    /// sites keep the by-name path until reads take a try-retain protocol.
+    pub module_global_slots: bool,
 }
 
 /// Whether a target's backend consumes final TIR, so the late lowering stage
@@ -337,16 +343,19 @@ impl TargetInfo {
                 non_escaping_tuple_scalarization: true,
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::BackendLanes,
+                module_global_slots: true,
             },
             TargetKind::Wasm => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::BackendLanes,
+                module_global_slots: true,
             },
             TargetKind::Llvm => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::FinalTir,
+                module_global_slots: true,
             },
             // Luau publishes line and columns with each location and has no
             // code table to recover them; the Rust target captures no Origin.
@@ -354,6 +363,7 @@ impl TargetInfo {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: false,
                 final_lowering: FinalLowering::BackendLanes,
+                module_global_slots: false,
             },
         }
     }

@@ -22,6 +22,7 @@ pub mod fast_math;
 pub mod fast_path_expansion;
 pub mod frame_location_placement;
 pub mod generator_fusion;
+pub mod global_slot_sites;
 pub mod gvn;
 pub mod inliner;
 pub mod ip_summary;

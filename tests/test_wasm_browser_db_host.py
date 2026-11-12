@@ -1877,6 +1877,8 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
             "molt.cli",
             "build",
             str(src),
+            "--capabilities",
+            "db.read",
             "--build-profile",
             "dev",
             "--profile",
