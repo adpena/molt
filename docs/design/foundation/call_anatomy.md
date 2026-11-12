@@ -105,6 +105,27 @@ interleaved runs per binary, output identical); user time 0.25 to 0.23 s, below 
 (row above). Next: C5 `Mul` with a cheap exact test; list index and store fast paths (fannkuch's hot
 path); WASM moves once the stage covers its lane parity checklist.
 
+P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
+LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
+the runtime's relocatable module with no import signature mismatch. On Node, all five spike
+programs print CPython 3.12.16's output. Against the WASM backend (same IR, runtime, wasm-ld
+flags and wasm-opt pipeline; interleaved medians; macOS arm64): `bench_fib` 0.68 to 0.39 s and
+17.0 to 10.4 billion instructions retired, `bench_calls` -16% and `bench_sum` -18% instructions,
+nbody 200000 steps 1.65 to 1.48 s; startup-bound runs are equal. Costs: linked size +12% on
+small programs and +72% on nbody, and backend compile 22 s against 0.6 s (nbody 250 s against
+6 s). Native LLVM takes 11 s on the same IR, so compile cost belongs to the LLVM lane, and
+wasm32 object emission is about 2x aarch64's. Blockers, in order: (1) the wasm32 runtime maps
+callable keys to an app-filled reserved table region, which wasm-ld cannot fill; resolving keys
+through the runtime's own table, as native does, fixes it, and the WASM backend passes on that
+runtime too (HF-699 K1 remainder); (2) `tools/wasm_link_*.py` edits the WASM backend's object
+shape and must admit a standard object; (3) split runtime needs a PIC side-module link (LLVM uses
+the shadow stack) and the `molt_runtime` import namespace; (4) compile latency needs the stdlib
+object cache and parallel module codegen. Then `--target wasm` moves to LLVM and the WASM op
+lowering, the reserved region, the app-owned `molt_call_indirectN` and `molt_isolate_import`
+and the object surgery in the link tools are deleted. Evidence:
+logs/agents/lane-llvm-wasm32-spike/notes.md; prototype commit 47b9c06ac3 (branch
+proto/llvm-wasm32-spike in worktree slot-02, not landed).
+
 ## Whole-pipeline structure (mapped 2026-11-10)
 
 The backend view above understates the problem. One function passes through these stages
