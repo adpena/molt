@@ -89,6 +89,41 @@ Order: (0) typed runtime calls: one generated `RuntimeFn` per runtime entry (lan
 late-TIR expansions, deleting backend copies, with Cranelift moving to final TIR; (E) stages 4, 6
 and 7 on TIR only.
 
+**P0 (owner, 2026-11-11): the codegen foundation comes before more fast paths.** Since C1, the
+late stage has gained fast paths for LLVM only (float, multiply), while Cranelift and WASM keep
+their own copies; each optimization added a third and fourth implementation, and the copies
+disagreed (Cranelift treated a stale pending-exception byte as an exception). No new fast path is
+written per backend until the foundation below exists; optimization briefs are rescoped as
+late-TIR expansions. The foundation is what rustc (`rustc_codegen_ssa`: one backend-generic walker
+over a `BuilderMethods` trait that LLVM, Cranelift and GCC implement) and Zig (one IR; release and
+WASM through LLVM) do:
+
+1. Semantics once: every operation's meaning is a late-TIR expansion into the closed final-TIR
+   primitive set. A runtime call is a cold edge, never the fast path; a name is never matched,
+   and no new name-keyed runtime path is added (owner, 2026-11-11): globals read typed slots,
+   attributes compile to shapes and slots.
+   Representation: raw by default. A value whose type is proven stays a machine `i64`, `f64` or
+   pointer in registers and is boxed only where it escapes to a place that must hold any type
+   (an unknown callee, a heterogeneous container, the C API). Boxing costs tag tests, conversions
+   and often a call on every use; the measure of a lowering is the instructions it leaves.
+2. One codegen walker over final TIR, generic over a builder trait (word ops, loads and stores,
+   blocks and branches, block parameters, calls by `RuntimeFn`). `WordBuilder` and `FrameBuilder`
+   in molt-codegen-abi are its first parts. Cranelift and LLVM implement the trait and nothing else.
+3. WASM through LLVM's `wasm32` target from the same walker, if a measured spike holds (speed, size,
+   build latency, split runtime, attached context, exception handling); molt-backend-wasm then
+   keeps host, link and ABI glue, and its op lowerings are deleted, not migrated.
+4. Test stubs of the runtime are generated from `RuntimeFn` or are the real runtime; hand-written
+   stub runtimes in test strings copy entry names and drift (HF-831).
+
+Foundation order, by duplicate code each step deletes: delete WASM `lir_fast` (10,246 lines,
+admitted only by a function-name substring no producer emits); the LLVM `wasm32` spike; the
+builder trait and walker with LLVM as its first implementation; Cranelift onto final TIR (retires
+its 251 spelled runtime imports). Measured reason the order matters (2026-11-11, LLVM release,
+macOS arm64, instructions retired, managed CPython 3.12.16 -I): the worst gaps are fannkuch 8.2x
+CPython (27.0 G excess), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
+mandelbrot 4.7x (6.6 G), `bench_dict` and `bench_list` 2.3x; their buckets (object lifecycle,
+container access) are fast paths every backend needs, so each is written once on the foundation.
+
 Status (2026-11-10): C1 landed (229180b0b): one set of NaN-box word generators in molt-codegen-abi
 (`word.rs`, `boxed_word.rs`), LLVM's copies deleted. C2 landed (077d6de6b): the stage
 (`run_late_lowering`, spec 0100) expands integer `+`/`-` on boxed words for LLVM; LLVM's seven
