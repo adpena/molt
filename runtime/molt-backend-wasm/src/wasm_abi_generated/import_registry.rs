@@ -771,8 +771,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "call_bind_ic_owned",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::LoadMethod,
-        name: "load_method",
+        import: WasmRuntimeImport::MethodSiteLoad,
+        name: "method_site_load",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoadSuperMethod,
@@ -11675,8 +11675,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_call_bind_ic" => Some(WasmRuntimeImport::CallBindIc),
         "call_bind_ic_owned" => Some(WasmRuntimeImport::CallBindIcOwned),
         "molt_call_bind_ic_owned" => Some(WasmRuntimeImport::CallBindIcOwned),
-        "load_method" => Some(WasmRuntimeImport::LoadMethod),
-        "molt_load_method" => Some(WasmRuntimeImport::LoadMethod),
+        "method_site_load" => Some(WasmRuntimeImport::MethodSiteLoad),
+        "molt_method_site_load" => Some(WasmRuntimeImport::MethodSiteLoad),
         "load_super_method" => Some(WasmRuntimeImport::LoadSuperMethod),
         "molt_load_super_method" => Some(WasmRuntimeImport::LoadSuperMethod),
         "call_loaded_method0" => Some(WasmRuntimeImport::CallLoadedMethod0),

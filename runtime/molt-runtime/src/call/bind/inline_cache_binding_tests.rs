@@ -558,6 +558,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = crate::dynamic_attr_name_bits(py, b"reverse").unwrap();
+            let site = crate::call::bind::method_site::TestSite::new(b"reverse");
             let label = crate::dynamic_attr_name_bits(py, b"NoArgsList").unwrap();
             let class = crate::molt_class_new_attached_body(py, label);
             crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).list);
@@ -583,13 +584,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                     );
                     assert!(!exception_pending(py));
                 }
-                let loaded = load_method(
-                    py,
-                    MoltObject::from_int(964).bits(),
-                    receiver,
-                    b"reverse".as_ptr(),
-                    7,
-                );
+                let loaded = site.load(py, receiver);
                 assert!(!exception_pending(py));
                 assert_eq!(loaded.self_or_null, receiver);
                 assert_eq!(refs(), original_refs + 1);
@@ -674,13 +669,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                 assert!(!exception_pending(py));
                 crate::molt_set_attr_name_attached_body(py, class, getter_name, wrapper);
                 assert!(!exception_pending(py));
-                let loaded = load_method(
-                    py,
-                    MoltObject::from_int(964).bits(),
-                    receiver,
-                    b"reverse".as_ptr(),
-                    7,
-                );
+                let loaded = site.load(py, receiver);
                 let modern =
                     (molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least)(3, 14);
                 if source == builtin_classes(py).tuple && !modern {
@@ -752,13 +741,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
             crate::molt_set_attr_name_attached_body(py, class, getter_name, custom);
             assert!(!exception_pending(py));
             dec_ref_bits(py, custom);
-            let through_hook = load_method(
-                py,
-                MoltObject::from_int(964).bits(),
-                receiver,
-                b"reverse".as_ptr(),
-                7,
-            );
+            let through_hook = site.load(py, receiver);
             assert!(!exception_pending(py));
             assert_eq!(through_hook.self_or_null, LoadedMethod::NULL);
             assert_eq!(
@@ -780,13 +763,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                 MoltObject::from_int(73).bits(),
             );
             assert!(!exception_pending(py));
-            let shadow = load_method(
-                py,
-                MoltObject::from_int(964).bits(),
-                receiver,
-                b"reverse".as_ptr(),
-                7,
-            );
+            let shadow = site.load(py, receiver);
             assert!(!exception_pending(py));
             assert_eq!(shadow.callable, MoltObject::from_int(73).bits());
             assert_eq!(shadow.self_or_null, LoadedMethod::NULL);
@@ -801,6 +778,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
             // Releasing the final semantic owner retires the view's stable
             // hold too; an invocation or projection leak leaves an entry.
             assert_eq!(bridge.managed_handle_is_uniquely_referenced(receiver), None);
+            site.release(py);
             for value in [class, label, name, getter_name] {
                 dec_ref_bits(py, value);
             }

@@ -1621,7 +1621,10 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
         opcode: OpCode::LoadMethod,
         operands: vec![receiver],
         results: pair.clone(),
-        attrs: AttrDict::from([("name".into(), AttrValue::Str("m".into()))]),
+        attrs: AttrDict::from([
+            ("name".into(), AttrValue::Str("m".into())),
+            ("method_site".into(), AttrValue::Int(0)),
+        ]),
         source_span: None,
     });
     for &argument in &arguments {
@@ -1639,6 +1642,7 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
         source_span: None,
     };
     call.set_argument_custody(&vec![molt_ir::ParameterCustody::Transferred; argc + 2]);
+    call.set_method_site(Some(0));
     entry.ops.push(call);
     entry.terminator = Terminator::Return {
         values: vec![result],
@@ -1646,6 +1650,10 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
     func
 }
 
+/// A method site's load is the shared load body, whose miss is
+/// `molt_method_site_load`; its call is the call body for its arity, whose
+/// miss is the fixed-arity runtime call, and above four arguments the runtime
+/// call itself with the arguments spilled.
 #[test]
 fn lower_loaded_method_call_selects_its_arity_entry_and_spills_above_four() {
     for (argc, symbol) in [
@@ -1664,9 +1672,20 @@ fn lower_loaded_method_call_selects_its_arity_entry_and_spills_above_four() {
             .module
             .verify()
             .unwrap_or_else(|error| panic!("{argc}: {error}"));
-        assert!(ir.contains_execution("@molt_load_method("), "{argc}: {ir}");
+        // The site bodies are module helpers the function calls.
+        let module_ir = backend.module.print_to_string().to_string();
         assert!(
-            ir.contains_execution(&format!("@{symbol}(")),
+            ir.contains_execution("@__molt_method_site_load(")
+                && module_ir.contains_execution("@molt_method_site_load("),
+            "{argc}: {module_ir}"
+        );
+        assert!(
+            module_ir.contains_execution(&format!("@{symbol}(")),
+            "{argc}: {module_ir}"
+        );
+        assert_eq!(
+            ir.contains_execution(&format!("@__molt_method_site_call_{argc}(")),
+            argc <= 4,
             "{argc}: {ir}"
         );
         if argc > 4 {
@@ -1682,10 +1701,10 @@ fn lower_loaded_method_call_selects_its_arity_entry_and_spills_above_four() {
 fn method_load_runtime_imports_keep_the_no_willreturn_declaration() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let ir = lower_tir_to_llvm(&loaded_method_call_function(1), &backend)
-        .print_to_string()
-        .to_string();
-    for symbol in ["molt_load_method", "molt_call_loaded_method1"] {
+    lower_tir_to_llvm(&loaded_method_call_function(1), &backend);
+    // The site bodies are module helpers that call the runtime.
+    let ir = backend.module.print_to_string().to_string();
+    for symbol in ["molt_method_site_load", "molt_call_loaded_method1"] {
         assert!(ir.contains_execution(symbol), "{ir}");
         let runtime_fn = backend
             .module

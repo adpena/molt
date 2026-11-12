@@ -43,6 +43,8 @@ pub struct WasmBackend {
     pub(in crate::wasm) numeric_lane_stats: WasmNumericLaneStats,
     pub(in crate::wasm) module_registry: Option<ModuleRegistryIR>,
     pub(in crate::wasm) module_registry_segment: Option<DataSegmentRef>,
+    /// Each method site's record, by (function index, site index).
+    pub(in crate::wasm) method_site_records: BTreeMap<(u32, u32), DataSegmentRef>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -158,6 +160,7 @@ impl WasmBackend {
             numeric_lane_stats: WasmNumericLaneStats::default(),
             module_registry: None,
             module_registry_segment: None,
+            method_site_records: BTreeMap::new(),
         }
     }
 

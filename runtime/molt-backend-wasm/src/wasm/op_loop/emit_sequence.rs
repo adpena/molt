@@ -146,6 +146,8 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 func_index,
                 func_import_count: backend.func_import_count,
                 table_relocations: &mut backend.table_relocations,
+                data_segments: &mut backend.data_segments,
+                method_site_records: &backend.method_site_records,
                 frame,
                 tail_call_enabled,
                 tail_call_eligible,

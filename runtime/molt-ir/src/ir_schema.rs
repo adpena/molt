@@ -32,6 +32,10 @@ const GLOBAL_SLOT_KINDS: &[crate::OpKind] = &[
     crate::OpKind::ModuleSetAttr,
     crate::OpKind::DictSet,
 ];
+/// A compiled method site's load and the call that consumes its pair
+/// (call_anatomy.md 4.5 "Methods").
+const METHOD_SITE_KINDS: &[crate::OpKind] =
+    &[crate::OpKind::LoadMethod, crate::OpKind::CallLoadedMethod];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
     BackendPrivate {
@@ -614,6 +618,9 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     }
     if op.global_slot.is_some() && !GLOBAL_SLOT_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry global_slot", op.kind));
+    }
+    if op.method_site.is_some() && !METHOD_SITE_KINDS.contains(&op.kind) {
+        return Err(format!("op `{}` cannot carry method_site", op.kind));
     }
     if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry bce_safe", op.kind));
