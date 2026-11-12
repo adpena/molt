@@ -48,7 +48,7 @@ import re
 import shlex
 import time
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from molt import checkout_provisioning
 from molt.checkout_state import is_checkout_state_lock_file
@@ -73,6 +73,10 @@ from tools.molt_dev_common import (
     _step,
 )  # noqa: E402
 from tools import dag_dispatch, drift_harvest, molt_dev_controller, molt_dev_retire
+
+if TYPE_CHECKING:
+    from tools.coordination_records import CoordinationRecord
+    from tools.molt_dev import Git
 from tools.molt_dev_change_ids import landing_representation
 from tools.git_identity import immutable_git_environment
 
@@ -789,6 +793,20 @@ def _add_dispatch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reason", help="text for a non-default dispatch reason")
 
 
+def _landed_but_unretired(git: Git, record: CoordinationRecord, base: str) -> bool:
+    """A lane record still marked active whose branch already landed: the tip
+    moved past the lane's start and ``base`` (main) contains it. A lane that has
+    not committed yet keeps its start commit as tip and stays active."""
+    lane = record.payload.get("lane") if isinstance(record.payload, dict) else None
+    if not record.active or not isinstance(lane, dict):
+        return False
+    branch, start = lane.get("branch"), lane.get("base_commit")
+    if not isinstance(branch, str) or not isinstance(start, str):
+        return False
+    tip = _ref_sha(git, f"refs/heads/{branch}")
+    return tip is not None and tip != start and git.is_ancestor(tip, base)
+
+
 def _admit_dispatch(
     git: Any, main: Path, base: str, args: argparse.Namespace, *, task: str = ""
 ):
@@ -801,11 +819,17 @@ def _admit_dispatch(
 
     ledger = git._run(["show", f"{base}:{finding_status.LEDGER_PATH}"]).stdout
     rows = tuple(row.strip() for row in (args.rows or "").split(",") if row.strip())
-    records = [
-        record
-        for record in coordination_records.load_records(main)
-        if record.task != task
-    ]
+    records = []
+    for record in coordination_records.load_records(main):
+        if record.task == task:
+            continue
+        if _landed_but_unretired(git, record, base):
+            # Landed work holds no capacity; `lane retire` still owns cleanup.
+            _say(
+                f"    {record.task} landed in {git.short(base)}; not counted as active"
+            )
+            continue
+        records.append(record)
     try:
         dispatch = dag_dispatch.plan_dispatch(
             finding_status.project(ledger),

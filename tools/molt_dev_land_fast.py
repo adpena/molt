@@ -7,8 +7,9 @@ managed lane, tests that merged tree on the landing's mechanical affected set
 changed-crate Clippy and changed-crate lib tests in every declared cell),
 writes a landing receipt, and pushes one landing commit, whose text the
 receipt generates, with ``--force-with-lease=refs/heads/main:<base>``. A main
-that moved is merged and tested again. See docs/design/landing_queue.md,
-section 9.
+that moved is merged; the static gates and the try-run gates the move can
+affect run again, and the receipt carries the rest from the earlier base.
+See docs/design/landing_queue.md, section 9.
 """
 
 from __future__ import annotations
@@ -21,10 +22,16 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
+from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 from tools import landing_receipt
 from tools.driver_errors import EXIT_FAIL, EXIT_OK, DriverError
 from tools.molt_dev_common import _fail, _ok, _say, _step, _warn
+
+if TYPE_CHECKING:
+    from tools.molt_dev import Git
+    from tools.molt_dev_policy import SelectedGate
 
 # A move of main between test and publication costs one more full test; three
 # attempts bound a run while another actor keeps publishing.
@@ -94,6 +101,7 @@ def _receipt_for(
     head: str,
     controller: str | None,
     started_at: str,
+    prior: dict | None = None,
 ) -> dict:
     from tools.molt_dev_gates import display
 
@@ -108,6 +116,8 @@ def _receipt_for(
         for run in precheck.runs
         for gate in run.gates
     ]
+    if prior is not None:
+        gates += _carried_records(prior, gates)
     # The crate-test gate's typed summary line, never its human text.
     from tools.check_changed_crate_tests import SCHEMA as CRATE_TESTS_SCHEMA
 
@@ -150,6 +160,115 @@ def _receipt_for(
         narrowed=narrowed,
         postsubmit_only=precheck.postsubmit_only,
     )
+
+
+_CARGO_GATE_SCRIPTS = (
+    "tools/check_changed_clippy.py",
+    "tools/check_changed_crate_tests.py",
+)
+
+
+def _changed(git: Git, old: str, new: str) -> list[str]:
+    out = git._run(["diff", "--name-only", old, new]).stdout
+    return [line for line in out.splitlines() if line]
+
+
+def _interaction_rerun(
+    git: Git,
+    repo: Path,
+    *,
+    lane_paths: list[str],
+    tested_base: str,
+    base: str,
+) -> Callable[[SelectedGate], bool]:
+    """Which try-run gates main's move ``tested_base`` -> ``base`` can affect.
+
+    A gate the lane passed on ``tested_base`` keeps its verdict on ``base``
+    unless the move can change it: a pytest cohort the move's own selection
+    also picks, or a Cargo gate when the reverse-dependency closures of the
+    lane's and the move's paths share a package (or either reaches the whole
+    workspace or the toolchain). Any other try-run gate reruns. Chromium's
+    commit queue and TAP make the same trade; postsubmit runs everything.
+    """
+    from tools.check_changed_clippy import Workspace, reach
+    from tools.molt_dev_gates import display
+    from tools.molt_dev_policy import select_landing_gates
+    from tools.molt_dev_queue import queue_paths, recent_postsubmit_failures
+
+    moved_paths = _changed(git, tested_base, base)
+    if not moved_paths:
+        _say(
+            f"    main moved {git.short(tested_base)} -> {git.short(base)} with no path; nothing reruns"
+        )
+        return lambda gate: False
+    _policy, _config, _touched, moved_gates, _matched = select_landing_gates(
+        git,
+        repo,
+        base,
+        tested_base,
+        extra=[],
+        recent_failures=recent_postsubmit_failures(queue_paths(repo)),
+    )
+    moved_cohorts = {display(gate.command) for gate in moved_gates if gate.pytest}
+    cargo: list[bool] = []  # computed on the first Cargo gate
+
+    def cargo_interacts() -> bool:
+        if not cargo:
+            workspace = Workspace.load(repo)
+            lane, moved = reach(workspace, lane_paths), reach(workspace, moved_paths)
+            cargo.append(
+                lane.whole_workspace
+                or moved.whole_workspace
+                or lane.toolchain
+                or moved.toolchain
+                or bool(lane.packages & moved.packages)
+                or bool(lane.projects & moved.projects)
+            )
+            _say(
+                f"    main moved {git.short(tested_base)} -> {git.short(base)}: Cargo reach "
+                + (
+                    "shared; Cargo gates rerun"
+                    if cargo[0]
+                    else "disjoint; Cargo gates carried"
+                )
+            )
+        return cargo[0]
+
+    def rerun(gate: SelectedGate) -> bool:
+        shown = display(gate.command)
+        if gate.pytest:
+            return shown in moved_cohorts
+        if any(script in shown for script in _CARGO_GATE_SCRIPTS):
+            return cargo_interacts()
+        return True
+
+    return rerun
+
+
+def _carried_records(prior: dict, rerun_records: list[dict]) -> list[dict]:
+    """The prior receipt's try-run records the new run did not repeat, each
+    marked with the base it passed on."""
+
+    def identity(command: str) -> str:
+        words = command.split()
+        kept, skip = [], False
+        for word in words:
+            if skip:
+                skip = False
+                continue
+            if word == "--base":
+                skip = True
+                continue
+            kept.append(word)
+        return " ".join(kept)
+
+    ran = {identity(str(record["command"])) for record in rerun_records}
+    # A record carried twice keeps the base it actually passed on.
+    return [
+        {"carried_from_base": prior["base"], **record}
+        for record in prior["gates"]
+        if record["phase"] != "static" and identity(str(record["command"])) not in ran
+    ]
 
 
 def _remote_main(git, remote: str) -> str | None:
@@ -295,6 +414,9 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
             if item.provisioned:
                 _ok(f"{item.name}: provisioned ({item.seconds:.2f} s)")
     session_id = os.environ.get("MOLT_SESSION_ID", "devtool")
+    # The last complete receipt of this run: a later attempt reruns only the
+    # try-run gates main's move since its base can affect.
+    prior: dict | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         _step(f"land --fast attempt {attempt} of {MAX_ATTEMPTS} [{controller}]")
         git.fetch(args.remote, args.branch)
@@ -324,6 +446,17 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
             )
         else:
             started_at = datetime.now(UTC).isoformat(timespec="seconds")
+            rerun = (
+                None
+                if prior is None
+                else _interaction_rerun(
+                    git,
+                    repo,
+                    lane_paths=_changed(git, base, head),
+                    tested_base=str(prior["base"]),
+                    base=base,
+                )
+            )
             precheck = precheck_landing(
                 git,
                 repo,
@@ -331,6 +464,7 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
                 upstream=base,
                 session_id=session_id,
                 budget=FAST_LANDING_BUDGET,
+                rerun=rerun,
             )
             if not precheck.complete:
                 _fail(
@@ -345,9 +479,11 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
                 head=head,
                 controller=controller,
                 started_at=started_at,
+                prior=prior if precheck.carried else None,
             )
             path = landing_receipt.write_receipt(common_dir, receipt)
             _ok(f"receipt {path}")
+        prior = receipt
         if args.no_push:
             _ok(
                 f"tested {git.short(head)} on {git.short(base)} in "

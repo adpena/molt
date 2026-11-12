@@ -62,6 +62,7 @@ import textwrap
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from types import ModuleType
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
     guard_custody_env,
@@ -7013,6 +7014,44 @@ def test_land_static_only_runs_static_gates_and_skips_the_try_run(
         )
 
 
+def test_a_landed_unretired_lane_holds_no_dispatch_capacity(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path]
+) -> None:
+    """`lane start` counts a record as active only while its work is unlanded:
+    a branch whose commits main already contains holds no capacity, a lane
+    that has not committed yet keeps its claim, and unlanded work keeps it."""
+    from tools import molt_dev_lanes
+    from tools.coordination_records import CoordinationRecord
+
+    _, work = origin_and_clone
+    start = _git(work, "rev-parse", "HEAD").stdout.strip()
+    _git(work, "branch", "lane/fresh", start)
+    _git(work, "checkout", "-q", "-b", "lane/landed")
+    _commit_file(work, "landed.txt", "landed\n", "landed work")
+    _git(work, "checkout", "-q", "-b", "lane/unlanded", start)
+    _commit_file(work, "unlanded.txt", "unlanded\n", "unlanded work")
+    _git(work, "checkout", "-q", "--detach", start)
+    _git(work, "merge", "-q", "--ff-only", "lane/landed")
+    main = _git(work, "rev-parse", "HEAD").stdout.strip()
+    git = drv.Git(work)
+
+    def record(branch: str, status: str = "running") -> CoordinationRecord:
+        return CoordinationRecord(
+            task=branch.removeprefix("lane/"),
+            path=work / "coordination.json",
+            payload={
+                "status": status,
+                "lane": {"branch": branch, "base_commit": start},
+            },
+        )
+
+    landed = molt_dev_lanes._landed_but_unretired
+    assert landed(git, record("lane/landed"), main)
+    assert not landed(git, record("lane/fresh"), main)
+    assert not landed(git, record("lane/unlanded"), main)
+    assert not landed(git, record("lane/landed", status="landed"), main)
+
+
 def _land_fast(drv, lane: Path, *extra: str) -> int:
     args = drv.build_parser().parse_args(
         ["land", "--repo", str(lane), "--candidate-controller", "--fast", *extra]
@@ -7313,7 +7352,9 @@ def test_land_fast_retests_when_main_moves_before_publication(
     move = (
         f"if [ ! -e {shlex.quote(str(marker))} ]; then touch {shlex.quote(str(marker))}"
         f" && git -C {shlex.quote(str(mover))} pull -q --no-rebase origin main"
-        f" && git -C {shlex.quote(str(mover))} commit -q --allow-empty --no-verify -m moved"
+        f" && echo moved > {shlex.quote(str(mover / 'moved.txt'))}"
+        f" && git -C {shlex.quote(str(mover))} add moved.txt"
+        f" && git -C {shlex.quote(str(mover))} commit -q --no-verify -m moved"
         f" && git -C {shlex.quote(str(mover))} push -q origin HEAD:main; fi"
         f" && echo try >> {shlex.quote(str(counter))}"
     )
@@ -7327,6 +7368,128 @@ def test_land_fast_retests_when_main_moves_before_publication(
     landed = _remote_main(work)
     moved = _git(mover, "rev-parse", "HEAD").stdout.strip()
     assert _git(lane, "merge-base", "--is-ancestor", moved, landed).returncode == 0
+
+
+def _moving_try_gate(
+    origin: Path, tmp_path: Path, counter: Path, *, path: str | None, label: str
+) -> str:
+    """A try gate whose first run publishes a commit to main touching ``path``
+    (none: an empty commit), as a concurrent landing would."""
+    mover = tmp_path / "mover"
+    _git(tmp_path, "clone", "-q", str(origin), str(mover))
+    _git(mover, "config", "user.email", "mover@example.test")
+    _git(mover, "config", "user.name", "Mover")
+    marker = tmp_path / "moved-once"
+    change = (
+        f" && mkdir -p {shlex.quote(str((mover / path).parent))}"
+        f" && echo moved > {shlex.quote(str(mover / path))}"
+        f" && git -C {shlex.quote(str(mover))} add {shlex.quote(path)}"
+        f" && git -C {shlex.quote(str(mover))} commit -q --no-verify -m moved"
+        if path is not None
+        else f" && git -C {shlex.quote(str(mover))} commit -q --allow-empty --no-verify -m moved"
+    )
+    return (
+        f"if [ ! -e {shlex.quote(str(marker))} ]; then touch {shlex.quote(str(marker))}"
+        f" && git -C {shlex.quote(str(mover))} pull -q --no-rebase origin main"
+        + change
+        + f" && git -C {shlex.quote(str(mover))} push -q origin HEAD:main; fi"
+        f" && echo {label} >> {shlex.quote(str(counter))}"
+    )
+
+
+def test_land_fast_carries_try_gates_a_pathless_main_move_cannot_affect(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """A main move that changes no path cannot change a verdict: the second
+    attempt reruns the static gates only and the receipt carries the try run
+    with the base it passed on."""
+    from tools import landing_receipt
+
+    origin, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    move = _moving_try_gate(origin, tmp_path, counter, path=None, label="try")
+    _publish_policy(work, _try_run_policy(counter, try_gate=move))
+    first_base = _remote_main(work)
+    lane = work.parent / "lane-fast-carried"
+    _lane(work, "fast-carried", {"a.py": "a = 1\n"})
+
+    assert _land_fast(drv, lane, "--subject", "Land across an empty move") == EXIT_OK
+
+    runs = counter.read_text(encoding="utf-8").split()
+    assert runs.count("try") == 1
+    assert runs.count("static") == 2
+    landed = _remote_main(work)
+    message = _git(lane, "log", "-1", "--format=%B", landed).stdout
+    assert f"Carried from base {first_base[:12]}" in message
+    tested = _git(lane, "rev-parse", f"{landed}^").stdout.strip()
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(lane),
+        tree=_git(lane, "rev-parse", f"{landed}^{{tree}}").stdout.strip(),
+        base=_git(lane, "rev-parse", f"{tested}^2").stdout.strip(),
+    )
+    assert receipt is not None
+    carried = [gate for gate in receipt["gates"] if "carried_from_base" in gate]
+    assert [gate["carried_from_base"] for gate in carried] == [first_base]
+
+
+def test_land_fast_carries_a_cargo_gate_when_no_package_sees_both_changes(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """A move whose paths reach no Cargo package the lane reaches cannot
+    change a Cargo gate's verdict on the lane's packages."""
+    origin, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    move = _moving_try_gate(
+        origin,
+        tmp_path,
+        counter,
+        path="docs/note.md",
+        label="tools/check_changed_clippy.py",
+    )
+    _commit_file(work, "Cargo.toml", "[workspace]\nmembers = []\n", "workspace")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _publish_policy(work, _try_run_policy(counter, try_gate=move))
+    lane = work.parent / "lane-fast-cargo-disjoint"
+    _lane(work, "fast-cargo-disjoint", {"a.py": "a = 1\n"})
+
+    assert _land_fast(drv, lane, "--subject", "Land across a docs move") == EXIT_OK
+
+    assert (
+        counter.read_text(encoding="utf-8")
+        .split()
+        .count("tools/check_changed_clippy.py")
+        == 1
+    )
+
+
+def test_land_fast_reruns_a_cargo_gate_when_the_move_reaches_the_whole_workspace(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """A Cargo gate is carried only when no package compiles both changes; a
+    Rust source outside every package reaches the whole workspace."""
+    origin, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    move = _moving_try_gate(
+        origin,
+        tmp_path,
+        counter,
+        path="shared/support.rs",
+        label="tools/check_changed_clippy.py",
+    )
+    _commit_file(work, "Cargo.toml", "[workspace]\nmembers = []\n", "workspace")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _publish_policy(work, _try_run_policy(counter, try_gate=move))
+    lane = work.parent / "lane-fast-cargo"
+    _lane(work, "fast-cargo", {"a.py": "a = 1\n"})
+
+    assert _land_fast(drv, lane, "--subject", "Land across a Rust move") == EXIT_OK
+
+    assert (
+        counter.read_text(encoding="utf-8")
+        .split()
+        .count("tools/check_changed_clippy.py")
+        == 2
+    )
 
 
 def test_land_fast_no_push_then_push_reuses_the_receipt_for_the_same_tree_and_base(
