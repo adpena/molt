@@ -23,49 +23,63 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
 use molt_ir::runtime_callable_abi_generated::{
     ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
-    runtime_execution_abi,
 };
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use native_ssa::FunctionBuilder;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
 
-/// Declare a runtime boundary using the generated execution ABI authority.
-/// Call emission keeps logical operands until `complete_attached_calls` adds
-/// the invocation's context at the machine ABI boundary.
-fn declare_runtime_execution_function(
-    module: &mut dyn Module,
-    logical: &str,
-    signature: &cranelift_codegen::ir::Signature,
-) -> Result<cranelift_module::FuncId, Box<cranelift_module::ModuleError>> {
-    let abi = runtime_execution_abi(logical).unwrap_or_else(|| {
-        panic!("runtime import `{logical}` has no execution ABI classification")
-    });
-    let mut physical = signature.clone();
-    if abi.context == RuntimeExecutionContext::Attached {
-        physical.params.insert(0, AbiParam::new(types::I64));
+/// The Cranelift signature of a runtime entry, from its generated record
+/// alone: the execution context word first when the entry is attached, then
+/// one parameter per machine type. Call emission keeps logical operands until
+/// `complete_attached_calls` adds the invocation's context.
+fn runtime_signature(
+    module: &dyn Module,
+    function: RuntimeFn,
+    physical: bool,
+) -> cranelift_codegen::ir::Signature {
+    use molt_ir::runtime_fn_generated::RuntimeMachineType;
+    let pointer = module.target_config().pointer_type();
+    let machine = |value: RuntimeMachineType| match value {
+        RuntimeMachineType::Word => types::I64,
+        RuntimeMachineType::Address => pointer,
+        RuntimeMachineType::I32 => types::I32,
+        RuntimeMachineType::F64 => types::F64,
+    };
+    let mut signature = module.make_signature();
+    if physical && function.context() == RuntimeExecutionContext::Attached {
+        signature.params.push(AbiParam::new(types::I64));
     }
-    module
-        .declare_function(abi.physical_symbol, Linkage::Import, &physical)
-        .map_err(Box::new)
+    signature.params.extend(
+        function
+            .param_types()
+            .iter()
+            .map(|&value| AbiParam::new(machine(value))),
+    );
+    signature.returns.extend(
+        function
+            .result_type()
+            .map(|value| AbiParam::new(machine(value))),
+    );
+    signature
 }
 
-/// Python arity remains logical; only the native callable signature carries
-/// its leading context. Runtime callables share their generated declaration.
-fn declare_python_execution_function(
+/// Declare one runtime entry by its generated linker symbol and signature.
+/// The only Cranelift path that names a runtime function to the module.
+fn declare_runtime_function(
     module: &mut dyn Module,
-    logical: &str,
-    linkage: Linkage,
-    signature: &cranelift_codegen::ir::Signature,
-) -> Result<cranelift_module::FuncId, Box<cranelift_module::ModuleError>> {
-    if runtime_execution_abi(logical).is_some() {
-        return declare_runtime_execution_function(module, logical, signature);
-    }
-    assert!(
-        molt_ir::runtime_fn_generated::runtime_boxed_abi(logical, signature.params.len()).is_none(),
-        "runtime callable `{logical}` has no execution ABI classification"
-    );
-    declare_compiled_execution_function(module, logical, linkage, signature)
+    function: RuntimeFn,
+) -> cranelift_module::FuncId {
+    let signature = runtime_signature(module, function, true);
+    module
+        .declare_function(function.linker_symbol(), Linkage::Import, &signature)
+        .unwrap_or_else(|error| {
+            panic!(
+                "runtime entry `{}` declaration conflicts in this module: {error}",
+                function.symbol()
+            )
+        })
 }
 
 /// A compiled application function: its physical symbol carries the attached

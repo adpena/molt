@@ -80,10 +80,10 @@ fn removed_runtime_delegates_fail_before_phantom_imports() {
     ] {
         let (err, backend) =
             lowering_error_for_single_op("removed_runtime_delegate", dialect, opcode, operands);
-        assert_lowering_error_contains(&err, symbol);
+        assert_lowering_error_contains(&err, "no runtime delegate");
         assert_lowering_error_contains(&err, message);
         assert!(
-            backend.module.get_execution_function(symbol).is_none(),
+            backend.module.get_compiled_function(symbol).is_none(),
             "{symbol} must not be declared as a phantom runtime import"
         );
     }
@@ -107,7 +107,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(expected.into());
+        admit_runtime_entry(&mut backend, &expected);
         let mut func = TirFunction::new(
             format!("iterator_{call_name}"),
             vec![],
@@ -317,117 +317,18 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
 }
 
 #[test]
-#[should_panic(expected = "LLVM function type mismatch for `molt_frame_record_exit`")]
-fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
-    let ctx = Context::create();
-    let backend = LlvmBackend::new(&ctx, "test");
-    backend.module.add_compiled_function(
-        "molt_frame_record_exit",
-        ctx.void_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let dummy = TirFunction::new(
-        "dummy_runtime_symbol".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy_runtime_symbol",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-
-    let _ = lowering.ensure_runtime_i64_fn("molt_frame_record_exit", 1);
-}
-
-#[test]
-#[should_panic(expected = "LLVM function type mismatch for `molt_inc_ref_obj`")]
-fn llvm_symbol_signature_mismatch_rejects_runtime_void_reuse() {
-    let ctx = Context::create();
-    let backend = LlvmBackend::new(&ctx, "test");
-    backend.module.add_compiled_function(
-        "molt_inc_ref_obj",
-        ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let dummy = TirFunction::new(
-        "dummy_runtime_void_symbol".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy_runtime_void_symbol",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-
-    let _ = lowering.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
-}
-
-#[test]
-fn on_demand_runtime_declaration_uses_conservative_attributes() {
-    let ctx = Context::create();
-    let backend = LlvmBackend::new(&ctx, "test");
-    let dummy = TirFunction::new(
-        "dummy_runtime_attrs".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy_runtime_attrs",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-
-    let func = lowering.ensure_runtime_i64_fn("molt_abs_builtin", 1);
-
-    assert!(has_fn_attr(func, "nounwind"));
-    assert!(
-        lacks_fn_attr(func, "willreturn"),
-        "ad-hoc runtime declarations must not claim termination"
-    );
-}
-
-#[test]
-#[should_panic(
-    expected = "LLVM runtime import `molt_unclassified_runtime_symbol` has no execution ABI"
-)]
-fn unclassified_runtime_declaration_rejects_new_symbol_drift() {
-    let ctx = Context::create();
-    let backend = LlvmBackend::new(&ctx, "test");
-    let dummy = TirFunction::new(
-        "dummy_runtime_reject".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let dummy_fn = backend.module.add_compiled_function(
-        "dummy_runtime_reject",
-        ctx.i64_type().fn_type(&[], false),
-        Some(inkwell::module::Linkage::External),
-    );
-    let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-
-    let _ = lowering.ensure_runtime_i64_fn("molt_unclassified_runtime_symbol", 2);
-}
-
-#[test]
 fn preserved_runtime_call_rejects_name_only_symbol_drift() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-        .insert("molt_binop".to_string());
+    // `binop` names no runtime entry, so the spelled admission adds nothing
+    // and no symbol is formatted from the kind.
+    admit_runtime_entry(&mut backend, "molt_binop");
+    assert!(molt_ir::runtime_fn_generated::preserved_op_runtime_fn(OpKind::Binop).is_none());
 
     let err = lower_preserved_kind_ir(&backend, OpKind::Binop, 2, true, None)
-        .expect_err("name-only preserved runtime symbols must fail before LLVM declaration");
-    assert_lowering_error_contains(&err, "has no positional boxed-value ABI classification");
-    assert_lowering_error_contains(&err, "molt_binop");
+        .expect_err("a kind with no runtime entry must fail before LLVM declaration");
+    assert_lowering_error_contains(&err, "binop");
+    assert!(backend.module.get_function("molt_binop").is_none());
 }
 
 #[test]

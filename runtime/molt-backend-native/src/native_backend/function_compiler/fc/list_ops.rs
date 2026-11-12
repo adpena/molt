@@ -32,7 +32,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_list_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -46,10 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -111,12 +108,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("list_int_new: fill_value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_int_new",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListIntNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*count, *fill]);
@@ -149,12 +144,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("list_fill_new: fill_value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_fill_new",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListFillNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*count, *fill]);
@@ -198,12 +191,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List-from-range step not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_from_range",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListFromRange,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
@@ -237,12 +228,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
                 &args[1],
             );
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_append",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListAppend,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list, val]);
@@ -275,12 +264,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List pop index not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_pop",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListPop,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list, *idx]);
@@ -313,12 +300,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List extend iterable not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_extend",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListExtend,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list, *other]);
@@ -362,12 +347,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List insert value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_insert",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListInsert,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list, *idx, *val]);
@@ -400,12 +383,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List remove value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_remove",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListRemove,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list, *val]);
@@ -427,12 +408,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_clear",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ListClear,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list]);
@@ -454,12 +433,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_copy",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ListCopy,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list]);
@@ -481,12 +458,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_reverse",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ListReverse,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list]);
@@ -519,12 +494,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List count value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_count",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListCount,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list, *val]);
@@ -557,12 +530,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List index value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_index",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListIndex,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list, *val]);
@@ -617,12 +588,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("List index stop not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_list_index_range",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ListIndexRange,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -646,12 +615,10 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 representation_plan,
             )
             .expect("Tuple source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_tuple_from_list",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::TupleFromList,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*list]);

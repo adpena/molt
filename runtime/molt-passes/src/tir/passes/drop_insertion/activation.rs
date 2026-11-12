@@ -111,8 +111,15 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
         let ready_block = func.fresh_block();
         let mut poll = make_op(OpCode::Call, vec![future]);
         poll.results.push(result);
-        poll.attrs
-            .insert("s_value".into(), AttrValue::Str("molt_future_poll".into()));
+        poll.attrs.insert(
+            "s_value".into(),
+            AttrValue::Str(
+                molt_ir::runtime_fn_generated::RuntimeFn::FuturePoll
+                    .symbol()
+                    .into(),
+            ),
+        );
+        poll.runtime = Some(molt_ir::runtime_fn_generated::RuntimeFn::FuturePoll);
         poll.source_span = op.source_span;
         let mut test = make_op(OpCode::IsPending, vec![result]);
         test.results.push(condition);

@@ -216,7 +216,6 @@ lint = [
     "{project_python} tools/gen_runtime_profile_schema.py --check",
     "{project_python} tools/audit_op_kinds.py --check",
     "{project_python} tools/gen_wasm_abi.py --check",
-    "{project_python} tools/llvm_runtime_abi_audit.py --check",
     "@subprocess-guard-audit",
     "@memory-guard-wiring-audit",
     "@dev-tooling-test",

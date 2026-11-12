@@ -58,6 +58,11 @@ pub(super) fn annotate_lowered_op(
     // The module global slot a read or store names (call_anatomy.md 4.5) is
     // a typed transport fact; every relift and back-conversion keeps it.
     opir.global_slot = tir_op.global_slot();
+    // The typed runtime call target decoded at ingest (HF-821 B1). A lowering
+    // that itself targets a runtime entry has already set it.
+    if tir_op.runtime.is_some() {
+        opir.runtime = tir_op.runtime;
+    }
     opir.passes_execution_context = matches!(
         tir_op.attrs.get("passes_execution_context"),
         Some(AttrValue::Bool(true))

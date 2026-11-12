@@ -559,26 +559,22 @@ impl SimpleBackend {
         });
         let pending_work_slots = work_ptr_slot.zip(thread_record_slot);
         let local_profile_struct = needs_field_store_profile.then(|| {
-            import_func_ref(
+            import_runtime_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
-                "molt_profile_struct_field_store",
-                &[],
-                &[],
+                RuntimeFn::ProfileStructFieldStore,
             )
         });
         let local_profile_enabled = (needs_field_store_profile || guard_facts.has_profile_only())
             .then(|| {
-                import_func_ref(
+                import_runtime_func_ref(
                     &mut self.module,
                     &mut self.import_ids,
                     &mut builder,
                     &mut import_refs,
-                    "molt_profile_enabled",
-                    &[],
-                    &[types::I64],
+                    RuntimeFn::ProfileEnabled,
                 )
             });
 
@@ -608,24 +604,19 @@ impl SimpleBackend {
             self.module.define_data(data_id, &data_ctx).unwrap();
             trace_data = Some((data_id, func_ir.name.len() as i64));
 
-            trace_func = Some(import_func_ref(
+            trace_func = Some(import_runtime_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
-                "molt_debug_trace",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::DebugTrace,
             ));
         }
 
         let nbc = NanBoxConsts::new();
 
         let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                           import_ids: &mut BTreeMap<
-            &'static str,
-            (cranelift_module::FuncId, ImportSignatureShape),
-        >,
+                                           import_ids: &mut RuntimeImportIds,
                                            builder: &mut FunctionBuilder<'_>,
                                            import_refs: &mut NativeFunctionImports,
                                            sealed_blocks: &mut BTreeSet<Block>,
@@ -1550,7 +1541,7 @@ impl SimpleBackend {
                         shared::emit_operand_transaction_call(
                             &op,
                             args,
-                            abi.symbol(),
+                            abi.function,
                             &mut self.module,
                             &mut self.import_ids,
                             &mut builder,

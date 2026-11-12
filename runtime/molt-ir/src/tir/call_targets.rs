@@ -1,30 +1,64 @@
 use super::op_kinds_generated::{SimpleIrCallTargetRole, simpleir_call_target_role};
 use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
+use crate::runtime_fn_generated::RuntimeFn;
 
 /// One identity/result authority for lifting and every TIR GPU call consumer.
-const GPU_RUNTIME_INTRINSICS: &[(crate::OpKind, &str, TirType)] = &[
+const GPU_RUNTIME_INTRINSICS: &[(crate::OpKind, RuntimeFn, TirType)] = &[
     (
         crate::OpKind::GpuThreadId,
-        "molt_gpu_thread_id",
+        RuntimeFn::GpuThreadId,
         TirType::I64,
     ),
-    (crate::OpKind::GpuBlockId, "molt_gpu_block_id", TirType::I64),
+    (
+        crate::OpKind::GpuBlockId,
+        RuntimeFn::GpuBlockId,
+        TirType::I64,
+    ),
     (
         crate::OpKind::GpuBlockDim,
-        "molt_gpu_block_dim",
+        RuntimeFn::GpuBlockDim,
         TirType::I64,
     ),
-    (crate::OpKind::GpuGridDim, "molt_gpu_grid_dim", TirType::I64),
-    (crate::OpKind::GpuBarrier, "molt_gpu_barrier", TirType::None),
+    (
+        crate::OpKind::GpuGridDim,
+        RuntimeFn::GpuGridDim,
+        TirType::I64,
+    ),
+    (
+        crate::OpKind::GpuBarrier,
+        RuntimeFn::GpuBarrier,
+        TirType::None,
+    ),
 ];
 
-/// Runtime helper symbol produced when SimpleIR GPU intrinsics are lifted into
+/// Runtime helper produced when SimpleIR GPU intrinsics are lifted into
 /// first-class TIR `Call` ops.
-pub fn gpu_runtime_symbol_for_simple_kind(kind: crate::OpKind) -> Option<&'static str> {
+pub fn gpu_runtime_fn_for_simple_kind(kind: crate::OpKind) -> Option<RuntimeFn> {
     GPU_RUNTIME_INTRINSICS
         .iter()
-        .find_map(|(source, symbol, _)| (*source == kind).then_some(*symbol))
+        .find_map(|(source, function, _)| (*source == kind).then_some(*function))
+}
+
+/// The runtime entry a SimpleIR operation executes, decoded once at TIR
+/// ingest (HF-821 B1). A GPU intrinsic names its fixed helper; a call whose
+/// generated role admits a runtime target (`call`), `builtin_func` and
+/// `call_async` (its poll function) name theirs in `s_value`. Every other operation, including `call_internal`
+/// (always a compiled function), has none. The result travels on the op's
+/// typed `runtime` field; no backend decodes a symbol.
+pub fn ingest_runtime_target(op: &crate::OpIR) -> Option<RuntimeFn> {
+    if let Some(function) = gpu_runtime_fn_for_simple_kind(op.kind) {
+        return Some(function);
+    }
+    let names_runtime = matches!(
+        op.kind,
+        crate::OpKind::BuiltinFunc | crate::OpKind::CallAsync
+    ) || simpleir_call_target_role(op.kind)
+        == Some(SimpleIrCallTargetRole::ExternalOrRuntime);
+    if !names_runtime {
+        return None;
+    }
+    RuntimeFn::from_symbol(op.s_value.as_deref()?)
 }
 
 /// A statically named call target, never an opaque call's incidental string.
@@ -52,7 +86,8 @@ pub fn direct_call_symbol_for_op(op: &TirOp) -> Option<&str> {
             ) => Some(symbol),
             Some(SimpleIrCallTargetRole::Opaque) => None,
             None => (op.opcode == OpCode::Call
-                && gpu_runtime_symbol_for_simple_kind(kind) == Some(symbol.as_str()))
+                && gpu_runtime_fn_for_simple_kind(kind).map(RuntimeFn::symbol)
+                    == Some(symbol.as_str()))
             .then_some(symbol.as_str()),
         },
     }
@@ -74,7 +109,7 @@ pub fn gpu_runtime_result_type_for_op(op: &TirOp) -> Option<TirType> {
     GPU_RUNTIME_INTRINSICS
         .iter()
         .find_map(|(source, runtime, ty)| {
-            (*source == kind && *runtime == symbol).then(|| ty.clone())
+            (*source == kind && runtime.symbol() == symbol).then(|| ty.clone())
         })
 }
 
@@ -116,7 +151,10 @@ mod tests {
             (crate::OpKind::GpuGridDim, "molt_gpu_grid_dim", TirType::I64),
             (crate::OpKind::GpuBarrier, "molt_gpu_barrier", TirType::None),
         ] {
-            assert_eq!(gpu_runtime_symbol_for_simple_kind(kind), Some(symbol));
+            assert_eq!(
+                gpu_runtime_fn_for_simple_kind(kind).map(RuntimeFn::symbol),
+                Some(symbol)
+            );
             let intrinsic = call(symbol, Some(kind));
             assert_eq!(direct_call_symbol_for_op(&intrinsic), Some(symbol));
             assert_eq!(
@@ -133,10 +171,7 @@ mod tests {
                 assert_eq!(gpu_runtime_result_type_for_op(&op), None);
             }
         }
-        assert_eq!(
-            gpu_runtime_symbol_for_simple_kind(crate::OpKind::Call),
-            None
-        );
+        assert_eq!(gpu_runtime_fn_for_simple_kind(crate::OpKind::Call), None);
         assert_eq!(
             gpu_runtime_result_type_for_op(&call("user_function", None)),
             None
@@ -211,5 +246,57 @@ mod tests {
         assert_eq!(gpu_runtime_result_type_for_op(&op), None);
         op.origin = Some(crate::OpKind::GpuThreadId);
         assert_eq!(gpu_runtime_result_type_for_op(&op), Some(TirType::I64));
+    }
+
+    fn simple(kind: crate::OpKind, symbol: Option<&str>) -> crate::OpIR {
+        crate::OpIR {
+            s_value: symbol.map(Into::into),
+            ..crate::OpIR::new(kind)
+        }
+    }
+
+    /// The ingest decode types exactly the ops whose role names a runtime
+    /// target, and nothing it could mistake for one (HF-821 B1).
+    #[test]
+    fn ingest_types_runtime_targets_by_role() {
+        use crate::OpKind;
+        let len = RuntimeFn::Len.symbol();
+        assert_eq!(
+            ingest_runtime_target(&simple(OpKind::Call, Some(len))),
+            Some(RuntimeFn::Len)
+        );
+        assert_eq!(
+            ingest_runtime_target(&simple(OpKind::BuiltinFunc, Some(len))),
+            Some(RuntimeFn::Len)
+        );
+        assert_eq!(
+            ingest_runtime_target(&simple(
+                OpKind::CallAsync,
+                Some(RuntimeFn::AsyncSleep.symbol())
+            )),
+            Some(RuntimeFn::AsyncSleep)
+        );
+        assert_eq!(
+            ingest_runtime_target(&simple(OpKind::GpuThreadId, None)),
+            Some(RuntimeFn::GpuThreadId)
+        );
+        // A compiled callee, an internal call and an opaque call never gain a
+        // runtime identity, even when the spelling matches an entry.
+        assert_eq!(
+            ingest_runtime_target(&simple(OpKind::Call, Some("module__f"))),
+            None
+        );
+        assert_eq!(
+            ingest_runtime_target(&simple(OpKind::CallInternal, Some(len))),
+            None
+        );
+        assert_eq!(
+            ingest_runtime_target(&simple(OpKind::CallFunc, Some(len))),
+            None
+        );
+        assert_eq!(
+            ingest_runtime_target(&simple(OpKind::ConstStr, Some(len))),
+            None
+        );
     }
 }

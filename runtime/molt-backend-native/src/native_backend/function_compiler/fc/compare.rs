@@ -24,7 +24,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_compare_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -38,10 +38,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -152,12 +149,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, slow_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_lt",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Lt,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
@@ -277,12 +272,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, slow_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_le",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Le,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
@@ -402,12 +395,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, slow_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_gt",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Gt,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
@@ -527,12 +518,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, slow_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_ge",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Ge,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
@@ -654,12 +643,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, slow_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_eq",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Eq,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -760,12 +747,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, slow_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_ne",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Ne,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -812,12 +797,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             )
             .expect("RHS not found");
             // Use the fast path: pointer-identity check before byte scan.
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_eq_fast",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringEqFast,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);

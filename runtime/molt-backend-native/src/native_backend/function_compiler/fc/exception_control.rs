@@ -33,7 +33,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     is_block_filled: &mut bool,
     rc_authority: NativeRcAuthority,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -59,10 +59,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -103,12 +100,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 representation_plan,
             )
             .expect("Exception not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_raise",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::Raise,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*exc]);
@@ -234,12 +229,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough);
             let cond = if op.is_async_work_poll() {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_async_work_poll_and_exception_pending",
-                    &[],
-                    &[types::I64],
+                    RuntimeFn::AsyncWorkPollAndExceptionPending,
                 );
                 let callee = module.declare_func_in_func(callee, builder.func);
                 let (word, record) =
@@ -290,12 +283,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                         );
                         emit_frame_location_store(builder, homes, location);
                     }
-                    let service = SimpleBackend::import_func_id_split(
+                    let service = SimpleBackend::import_runtime_func_id_split(
                         module,
                         import_ids,
-                        "molt_exception_frame_origin",
-                        &[types::I64],
-                        &[types::I64],
+                        RuntimeFn::ExceptionFrameOrigin,
                     );
                     let service = module.declare_func_in_func(service, builder.func);
                     builder.ins().call(service, &[homes]);

@@ -28,7 +28,7 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
 pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -40,10 +40,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
     let op_prefers_int_lane =
         |op: &OpIR| super::op_prefers_int_lane(scalar_fast_paths_enabled, representation_plan, op);
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -116,7 +113,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *sealed_blocks,
                         *lhs,
                         *rhs,
-                        "molt_bit_or",
+                        RuntimeFn::BitOr,
                         BoxedBitwiseOp::Or,
                         nbc,
                     )
@@ -144,12 +141,10 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_bit_or",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::BitOr,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -225,17 +220,15 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *sealed_blocks,
                     *lhs,
                     *rhs,
-                    "molt_inplace_bit_or",
+                    RuntimeFn::InplaceBitOr,
                     BoxedBitwiseOp::Or,
                     nbc,
                 )
             } else {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_inplace_bit_or",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::InplaceBitOr,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -328,7 +321,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *sealed_blocks,
                         *lhs,
                         *rhs,
-                        "molt_bit_and",
+                        RuntimeFn::BitAnd,
                         BoxedBitwiseOp::And,
                         nbc,
                     )
@@ -356,12 +349,10 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_bit_and",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::BitAnd,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -437,17 +428,15 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *sealed_blocks,
                     *lhs,
                     *rhs,
-                    "molt_inplace_bit_and",
+                    RuntimeFn::InplaceBitAnd,
                     BoxedBitwiseOp::And,
                     nbc,
                 )
             } else {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_inplace_bit_and",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::InplaceBitAnd,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -540,7 +529,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *sealed_blocks,
                         *lhs,
                         *rhs,
-                        "molt_bit_xor",
+                        RuntimeFn::BitXor,
                         BoxedBitwiseOp::Xor,
                         nbc,
                     )
@@ -568,12 +557,10 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_bit_xor",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::BitXor,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -649,17 +636,15 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *sealed_blocks,
                     *lhs,
                     *rhs,
-                    "molt_inplace_bit_xor",
+                    RuntimeFn::InplaceBitXor,
                     BoxedBitwiseOp::Xor,
                     nbc,
                 )
             } else {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_inplace_bit_xor",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::InplaceBitXor,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -708,9 +693,9 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
             // before the binary __lshift__/__rlshift__ chain); builtin int
             // has no in-place dunder so there is no fast-lane divergence.
             let boxed_sym = if op.kind == OpKind::InplaceLshift {
-                "molt_inplace_lshift"
+                RuntimeFn::InplaceLshift
             } else {
-                "molt_lshift"
+                RuntimeFn::Lshift
             };
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
@@ -735,12 +720,10 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 representation_plan,
             )
             .expect("RHS not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
                 boxed_sym,
-                &[types::I64, types::I64],
-                &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -753,9 +736,9 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
             // `>>` and `>>=`.  Inplace variant: molt_inplace_rshift tries
             // __irshift__ before the binary chain.
             let boxed_sym = if op.kind == OpKind::InplaceRshift {
-                "molt_inplace_rshift"
+                RuntimeFn::InplaceRshift
             } else {
-                "molt_rshift"
+                RuntimeFn::Rshift
             };
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
@@ -780,12 +763,10 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 representation_plan,
             )
             .expect("RHS not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
                 boxed_sym,
-                &[types::I64, types::I64],
-                &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);

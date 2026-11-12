@@ -4,11 +4,11 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_build_list(&mut self, op: &TirOp) {
-        self.emit_fixed_sequence(op, "molt_list_from_values");
+        self.emit_fixed_sequence(op, RuntimeFn::ListFromValues);
     }
 
     pub(super) fn emit_build_tuple(&mut self, op: &TirOp) {
-        self.emit_fixed_sequence(op, "molt_tuple_from_values");
+        self.emit_fixed_sequence(op, RuntimeFn::TupleFromValues);
     }
 
     pub(super) fn emit_build_dict(&mut self, op: &TirOp) {
@@ -39,19 +39,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_int_to_ptr(values, ptr_ty, "dict_values_ptr")
                     .unwrap();
-                let constructor = this.ensure_runtime_decl(
-                    "molt_dict_from_pairs",
-                    this.backend.context.i64_type().fn_type(
-                        &[
-                            ptr_ty.into(),
-                            ptr_ty.into(),
-                            this.backend.context.i64_type().into(),
-                        ],
-                        false,
-                    ),
-                    3,
-                    RuntimeReturnAbi::I64,
-                );
+                let constructor = this.ensure_runtime_import(RuntimeFn::DictFromPairs);
                 this.backend
                     .builder
                     .build_execution_call(
@@ -70,12 +58,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Fixed-arity lists and tuples: one constructor transaction over one
     /// borrowed word range. The runtime copies and retains every word and
     /// returns None only with an exception pending.
-    fn emit_fixed_sequence(&mut self, op: &TirOp, constructor_symbol: &str) {
+    fn emit_fixed_sequence(&mut self, op: &TirOp, constructor_symbol: RuntimeFn) {
         let result =
             self.with_borrowed_boxed_operands(&op.operands, "sequence", |this, words, name| {
                 let (address, count) =
                     this.store_borrowed_word_range(words.iter().copied(), "sequence_values");
-                let constructor = this.ensure_runtime_i64_fn(constructor_symbol, 2);
+                let constructor = this.ensure_runtime_import(constructor_symbol);
                 this.build_constructor_call(constructor, &[address, count], name)
             });
         self.bind_owned_runtime_result(op, result);
@@ -99,7 +87,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .store_borrowed_word_range(words[1..1 + nbases].iter().copied(), "class_bases");
                 let (attrs, _) = this
                     .store_borrowed_word_range(words[1 + nbases..].iter().copied(), "class_attrs");
-                let constructor = this.ensure_runtime_i64_fn("molt_guarded_class_def", 8);
+                let constructor = this.ensure_runtime_import(RuntimeFn::GuardedClassDef);
                 this.build_constructor_call(
                     constructor,
                     &[
@@ -176,11 +164,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_build_set(&mut self, op: &TirOp) {
-        self.emit_owned_set_aggregate(op, "molt_set_new", "molt_set_add");
+        self.emit_owned_set_aggregate(op, RuntimeFn::SetNew, RuntimeFn::SetAdd);
     }
 
     pub(super) fn emit_build_frozenset(&mut self, op: &TirOp) {
-        self.emit_owned_set_aggregate(op, "molt_frozenset_new", "molt_frozenset_add");
+        self.emit_owned_set_aggregate(op, RuntimeFn::FrozensetNew, RuntimeFn::FrozensetAdd);
     }
 
     /// Incremental construction owns the actual set/frozenset from allocation to
@@ -192,13 +180,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// insertion releases the partial aggregate and every minted box while the
     /// first exception stays pending. No scratch heap kind, borrowed-edge builder
     /// or finish lane exists.
-    fn emit_owned_set_aggregate(&mut self, op: &TirOp, new_symbol: &str, mutate_symbol: &str) {
+    fn emit_owned_set_aggregate(
+        &mut self,
+        op: &TirOp,
+        new_symbol: RuntimeFn,
+        mutate_symbol: RuntimeFn,
+    ) {
         let i64_ty = self.backend.context.i64_type();
         let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
         let mut custody = self.begin_borrowed_operands(&op.operands, "aggregate");
         let capacity = op.operands.len() as u64;
         // Hash-aggregate constructors share one raw usize-capacity ABI.
-        let new_fn = self.ensure_runtime_i64_fn(new_symbol, 1);
+        let new_fn = self.ensure_runtime_import(new_symbol);
         let aggregate = self
             .backend
             .builder
@@ -222,9 +215,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             )
             .unwrap();
         self.borrowed_operands_continue_if(&mut custody, created, "ready");
-        let mutate = self.ensure_runtime_i64_fn(mutate_symbol, 2);
-        let mutation_return = runtime_boxed_abi(mutate_symbol, 2)
-            .unwrap_or_else(|| panic!("hash aggregate mutator {mutate_symbol} has no boxed ABI"))
+        let mutate = self.ensure_runtime_import(mutate_symbol);
+        let mutation_return = mutate_symbol
+            .boxed_abi()
+            .filter(|abi| abi.arity() == 2)
+            .unwrap_or_else(|| {
+                panic!(
+                    "hash aggregate mutator {} has no boxed ABI",
+                    mutate_symbol.symbol()
+                )
+            })
             .result;
         let release = self
             .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
@@ -246,7 +246,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 RuntimeBoxedReturn::BorrowedValue => {}
                 RuntimeBoxedReturn::Void => {
-                    panic!("hash aggregate mutator {mutate_symbol} cannot return void")
+                    panic!(
+                        "hash aggregate mutator {} cannot return void",
+                        mutate_symbol.symbol()
+                    )
                 }
             }
             self.borrowed_operands_continue_if_clear(&mut custody, "inserted");
@@ -282,7 +285,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result =
             self.with_borrowed_boxed_operands(&op.operands, "slice", |this, words, name| {
                 let bound = |index: usize| words.get(index).copied().unwrap_or(none);
-                let constructor = this.ensure_runtime_i64_fn("molt_slice_new", 3);
+                let constructor = this.ensure_runtime_import(RuntimeFn::SliceNew);
                 this.build_constructor_call(constructor, &[bound(0), bound(1), bound(2)], name)
             });
         self.bind_owned_runtime_result(op, result);
@@ -297,7 +300,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_iter_next(&mut self, op: &TirOp) {
-        let abi = runtime_boxed_abi("molt_iter_next", 1)
+        let abi = RuntimeFn::IterNext
+            .boxed_abi()
+            .filter(|abi| abi.arity() == 1)
             .expect("molt_iter_next must have a generated boxed ABI");
         self.emit_boxed_runtime_call(op, abi);
     }
@@ -317,7 +322,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // the back-edge `BranchInst` would be needed.
         let _ = has_attr(op, "vectorize");
 
-        let abi = runtime_boxed_abi("molt_iter_next", 1)
+        let abi = RuntimeFn::IterNext
+            .boxed_abi()
+            .filter(|abi| abi.arity() == 1)
             .expect("molt_iter_next must have a generated boxed ABI");
         self.emit_boxed_runtime_call(op, abi);
     }
@@ -341,7 +348,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_ptr_to_int(val_ptr, i64_ty, "iter_next_unboxed_value_ptr")
             .unwrap();
-        let iter_next_fn = self.ensure_runtime_i64_fn("molt_iter_next_unboxed", 2);
+        let iter_next_fn = self.ensure_runtime_import(RuntimeFn::IterNextUnboxed);
         let call_name = if custody.can_fail() {
             "iter_next_unboxed_call"
         } else {

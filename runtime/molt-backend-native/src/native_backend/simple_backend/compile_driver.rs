@@ -109,11 +109,7 @@ impl SimpleBackend {
             let context = inkwell::context::Context::create();
             let mut llvm = LlvmBackend::new(&context, "molt_module");
 
-            // Declare all runtime functions that lowered code may call into.
-            crate::llvm_backend::runtime_imports::declare_runtime_functions(
-                llvm.context,
-                &llvm.module,
-            );
+            // Runtime functions are declared on first use by typed identity.
 
             let func_count = ir.functions.iter().filter(|f| !f.is_extern).count();
             let total_ops: usize = ir
@@ -495,7 +491,7 @@ impl SimpleBackend {
             if signature.returns_value {
                 cranelift_signature.returns.push(AbiParam::new(types::I64));
             }
-            declare_python_execution_function(&mut self.module, name, Linkage::Import, &cranelift_signature)
+            declare_compiled_execution_function(&mut self.module, name, Linkage::Import, &cranelift_signature)
                 .unwrap_or_else(|error| {
                     panic!(
                         "Cranelift extern declaration mismatch for `{name}`: expected {} parameter(s), returns_value={}: {error}",

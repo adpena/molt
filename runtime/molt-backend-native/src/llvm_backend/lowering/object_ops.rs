@@ -64,7 +64,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result_id = op.results[0];
         let original_kind = op.origin;
         if matches!(original_kind, Some(OpKind::GetAttrName)) && op.operands.len() >= 2 {
-            let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_name", 2);
+            let get_fn = self.ensure_runtime_import(RuntimeFn::GetAttrName);
             let val = self.borrowed_runtime_call_value(
                 get_fn,
                 &[
@@ -164,7 +164,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
 
             self.backend.builder.position_at_end(runtime_bb);
-            let get_fn = self.ensure_runtime_i64_fn("molt_object_field_get_ptr", 2);
+            let get_fn = self.ensure_runtime_import(RuntimeFn::ObjectFieldGetPtr);
             let runtime_val = self
                 .backend
                 .builder
@@ -227,7 +227,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 })
                 .unwrap_or(0);
             let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
-            let get_fn = self.ensure_runtime_i64_fn("molt_guarded_field_get", 6);
+            let get_fn = self.ensure_runtime_import(RuntimeFn::GuardedFieldGet);
             let offset_bits = self
                 .backend
                 .context
@@ -269,27 +269,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let site_kind = original_kind
             .filter(|kind| matches!(*kind, OpKind::GetAttrGenericObj | OpKind::GetAttrGenericPtr));
         let val = if let Some(site_kind) = site_kind {
-            let runtime_name = "molt_get_attr_object_ic";
-            let i64_ty = self.backend.context.i64_type();
-            let ptr_ty = self
-                .backend
-                .context
-                .ptr_type(inkwell::AddressSpace::default());
-            let fn_ty = i64_ty.fn_type(
-                &[i64_ty.into(), ptr_ty.into(), i64_ty.into(), i64_ty.into()],
-                false,
-            );
-            let get_fn = declare_fixed_runtime_function(
-                self.backend.context,
-                &self.backend.module,
-                runtime_name,
-            )
-            .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
-            let get_fn = require_llvm_function_type(
-                runtime_name,
-                get_fn,
-                runtime_execution_type(runtime_name, fn_ty),
-            );
+            let runtime_name = RuntimeFn::GetAttrObjectIc;
+            let get_fn = self.ensure_runtime_import(runtime_name);
             let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
             let site_bits = self.source_call_site_bits(op, site_kind.as_str());
             let call_args_generic = [
@@ -300,21 +281,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ];
             self.backend
                 .builder
-                .build_execution_call(get_fn, &call_args_generic, runtime_name)
+                .build_execution_call(get_fn, &call_args_generic, runtime_name.symbol())
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
                 .into_int_value()
         } else {
-            let runtime_name = "molt_get_attr_name";
-            let get_fn = self.ensure_runtime_i64_fn(runtime_name, 2);
+            let runtime_name = RuntimeFn::GetAttrName;
+            let get_fn = self.ensure_runtime_import(runtime_name);
             self.with_owned_name(attr_name, |this, name_bits| {
                 this.backend
                     .builder
                     .build_execution_call(
                         get_fn,
                         &[obj_bits.into(), name_bits.into()],
-                        runtime_name,
+                        runtime_name.symbol(),
                     )
                     .unwrap()
                     .try_as_basic_value()
@@ -335,7 +316,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // Attribute setters borrow the receiver and value and return the
         // immortal None, so a discarded result needs no release.
         if matches!(original_kind, Some(OpKind::SetAttrName)) && op.operands.len() >= 3 {
-            let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
+            let set_fn = self.ensure_runtime_import(RuntimeFn::SetAttrName);
             self.emit_borrowed_runtime_call(
                 op,
                 set_fn,
@@ -436,7 +417,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
             // Slow path: owning value or dictionary backing — runtime call.
             self.backend.builder.position_at_end(slow_bb);
-            let set_fn = self.ensure_runtime_i64_fn("molt_object_field_set", 3);
+            let set_fn = self.ensure_runtime_import(RuntimeFn::ObjectFieldSet);
             self.backend
                 .builder
                 .build_execution_call(
@@ -486,7 +467,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 })
                 .unwrap_or(0);
             let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
-            let set_fn = self.ensure_runtime_i64_fn("molt_guarded_field_set", 7);
+            let set_fn = self.ensure_runtime_import(RuntimeFn::GuardedFieldSet);
             let offset_bits = self
                 .backend
                 .context
@@ -530,33 +511,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = if let Some(site_kind) = site_kind {
             // A generic write site carries its id, so a warm site writes the
             // inferred field without building the name string.
-            let runtime_name = "molt_set_attr_object_ic";
-            let i64_ty = self.backend.context.i64_type();
-            let ptr_ty = self
-                .backend
-                .context
-                .ptr_type(inkwell::AddressSpace::default());
-            let fn_ty = i64_ty.fn_type(
-                &[
-                    i64_ty.into(),
-                    ptr_ty.into(),
-                    i64_ty.into(),
-                    i64_ty.into(),
-                    i64_ty.into(),
-                ],
-                false,
-            );
-            let set_fn = declare_fixed_runtime_function(
-                self.backend.context,
-                &self.backend.module,
-                runtime_name,
-            )
-            .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
-            let set_fn = require_llvm_function_type(
-                runtime_name,
-                set_fn,
-                runtime_execution_type(runtime_name, fn_ty),
-            );
+            let runtime_name = RuntimeFn::SetAttrObjectIc;
+            let set_fn = self.ensure_runtime_import(runtime_name);
             let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
             let site_bits = self.source_call_site_bits(op, site_kind.as_str());
             self.backend
@@ -570,14 +526,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         val_i64.into(),
                         site_bits.into(),
                     ],
-                    runtime_name,
+                    runtime_name.symbol(),
                 )
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
                 .into_int_value()
         } else {
-            let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
+            let set_fn = self.ensure_runtime_import(RuntimeFn::SetAttrName);
             self.with_owned_name(attr_name, |this, name_i64| {
                 this.backend
                     .builder
@@ -603,7 +559,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let original_kind = op.origin;
         // Attribute deletion borrows the receiver and returns the immortal None.
         if matches!(original_kind, Some(OpKind::DelAttrName)) && op.operands.len() >= 2 {
-            let del_fn = self.ensure_runtime_i64_fn("molt_del_attr_name", 2);
+            let del_fn = self.ensure_runtime_import(RuntimeFn::DelAttrName);
             self.emit_borrowed_runtime_call(
                 op,
                 del_fn,
@@ -630,7 +586,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or("<unknown>");
         let mut custody = self.begin_borrowed_operands(&op.operands[..1], "del_attr");
         let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
-        let del_fn = self.ensure_runtime_i64_fn("molt_del_attr_name", 2);
+        let del_fn = self.ensure_runtime_import(RuntimeFn::DelAttrName);
         let val = self
             .with_owned_name(attr_name, |this, name_bits| {
                 this.backend
@@ -658,11 +614,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // is in-range, we call `molt_getitem_unchecked` which skips the
         // runtime bounds check and associated branch entirely.
         let symbol = if has_attr(op, "bce_safe") {
-            "molt_getitem_unchecked"
+            RuntimeFn::GetitemUnchecked
         } else {
-            "molt_getitem_method"
+            RuntimeFn::GetitemMethod
         };
-        let get_fn = self.ensure_runtime_i64_fn(symbol, 2);
+        let get_fn = self.ensure_runtime_import(symbol);
         let val = self.borrowed_runtime_call_value(
             get_fn,
             &[
@@ -671,7 +627,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ],
             false,
             "index",
-            symbol,
+            symbol.symbol(),
         );
         self.values.insert(result_id, val.into());
         self.value_types.insert(result_id, TirType::DynBox);
@@ -680,7 +636,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Item assignment and deletion borrow their operands; the container
     /// retains what it stores, and the runtime returns only None or a boolean.
     pub(super) fn emit_store_index(&mut self, op: &TirOp) {
-        let set_fn = self.ensure_runtime_i64_fn("molt_setitem_method", 3);
+        let set_fn = self.ensure_runtime_import(RuntimeFn::SetitemMethod);
         self.emit_borrowed_runtime_call(
             op,
             set_fn,
@@ -696,7 +652,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_del_index(&mut self, op: &TirOp) {
-        let del_fn = self.ensure_runtime_i64_fn("molt_delitem_method", 2);
+        let del_fn = self.ensure_runtime_import(RuntimeFn::DelitemMethod);
         self.emit_borrowed_runtime_call(
             op,
             del_fn,
@@ -706,7 +662,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ],
             RuntimeResultCustody::Unowned,
             "del_index",
-            "molt_delitem_method",
+            RuntimeFn::DelitemMethod.symbol(),
         );
     }
 }

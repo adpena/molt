@@ -1564,7 +1564,7 @@ fn native_backend_import_ids_are_cached_by_symbol() {
     );
 
     assert_eq!(first, second);
-    assert_eq!(backend.import_ids.len(), 1);
+    assert_eq!(backend.import_ids.declared().count(), 1);
 }
 
 #[test]

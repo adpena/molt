@@ -81,22 +81,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let digits = required_tir_literal_bytes(op);
         let ptr_val = self.add_private_bytes_global(digits, "__const_bigint_", "");
 
-        let ptr_ty = self
-            .backend
-            .context
-            .ptr_type(inkwell::AddressSpace::default());
-        let bigint_from_bytes_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
-        let bfs_fn = declare_fixed_runtime_function(
-            self.backend.context,
-            &self.backend.module,
-            "molt_bigint_from_bytes",
-        )
-        .unwrap_or_else(|| panic!("molt_bigint_from_bytes must be a fixed LLVM runtime import"));
-        let bfs_fn = require_llvm_function_type(
-            "molt_bigint_from_bytes",
-            bfs_fn,
-            runtime_execution_type("molt_bigint_from_bytes", bigint_from_bytes_ty),
-        );
+        let bfs_fn = self.ensure_runtime_import(RuntimeFn::BigintFromBytes);
 
         let len_val = i64_ty.const_int(digits.len() as u64, false);
         let call = self
@@ -130,14 +115,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> (BasicValueEnum<'ctx>, inkwell::values::IntValue<'ctx>) {
         let (runtime_name, global_prefix, out_name, call_name, load_name) = match literal_type {
             TirType::Str => (
-                "molt_string_from_bytes",
+                RuntimeFn::StringFromBytes,
                 "__const_str_",
                 "str_out",
                 "sfb",
                 "str_bits",
             ),
             TirType::Bytes => (
-                "molt_bytes_from_bytes",
+                RuntimeFn::BytesFromBytes,
                 "__const_bytes_",
                 "bytes_out",
                 "bfb",
@@ -149,26 +134,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         let ptr_val = self.add_private_bytes_global(bytes, global_prefix, "");
 
-        let materializer = declare_fixed_runtime_function(
-            self.backend.context,
-            &self.backend.module,
-            runtime_name,
-        )
-        .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
-        let ptr_ty = self
-            .backend
-            .context
-            .ptr_type(inkwell::AddressSpace::default());
-        let expected_abi = self
-            .backend
-            .context
-            .i32_type()
-            .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
-        let materializer = require_llvm_function_type(
-            runtime_name,
-            materializer,
-            runtime_execution_type(runtime_name, expected_abi),
-        );
+        let materializer = self.ensure_runtime_import(runtime_name);
         let out_alloca = self.build_entry_i64_alloca(out_name);
 
         let len_val = i64_ty.const_int(bytes.len() as u64, false);

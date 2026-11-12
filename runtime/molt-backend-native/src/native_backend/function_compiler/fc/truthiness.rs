@@ -13,7 +13,7 @@ use super::list_index_fast_path::ListIndexFastPathState;
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
@@ -85,13 +85,8 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
 
     switch_to_block_materialized(builder, call_block);
     seal_block_once(builder, sealed_blocks, call_block);
-    let truthy_fn = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        "molt_is_truthy",
-        &[types::I64],
-        &[types::I64],
-    );
+    let truthy_fn =
+        SimpleBackend::import_runtime_func_id_split(module, import_ids, RuntimeFn::IsTruthy);
     let truthy_ref = module.declare_func_in_func(truthy_fn, builder.func);
     let call = builder.ins().call(truthy_ref, &[cond]);
     let truthy = builder.inst_results(call)[0];

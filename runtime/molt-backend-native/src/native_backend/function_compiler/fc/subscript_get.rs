@@ -1,7 +1,7 @@
 use super::super::*;
 use super::list_index_fast_path::{
     ListIndexFastPathState, ListStorageField, generic_list_int_lane_eligible,
-    index_fallback_import_name, observe_generic_list_storage,
+    index_fallback_runtime_fn, observe_generic_list_storage,
 };
 #[cfg(test)]
 use molt_ir::OpKind;
@@ -17,7 +17,7 @@ fn bind_index_result(
     out: Option<&str>,
     result: Value,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -75,7 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
     op_idx: usize,
     const_int_map: &BTreeMap<String, i64>,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -287,12 +287,10 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     // never boxed.
                     switch_to_block_materialized(&mut *builder, slow_block);
                     seal_block_once(&mut *builder, sealed_blocks, slow_block);
-                    let callee = SimpleBackend::import_func_id_split(
+                    let callee = SimpleBackend::import_runtime_func_id_split(
                         &mut *module,
                         &mut *import_ids,
-                        "molt_list_int_getitem_raw_checked",
-                        &[types::I64, types::I64],
-                        &[types::I64],
+                        RuntimeFn::ListIntGetitemRawChecked,
                     );
                     let local_callee = module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, raw_idx]);
@@ -401,14 +399,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 if let Some(slow) = slow_block {
                     switch_to_block_materialized(builder, slow);
                     seal_block_once(builder, sealed_blocks, slow);
-                    let callee = import_func_ref(
+                    let callee = import_runtime_func_ref(
                         module,
                         import_ids,
                         builder,
                         import_refs,
-                        "molt_list_getitem_raw_idx",
-                        &[types::I64, types::I64],
-                        &[types::I64],
+                        RuntimeFn::ListGetitemRawIdx,
                     );
                     let call = builder.ins().call(callee, &[*obj, raw_idx]);
                     let result = builder.inst_results(call)[0];
@@ -478,23 +474,16 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     nbc,
                 );
                 let fn_name = if flat_list_int {
-                    "molt_list_int_getitem"
+                    RuntimeFn::ListIntGetitem
                 } else {
-                    index_fallback_import_name(
+                    index_fallback_runtime_fn(
                         representation_plan,
                         op,
                         op_index_key_is_integer_family(op),
                     )
                 };
-                let callee = import_func_ref(
-                    module,
-                    import_ids,
-                    builder,
-                    import_refs,
-                    fn_name,
-                    &[types::I64, types::I64],
-                    &[types::I64],
-                );
+                let callee =
+                    import_runtime_func_ref(module, import_ids, builder, import_refs, fn_name);
                 let call = builder.ins().call(callee, &[obj, idx]);
                 let res = builder.inst_results(call)[0];
                 let res = operands.finish(

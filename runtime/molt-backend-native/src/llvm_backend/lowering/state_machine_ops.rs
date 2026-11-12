@@ -68,7 +68,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let Some(&result_id) = op.results.first() else {
             return false;
         };
-        if poll_func_name == "molt_async_sleep" {
+        if op.runtime == Some(RuntimeFn::AsyncSleep) {
             if op.operands.len() > 2 {
                 return false;
             }
@@ -86,12 +86,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     None => RuntimeArg::Word(default.into()),
                 })
                 .collect();
-            let sleep_fn = self.ensure_runtime_i64_fn("molt_async_sleep", 2);
+            let sleep_fn = self.ensure_runtime_import(RuntimeFn::AsyncSleep);
             self.emit_borrowed_runtime_call(
                 op,
                 sleep_fn,
                 &args,
-                Self::canonical_boxed_return("molt_async_sleep", 2),
+                Self::canonical_boxed_return(RuntimeFn::AsyncSleep, 2),
                 "async_sleep",
                 "call_async_sleep",
             );
@@ -146,7 +146,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 _ => None,
             })
             .unwrap_or(0);
-        let load_fn = self.ensure_runtime_i64_fn("molt_closure_load", 2);
+        let load_fn = self.ensure_runtime_import(RuntimeFn::ClosureLoad);
         // The loaded slot value is returned retained.
         let result = self
             .backend
@@ -170,7 +170,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_frame_context_set(&mut self, op: &TirOp) {
-        let publish = self.ensure_runtime_i64_fn("molt_frame_context_set", 3);
+        let publish = self.ensure_runtime_import(RuntimeFn::FrameContextSet);
         let args: Vec<RuntimeArg<'ctx>> = op.operands[..3]
             .iter()
             .map(|&operand| RuntimeArg::Operand(operand))
@@ -181,7 +181,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             op,
             publish,
             &args,
-            Self::canonical_boxed_return("molt_frame_context_set", 3),
+            Self::canonical_boxed_return(RuntimeFn::FrameContextSet, 3),
             "frame_context_set",
             "frame_context_set",
         );
@@ -202,7 +202,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .context
             .i64_type()
             .const_int(offset as u64, true);
-        let store_fn = self.ensure_runtime_i64_fn("molt_closure_store", 3);
+        let store_fn = self.ensure_runtime_import(RuntimeFn::ClosureStore);
         // The payload retains the borrowed value; the runtime returns None.
         self.emit_borrowed_runtime_call(
             op,
@@ -232,7 +232,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .context
             .i64_type()
             .const_int(state as u64, true);
-        let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
+        let set_state_fn = self.ensure_runtime_import(RuntimeFn::ObjSetState);
         self.backend
             .builder
             .build_execution_call(set_state_fn, &[self_bits.into(), state_bits.into()], "")
@@ -295,23 +295,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// `molt_sleep_register` takes object addresses, not boxed words: the poll
     /// frame parameter and the future's unboxed pointer.
     fn emit_sleep_register(&self, future_bits: inkwell::values::IntValue<'ctx>) {
-        let i64_ty = self.backend.context.i64_type();
         let ptr_ty = self
             .backend
             .context
             .ptr_type(inkwell::AddressSpace::default());
-        let fn_ty = i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        let sleep_fn = declare_fixed_runtime_function(
-            self.backend.context,
-            &self.backend.module,
-            "molt_sleep_register",
-        )
-        .unwrap_or_else(|| panic!("molt_sleep_register must be a fixed LLVM runtime import"));
-        let sleep_fn = require_llvm_function_type(
-            "molt_sleep_register",
-            sleep_fn,
-            runtime_execution_type("molt_sleep_register", fn_ty),
-        );
+        let sleep_fn = self.ensure_runtime_import(RuntimeFn::SleepRegister);
         let frame_ptr = self
             .backend
             .builder
@@ -334,18 +322,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_yield(&mut self, op: &TirOp) {
-        self.record_removed_runtime_delegate(
-            op,
-            "molt_yield",
-            "lower generators through explicit state-machine poll/resume blocks before LLVM codegen",
+        self.record_unlowered_structured_op(
+                op,
+                "lower generators through explicit state-machine poll/resume blocks before LLVM codegen",
         );
     }
 
     pub(super) fn emit_yield_from(&mut self, op: &TirOp) {
-        self.record_removed_runtime_delegate(
-            op,
-            "molt_yield_from",
-            "lower generator delegation through explicit state-machine poll/resume blocks before LLVM codegen",
+        self.record_unlowered_structured_op(
+                op,
+                "lower generator delegation through explicit state-machine poll/resume blocks before LLVM codegen",
         );
     }
 }

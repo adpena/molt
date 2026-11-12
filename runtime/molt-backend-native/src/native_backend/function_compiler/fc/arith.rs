@@ -37,7 +37,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -180,7 +180,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 fn handle_add_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -210,10 +210,7 @@ fn handle_add_op(
                 == Some(ScalarKind::Str)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -266,12 +263,10 @@ fn handle_add_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_str_concat",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::StrConcat,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -334,12 +329,10 @@ fn handle_add_op(
             .as_ref()
             .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out));
 
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_add",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Add,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
 
@@ -444,12 +437,10 @@ fn handle_add_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_add",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Add,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -477,12 +468,10 @@ fn handle_add_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_add",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Add,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -567,7 +556,7 @@ fn handle_add_op(
 fn handle_checked_add_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -576,10 +565,7 @@ fn handle_checked_add_op(
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -684,12 +670,10 @@ fn handle_checked_add_op(
             representation_plan,
         )
         .expect("checked_add: RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_add",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Add,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -724,7 +708,7 @@ fn handle_checked_add_op(
 fn handle_checked_mul_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -733,10 +717,7 @@ fn handle_checked_mul_op(
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -844,12 +825,10 @@ fn handle_checked_mul_op(
             representation_plan,
         )
         .expect("checked_mul: RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_mul",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Mul,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -884,7 +863,7 @@ fn handle_checked_mul_op(
 fn handle_inplace_add_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -914,10 +893,7 @@ fn handle_inplace_add_op(
                 == Some(ScalarKind::Str)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -964,12 +940,10 @@ fn handle_inplace_add_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_str_concat",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::StrConcat,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -1061,12 +1035,10 @@ fn handle_inplace_add_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_inplace_add",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::InplaceAdd,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let fast_block = builder.create_block();
@@ -1124,12 +1096,10 @@ fn handle_inplace_add_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_inplace_add",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::InplaceAdd,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -1213,7 +1183,7 @@ fn handle_sub_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1237,10 +1207,7 @@ fn handle_sub_op(
                 == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -1323,12 +1290,10 @@ fn handle_sub_op(
             .as_ref()
             .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out));
 
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_sub",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Sub,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
 
@@ -1456,12 +1421,10 @@ fn handle_sub_op(
 
         switch_to_block_materialized(&mut *builder, slow_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_sub",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Sub,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
@@ -1519,7 +1482,7 @@ fn handle_inplace_sub_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1542,10 +1505,7 @@ fn handle_inplace_sub_op(
                 == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -1650,12 +1610,10 @@ fn handle_inplace_sub_op(
             representation_plan,
         )
         .unwrap_or_else(|| panic!("RHS not found in {} op {}", func_name, op_idx));
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_inplace_sub",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::InplaceSub,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let fast_block = builder.create_block();
@@ -1741,12 +1699,10 @@ fn handle_inplace_sub_op(
 
         switch_to_block_materialized(&mut *builder, slow_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_inplace_sub",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::InplaceSub,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
@@ -1800,7 +1756,7 @@ fn handle_inplace_sub_op(
 fn handle_mul_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1824,10 +1780,7 @@ fn handle_mul_op(
                 == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -1910,12 +1863,10 @@ fn handle_mul_op(
             .as_ref()
             .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out));
 
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_mul",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Mul,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
 
@@ -2014,12 +1965,10 @@ fn handle_mul_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_mul",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::Mul,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -2102,7 +2051,7 @@ fn handle_mul_op(
 fn handle_inplace_mul_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -2125,10 +2074,7 @@ fn handle_inplace_mul_op(
                 == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -2232,12 +2178,10 @@ fn handle_inplace_mul_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_inplace_mul",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::InplaceMul,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let fast_block = builder.create_block();
@@ -2294,12 +2238,10 @@ fn handle_inplace_mul_op(
             representation_plan,
         )
         .expect("RHS not found");
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_inplace_mul",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::InplaceMul,
         );
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);

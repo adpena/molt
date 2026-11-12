@@ -31,7 +31,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_generator_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -43,10 +43,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -80,12 +77,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Async iter source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_aiter",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::Aiter,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj]);
@@ -107,12 +102,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Async iter not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_anext",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::Anext,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*iter]);
@@ -168,12 +161,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Send value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_generator_send",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::GeneratorSend,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*gen_obj, *val]);
@@ -206,12 +197,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Throw value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_generator_throw",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::GeneratorThrow,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*gen_obj, *val]);
@@ -233,12 +222,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Generator not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_generator_close",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::GeneratorClose,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*gen_obj]);
@@ -260,12 +247,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Obj not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_is_generator",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::IsGenerator,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj]);
@@ -287,12 +272,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Obj not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_is_bound_method",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::IsBoundMethod,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj]);
@@ -314,12 +297,10 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 representation_plan,
             )
             .expect("Obj not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_is_callable",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::IsCallable,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj]);

@@ -2,8 +2,7 @@ use super::*;
 use molt_ir::OpKind;
 
 #[test]
-#[should_panic(expected = "import signature mismatch for molt_add")]
-fn import_func_ref_validates_signature_before_local_reuse() {
+fn runtime_func_ref_is_declared_once_per_body() {
     let mut backend = SimpleBackend::new();
     let mut builder_ctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut backend.ctx.func, &mut builder_ctx);
@@ -12,24 +11,22 @@ fn import_func_ref_validates_signature_before_local_reuse() {
     builder.seal_block(entry_block);
 
     let mut import_refs = NativeFunctionImports::default();
-    import_func_ref(
+    let first = import_runtime_func_ref(
         &mut backend.module,
         &mut backend.import_ids,
         &mut builder,
         &mut import_refs,
-        "molt_add",
-        &[types::I64],
-        &[types::I64],
+        RuntimeFn::Add,
     );
-    import_func_ref(
+    let second = import_runtime_func_ref(
         &mut backend.module,
         &mut backend.import_ids,
         &mut builder,
         &mut import_refs,
-        "molt_add",
-        &[types::I64, types::I64],
-        &[types::I64],
+        RuntimeFn::Add,
     );
+    assert_eq!(first, second);
+    assert_eq!(backend.import_ids.declared().count(), 1);
 }
 
 #[test]

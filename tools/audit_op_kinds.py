@@ -27,13 +27,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def llvm_boxed_runtime_abi_mismatches() -> list[str]:
-    from tools.llvm_runtime_abi_audit import boxed_runtime_export_issues
+    """Machine signatures that disagree with their runtime exports.
 
-    return [
-        f"{issue.problem}:{issue.symbol}/{issue.classified_arity}:"
-        f"expected={issue.expected}:actual={issue.actual}"
-        for issue in boxed_runtime_export_issues()
-    ]
+    The RuntimeFn generator owns the check (every row against its Rust
+    export, by machine class); this audit reports its refusal.
+    """
+    from tools.wasm_abi_gen.manifest import (
+        WasmAbiManifestError,
+        load_manifest,
+        runtime_fn_specs,
+    )
+
+    try:
+        runtime_fn_specs(load_manifest())
+    except WasmAbiManifestError as error:
+        return [str(error)]
+    return []
 
 
 @dataclass

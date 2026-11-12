@@ -4995,29 +4995,25 @@ def test_render_detects_frontend_table_mutation() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_audit_separates_boxed_contracts_from_dedicated_machine_constants() -> None:
-    from tools.llvm_runtime_abi_audit import runtime_boxed_abi_facts
+def test_runtime_fn_separates_boxed_calls_from_machine_helpers() -> None:
+    from tools.wasm_abi_gen.manifest import load_manifest, runtime_fn_specs
 
-    imports = runtime_boxed_abi_facts()
-
-    expected = {
-        "molt_cancel_token_get_current": 0,
-        "molt_task_register_execution": 3,
-    }
-    for symbol, param_count in expected.items():
-        assert imports[(symbol, param_count)].arity == param_count
-        assert imports[(symbol, param_count)].return_abi == "I64"
-    from tools.llvm_runtime_abi_audit import runtime_import_abi_facts
-
-    dedicated, _ = runtime_import_abi_facts(include_fixed=False)
+    specs = {spec["runtime_name"]: spec for spec in runtime_fn_specs(load_manifest())}
+    for symbol, param_count in (
+        ("molt_cancel_token_get_current", 0),
+        ("molt_task_register_execution", 3),
+    ):
+        assert specs[symbol]["params"] == param_count
+        assert specs[symbol]["machine_result"] == "i64"
     for symbol, arity in (
         ("molt_alloc_class", 2),
         ("molt_stateful_locals_register", 3),
         ("molt_asyncgen_new", 1),
         ("molt_function_closure_bits", 1),
     ):
-        assert (symbol, arity) not in imports
-        assert dedicated[(symbol, arity)].return_abi == "I64"
+        assert specs[symbol]["form"] != "boxed"
+        assert specs[symbol]["params"] == arity
+        assert specs[symbol]["machine_result"] == "i64"
 
 
 # ---------------------------------------------------------------------------

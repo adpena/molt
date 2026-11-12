@@ -4,6 +4,7 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeCallForm;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn ensure_function_symbol(
@@ -39,7 +40,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             None => self.backend.context.void_type().fn_type(&params, false),
         };
         let fn_ty = prepend_execution_context(logical_fn_ty);
-        if let Some(func) = self.backend.module.get_execution_function(name) {
+        if let Some(func) = self.backend.module.get_compiled_function(name) {
             return require_llvm_function_type(name, func, fn_ty);
         }
         self.backend.module.add_compiled_function(
@@ -95,35 +96,37 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn ensure_builtin_callable(
         &mut self,
         name: &str,
+        runtime: Option<RuntimeFn>,
         arity: usize,
     ) -> Option<(FunctionValue<'ctx>, FunctionValue<'ctx>)> {
-        use molt_ir::runtime_callable_abi_generated::{
-            RuntimeCallableTrampolineAbi, runtime_callable_abi,
-        };
-        let Some(abi) = runtime_callable_abi(name) else {
+        use molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi;
+        // The typed runtime entry decoded at TIR ingest (HF-821 B1).
+        let Some((function, trampoline_abi)) =
+            runtime.and_then(|function| function.callable_trampoline().map(|abi| (function, abi)))
+        else {
             self.record_fatal(format!(
                 "builtin_func target `{name}` has no runtime callable ABI; use func_new for compiled functions"
             ));
             return None;
         };
-        if abi.arity != arity {
+        if function.params() != arity {
             self.record_fatal(format!(
                 "builtin_func arity mismatch for `{name}`: manifest requires {}, got {arity}",
-                abi.arity
+                function.params()
             ));
             return None;
         }
-        let target_fn = self.ensure_runtime_i64_fn(name, abi.arity);
-        let trampoline = match abi.trampoline_abi {
+        let target_fn = self.ensure_runtime_import(function);
+        let trampoline = match trampoline_abi {
             // This runtime entry already consumes (closure, argv, argc).
             RuntimeCallableTrampolineAbi::CallFrame => target_fn,
             RuntimeCallableTrampolineAbi::UnpackArgs => self.ensure_typed_trampoline(
                 name,
                 target_fn,
                 false,
-                &vec![TirType::DynBox; abi.arity],
+                &vec![TirType::DynBox; arity],
                 Some(&TirType::DynBox),
-                &vec![crate::ir::ParameterCustody::Borrowed; abi.arity],
+                &vec![crate::ir::ParameterCustody::Borrowed; arity],
             ),
         };
         Some((target_fn, trampoline))
@@ -142,7 +145,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let trampoline_name =
             format!("{name}__molt_llvm_trampoline_{callable_arity}{closure_suffix}");
-        if let Some(func) = self.backend.module.get_execution_function(&trampoline_name) {
+        if let Some(func) = self.backend.module.get_compiled_function(&trampoline_name) {
             return func;
         }
 
@@ -317,9 +320,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// borrowed; both results are owned.
     pub(super) fn emit_load_method(&mut self, op: &TirOp) {
         let (symbol, lane, operand_count) = if op.opcode == OpCode::LoadSuperMethod {
-            ("molt_load_super_method", "load_super_method", 2)
+            (RuntimeFn::LoadSuperMethod, "load_super_method", 2)
         } else {
-            ("molt_load_method", "load_method", 1)
+            (RuntimeFn::LoadMethod, "load_method", 1)
         };
         let Some(AttrValue::Str(name)) = op.attrs.get("name") else {
             self.record_fatal(format!(
@@ -343,9 +346,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // The slot holds the null sentinel until the runtime writes it, so a
         // call that raises before its write leaves a releasable word.
         self.backend.builder.build_store(self_slot, null).unwrap();
-        let call_fn =
-            declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
-                .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
+        let call_fn = self.ensure_runtime_import(symbol);
         let site_bits = self.next_call_site_bits(lane);
         let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(name);
         let mut custody = self.begin_borrowed_operands(&op.operands, lane);
@@ -429,7 +430,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_conditional_branch(present, push, join)
             .unwrap();
         self.backend.builder.position_at_end(push);
-        let push_fn = self.ensure_runtime_i64_fn("molt_callargs_push_pos", 2);
+        let push_fn = self.ensure_runtime_import(RuntimeFn::CallargsPushPos);
         let result = self
             .backend
             .builder
@@ -459,12 +460,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// attribute when `self_or_null` is the null sentinel. Failed boxing skips
     /// the entry and releases the instruction's inputs.
     pub(super) fn emit_call_loaded_method(&mut self, op: &TirOp) {
-        const CALLS: [&str; 5] = [
-            "molt_call_loaded_method0",
-            "molt_call_loaded_method1",
-            "molt_call_loaded_method2",
-            "molt_call_loaded_method3",
-            "molt_call_loaded_method4",
+        const CALLS: [RuntimeFn; 5] = [
+            RuntimeFn::CallLoadedMethod0,
+            RuntimeFn::CallLoadedMethod1,
+            RuntimeFn::CallLoadedMethod2,
+            RuntimeFn::CallLoadedMethod3,
+            RuntimeFn::CallLoadedMethod4,
         ];
         let adopts_all = op.argument_custody().is_some_and(|custody| {
             custody
@@ -485,26 +486,26 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .iter()
             .map(|&operand| self.borrowed_operand(&mut custody, operand))
             .collect();
-        let (symbol, call_args): (&str, Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>) =
-            match CALLS.get(words.len() - 2) {
-                Some(&symbol) => (symbol, words.iter().map(|&word| word.into()).collect()),
-                None => {
-                    let (args_ptr, nargs) =
-                        self.spill_call_words(&words[2..], "call_loaded_method_args");
-                    (
-                        "molt_call_loaded_method_spilled",
-                        vec![
-                            words[0].into(),
-                            words[1].into(),
-                            args_ptr.into(),
-                            nargs.into(),
-                        ],
-                    )
-                }
-            };
-        let call_fn =
-            declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
-                .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
+        let (symbol, call_args): (
+            RuntimeFn,
+            Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
+        ) = match CALLS.get(words.len() - 2) {
+            Some(&symbol) => (symbol, words.iter().map(|&word| word.into()).collect()),
+            None => {
+                let (args_ptr, nargs) =
+                    self.spill_call_words(&words[2..], "call_loaded_method_args");
+                (
+                    RuntimeFn::CallLoadedMethodSpilled,
+                    vec![
+                        words[0].into(),
+                        words[1].into(),
+                        args_ptr.into(),
+                        nargs.into(),
+                    ],
+                )
+            }
+        };
+        let call_fn = self.ensure_runtime_import(symbol);
         self.surrender_borrowed_owners(&custody, &op.operands, &[]);
         let result = self
             .backend
@@ -567,15 +568,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         ) && op.operands.len() >= 2
         {
             let (lane, runtime_name) = if matches!(original_kind, Some(OpKind::CallIndirect)) {
-                ("call_indirect", "molt_call_indirect_ic")
+                ("call_indirect", RuntimeFn::CallIndirectIc)
             } else {
-                ("call_bind", "molt_call_bind_ic")
+                ("call_bind", RuntimeFn::CallBindIc)
             };
             // An ordinary call (a stack-form builder) adopted its callable as
             // well as the builder; one owned entry serves both spellings.
             let owned_callable = op.operand_custody(0) == crate::ir::ParameterCustody::Transferred;
             let runtime_name = if owned_callable {
-                "molt_call_bind_ic_owned"
+                RuntimeFn::CallBindIcOwned
             } else {
                 runtime_name
             };
@@ -652,16 +653,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             == Some(target_name.as_str())
                     }
                 };
-                if runtime_role
-                    && let Some(abi) = runtime_boxed_abi(target_name, direct_operands.len())
-                {
+                // The runtime entry decoded at TIR ingest (HF-821 B1), admitted
+                // only at its exact arity.
+                let runtime_target = op
+                    .runtime
+                    .filter(|function| runtime_role && function.params() == direct_operands.len());
+                if let Some(abi) = runtime_target.and_then(RuntimeFn::boxed_abi) {
                     self.emit_boxed_runtime_call(op, abi);
                     return;
                 }
-                if runtime_role
-                    && let Some(abi) = runtime_raw_abi(target_name, direct_operands.len())
+                if let Some(function) =
+                    runtime_target.filter(|function| function.form() == RuntimeCallForm::RawCall)
                 {
-                    self.emit_raw_runtime_call(op, abi);
+                    self.emit_raw_runtime_call(op, function);
                     return;
                 }
                 self.record_fatal(format!(
@@ -958,7 +962,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         callable: ValueId,
         builder: ValueId,
         lane: &str,
-        runtime_name: &str,
+        runtime_name: RuntimeFn,
         owned_callable: bool,
     ) -> inkwell::values::IntValue<'ctx> {
         let builder_ty = self
@@ -983,14 +987,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.surrender_borrowed_owners(&custody, &[callable], &[]);
         }
         let site_bits = self.next_call_site_bits(lane);
-        let runtime_fn = self.ensure_runtime_i64_fn(runtime_name, 3);
+        let runtime_fn = self.ensure_runtime_import(runtime_name);
         let bound = self
             .backend
             .builder
             .build_execution_call(
                 runtime_fn,
                 &[site_bits.into(), callable_bits.into(), builder_bits.into()],
-                runtime_name,
+                runtime_name.symbol(),
             )
             .unwrap()
             .try_as_basic_value()
@@ -1026,7 +1030,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             arg_bits.push(self.borrowed_operand(&mut custody, arg_id));
         }
         let site_bits = self.next_call_site_bits("call_method");
-        let call_bind_fn = self.ensure_runtime_i64_fn("molt_call_bind_ic", 3);
+        let call_bind_fn = self.ensure_runtime_import(RuntimeFn::CallBindIc);
         let bound = self.with_callargs(&arg_bits, |this, builder| {
             this.backend
                 .builder
@@ -1061,7 +1065,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // runtime print surface just like the native backend. Each
             // argument is borrowed by its print call; a failed box skips
             // every later print.
-            let print_fn = self.ensure_runtime_void_fn("molt_print_obj", 1);
+            let print_fn = self.ensure_runtime_import(RuntimeFn::PrintObj);
             let mut custody = self.begin_borrowed_operands(call.arguments, "print");
             for &arg_id in call.arguments {
                 let arg_bits = self.borrowed_operand(&mut custody, arg_id);
@@ -1090,7 +1094,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // boxed bounds (start defaults to 0, step to 1), so operands is
             // exactly [start, stop, step], admitted by the shared call view.
             // The constructor borrows its bounds (it copies their values).
-            let range_new_fn = self.ensure_runtime_i64_fn("molt_range_new", 3);
+            let range_new_fn = self.ensure_runtime_import(RuntimeFn::RangeNew);
             let bounds: Vec<RuntimeArg<'ctx>> = call
                 .arguments
                 .iter()
@@ -1100,7 +1104,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 op,
                 range_new_fn,
                 &bounds,
-                Self::canonical_boxed_return("molt_range_new", 3),
+                Self::canonical_boxed_return(RuntimeFn::RangeNew, 3),
                 "range_new",
                 "range_new",
             );
@@ -1147,7 +1151,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         for &arg_id in arguments {
             arg_bits.push(self.borrowed_operand(&mut custody, arg_id));
         }
-        let call_builtin_fn = self.ensure_runtime_i64_fn("molt_call_builtin", 2);
+        let call_builtin_fn = self.ensure_runtime_import(RuntimeFn::CallBuiltin);
         let bound = self.with_callargs(&arg_bits, |this, builder| {
             this.backend
                 .builder

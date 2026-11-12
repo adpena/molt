@@ -262,8 +262,8 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
     let backend = compile_selected_functions_direct(functions, &names);
     let ids = backend
         .import_ids
-        .iter()
-        .map(|(&symbol, (id, _))| (symbol, id.as_u32()))
+        .declared()
+        .map(|(function, id)| (function.symbol(), id.as_u32()))
         .collect();
     for (name, symbol, shape, arity, wide) in &cases {
         let function = &backend

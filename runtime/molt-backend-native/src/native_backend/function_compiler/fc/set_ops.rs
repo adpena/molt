@@ -27,7 +27,7 @@ use super::OpFlow;
 pub(in crate::native_backend::function_compiler) fn handle_set_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -54,16 +54,16 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
             );
             return OpFlow::Proceed;
         }
-        OpKind::SetAdd => "molt_set_add",
-        OpKind::SetAddProbe => "molt_set_add_probe",
-        OpKind::FrozensetAdd => "molt_frozenset_add",
-        OpKind::SetDiscard => "molt_set_discard",
-        OpKind::SetRemove => "molt_set_remove",
-        OpKind::SetPop => "molt_set_pop",
-        OpKind::SetUpdate => "molt_set_update",
-        OpKind::SetIntersectionUpdate => "molt_set_intersection_update",
-        OpKind::SetDifferenceUpdate => "molt_set_difference_update",
-        OpKind::SetSymdiffUpdate => "molt_set_symdiff_update",
+        OpKind::SetAdd => RuntimeFn::SetAdd,
+        OpKind::SetAddProbe => RuntimeFn::SetAddProbe,
+        OpKind::FrozensetAdd => RuntimeFn::FrozensetAdd,
+        OpKind::SetDiscard => RuntimeFn::SetDiscard,
+        OpKind::SetRemove => RuntimeFn::SetRemove,
+        OpKind::SetPop => RuntimeFn::SetPop,
+        OpKind::SetUpdate => RuntimeFn::SetUpdate,
+        OpKind::SetIntersectionUpdate => RuntimeFn::SetIntersectionUpdate,
+        OpKind::SetDifferenceUpdate => RuntimeFn::SetDifferenceUpdate,
+        OpKind::SetSymdiffUpdate => RuntimeFn::SetSymdiffUpdate,
         _ => unreachable!("handler invoked with non-matching op.kind"),
     };
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

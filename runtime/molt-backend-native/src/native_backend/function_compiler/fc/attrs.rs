@@ -53,7 +53,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -65,10 +65,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -121,12 +118,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
             let call = if op.kind == OpKind::GetAttr {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_get_attr_object",
-                    &[types::I64, types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::GetAttrObject,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 builder
@@ -134,12 +129,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     .call(local_callee, &[*obj, attr_ptr, attr_len])
             } else {
                 let source_op_idx = op.required_source_op_index(op_idx, op.kind);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_get_attr_object_ic",
-                    &[types::I64, types::I64, types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::GetAttrObjectIc,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let site_bits = builder.ins().iconst(
@@ -185,9 +178,9 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 );
             }
             let (symbol, operand_count) = if op.kind == OpKind::LoadMethod {
-                ("molt_load_method", 1)
+                (RuntimeFn::LoadMethod, 1)
             } else {
-                ("molt_load_super_method", 2)
+                (RuntimeFn::LoadSuperMethod, 2)
             };
             assert_eq!(operands.len(), operand_count, "{} operands", op.kind);
             let attr_name = op
@@ -233,13 +226,8 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let mut call_args = vec![site_bits];
             call_args.extend_from_slice(&operands);
             call_args.extend_from_slice(&[name_ptr, name_len, self_out]);
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                symbol,
-                &vec![types::I64; call_args.len()],
-                &[types::I64],
-            );
+            let callee =
+                SimpleBackend::import_runtime_func_id_split(&mut *module, &mut *import_ids, symbol);
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &call_args);
             let callable = builder.inst_results(call)[0];
@@ -310,12 +298,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_get_attr_special",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::GetAttrSpecial,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -351,12 +337,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 representation_plan,
             )
             .expect("Attr name not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_get_attr_name",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::GetAttrName,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name]);
@@ -401,12 +385,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 representation_plan,
             )
             .expect("Attr default not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_get_attr_name_default",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::GetAttrNameDefault,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
@@ -440,12 +422,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 representation_plan,
             )
             .expect("Attr name not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_has_attr_name",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::HasAttrName,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name]);
@@ -489,12 +469,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 representation_plan,
             )
             .expect("Attr value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_set_attr_name",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::SetAttrName,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name, *val]);
@@ -550,12 +528,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             // and both entries resolve it with `maybe_ptr_from_bits`, raising a
             // catchable AttributeError instead of reading a header at a tag.
             let call = if op.kind == OpKind::SetAttr {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_set_attr_object",
-                    &[types::I64, types::I64, types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::SetAttrObject,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 builder
@@ -563,12 +539,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     .call(local_callee, &[*obj, attr_ptr, attr_len, *val])
             } else {
                 let source_op_idx = op.required_source_op_index(op_idx, op.kind);
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_set_attr_object_ic",
-                    &[types::I64, types::I64, types::I64, types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::SetAttrObjectIc,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let site_bits = builder.ins().iconst(
@@ -627,12 +601,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             // `molt_del_attr_object` resolves via `maybe_ptr_from_bits` and raises
             // a clean AttributeError/TypeError for a tagged receiver, with no
             // behavior change for real heap objects.
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_del_attr_object",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::DelAttrObject,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -674,12 +646,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_del_attr_object",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::DelAttrObject,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -714,12 +684,10 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 representation_plan,
             )
             .expect("Attr name not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_del_attr_name",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::DelAttrName,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name]);

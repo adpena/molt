@@ -18,7 +18,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -27,10 +27,7 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -65,12 +62,10 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 representation_plan,
             )
             .expect("Id arg not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_id",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::Id,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val]);
@@ -92,12 +87,10 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 representation_plan,
             )
             .expect("Ord arg not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_ord",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::Ord,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val]);
@@ -130,12 +123,10 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 representation_plan,
             )
             .expect("Ord-at index not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_ord_at",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::OrdAt,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *index]);
@@ -157,12 +148,10 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 representation_plan,
             )
             .expect("Chr arg not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_chr",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::Chr,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val]);

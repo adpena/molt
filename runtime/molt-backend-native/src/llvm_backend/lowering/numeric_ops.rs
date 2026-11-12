@@ -804,12 +804,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // `contains`/`in`/`not_in` convention), so they must be passed in that
         // order — swapping them makes `3 in [1, 2, 3]` call `molt_contains(3,
         // [1, 2, 3])`, reporting `argument of type 'int' is not iterable`.
-        let contains_fn = self.ensure_runtime_i64_fn("molt_contains", 2);
+        let contains_fn = self.ensure_runtime_import(RuntimeFn::Contains);
         let args = [
             RuntimeArg::Operand(op.operands[0]),
             RuntimeArg::Operand(op.operands[1]),
         ];
-        let custody = Self::canonical_boxed_return("molt_contains", 2);
+        let custody = Self::canonical_boxed_return(RuntimeFn::Contains, 2);
         if op.opcode != OpCode::NotIn {
             self.emit_borrowed_runtime_call(
                 op,
@@ -817,7 +817,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 &args,
                 custody,
                 "contains",
-                "molt_contains",
+                RuntimeFn::Contains.symbol(),
             );
             return;
         }
@@ -828,9 +828,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             &args,
             false,
             "contains",
-            "molt_contains",
+            RuntimeFn::Contains.symbol(),
         );
-        let truthy_fn = self.ensure_runtime_i64_fn("molt_is_truthy", 1);
+        let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
         let truthy = self
             .backend
             .builder
@@ -1028,7 +1028,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap(),
             _ => {
                 let bits = self.ensure_i64(value);
-                let truthy_fn = self.ensure_runtime_i64_fn("molt_is_truthy", 1);
+                let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
                 let truthy = self
                     .backend
                     .builder
@@ -1248,7 +1248,7 @@ mod numeric_family_tests {
 
     #[test]
     fn float_divrem_preserves_zero_dispatch_and_python_remainder_sign() {
-        for (opcode, runtime) in [(OpCode::Div, "molt_div"), (OpCode::Mod, "molt_mod")] {
+        for (opcode, runtime) in [(OpCode::Div, RuntimeFn::Div), (OpCode::Mod, RuntimeFn::Mod)] {
             let context = inkwell::context::Context::create();
             let mut backend = LlvmBackend::new(&context, "float_divrem_semantics");
             let mut func = TirFunction::new(
@@ -1284,7 +1284,7 @@ mod numeric_family_tests {
             backend.module.verify().unwrap();
             let ir = backend.module.print_to_string().to_string();
             assert!(ir.contains("float_rhs_nonzero") && ir.contains("fcmp une"));
-            assert!(ir.contains(runtime));
+            assert!(ir.contains(runtime.linker_symbol()));
             assert!(
                 !ir.contains("fdiv fast") && !ir.contains("frem fast"),
                 "fast-math must not erase zero/NaN/sign semantics"

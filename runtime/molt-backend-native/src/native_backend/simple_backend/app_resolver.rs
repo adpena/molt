@@ -70,34 +70,28 @@ impl SimpleBackend {
             // A runtime callable is a staticlib symbol with an execution ABI; a
             // compiled body is this program's function, possibly defined in
             // another object of the same link.
-            let physical_name = match kind {
-                AppCallableKind::RuntimeCallable => runtime_execution_abi(name)
-                    .unwrap_or_else(|| {
-                        panic!("app resolver runtime callable `{name}` has no execution ABI")
-                    })
-                    .physical_symbol
-                    .to_owned(),
-                AppCallableKind::CompiledBody => compiled_execution_symbol(name),
-            };
-            let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
-                self.module.get_name(&physical_name)
-            {
-                id
-            } else {
-                match kind {
-                    AppCallableKind::RuntimeCallable => {
-                        declare_runtime_execution_function(&mut self.module, name, &canonical_sig)
-                    }
-                    AppCallableKind::CompiledBody => declare_compiled_execution_function(
-                        &mut self.module,
-                        name,
-                        Linkage::Import,
-                        &canonical_sig,
-                    ),
+            let func_id = match kind {
+                AppCallableKind::RuntimeCallable(function) => {
+                    self.import_ids.func_id(&mut self.module, function)
                 }
-                .unwrap_or_else(|e| {
-                    panic!("app resolver: failed to declare callable '{name}': {e:?}")
-                })
+                AppCallableKind::CompiledBody => {
+                    let physical_name = compiled_execution_symbol(name);
+                    if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(&physical_name)
+                    {
+                        id
+                    } else {
+                        declare_compiled_execution_function(
+                            &mut self.module,
+                            name,
+                            Linkage::Import,
+                            &canonical_sig,
+                        )
+                        .unwrap_or_else(|e| {
+                            panic!("app resolver: failed to declare callable '{name}': {e:?}")
+                        })
+                    }
+                }
             };
             entries.push((name, func_id));
         }

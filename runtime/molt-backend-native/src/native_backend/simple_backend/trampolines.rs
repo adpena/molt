@@ -7,8 +7,9 @@ impl SimpleBackend {
     pub(crate) fn ensure_trampoline(
         module: &mut dyn Module,
         trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         func_name: &str,
+        runtime_target: Option<RuntimeFn>,
         linkage: Linkage,
         spec: TrampolineSpec,
     ) -> cranelift_module::FuncId {
@@ -17,6 +18,7 @@ impl SimpleBackend {
             trampoline_ids,
             import_ids,
             func_name,
+            runtime_target,
             linkage,
             spec,
             |_| {},
@@ -26,8 +28,9 @@ impl SimpleBackend {
     fn ensure_trampoline_with_inspector<F>(
         module: &mut dyn Module,
         trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         func_name: &str,
+        runtime_target: Option<RuntimeFn>,
         linkage: Linkage,
         spec: TrampolineSpec,
         inspect: F,
@@ -231,13 +234,18 @@ impl SimpleBackend {
                 if target_has_ret {
                     target_sig.returns.push(AbiParam::new(types::I64));
                 }
-                let target_id = declare_python_execution_function(
-                    module,
-                    func_name,
-                    Linkage::Import,
-                    &target_sig,
-                )
-                .unwrap();
+                // A runtime callable's target is its typed runtime entry; every
+                // other target is a compiled function.
+                let target_id = match runtime_target {
+                    Some(function) => import_ids.func_id(module, function),
+                    None => declare_compiled_execution_function(
+                        module,
+                        func_name,
+                        Linkage::Import,
+                        &target_sig,
+                    )
+                    .unwrap(),
+                };
                 let target_ref = module.declare_func_in_func(target_id, builder.func);
                 let call = builder
                     .ins()
@@ -278,13 +286,18 @@ impl SimpleBackend {
                 // trampolines: the target is defined by its own
                 // compile_func call (Export), and in batched compilation
                 // the target may be in a different batch .o file.
-                let target_id = declare_python_execution_function(
-                    module,
-                    func_name,
-                    Linkage::Import,
-                    &target_sig,
-                )
-                .unwrap();
+                // A runtime callable's target is its typed runtime entry; every
+                // other target is a compiled function.
+                let target_id = match runtime_target {
+                    Some(function) => import_ids.func_id(module, function),
+                    None => declare_compiled_execution_function(
+                        module,
+                        func_name,
+                        Linkage::Import,
+                        &target_sig,
+                    )
+                    .unwrap(),
+                };
                 let target_ref = module.declare_func_in_func(target_id, builder.func);
                 let call = builder.ins().call(target_ref, &call_args);
                 if target_has_ret {
@@ -327,7 +340,7 @@ impl SimpleBackend {
     #[cfg(test)]
     pub(crate) fn task_trampoline_clif_for_test(
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         func_name: &str,
         spec: TrampolineSpec,
     ) -> cranelift_codegen::ir::Function {
@@ -338,6 +351,7 @@ impl SimpleBackend {
             &mut trampoline_ids,
             import_ids,
             func_name,
+            None,
             Linkage::Import,
             spec,
             |ctx| clif = Some(ctx.func.clone()),

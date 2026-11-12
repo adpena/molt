@@ -13,7 +13,7 @@
 //!
 //! Each family handler is a free `fn` that takes the shared lowering state as
 //! explicit split-borrowed `&mut` params — the same idiom the backend already
-//! uses for `SimpleBackend::import_func_id_split` and
+//! uses for `SimpleBackend::import_runtime_func_id_split` and
 //! `var_get_boxed_overflow_safe_base`, which take `module` / `import_ids`
 //! separately so a concurrent `FunctionBuilder` borrow on `self.ctx.func` can
 //! coexist. Arm bodies are moved verbatim (byte-identical Cranelift IR); only
@@ -152,7 +152,7 @@ pub(in crate::native_backend::function_compiler) use op_family::{
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_fn(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,

@@ -39,7 +39,7 @@ use super::var_get_boxed_overflow_safe_fn;
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -50,10 +50,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
     out_name: &str,
 ) -> bool {
     let boxed_source = |module: &mut dyn Module,
-                        import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                        import_ids: &mut RuntimeImportIds,
                         builder: &mut FunctionBuilder<'_>,
                         import_refs: &mut NativeFunctionImports,
                         sealed_blocks: &mut BTreeSet<Block>| {
@@ -112,7 +109,7 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
     out_name: &str,
     borrowed_boxed_source: Option<Value>,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -178,7 +175,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     op: &OpIR,
     op_idx: usize,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -193,10 +190,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,

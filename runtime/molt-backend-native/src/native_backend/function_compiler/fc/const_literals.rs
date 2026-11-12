@@ -204,7 +204,7 @@ impl LiteralFailureExit {
 #[cfg(feature = "native-backend")]
 fn hoist_outparam_literal(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
@@ -212,7 +212,7 @@ fn hoist_outparam_literal(
     vars: &BTreeMap<String, Variable>,
     ref_name: &str,
     bytes: &[u8],
-    runtime_func: &'static str,
+    runtime_func: RuntimeFn,
     hoisted_slot: cranelift_codegen::ir::StackSlot,
     failure_exit: LiteralFailureExit,
 ) {
@@ -220,13 +220,7 @@ fn hoist_outparam_literal(
     def_var_named(builder, vars, format!("{}_ptr", ref_name), ptr);
     def_var_named(builder, vars, format!("{}_len", ref_name), len);
 
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        runtime_func,
-        &[types::I64, types::I64, types::I64],
-        &[types::I32],
-    );
+    let callee = SimpleBackend::import_runtime_func_id_split(module, import_ids, runtime_func);
     let tmp_ptr = builder.ins().stack_addr(types::I64, hoisted_slot, 0);
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let call = builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
@@ -238,7 +232,7 @@ fn hoist_outparam_literal(
 #[cfg(feature = "native-backend")]
 fn hoist_bigint_literal(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
@@ -253,13 +247,8 @@ fn hoist_bigint_literal(
     def_var_named(builder, vars, format!("{}_ptr", ref_name), ptr);
     def_var_named(builder, vars, format!("{}_len", ref_name), len);
 
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        "molt_bigint_from_bytes",
-        &[types::I64, types::I64],
-        &[types::I64],
-    );
+    let callee =
+        SimpleBackend::import_runtime_func_id_split(module, import_ids, RuntimeFn::BigintFromBytes);
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let call = builder.ins().call(local_callee, &[ptr, len]);
     let val = builder.inst_results(call)[0];
@@ -388,7 +377,7 @@ impl HeapLiteralMaterialization {
         self,
         hoists: &HeapLiteralHoists,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
         next_data_id: &mut u64,
         builder: &mut FunctionBuilder<'_>,
@@ -407,7 +396,7 @@ impl HeapLiteralMaterialization {
                 vars,
                 ref_name,
                 bytes,
-                "molt_string_from_bytes",
+                RuntimeFn::StringFromBytes,
                 hoists.const_str_slots[bytes],
                 failure_exit,
             );
@@ -424,7 +413,7 @@ impl HeapLiteralMaterialization {
                 vars,
                 ref_name,
                 bytes,
-                "molt_bytes_from_bytes",
+                RuntimeFn::BytesFromBytes,
                 hoists.const_bytes_slots[bytes],
                 failure_exit,
             );
@@ -456,7 +445,7 @@ impl HeapLiteralMaterialization {
 pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -530,12 +519,10 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             }
         }
         OpKind::ConstNotImplemented => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 module,
                 import_ids,
-                "molt_not_implemented",
-                &[],
-                &[types::I64],
+                RuntimeFn::NotImplemented,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -545,12 +532,10 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             }
         }
         OpKind::ConstEllipsis => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 module,
                 import_ids,
-                "molt_ellipsis",
-                &[],
-                &[types::I64],
+                RuntimeFn::Ellipsis,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);

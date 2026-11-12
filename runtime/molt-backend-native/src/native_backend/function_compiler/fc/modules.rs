@@ -39,7 +39,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -53,10 +53,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -90,12 +87,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Module name not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_new",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*name_bits]);
@@ -117,12 +112,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Module name not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_cache_get",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleCacheGet,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*name_bits]);
@@ -144,12 +137,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Module name not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_import",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleImport,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*name_bits]);
@@ -186,12 +177,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Module not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_cache_set",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleCacheSet,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder
@@ -211,12 +200,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Module name not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_cache_del",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleCacheDel,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[*name_bits]);
@@ -281,16 +268,14 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             // sys.modules submodule fallback); plain `M.name` reads use
             // molt_module_get_attr (AttributeError on miss).
             let runtime_symbol = if op.kind == OpKind::ModuleImportFrom {
-                "molt_module_import_from"
+                RuntimeFn::ModuleImportFrom
             } else {
-                "molt_module_get_attr"
+                RuntimeFn::ModuleGetAttr
             };
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
                 runtime_symbol,
-                &[types::I64, types::I64],
-                &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_val]);
@@ -323,12 +308,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Attr not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_get_global",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleGetGlobal,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_bits]);
@@ -362,12 +345,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 .as_ref()
                 .expect("global_slot_get carries its slot")
                 .index;
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                molt_ir::runtime_fn_generated::RuntimeFn::ModuleGetGlobal.symbol(),
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleGetGlobal,
             );
             let cold = module.declare_func_in_func(callee, builder.func);
             let res = crate::native_backend::simple_backend::emit_global_slot_read(
@@ -407,16 +388,14 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             )
             .expect("Attr not found");
             let callee_name = if op.kind == OpKind::ModuleDelGlobalIfPresent {
-                "molt_module_del_global_if_present"
+                RuntimeFn::ModuleDelGlobalIfPresent
             } else {
-                "molt_module_del_global"
+                RuntimeFn::ModuleDelGlobal
             };
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
                 callee_name,
-                &[types::I64, types::I64],
-                &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_bits]);
@@ -449,12 +428,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Attr not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_get_name",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleGetName,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*module_bits, attr_bits]);
@@ -509,12 +486,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                     func_name, op_idx
                 )
             });
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_set_attr",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleSetAttr,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder
@@ -545,12 +520,10 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Module not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_module_import_star",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ModuleImportStar,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[*src_bits, *dst_bits]);

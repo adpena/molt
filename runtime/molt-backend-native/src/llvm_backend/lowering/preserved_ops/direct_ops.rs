@@ -73,7 +73,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if let Some(flag) = self.guard_profile_flag {
             return flag;
         }
-        let function = self.ensure_runtime_i64_fn("molt_profile_enabled", 0);
+        let function = self.ensure_runtime_import(RuntimeFn::ProfileEnabled);
         let builder = self.backend.context.create_builder();
         let entry = self.llvm_fn.get_first_basic_block().expect("LLVM entry");
         // The runtime profile flag is initialized once per runtime epoch. One
@@ -126,7 +126,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 2 {
                     return false;
                 }
-                let func = self.ensure_runtime_i64_fn("molt_generator_send", 2);
+                let func = self.ensure_runtime_import(RuntimeFn::GeneratorSend);
                 self.emit_positional_runtime_call(
                     op,
                     func,
@@ -175,11 +175,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return false;
                 };
                 let symbol = if kind == OpKind::ExceptionNewBuiltin {
-                    "molt_exception_new_builtin"
+                    RuntimeFn::ExceptionNewBuiltin
                 } else {
-                    "molt_exception_new_builtin_one"
+                    RuntimeFn::ExceptionNewBuiltinOne
                 };
-                let new_fn = self.ensure_runtime_i64_fn(symbol, 2);
+                let new_fn = self.ensure_runtime_import(symbol);
                 let tag_val = i64_ty.const_int(*tag as u64, false);
                 self.emit_borrowed_runtime_call(
                     op,
@@ -198,7 +198,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
                     return false;
                 };
-                let new_fn = self.ensure_runtime_i64_fn("molt_exception_new_builtin_empty", 1);
+                let new_fn = self.ensure_runtime_import(RuntimeFn::ExceptionNewBuiltinEmpty);
                 let tag_val = self
                     .backend
                     .context
@@ -218,7 +218,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionPush => {
-                let push_fn = self.ensure_runtime_i64_fn("molt_exception_push", 0);
+                let push_fn = self.ensure_runtime_import(RuntimeFn::ExceptionPush);
                 let result = self
                     .backend
                     .builder
@@ -233,7 +233,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionStackEnter => {
-                let enter_fn = self.ensure_runtime_i64_fn("molt_exception_stack_enter", 0);
+                let enter_fn = self.ensure_runtime_import(RuntimeFn::ExceptionStackEnter);
                 let result = self
                     .backend
                     .builder
@@ -248,7 +248,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionStackDepth => {
-                let depth_fn = self.ensure_runtime_i64_fn("molt_exception_stack_depth", 0);
+                let depth_fn = self.ensure_runtime_import(RuntimeFn::ExceptionStackDepth);
                 let result = self
                     .backend
                     .builder
@@ -263,7 +263,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionPop => {
-                let pop_fn = self.ensure_runtime_i64_fn("molt_exception_pop", 0);
+                let pop_fn = self.ensure_runtime_import(RuntimeFn::ExceptionPop);
                 let result = self
                     .backend
                     .builder
@@ -278,7 +278,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionStackClear => {
-                let clear_fn = self.ensure_runtime_i64_fn("molt_exception_stack_clear", 0);
+                let clear_fn = self.ensure_runtime_import(RuntimeFn::ExceptionStackClear);
                 let result = self
                     .backend
                     .builder
@@ -293,7 +293,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionLast => {
-                let last_fn = self.ensure_runtime_i64_fn("molt_exception_last", 0);
+                let last_fn = self.ensure_runtime_import(RuntimeFn::ExceptionLast);
                 let result = self
                     .backend
                     .builder
@@ -311,7 +311,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = if op.is_async_work_poll() {
                     self.emit_async_work_poll(true, None)
                 } else {
-                    let last_fn = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
+                    let last_fn = self.ensure_runtime_import(RuntimeFn::ExceptionLastPending);
                     self.backend
                         .builder
                         .build_execution_call(last_fn, &[], "exception_last_pending")
@@ -326,7 +326,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionActive => {
-                let active_fn = self.ensure_runtime_i64_fn("molt_exception_active", 0);
+                let active_fn = self.ensure_runtime_import(RuntimeFn::ExceptionActive);
                 let result = self
                     .backend
                     .builder
@@ -341,7 +341,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionCurrent => {
-                let current_fn = self.ensure_runtime_i64_fn("molt_exception_current", 0);
+                let current_fn = self.ensure_runtime_import(RuntimeFn::ExceptionCurrent);
                 let result = self
                     .backend
                     .builder
@@ -356,7 +356,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionClear => {
-                let clear_fn = self.ensure_runtime_i64_fn("molt_exception_clear", 0);
+                let clear_fn = self.ensure_runtime_import(RuntimeFn::ExceptionClear);
                 let result = self
                     .backend
                     .builder
@@ -375,7 +375,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&tag_id) = op.operands.first() else {
                     return false;
                 };
-                let builtin_type_fn = self.ensure_runtime_i64_fn("molt_builtin_type", 1);
+                let builtin_type_fn = self.ensure_runtime_import(RuntimeFn::BuiltinType);
                 self.emit_borrowed_runtime_call(
                     op,
                     builtin_type_fn,
@@ -392,7 +392,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 1 {
                     return false;
                 }
-                let set_fn = self.ensure_runtime_i64_fn("molt_class_set_definition", 2);
+                let set_fn = self.ensure_runtime_import(RuntimeFn::ClassSetDefinition);
                 let definition_slot = self.class_definition_slot(op);
                 self.emit_borrowed_runtime_call(
                     op,
@@ -417,11 +417,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 2 {
                     return false;
                 }
-                let fmt_fn = self.ensure_runtime_i64_fn("molt_format_builtin", 2);
+                let fmt_fn = self.ensure_runtime_import(RuntimeFn::FormatBuiltin);
                 self.emit_positional_runtime_call(
                     op,
                     fmt_fn,
-                    Self::canonical_boxed_return("molt_format_builtin", 2),
+                    Self::canonical_boxed_return(RuntimeFn::FormatBuiltin, 2),
                     kind.as_str(),
                     "string_format",
                 );
@@ -439,7 +439,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- dict(x): a fresh owned dict. --
             // -- object(): a fresh owned bare object. No operands. --
             OpKind::ObjectNew => {
-                let object_new_fn = self.ensure_runtime_i64_fn("molt_object_new", 0);
+                let object_new_fn = self.ensure_runtime_import(RuntimeFn::ObjectNew);
                 let result = self
                     .backend
                     .builder
@@ -462,7 +462,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
                     return false;
                 };
-                let match_fn = self.ensure_runtime_i64_fn("molt_exception_match_builtin", 2);
+                let match_fn = self.ensure_runtime_import(RuntimeFn::ExceptionMatchBuiltin);
                 let tag_val = i64_ty.const_int(*tag as u64, false);
                 self.emit_borrowed_runtime_call(
                     op,
@@ -482,7 +482,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&obj_id) = op.operands.first() else {
                     return false;
                 };
-                let type_of_fn = self.ensure_runtime_i64_fn("molt_type_of", 1);
+                let type_of_fn = self.ensure_runtime_import(RuntimeFn::TypeOf);
                 self.emit_borrowed_runtime_call(
                     op,
                     type_of_fn,
@@ -494,7 +494,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::Missing => {
-                let missing_fn = self.ensure_runtime_i64_fn("molt_missing", 0);
+                let missing_fn = self.ensure_runtime_import(RuntimeFn::Missing);
                 let result = self
                     .backend
                     .builder
@@ -514,7 +514,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 3 {
                     return false;
                 }
-                let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_name_default", 3);
+                let get_fn = self.ensure_runtime_import(RuntimeFn::GetAttrNameDefault);
                 self.emit_positional_runtime_call(
                     op,
                     get_fn,
@@ -546,12 +546,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&x_id) = op.operands.first() else {
                     return false;
                 };
-                let abs_fn = self.ensure_runtime_i64_fn("molt_abs_builtin", 1);
+                let abs_fn = self.ensure_runtime_import(RuntimeFn::AbsBuiltin);
                 self.emit_borrowed_runtime_call(
                     op,
                     abs_fn,
                     &[RuntimeArg::Operand(x_id)],
-                    Self::canonical_boxed_return("molt_abs_builtin", 1),
+                    Self::canonical_boxed_return(RuntimeFn::AbsBuiltin, 1),
                     kind.as_str(),
                     "abs",
                 );
@@ -560,7 +560,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // `...` literal ? the Ellipsis singleton. Symbol `molt_ellipsis`,
             // NOT `molt_const_ellipsis`. 0 operands.
             OpKind::ConstEllipsis => {
-                let ell_fn = self.ensure_runtime_i64_fn("molt_ellipsis", 0);
+                let ell_fn = self.ensure_runtime_import(RuntimeFn::Ellipsis);
                 let result = self
                     .backend
                     .builder
@@ -577,7 +577,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // `NotImplemented` singleton (e.g. a `__eq__` returning it). Symbol
             // `molt_not_implemented`, NOT `molt_const_not_implemented`.
             OpKind::ConstNotImplemented => {
-                let ni_fn = self.ensure_runtime_i64_fn("molt_not_implemented", 0);
+                let ni_fn = self.ensure_runtime_import(RuntimeFn::NotImplemented);
                 let result = self
                     .backend
                     .builder
@@ -597,7 +597,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 2 {
                     return false;
                 }
-                let throw_fn = self.ensure_runtime_i64_fn("molt_generator_throw", 2);
+                let throw_fn = self.ensure_runtime_import(RuntimeFn::GeneratorThrow);
                 self.emit_positional_runtime_call(
                     op,
                     throw_fn,
@@ -613,7 +613,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&gen_id) = op.operands.first() else {
                     return false;
                 };
-                let close_fn = self.ensure_runtime_i64_fn("molt_generator_close", 1);
+                let close_fn = self.ensure_runtime_import(RuntimeFn::GeneratorClose);
                 self.emit_borrowed_runtime_call(
                     op,
                     close_fn,
@@ -643,26 +643,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }) else {
                     return false;
                 };
-                let i64_ty = self.backend.context.i64_type();
-                let ptr_ty = self
-                    .backend
-                    .context
-                    .ptr_type(inkwell::AddressSpace::default());
                 let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(&attr_name);
-                let fn_ty = i64_ty.fn_type(&[i64_ty.into(), ptr_ty.into(), i64_ty.into()], false);
-                let get_fn = declare_fixed_runtime_function(
-                    self.backend.context,
-                    &self.backend.module,
-                    "molt_get_attr_special",
-                )
-                .unwrap_or_else(|| {
-                    panic!("molt_get_attr_special must be a fixed LLVM runtime import")
-                });
-                let get_fn = require_llvm_function_type(
-                    "molt_get_attr_special",
-                    get_fn,
-                    runtime_execution_type("molt_get_attr_special", fn_ty),
-                );
+                let get_fn = self.ensure_runtime_import(RuntimeFn::GetAttrSpecial);
                 self.emit_borrowed_runtime_call(
                     op,
                     get_fn,
@@ -737,7 +719,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let size = i64_ty.const_int(*size as u64, false);
                 let mut custody = self.begin_borrowed_operands(&op.operands, kind.as_str());
                 let class_bits = self.borrowed_operand(&mut custody, op.operands[0]);
-                let alloc = self.ensure_runtime_i64_fn("molt_alloc_class", 2);
+                let alloc = self.ensure_runtime_import(RuntimeFn::AllocClass);
                 let unpublished = self
                     .backend
                     .builder
@@ -747,7 +729,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap_basic();
                 // Allocation returns an unpublished instance. Publish its
                 // initialized object edges before exposing or retiring it.
-                let publish = self.ensure_runtime_i64_fn("molt_object_publish_initialized", 1);
+                let publish = self.ensure_runtime_import(RuntimeFn::ObjectPublishInitialized);
                 let initialized = self
                     .backend
                     .builder
@@ -799,7 +781,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "stateful_locals_func_ptr",
                     )
                     .unwrap();
-                let reg_fn = self.ensure_runtime_i64_fn("molt_stateful_locals_register", 3);
+                let reg_fn = self.ensure_runtime_import(RuntimeFn::StatefulLocalsRegister);
                 self.emit_borrowed_runtime_call(
                     op,
                     reg_fn,
@@ -854,7 +836,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 } else {
                     None
                 };
-                let guard_fn = self.ensure_runtime_i64_fn("molt_guard_type", 2);
+                let guard_fn = self.ensure_runtime_import(RuntimeFn::GuardType);
                 self.emit_positional_runtime_call(
                     op,
                     guard_fn,
@@ -893,7 +875,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 2 {
                     return false;
                 }
-                let guard_fn = self.ensure_runtime_i64_fn("molt_guard_layout", 3);
+                let guard_fn = self.ensure_runtime_import(RuntimeFn::GuardLayout);
                 let definition_slot = self.class_definition_slot(op);
                 self.emit_borrowed_runtime_call(
                     op,

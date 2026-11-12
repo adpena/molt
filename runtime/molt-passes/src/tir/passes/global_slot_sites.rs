@@ -119,6 +119,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 store.set_global_slot(None);
                 store.opcode = OpCode::Call;
                 store.origin = None;
+                store.runtime = Some(molt_ir::runtime_fn_generated::RuntimeFn::GlobalSlotSet);
                 store.attrs.insert(
                     "s_value".into(),
                     AttrValue::Str(

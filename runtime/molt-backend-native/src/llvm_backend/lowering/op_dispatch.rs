@@ -2,7 +2,6 @@ use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -88,11 +87,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         )
                         .unwrap(),
                     _ => {
-                        let truthy_fn = self
-                            .backend
-                            .module
-                            .get_execution_function("molt_is_truthy")
-                            .unwrap();
+                        let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
                         let truthy = self
                             .backend
                             .builder
@@ -396,11 +391,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result_id = op.results[0];
                 let size = self.resolve(op.operands[0]);
                 let size_i64 = self.ensure_i64(size);
-                let alloc_fn = self
-                    .backend
-                    .module
-                    .get_execution_function("molt_alloc")
-                    .unwrap();
+                let alloc_fn = self.ensure_runtime_import(RuntimeFn::Alloc);
                 let unpublished = self
                     .backend
                     .builder
@@ -408,11 +399,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let publish_fn = self
-                    .backend
-                    .module
-                    .get_execution_function("molt_object_publish_initialized")
-                    .unwrap();
+                let publish_fn = self.ensure_runtime_import(RuntimeFn::ObjectPublishInitialized);
                 let result = self
                     .backend
                     .builder
@@ -440,7 +427,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() < 2 {
                     return;
                 }
-                let ord_at_fn = self.ensure_runtime_i64_fn("molt_ord_at", 2);
+                let ord_at_fn = self.ensure_runtime_import(RuntimeFn::OrdAt);
                 let args = [
                     RuntimeArg::Operand(op.operands[0]),
                     RuntimeArg::Operand(op.operands[1]),
@@ -449,7 +436,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     ord_at_fn,
                     &args,
-                    Self::canonical_boxed_return("molt_ord_at", 2),
+                    Self::canonical_boxed_return(RuntimeFn::OrdAt, 2),
                     "ord_at",
                     "ord_at",
                 );
@@ -514,7 +501,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::Raise => {
                 // `molt_raise` borrows the exception object and returns the
                 // immortal None with that exception pending.
-                let raise_fn = self.ensure_runtime_i64_fn("molt_raise", 1);
+                let raise_fn = self.ensure_runtime_import(RuntimeFn::Raise);
                 self.emit_borrowed_runtime_call(
                     op,
                     raise_fn,
@@ -527,7 +514,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- WarnStderr: side-effecting diagnostic emit --
             OpCode::WarnStderr => {
-                let warn_fn = self.ensure_runtime_void_fn("molt_warn_stderr", 1);
+                let warn_fn = self.ensure_runtime_import(RuntimeFn::WarnStderr);
                 self.emit_borrowed_runtime_call(
                     op,
                     warn_fn,
@@ -584,14 +571,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .operands
                     .first()
                     .expect("FunctionDefaultsVersion requires a function operand");
-                let ver_fn = self.ensure_runtime_i64_fn("molt_function_defaults_version", 1);
+                let ver_fn = self.ensure_runtime_import(RuntimeFn::FunctionDefaultsVersion);
                 // Returns a NaN-boxed inline int; the consuming `== 0` compare
                 // routes through the boxed-int equality path.
                 self.emit_borrowed_runtime_call(
                     op,
                     ver_fn,
                     &[RuntimeArg::Operand(func_id)],
-                    Self::canonical_boxed_return("molt_function_defaults_version", 1),
+                    Self::canonical_boxed_return(RuntimeFn::FunctionDefaultsVersion, 1),
                     "function_defaults_version",
                     "func_defaults_version",
                 );
@@ -683,7 +670,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         } else {
                             self.backend.context.i64_type().const_zero()
                         };
-                        let service = self.ensure_runtime_i64_fn("molt_exception_frame_origin", 1);
+                        let service = self.ensure_runtime_import(RuntimeFn::ExceptionFrameOrigin);
                         self.backend
                             .builder
                             .build_execution_call(service, &[homes.into()], "origin_capture")
@@ -726,7 +713,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Import: import module by name --
             OpCode::Import => {
                 let result_id = op.results[0];
-                let import_fn = self.ensure_runtime_i64_fn("molt_module_import", 1);
+                let import_fn = self.ensure_runtime_import(RuntimeFn::ModuleImport);
                 let result = if let Some(&name_id) = op.operands.first() {
                     self.borrowed_runtime_call_value(
                         import_fn,
@@ -764,36 +751,42 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- ImportFrom: from module import name --
             // operands: [module, attr_name]
-            OpCode::ImportFrom => self.emit_module_runtime_call(op, "molt_module_get_attr", 2),
+            OpCode::ImportFrom => self.emit_module_runtime_call(op, RuntimeFn::ModuleGetAttr, 2),
 
             // -- ModuleCacheGet: module-cache lookup by name --
             // operands: [module_name]
-            OpCode::ModuleCacheGet => self.emit_module_runtime_call(op, "molt_module_cache_get", 1),
+            OpCode::ModuleCacheGet => {
+                self.emit_module_runtime_call(op, RuntimeFn::ModuleCacheGet, 1)
+            }
 
             // -- ModuleCacheSet: module-cache mutation by name --
             // operands: [module_name, module]
-            OpCode::ModuleCacheSet => self.emit_module_runtime_call(op, "molt_module_cache_set", 2),
+            OpCode::ModuleCacheSet => {
+                self.emit_module_runtime_call(op, RuntimeFn::ModuleCacheSet, 2)
+            }
 
             // -- ModuleCacheDel: module-cache deletion by name --
             // operands: [module_name]
-            OpCode::ModuleCacheDel => self.emit_module_runtime_call(op, "molt_module_cache_del", 1),
+            OpCode::ModuleCacheDel => {
+                self.emit_module_runtime_call(op, RuntimeFn::ModuleCacheDel, 1)
+            }
 
             // -- ModuleGetAttr: module attribute read --
             // operands: [module, attr_name]
-            OpCode::ModuleGetAttr => self.emit_module_runtime_call(op, "molt_module_get_attr", 2),
+            OpCode::ModuleGetAttr => self.emit_module_runtime_call(op, RuntimeFn::ModuleGetAttr, 2),
 
             // -- ModuleImportFrom: `from M import name` binding --
             // operands: [module, attr_name]. CPython IMPORT_FROM semantics:
             // ImportError (not AttributeError) on miss, with a sys.modules
             // submodule fallback (see molt_module_import_from).
             OpCode::ModuleImportFrom => {
-                self.emit_module_runtime_call(op, "molt_module_import_from", 2)
+                self.emit_module_runtime_call(op, RuntimeFn::ModuleImportFrom, 2)
             }
 
             // -- ModuleGetGlobal: CPython-style module global lookup --
             // operands: [module, global_name]
             OpCode::ModuleGetGlobal => {
-                self.emit_module_runtime_call(op, "molt_module_get_global", 2)
+                self.emit_module_runtime_call(op, RuntimeFn::ModuleGetGlobal, 2)
             }
             // -- Module global slot sites (call_anatomy.md 4.5) --
             OpCode::GlobalSlotBase => self.emit_global_slot_base(op),
@@ -801,20 +794,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]
-            OpCode::ModuleGetName => self.emit_module_runtime_call(op, "molt_module_get_name", 2),
+            OpCode::ModuleGetName => self.emit_module_runtime_call(op, RuntimeFn::ModuleGetName, 2),
 
             // -- ModuleSetAttr: module attribute mutation --
             // operands: [module, attr_name, value]; the module dict retains the
             // value, so a box minted for a raw value is released after the store.
-            OpCode::ModuleSetAttr => self.emit_module_runtime_call(op, "molt_module_set_attr", 3),
+            OpCode::ModuleSetAttr => self.emit_module_runtime_call(op, RuntimeFn::ModuleSetAttr, 3),
 
             // -- ModuleDelGlobal: CPython-style module global deletion --
             // operands: [module, global_name]
             OpCode::ModuleDelGlobal => {
-                self.emit_module_runtime_call(op, "molt_module_del_global", 2)
+                self.emit_module_runtime_call(op, RuntimeFn::ModuleDelGlobal, 2)
             }
             OpCode::ModuleDelGlobalIfPresent => {
-                self.emit_module_runtime_call(op, "molt_module_del_global_if_present", 2)
+                self.emit_module_runtime_call(op, RuntimeFn::ModuleDelGlobalIfPresent, 2)
             }
 
             // -- SCF dialect ops --
@@ -823,24 +816,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // keeping them as declarations converted missing lowering into link
             // failures. Fail closed here until the structured lowering pass owns
             // the full CFG form.
-            OpCode::ScfIf => self.record_removed_runtime_delegate(
+            OpCode::ScfIf => self.record_unlowered_structured_op(
                 op,
-                "molt_call_0",
                 "lower structured if/else regions into LLVM CFG before codegen",
             ),
-            OpCode::ScfFor => self.record_removed_runtime_delegate(
+            OpCode::ScfFor => self.record_unlowered_structured_op(
                 op,
-                "molt_scf_for",
                 "lower counted or iterator loops into LLVM CFG before codegen",
             ),
-            OpCode::ScfWhile => self.record_removed_runtime_delegate(
+            OpCode::ScfWhile => self.record_unlowered_structured_op(
                 op,
-                "molt_scf_while",
                 "lower while regions into LLVM CFG before codegen",
             ),
-            OpCode::ScfYield => self.record_removed_runtime_delegate(
+            OpCode::ScfYield => self.record_unlowered_structured_op(
                 op,
-                "molt_scf_yield",
                 "thread SCF region results through block arguments or phi nodes before codegen",
             ),
 
@@ -859,12 +848,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&class_id) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);
                 };
-                let new_fn = self.ensure_runtime_i64_fn("molt_object_new_bound", 1);
+                let new_fn = self.ensure_runtime_import(RuntimeFn::ObjectNewBound);
                 self.emit_borrowed_runtime_call(
                     op,
                     new_fn,
                     &[RuntimeArg::Operand(class_id)],
-                    Self::canonical_boxed_return("molt_object_new_bound", 1),
+                    Self::canonical_boxed_return(RuntimeFn::ObjectNewBound, 1),
                     "object_new_bound",
                     "object_new_bound",
                 );
@@ -876,8 +865,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Module and import operations are positional boxed runtime calls with
     /// canonical rows: every operand is borrowed through one custody and the
     /// owned result is bound or released.
-    fn emit_module_runtime_call(&mut self, op: &TirOp, symbol: &str, arity: usize) {
-        let callee = self.ensure_runtime_i64_fn(symbol, arity);
+    fn emit_module_runtime_call(&mut self, op: &TirOp, function: RuntimeFn, arity: usize) {
+        let callee = self.ensure_runtime_import(function);
         let args: Vec<RuntimeArg<'ctx>> = op.operands[..arity]
             .iter()
             .map(|&operand| RuntimeArg::Operand(operand))
@@ -886,9 +875,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             op,
             callee,
             &args,
-            Self::canonical_boxed_return(symbol, arity),
+            Self::canonical_boxed_return(function, arity),
             "module_call",
-            symbol,
+            function.symbol(),
         );
     }
 }

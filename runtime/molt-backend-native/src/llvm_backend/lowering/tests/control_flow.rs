@@ -124,8 +124,9 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     // The stack-exit restore is an exact boxed-ABI kind on the admitted route.
-    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-        .insert("molt_exception_stack_exit".into());
+    backend
+        .runtime_callable_symbols
+        .insert(RuntimeFn::ExceptionStackExit);
     let mut func = TirFunction::new(
         "path_local_try".into(),
         vec![TirType::Bool],
@@ -554,10 +555,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                     if let Ok(call) = inkwell::values::CallSiteValue::try_from(inst)
                         && call.get_called_fn_value().is_some_and(|callee| {
                             callee.get_name().to_bytes()
-                                == crate::llvm_backend::execution_abi::execution_symbol(
-                                    "molt_task_new",
-                                )
-                                .as_bytes()
+                                == test_execution_symbol("molt_task_new").as_bytes()
                         })
                     {
                         allocations.push(inst);
@@ -580,7 +578,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             if expected_key.is_none() {
                 let compiled = backend
                     .module
-                    .get_execution_function(symbol)
+                    .get_compiled_function(symbol)
                     .unwrap()
                     .as_global_value()
                     .as_pointer_value()

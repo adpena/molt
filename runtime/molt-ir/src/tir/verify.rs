@@ -16,7 +16,7 @@ use super::op_kinds_generated::{
     opcode_canonical_kind_table, opcode_fixed_result_count_table,
     opcode_tir_verify_attr_rule_table,
 };
-use super::ops::{AttrValue, OpCode};
+use super::ops::{AttrValue, OpCode, TirOp};
 use super::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -253,6 +253,16 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     "CallRuntime requires its typed runtime entry",
                 )),
                 (OpCode::CallRuntime, Some(runtime)) => {
+                    if !runtime.is_word_signature() {
+                        errors.push(VerifyError::op(
+                            *bid,
+                            op_idx,
+                            format!(
+                                "CallRuntime of {} needs an all-word signature",
+                                runtime.symbol()
+                            ),
+                        ));
+                    }
                     let results = usize::from(runtime.returns_word());
                     if op.operands.len() != runtime.params() || op.results.len() != results {
                         errors.push(VerifyError::op(
@@ -269,15 +279,18 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         ));
                     }
                 }
-                (_, Some(runtime)) => errors.push(VerifyError::op(
-                    *bid,
-                    op_idx,
-                    format!(
-                        "{:?} carries runtime entry {}; only CallRuntime may",
-                        op.opcode,
-                        runtime.symbol()
-                    ),
-                )),
+                (_, Some(runtime)) if !names_runtime_target(op, runtime) => {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        format!(
+                            "{:?} carries runtime entry {} but names no such call target",
+                            op.opcode,
+                            runtime.symbol()
+                        ),
+                    ))
+                }
+                (_, Some(_)) => {}
                 (_, None) => {}
             }
             if op.opcode == OpCode::CheckException && op.exception_edge_kind().is_none() {
@@ -1141,6 +1154,22 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// A call op carries the runtime entry its own target names: its `s_value` is
+/// the entry's symbol and the op is a direct call or a `builtin_func`. Any
+/// other op holding a runtime identity is a lost or forged fact (HF-821 B1).
+fn names_runtime_target(op: &TirOp, runtime: crate::runtime_fn_generated::RuntimeFn) -> bool {
+    let target = match op.attrs.get("s_value") {
+        Some(AttrValue::Str(symbol)) => symbol.as_str(),
+        _ => return false,
+    };
+    target == runtime.symbol()
+        && (super::call_targets::direct_call_symbol_for_op(op).is_some()
+            || matches!(
+                op.origin,
+                Some(crate::OpKind::BuiltinFunc | crate::OpKind::CallAsync)
+            ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1542,8 +1571,9 @@ mod tests {
             }
         }
         for kind in [crate::OpKind::GpuThreadId, crate::OpKind::GpuBarrier] {
-            let symbol =
-                super::super::call_targets::gpu_runtime_symbol_for_simple_kind(kind).unwrap();
+            let symbol = super::super::call_targets::gpu_runtime_fn_for_simple_kind(kind)
+                .unwrap()
+                .symbol();
             check(
                 OpCode::Call,
                 Some(kind),

@@ -1840,6 +1840,9 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
     assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["ok"]
 
 
+# Median above 300 s on macOS arm64 (2026-11-12); it also times out on main
+# 8346f34eb0 at the 300 s guard, so postsubmit owns it.
+@pytest.mark.slow
 def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for wasm browser DB host test")

@@ -65,14 +65,12 @@ fn cleanup_tokens_release_sibling_paths_without_cross_branch_dedup() {
                 "never-acquired params need no cleanup phi"
             );
             roots.initialize(&mut builder);
-            release = import_func_ref(
+            release = import_runtime_func_ref(
                 &mut backend.module,
                 &mut backend.import_ids,
                 &mut builder,
                 &mut NativeFunctionImports::default(),
-                "molt_dec_ref_obj",
-                &[types::I64],
-                &[],
+                RuntimeFn::DecRefObj,
             );
             let release_site =
                 detached_refcount_site(&mut builder, release, RefcountOperation::Release);
@@ -149,14 +147,12 @@ fn cleanup_tokens_rearm_and_transfer_on_the_executing_path() {
             NativeRcAuthority::NativeValueTracking,
         );
         roots.initialize(&mut builder);
-        release = import_func_ref(
+        release = import_runtime_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut NativeFunctionImports::default(),
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::DecRefObj,
         );
         let release_site =
             detached_refcount_site(&mut builder, release, RefcountOperation::Release);
@@ -242,14 +238,12 @@ fn cleanup_of_proven_boxed_immediates_emits_no_reference_transitions() {
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         roots.initialize(&mut builder);
-        let release = import_func_ref(
+        let release = import_runtime_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut NativeFunctionImports::default(),
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::DecRefObj,
         );
         let site = detached_refcount_site(&mut builder, release, RefcountOperation::Release);
         let value = builder.ins().iconst(
@@ -301,14 +295,12 @@ fn cleanup_token_reassignment_is_carried_over_a_real_backedge() {
             NativeRcAuthority::NativeValueTracking,
         );
         roots.initialize(&mut builder);
-        let release = import_func_ref(
+        let release = import_runtime_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut NativeFunctionImports::default(),
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::DecRefObj,
         );
         let release_site =
             detached_refcount_site(&mut builder, release, RefcountOperation::Release);

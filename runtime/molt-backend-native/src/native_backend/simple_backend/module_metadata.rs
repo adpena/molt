@@ -89,7 +89,18 @@ impl NativeFinalFunctions {
     /// replacing it with a TIR projection or materializing executable polls.
     /// This fresh-input aperture is unavailable to production compilation.
     #[cfg(test)]
-    pub(in crate::native_backend::simple_backend) fn from_codegen_fixtures(ir: SimpleIR) -> Self {
+    pub(in crate::native_backend::simple_backend) fn from_codegen_fixtures(
+        mut ir: SimpleIR,
+    ) -> Self {
+        // Authored bodies skip the TIR lift, so they receive the one ingest
+        // decode of their runtime targets here, as a lifted body would.
+        for function in &mut ir.functions {
+            for op in &mut function.ops {
+                if op.runtime.is_none() {
+                    op.runtime = molt_ir::tir::call_targets::ingest_runtime_target(op);
+                }
+            }
+        }
         let target = crate::tir::TargetInfo::native_release_fast();
         let facts = ir
             .functions

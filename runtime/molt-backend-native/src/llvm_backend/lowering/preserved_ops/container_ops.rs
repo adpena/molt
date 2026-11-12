@@ -32,9 +32,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 1 {
                     return false;
                 }
-                let fn_name = self.container_len_fn(op.operands[0]);
-                let abi = runtime_boxed_abi(fn_name, 1)
-                    .unwrap_or_else(|| panic!("{fn_name} must have a generated boxed ABI"));
+                let function = self.container_len_fn(op.operands[0]);
+                let abi = function
+                    .boxed_abi()
+                    .filter(|abi| abi.arity() == 1)
+                    .unwrap_or_else(|| {
+                        panic!("{} must have a generated boxed ABI", function.symbol())
+                    });
                 self.emit_boxed_runtime_call(op, abi);
                 true
             }
@@ -88,7 +92,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_ptr_to_int(out_alloca, i64_ty, "unpack_out_ptr")
                     .unwrap();
-                let unpack_fn = self.ensure_runtime_i64_fn("molt_unpack_sequence", 3);
+                let unpack_fn = self.ensure_runtime_import(RuntimeFn::UnpackSequence);
                 let mut custody = self.begin_borrowed_operands(&op.operands, "unpack");
                 let seq_bits = self.borrowed_operand(&mut custody, seq_id);
                 let unpack_result = self

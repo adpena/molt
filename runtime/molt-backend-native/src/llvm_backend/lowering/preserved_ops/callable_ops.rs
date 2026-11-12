@@ -276,7 +276,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_ptr_to_int(kind_ptr, i64_ty, "frame_home_address")
             .unwrap();
-        let load_fn = self.ensure_runtime_i64_fn("molt_frame_home_load", 1);
+        let load_fn = self.ensure_runtime_import(RuntimeFn::FrameHomeLoad);
         let slow = self
             .backend
             .builder
@@ -425,7 +425,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 1 || op.results.len() > 1 {
                     return false;
                 }
-                let closure_fn = self.ensure_runtime_i64_fn("molt_function_closure_bits", 1);
+                let closure_fn = self.ensure_runtime_import(RuntimeFn::FunctionClosureBits);
                 // The function owns this edge. Only a retained SSA result gains
                 // an owner; a discarded borrowed edge must never be decreffed.
                 self.emit_borrowed_runtime_call(
@@ -470,7 +470,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         _ => None,
                     })
                     .unwrap_or(0);
-                let Some((func, trampoline)) = self.ensure_builtin_callable(func_name, arity)
+                let Some((func, trampoline)) =
+                    self.ensure_builtin_callable(func_name, op.runtime, arity)
                 else {
                     return true;
                 };
@@ -495,12 +496,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let arity_bits = i64_ty.const_int(arity as u64, false);
                 let (new_fn, mut args) = if let Some(&name_id) = op.operands.first() {
                     (
-                        self.ensure_runtime_i64_fn("molt_func_new_builtin_named", 4),
+                        self.ensure_runtime_import(RuntimeFn::FuncNewBuiltinNamed),
                         vec![RuntimeArg::Operand(name_id)],
                     )
                 } else {
                     (
-                        self.ensure_runtime_i64_fn("molt_func_new_builtin", 3),
+                        self.ensure_runtime_import(RuntimeFn::FuncNewBuiltin),
                         Vec::new(),
                     )
                 };
@@ -554,7 +555,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     )
                     .unwrap();
                 let custody = self.function_entry_custody_word(op, func_name, false, arity);
-                let new_fn = self.ensure_runtime_i64_fn("molt_func_new", 4);
+                let new_fn = self.ensure_runtime_import(RuntimeFn::FuncNew);
                 let result = self
                     .backend
                     .builder
@@ -612,7 +613,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     )
                     .unwrap();
                 let custody = self.function_entry_custody_word(op, func_name, true, arity);
-                let new_fn = self.ensure_runtime_i64_fn("molt_func_new_closure", 5);
+                let new_fn = self.ensure_runtime_import(RuntimeFn::FuncNewClosure);
                 // Code addresses, the arity and the entry custody are raw ABI
                 // words; the function retains the borrowed closure object.
                 self.emit_borrowed_runtime_call(
@@ -633,7 +634,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpKind::CodeSlotSet => {
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
-                let slot_set_fn = self.ensure_runtime_i64_fn("molt_code_slot_set", 3);
+                let slot_set_fn = self.ensure_runtime_import(RuntimeFn::CodeSlotSet);
                 // The slot ID is a raw ABI word; the code object and globals
                 // are borrowed. Only the exception state reports failure.
                 self.emit_borrowed_runtime_call(
@@ -659,7 +660,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         _ => None,
                     })
                     .expect("admitted code_slots_init count");
-                let init_fn = self.ensure_runtime_i64_fn("molt_code_slots_init", 1);
+                let init_fn = self.ensure_runtime_import(RuntimeFn::CodeSlotsInit);
                 let _ = self
                     .backend
                     .builder
@@ -840,7 +841,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_ptr_to_int(kind_ptr, i64_ty, "frame_home_address")
                     .unwrap();
-                let load_fn = self.ensure_runtime_i64_fn("molt_frame_home_load", 1);
+                let load_fn = self.ensure_runtime_import(RuntimeFn::FrameHomeLoad);
                 let slow_bits = self
                     .backend
                     .builder
@@ -884,7 +885,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_ptr_to_int(home, i64_ty, "frame_home_address")
                     .unwrap();
-                let take_fn = self.ensure_runtime_i64_fn("molt_frame_home_take", 1);
+                let take_fn = self.ensure_runtime_import(RuntimeFn::FrameHomeTake);
                 self.emit_borrowed_runtime_call(
                     op,
                     take_fn,
@@ -898,7 +899,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpKind::FrameLocals => {
                 // `locals()`: the runtime's one authority over the executing
                 // frame; the operand pairs serve targets that build the dict.
-                let locals_fn = self.ensure_runtime_i64_fn("molt_locals_builtin", 0);
+                let locals_fn = self.ensure_runtime_import(RuntimeFn::LocalsBuiltin);
                 self.emit_borrowed_runtime_call(
                     op,
                     locals_fn,
@@ -913,7 +914,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&dict_id) = op.operands.first() else {
                     return false;
                 };
-                let frame_locals_fn = self.ensure_runtime_i64_fn("molt_frame_locals_set", 1);
+                let frame_locals_fn = self.ensure_runtime_import(RuntimeFn::FrameLocalsSet);
                 self.emit_borrowed_runtime_call(
                     op,
                     frame_locals_fn,
@@ -942,7 +943,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .call_argument_form()
                     .expect("validated callargs_new call form")
                     .runtime_constructor();
-                let new_fn = self.ensure_runtime_i64_fn(constructor, 2);
+                let new_fn = self.ensure_runtime_import(constructor);
                 let result = self
                     .backend
                     .builder

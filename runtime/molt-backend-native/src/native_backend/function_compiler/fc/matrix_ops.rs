@@ -15,7 +15,7 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::Matmul, OpK
 pub(in crate::native_backend::function_compiler) fn handle_matrix_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -24,10 +24,7 @@ pub(in crate::native_backend::function_compiler) fn handle_matrix_op(
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -53,9 +50,9 @@ pub(in crate::native_backend::function_compiler) fn handle_matrix_op(
             // `@` and `@=`.  Inplace variant: molt_inplace_matmul tries
             // __imatmul__ before the binary __matmul__/__rmatmul__ chain.
             let boxed_sym = if op.kind == OpKind::InplaceMatmul {
-                "molt_inplace_matmul"
+                RuntimeFn::InplaceMatmul
             } else {
-                "molt_matmul"
+                RuntimeFn::Matmul
             };
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
@@ -80,12 +77,10 @@ pub(in crate::native_backend::function_compiler) fn handle_matrix_op(
                 representation_plan,
             )
             .expect("RHS not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
                 boxed_sym,
-                &[types::I64, types::I64],
-                &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);

@@ -306,7 +306,9 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
         in rendered
     )
     assert (
-        'RuntimeFnAbi { symbol: "molt_runtime_init", params: 0, '
+        'RuntimeFnAbi { symbol: "molt_runtime_init", linker_symbol: "molt_runtime_init", '
+        "context: RuntimeExecutionContext::Boundary, params: 0, param_types: PARAMS_NONE, "
+        "result_type: Some(RuntimeMachineType::Word), callable_trampoline: None, "
         "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::RawCall, "
         "effects: RuntimeEffects::Impure }"
     ) in rendered
@@ -319,32 +321,28 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
         manifest.runtime_raw_abi_specs(drifted)
 
 
-def test_runtime_fn_names_every_all_word_runtime_entry_once() -> None:
-    """Backends name runtime entries by RuntimeFn (HF-384, HF-485).
+def test_runtime_fn_names_every_runtime_entry_once() -> None:
+    """Backends name runtime entries by RuntimeFn (HF-384, HF-485, HF-821).
 
-    The oracle is the manifest itself: an import whose wasm32 signature is all
-    i64 words with at most one i64 result has the same machine signature on
-    native targets, so it gets exactly one identity; a pointer or length word
-    proves no native signature, so such an import gets none.
+    The oracle is the manifest itself: every import with a runtime export has
+    exactly one identity, carrying the row's declared machine types; a pointer
+    is `ptr`, so the identity keeps its native signature.
     """
     data = gen_wasm_abi.load_manifest()
     rows = {row["runtime_name"]: row for row in manifest.runtime_fn_specs(data)}
     assert list(rows) == sorted(rows)
     contracts = manifest.runtime_import_return_specs(data)
     static_types = data["static_type"]
+    machine_types = data["machine_static_type"]
     for entry in data["import"]:
         symbol = manifest.runtime_export_name(entry)
-        signature = static_types[entry["type"]]
-        all_words = all(p == "i64" for p in signature["params"]) and signature[
-            "results"
-        ] in ([], ["i64"])
-        boxed_elsewhere = rows.get(symbol, {}).get("form") == "boxed"
-        if not all_words:
-            assert symbol not in rows or boxed_elsewhere, symbol
-            continue
+        signature = machine_types[entry["type"]]
         row = rows[symbol]
         assert row["params"] == len(signature["params"]), symbol
+        assert row["machine_params"] == signature["params"], symbol
+        assert row["machine_result"] == (signature["results"] or [None])[0], symbol
         assert row["result"] == contracts[entry["name"]], symbol
+    assert static_types is data["static_type"]
     # The fast-path helpers the shared lowering needs are typed helpers.
     for symbol, params, result in (
         ("molt_is_truthy", 1, "raw_bits"),
@@ -356,20 +354,27 @@ def test_runtime_fn_names_every_all_word_runtime_entry_once() -> None:
         assert rows[symbol] == {
             "runtime_name": symbol,
             "params": params,
+            "machine_params": ["i64"] * params,
+            "machine_result": None if result == "void" else "i64",
             "result": result,
             "form": "helper",
             # The recursion charge writes thread state and cannot raise; an
             # entry without the manifest's `effects` key keeps the impure floor.
-            "effects": "nothrow_write"
-            if symbol == "molt_recursion_enter_fast"
-            else None,
+            "effects": {
+                "molt_recursion_enter_fast": "nothrow_write",
+                "molt_exception_pending": "nothrow_read",
+            }.get(symbol),
         }
-    # A wasm32 pointer result proves no native signature.
-    assert "molt_handle_resolve" not in rows
+    # A wasm32 pointer result keeps its native pointer class.
+    assert rows["molt_handle_resolve"]["machine_result"] == "ptr"
     rendered = gen_wasm_abi.render_runtime_fn_rs(data)
     assert (
-        'RuntimeFnAbi { symbol: "molt_is_truthy", params: 1, '
-        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::Helper, effects: RuntimeEffects::Impure }"
+        'RuntimeFnAbi { symbol: "molt_is_truthy", '
+        'linker_symbol: "molt_is_truthy__molt_context_047a33b55bc1b76d", '
+        "context: RuntimeExecutionContext::Attached, params: 1, param_types: PARAMS_W, "
+        "result_type: Some(RuntimeMachineType::Word), callable_trampoline: None, "
+        "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::Helper, "
+        "effects: RuntimeEffects::Impure }"
     ) in rendered
     # Two forms cannot claim one symbol.
     drifted = copy.deepcopy(data)
@@ -710,6 +715,8 @@ def _boxed_abi_fixture() -> dict:
         ],
         "import": [{"name": "example", "type": 0}],
     }
+    # The loader's machine view; this fixture declares no pointer.
+    data["machine_static_type"] = copy.deepcopy(data["static_type"])
     data["runtime_import"] = data["import"]
     return data
 
@@ -2971,14 +2978,19 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         "molt_ir::OpKind::ExceptionFinallyPendingObserver if marked"
         in rendered_native_rs
     )
+    flat_native_rs = re.sub(r"\s+", " ", rendered_native_rs)
     assert (
-        'Some("molt_async_work_poll_and_exception_last_pending")' in rendered_native_rs
+        "Some(molt_ir::runtime_fn_generated::RuntimeFn::AsyncWorkPollAndExceptionLastPending)"
+        in flat_native_rs
     )
     assert (
         "molt_ir::OpKind::ExceptionFinallyPendingObserver | molt_ir::OpKind::ExceptionLastPending"
         in re.sub(r"\s+", " ", rendered_native_rs)
     )
-    assert 'Some("molt_exception_last_pending")' in rendered_native_rs
+    assert (
+        "Some(molt_ir::runtime_fn_generated::RuntimeFn::ExceptionLastPending)"
+        in flat_native_rs
+    )
     assert generated_file_matches(
         OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS, rendered_native_rs
     )
@@ -3884,6 +3896,11 @@ def test_shared_boxed_ops_admit_only_complete_text_predicate_family() -> None:
 def _shared_boxed_op_fixture() -> dict:
     data = _boxed_abi_fixture()
     data["import"][0]["runtime_name"] = "molt_different_export"
+    # Each identity's linker symbol comes from the execution protocol.
+    data["execution_context_abi"] = copy.deepcopy(
+        gen_wasm_abi.load_manifest()["execution_context_abi"]
+    )
+    data["runtime_callable_abi"] = []
     data["op_loop_runtime_call"] = [
         {
             "kind": "len",
@@ -4160,3 +4177,60 @@ def test_manifest_registers_every_runtime_abi_projection() -> None:
     assert set(producer["outputs"]) == {
         path.relative_to(ROOT).as_posix() for path in gen_wasm_abi.OUTPUT_PATHS
     }
+
+
+def test_runtime_fn_carries_machine_types_and_their_wasm32_projection() -> None:
+    data = gen_wasm_abi.load_manifest()
+    specs = {spec["runtime_name"]: spec for spec in manifest.runtime_fn_specs(data)}
+    # Every [[import]] row with a runtime export has a typed identity.
+    for entry in data["runtime_import"]:
+        assert manifest.runtime_export_name(entry) in specs, entry["name"]
+    # A pointer is `ptr` on the identity and `i32` in every WASM projection.
+    assert specs["molt_load_method"]["machine_params"] == [
+        "i64",
+        "i64",
+        "ptr",
+        "i64",
+        "i64",
+    ]
+    assert specs["molt_handle_resolve"]["machine_result"] == "ptr"
+    assert specs["molt_string_from_bytes"]["machine_result"] == "i32"
+    row = next(entry for entry in data["import"] if entry["name"] == "load_method")
+    assert data["static_type"][row["type"]]["params"] == [
+        "i64",
+        "i64",
+        "i32",
+        "i64",
+        "i64",
+    ]
+    assert "ptr" not in {
+        value
+        for signature in data["static_type"]
+        for value in (*signature["params"], *signature["results"])
+    }
+
+
+def test_runtime_fn_refuses_a_machine_type_its_runtime_export_contradicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = gen_wasm_abi.load_manifest()
+    real = manifest._rust_export_signatures(include_native=True, machine=True)
+    forged = dict(real)
+    # A runtime export that takes a word where the manifest declares a pointer
+    # would truncate or misread an address at every call.
+    forged["molt_load_method"] = {(("i64", "i64", "i64", "i64", "i64"), "i64")}
+
+    def signatures(
+        *, include_native: bool = False, machine: bool = False
+    ) -> dict[str, set[tuple[tuple[str, ...], str]]]:
+        return (
+            forged
+            if machine
+            else manifest._rust_export_signatures.__wrapped__(
+                include_native=include_native, machine=machine
+            )
+        )
+
+    monkeypatch.setattr(manifest, "_rust_export_signatures", signatures)
+    with pytest.raises(manifest.WasmAbiManifestError, match="molt_load_method"):
+        manifest.runtime_fn_specs(data)

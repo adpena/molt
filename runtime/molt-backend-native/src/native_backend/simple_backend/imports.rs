@@ -1,20 +1,55 @@
 use super::*;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
+/// One object module's runtime imports, by dense `RuntimeFn` index. An entry
+/// is declared on first use from its generated record; its signature is never
+/// restated, so a second request cannot disagree with the first.
 #[cfg(feature = "native-backend")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ImportSignatureShape {
-    params: Vec<String>,
-    returns: Vec<String>,
+pub(crate) struct RuntimeImportIds {
+    ids: Box<[cranelift_codegen::packed_option::PackedOption<cranelift_module::FuncId>]>,
 }
 
 #[cfg(feature = "native-backend")]
-impl ImportSignatureShape {
-    pub(crate) fn from_types(params: &[types::Type], returns: &[types::Type]) -> Self {
+impl Default for RuntimeImportIds {
+    fn default() -> Self {
         Self {
-            params: params.iter().map(ToString::to_string).collect(),
-            returns: returns.iter().map(ToString::to_string).collect(),
+            ids: vec![Default::default(); RuntimeFn::COUNT].into_boxed_slice(),
         }
+    }
+}
+
+#[cfg(feature = "native-backend")]
+impl RuntimeImportIds {
+    /// The module's declaration of `function`, made on first use. Requires
+    /// `module` to be the module this table belongs to.
+    pub(crate) fn func_id(
+        &mut self,
+        module: &mut dyn Module,
+        function: RuntimeFn,
+    ) -> cranelift_module::FuncId {
+        let slot = &mut self.ids[function.index()];
+        if let Some(id) = slot.expand() {
+            return id;
+        }
+        let id = declare_runtime_function(module, function);
+        *slot = id.into();
+        id
+    }
+
+    /// The module's declaration of `function`, if one was made.
+    #[cfg(test)]
+    pub(crate) fn get(&self, function: RuntimeFn) -> Option<cranelift_module::FuncId> {
+        self.ids[function.index()].expand()
+    }
+
+    /// Every declared entry, in `RuntimeFn` order.
+    #[cfg(test)]
+    pub(crate) fn declared(
+        &self,
+    ) -> impl Iterator<Item = (RuntimeFn, cranelift_module::FuncId)> + '_ {
+        RuntimeFn::ALL
+            .iter()
+            .filter_map(|&function| self.get(function).map(|id| (function, id)))
     }
 }
 
@@ -34,7 +69,7 @@ impl SimpleBackend {
         let mut signature = module.make_signature();
         signature.params.push(AbiParam::new(types::I64));
         signature.returns.push(AbiParam::new(types::I64));
-        let function = declare_python_execution_function(module, name, linkage, &signature)
+        let function = declare_compiled_execution_function(module, name, linkage, &signature)
             .unwrap_or_else(|error| {
                 panic!("task poll target `{name}` must have ABI (context, task) -> i64: {error}")
             });
@@ -63,56 +98,12 @@ impl SimpleBackend {
         data_id
     }
 
-    /// Cached version of `module.declare_function(name, Linkage::Import, &sig)`.
-    /// Returns the `FuncId` for the given runtime import, reusing a previous
-    /// declaration when the same name has already been declared.  The signature
-    /// shape is validated on cache hits to guard against mismatches.
-    ///
-    /// Takes split borrows (`module` + `import_ids`) so callers can hold a
-    /// concurrent `FunctionBuilder` borrow on `self.ctx.func`.
-    pub(crate) fn import_func_id_split(
-        module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-        name: &'static str,
-        params: &[types::Type],
-        returns: &[types::Type],
-    ) -> cranelift_module::FuncId {
-        let shape = ImportSignatureShape::from_types(params, returns);
-        if let Some((func_id, cached_shape)) = import_ids.get(name) {
-            assert_eq!(
-                cached_shape, &shape,
-                "import signature mismatch for {name}: {:?} vs {:?}",
-                cached_shape, shape
-            );
-            return *func_id;
-        }
-
-        let mut sig = module.make_signature();
-        for param in params {
-            sig.params.push(AbiParam::new(*param));
-        }
-        for ret in returns {
-            sig.returns.push(AbiParam::new(*ret));
-        }
-        let func_id =
-            declare_runtime_execution_function(module, name, &sig).unwrap_or_else(|err| {
-                panic!("import declaration mismatch for `{name}`: expected {shape:?}: {err}")
-            });
-        import_ids.insert(name, (func_id, shape));
-        func_id
-    }
-
+    /// The module's declaration of runtime entry `function`.
     pub(crate) fn import_runtime_func_id_split(
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         function: RuntimeFn,
     ) -> cranelift_module::FuncId {
-        let params = vec![types::I64; function.params()];
-        let returns: &[types::Type] = if function.returns_word() {
-            &[types::I64]
-        } else {
-            &[]
-        };
-        Self::import_func_id_split(module, import_ids, function.symbol(), &params, returns)
+        import_ids.func_id(module, function)
     }
 }

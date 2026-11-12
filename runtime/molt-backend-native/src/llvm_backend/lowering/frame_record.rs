@@ -116,7 +116,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             }
         };
         let signature = prepend_execution_context(logical_signature);
-        if let Some(function) = self.backend.module.get_execution_function(&name) {
+        if let Some(function) = self.backend.module.get_compiled_function(&name) {
             return require_llvm_function_type(&name, function, signature);
         }
         let function = self.backend.module.add_compiled_function(

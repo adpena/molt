@@ -1,16 +1,16 @@
 use super::fc::arith_division::emit_raw_int_div_intmin_debug_guard;
 use super::fc::list_index_fast_path::{
-    collect_pre_loop_defined_names, generic_list_int_lane_eligible, index_fallback_import_name,
+    collect_pre_loop_defined_names, generic_list_int_lane_eligible, index_fallback_runtime_fn,
     match_loop_int_sum_shape, scan_loop_hoistable_lists, scan_loop_int_sum_reduction,
-    store_index_fallback_import_name,
+    store_index_fallback_runtime_fn,
 };
 use super::fc::loops::metadata_only_structured_loop_ops;
-use super::fc::memory::typed_slot_store_helper_name;
+use super::fc::memory::typed_slot_store_runtime_fn;
 use super::{
     BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, NativeCleanupRoots, NativeRcAuthority,
     NativeSsaValues, ScalarRepresentationPlan, box_raw_bool_value, box_raw_i64_value_overflow_safe,
     collect_slot_backed_join_names, def_var_from_boxed_transport, def_var_from_numeric_result,
-    import_func_ref, is_cold_module_chunk_function, jump_block, materialize_label_block,
+    import_runtime_func_ref, is_cold_module_chunk_function, jump_block, materialize_label_block,
     preanalyze_function_ir, protect_cleanup_names, switch_to_block_materialized,
 };
 use crate::native_backend::native_ssa::FunctionBuilder;
@@ -26,6 +26,7 @@ use cranelift_codegen::{
 use cranelift_frontend::FunctionBuilderContext;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Opcode-unit fixtures author logical operands. Give their actual Cranelift

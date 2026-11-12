@@ -399,7 +399,10 @@ fn a_compiled_body_spelled_like_a_runtime_callable_keeps_its_kind() {
                 "molt_gpu__Buffer___getitem__",
                 AppCallableKind::CompiledBody
             ),
-            ("molt_len", AppCallableKind::RuntimeCallable),
+            (
+                "molt_len",
+                AppCallableKind::RuntimeCallable(molt_ir::runtime_fn_generated::RuntimeFn::Len)
+            ),
         ],
         "one table, in the binary search's byte order"
     );

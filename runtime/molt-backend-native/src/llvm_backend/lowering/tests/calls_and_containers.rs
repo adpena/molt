@@ -23,7 +23,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
+        admit_runtime_entry(&mut backend, &symbol);
         let mut func = TirFunction::new(
             "runtime_call".into(),
             vec![],
@@ -71,7 +71,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
         assert_eq!(
             backend
                 .module
-                .get_execution_function(symbol)
+                .get_compiled_function(symbol)
                 .unwrap()
                 .count_params(),
             arity as u32 + 1,
@@ -87,8 +87,9 @@ fn direct_raw_runtime_calls_bind_words_without_owners() {
     // released, with no boxed-call or call_bind indirection.
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-        .insert("molt_runtime_init".into());
+    backend
+        .runtime_callable_symbols
+        .insert(RuntimeFn::RuntimeInit);
     let mut func = TirFunction::new(
         "host_init".into(),
         vec![],
@@ -127,7 +128,7 @@ fn direct_raw_runtime_calls_bind_words_without_owners() {
     assert_eq!(
         backend
             .module
-            .get_execution_function("molt_runtime_init")
+            .get_function(molt_ir::runtime_fn_generated::RuntimeFn::RuntimeInit.linker_symbol())
             .unwrap()
             .count_params(),
         0
@@ -140,7 +141,7 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
         for with_result in [false, true] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
-            std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
+            admit_runtime_entry(&mut backend, &symbol);
             let mut func = TirFunction::new(
                 "void_runtime_call".into(),
                 vec![],
@@ -192,7 +193,7 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
             let symbol = symbol.to_string();
-            std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).remove(&symbol);
+            retire_runtime_entry(&mut backend, &symbol);
             let mut func = TirFunction::new(
                 "unavailable_runtime".into(),
                 vec![],
@@ -222,7 +223,7 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
                 &error,
                 &format!("boxed runtime symbol `{symbol}` is unavailable in the selected runtime"),
             );
-            assert!(backend.module.get_execution_function(&symbol).is_none());
+            assert!(backend.module.get_compiled_function(&symbol).is_none());
             let ir = backend.module.print_to_string().to_string();
             assert!(
                 !ir.contains_execution("call i64 @molt_int_from_i64("),
@@ -287,7 +288,7 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
+        admit_runtime_entry(&mut backend, &symbol);
         let mut func = TirFunction::new(
             "discard_runtime_result".into(),
             vec![],
@@ -351,8 +352,7 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
                 let symbol = symbol.to_string();
-                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-                    .insert(symbol.clone());
+                admit_runtime_entry(&mut backend, &symbol);
                 let mut func = TirFunction::new(
                     "boxed_argument_owner".into(),
                     vec![],
@@ -938,7 +938,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(producer.into());
+        admit_runtime_entry(&mut backend, &producer);
         let mut func = TirFunction::new(
             "discard_container_result".into(),
             vec![],
@@ -986,13 +986,10 @@ fn handwritten_container_owned_results_release_when_discarded() {
                 let Some(callee) = call.get_called_fn_value() else {
                     continue;
                 };
-                if callee.get_name().to_bytes()
-                    == crate::llvm_backend::execution_abi::execution_symbol(producer).as_bytes()
-                {
+                if callee.get_name().to_bytes() == test_execution_symbol(producer).as_bytes() {
                     produced.push(call.try_as_basic_value().unwrap_basic().into_int_value());
                 } else if callee.get_name().to_bytes()
-                    == crate::llvm_backend::execution_abi::execution_symbol("__molt_inline_release")
-                        .as_bytes()
+                    == test_execution_symbol("__molt_inline_release").as_bytes()
                 {
                     let owner = instruction
                         .get_operand(1)
@@ -1102,7 +1099,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
+        admit_runtime_entry(&mut backend, &symbol);
         let mut func = TirFunction::new(
             "raw_iterator_input".into(),
             vec![],
@@ -1690,7 +1687,7 @@ fn method_load_runtime_imports_keep_the_no_willreturn_declaration() {
         assert!(ir.contains_execution(symbol), "{ir}");
         let runtime_fn = backend
             .module
-            .get_execution_function(symbol)
+            .get_compiled_function(symbol)
             .unwrap_or_else(|| panic!("central {symbol} runtime import should exist"));
         assert!(has_fn_attr(runtime_fn, "nounwind"));
         assert!(

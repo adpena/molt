@@ -69,23 +69,19 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                     }
                     let source = builder.block_params(entry)[0];
                     builder.def_var(vars["source"], source);
-                    retain = import_func_ref(
+                    retain = import_runtime_func_ref(
                         &mut backend.module,
                         &mut backend.import_ids,
                         &mut builder,
                         &mut refs,
-                        "molt_inc_ref_obj",
-                        &[types::I64],
-                        &[],
+                        RuntimeFn::IncRefObj,
                     );
-                    release = import_func_ref(
+                    release = import_runtime_func_ref(
                         &mut backend.module,
                         &mut backend.import_ids,
                         &mut builder,
                         &mut refs,
-                        "molt_dec_ref_obj",
-                        &[types::I64],
-                        &[],
+                        RuntimeFn::DecRefObj,
                     );
                     let retain =
                         detached_refcount_site(&mut builder, retain, RefcountOperation::Retain);
@@ -134,8 +130,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                 };
                 let bound = out == Some("kept");
                 assert_eq!(
-                    refs.get("molt_int_from_i64")
-                        .map_or(0, |&callee| calls(callee)),
+                    refs.get(RuntimeFn::IntFromI64).map_or(0, calls),
                     usize::from(heap_box)
                 );
                 assert_eq!(
@@ -343,9 +338,9 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                     "a captured u32 must not need a boxing range branch"
                 );
             }
-            let box_calls = refs.get("molt_int_from_i64").map_or(0, |box_fn| {
+            let box_calls = refs.get(RuntimeFn::IntFromI64).map_or(0, |box_fn| {
                 func.layout.blocks().flat_map(|block| func.layout.block_insts(block)).filter(|inst| {
-                    matches!(func.dfg.insts[*inst], cranelift_codegen::ir::InstructionData::Call { func_ref, .. } if func_ref == *box_fn)
+                    matches!(func.dfg.insts[*inst], cranelift_codegen::ir::InstructionData::Call { func_ref, .. } if func_ref == box_fn)
                 }).count()
             });
             assert_eq!(
@@ -409,14 +404,12 @@ fn lower_unary_numeric_carrier_with_plan(
         };
         builder.def_var(vars[source], raw);
         let mut refs = NativeFunctionImports::default();
-        let inc_ref = import_func_ref(
+        let inc_ref = import_runtime_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut refs,
-            "molt_inc_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::IncRefObj,
         );
         let inc_ref = detached_refcount_site(&mut builder, inc_ref, RefcountOperation::Retain);
         refs.set_refcount_admission(inc_ref.admission);
@@ -441,14 +434,14 @@ fn lower_unary_numeric_carrier_with_plan(
         );
         if plan.is_full_deopt_int_name(source) && matches!(kind, OpKind::Neg | OpKind::Abs) {
             let box_fn = refs
-                .get("molt_int_from_i64")
+                .get(RuntimeFn::IntFromI64)
                 .expect("full-width unary input must use overflow-safe boxing");
             let mut exact_box_calls = 0;
             for block in builder.func.layout.blocks() {
                 for inst in builder.func.layout.block_insts(block) {
                     if let cranelift_codegen::ir::InstructionData::Call { func_ref, .. } =
                         builder.func.dfg.insts[inst]
-                        && func_ref == *box_fn
+                        && func_ref == box_fn
                     {
                         assert_eq!(
                             builder.func.dfg.inst_args(inst),
@@ -482,8 +475,8 @@ fn lower_unary_numeric_carrier_with_plan(
         func.display().to_string(),
         backend
             .import_ids
-            .keys()
-            .map(|name| name.to_string())
+            .declared()
+            .map(|(function, _)| function.symbol().to_string())
             .collect(),
     )
 }
@@ -638,8 +631,8 @@ fn native_container_dispatch_uses_tir_container_facts() {
         std::slice::from_ref(&dict_index),
     );
     assert_eq!(
-        index_fallback_import_name(&dict_plan, &dict_index, false),
-        "molt_dict_getitem"
+        index_fallback_runtime_fn(&dict_plan, &dict_index, false),
+        RuntimeFn::DictGetitem
     );
 
     let tuple_index = OpIR {
@@ -653,8 +646,8 @@ fn native_container_dispatch_uses_tir_container_facts() {
         std::slice::from_ref(&tuple_index),
     );
     assert_eq!(
-        index_fallback_import_name(&tuple_plan, &tuple_index, false),
-        "molt_tuple_getitem"
+        index_fallback_runtime_fn(&tuple_plan, &tuple_index, false),
+        RuntimeFn::TupleGetitem
     );
 
     let dict_store = OpIR {
@@ -671,8 +664,8 @@ fn native_container_dispatch_uses_tir_container_facts() {
         std::slice::from_ref(&dict_store),
     );
     assert_eq!(
-        store_index_fallback_import_name(&dict_store_plan, &dict_store),
-        "molt_dict_setitem"
+        store_index_fallback_runtime_fn(&dict_store_plan, &dict_store),
+        RuntimeFn::DictSetitem
     );
 }
 
@@ -691,8 +684,8 @@ fn native_container_dispatch_ignores_transport_only_container_type() {
     );
 
     assert_eq!(
-        index_fallback_import_name(&plan, &transport_index, false),
-        "molt_index"
+        index_fallback_runtime_fn(&plan, &transport_index, false),
+        RuntimeFn::Index
     );
     assert!(
         !generic_list_int_lane_eligible(&plan, &transport_index, true),
@@ -715,8 +708,8 @@ fn native_container_dispatch_ignores_transport_only_container_type() {
     );
 
     assert_eq!(
-        store_index_fallback_import_name(&store_plan, &transport_store),
-        "molt_store_index"
+        store_index_fallback_runtime_fn(&store_plan, &transport_store),
+        RuntimeFn::StoreIndex
     );
 }
 
@@ -736,8 +729,8 @@ fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
     assert!(!generic_list_int_lane_eligible(&plan, &list_index, true));
     assert!(!generic_list_int_lane_eligible(&plan, &list_index, false));
     assert_eq!(
-        index_fallback_import_name(&plan, &list_index, true),
-        "molt_list_getitem_int_fast",
+        index_fallback_runtime_fn(&plan, &list_index, true),
+        RuntimeFn::ListGetitemIntFast,
         "a List annotation requires runtime class dispatch",
     );
 
@@ -755,8 +748,8 @@ fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
         std::slice::from_ref(&list_store),
     );
     assert_eq!(
-        store_index_fallback_import_name(&store_plan, &list_store),
-        "molt_store_index"
+        store_index_fallback_runtime_fn(&store_plan, &list_store),
+        RuntimeFn::StoreIndex
     );
 
     let mut list_int_new = OpIR {
@@ -783,8 +776,8 @@ fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
         ContainerStorageKind::FlatListInt
     ));
     assert_eq!(
-        store_index_fallback_import_name(&incomplete_plan, &flat_store),
-        "molt_store_index"
+        store_index_fallback_runtime_fn(&incomplete_plan, &flat_store),
+        RuntimeFn::StoreIndex
     );
 
     // The positive storage case has a complete allocator and producer-derived
@@ -802,8 +795,8 @@ fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
     let flat_plan = representation_plan_for_typed_ops(&[], None, &flat_ops);
     assert!(flat_plan.op_has_container_storage(5, &flat_store, ContainerStorageKind::FlatListInt));
     assert_eq!(
-        store_index_fallback_import_name(&flat_plan, &flat_store),
-        "molt_store_index",
+        store_index_fallback_runtime_fn(&flat_plan, &flat_store),
+        RuntimeFn::StoreIndex,
         "physical storage proof alone cannot prove that ABI publication never promoted the list",
     );
 }

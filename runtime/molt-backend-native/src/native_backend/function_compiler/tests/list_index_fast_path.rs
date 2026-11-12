@@ -33,14 +33,12 @@ fn with_list_storage_state(
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         roots.initialize(&mut builder);
-        let release = import_func_ref(
+        let release = import_runtime_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut NativeFunctionImports::default(),
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::DecRefObj,
         );
         let release_site =
             detached_refcount_site(&mut builder, release, RefcountOperation::Release);

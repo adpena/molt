@@ -547,7 +547,7 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
     func_ir: &FunctionIR,
     op_idx: usize,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -639,27 +639,27 @@ pub(in crate::native_backend::function_compiler) fn generic_list_int_lane_eligib
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn index_fallback_import_name(
+pub(in crate::native_backend::function_compiler) fn index_fallback_runtime_fn(
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
     integer_key_lane: bool,
-) -> &'static str {
+) -> RuntimeFn {
     match representation_plan.op_container_kind(op) {
-        Some(ContainerKind::Dict) => "molt_dict_getitem",
-        Some(ContainerKind::Tuple) => "molt_tuple_getitem",
-        _ if integer_key_lane => "molt_list_getitem_int_fast",
-        _ => "molt_index",
+        Some(ContainerKind::Dict) => RuntimeFn::DictGetitem,
+        Some(ContainerKind::Tuple) => RuntimeFn::TupleGetitem,
+        _ if integer_key_lane => RuntimeFn::ListGetitemIntFast,
+        _ => RuntimeFn::Index,
     }
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn store_index_fallback_import_name(
+pub(in crate::native_backend::function_compiler) fn store_index_fallback_runtime_fn(
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
-) -> &'static str {
+) -> RuntimeFn {
     match representation_plan.op_container_kind(op) {
-        Some(ContainerKind::Dict) => "molt_dict_setitem",
-        _ => "molt_store_index",
+        Some(ContainerKind::Dict) => RuntimeFn::DictSetitem,
+        _ => RuntimeFn::StoreIndex,
     }
 }
 

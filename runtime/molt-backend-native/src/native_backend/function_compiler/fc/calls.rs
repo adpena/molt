@@ -1,6 +1,6 @@
 use super::super::*;
 use molt_ir::OpKind;
-use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+use molt_ir::runtime_fn_generated::RuntimeBoxedReturn;
 
 // Single-source kind authority for [`handle_call_op`], consulted by
 // `op_family::native_op_family`. Mirror the `match op.kind` arms below.
@@ -33,7 +33,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     returns_value: bool,
     rc_authority: NativeRcAuthority,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -301,7 +301,7 @@ fn release_adopted_call_inputs(
     first_arg: usize,
     args: &[Value],
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
 ) {
@@ -323,14 +323,12 @@ fn release_adopted_call_inputs(
         module.target_config().pointer_type(),
         &adopted_args,
     );
-    let release = import_func_ref(
+    let release = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_call_inputs_release",
-        &[types::I64, types::I64, types::I64],
-        &[],
+        RuntimeFn::CallInputsRelease,
     );
     builder.ins().call(release, &[callable, args_ptr, nargs]);
 }
@@ -343,21 +341,19 @@ fn release_adopted_callable(
     op: &OpIR,
     callable: Value,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
 ) {
     if !operand_adopted(op, 0) {
         return;
     }
-    let release = import_func_ref(
+    let release = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_dec_ref_obj",
-        &[types::I64],
-        &[],
+        RuntimeFn::DecRefObj,
     );
     emit_refcount(
         builder,
@@ -377,7 +373,7 @@ fn release_adopted_callable(
 #[cfg(feature = "native-backend")]
 fn emit_owned_dynamic_call(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     callable: Value,
     args: &[Value],
@@ -386,13 +382,8 @@ fn emit_owned_dynamic_call(
     let (args_ptr, nargs) =
         spill_call_arguments(builder, module.target_config().pointer_type(), args);
     let code_id = builder.ins().iconst(types::I64, code_id);
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        "molt_call_func_owned",
-        &[types::I64, types::I64, types::I64, types::I64],
-        &[types::I64],
-    );
+    let callee =
+        SimpleBackend::import_runtime_func_id_split(module, import_ids, RuntimeFn::CallFuncOwned);
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let call = builder
         .ins()
@@ -434,7 +425,7 @@ fn handle_call_direct_op(
     returns_value: bool,
     rc_authority: NativeRcAuthority,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -527,14 +518,12 @@ fn handle_call_direct_op(
         let func_obj_bits = *operands
             .word(func_obj_var)
             .expect("Closure func obj not found for direct call");
-        let extract_local = import_func_ref(
+        let extract_local = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_function_closure_bits",
-            &[types::I64],
-            &[types::I64],
+            RuntimeFn::FunctionClosureBits,
         );
         let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
         let env_bits = builder.inst_results(extract_call)[0];
@@ -549,7 +538,12 @@ fn handle_call_direct_op(
         known_function_arities,
         declared_func_arities,
     );
-    let runtime_result = runtime_boxed_abi(target_name, sig_arity).map(|abi| abi.result);
+    // The runtime entry decoded at TIR ingest (HF-821 B1), admitted only at
+    // its exact arity; every other target is a compiled function.
+    let runtime_target = op.runtime.filter(|function| function.params() == sig_arity);
+    let runtime_result = runtime_target
+        .and_then(RuntimeFn::boxed_abi)
+        .map(|abi| abi.result);
     let bound_result = crate::tir::simple_def_use::simple_ir_out_result(op);
     assert!(
         runtime_result != Some(RuntimeBoxedReturn::Void) || bound_result.is_none(),
@@ -573,14 +567,26 @@ fn handle_call_direct_op(
     } else {
         Linkage::Import
     };
-    let callee = declare_python_execution_function(module, target_name, linkage, &target_sig)
-        .unwrap_or_else(|e| {
-            panic!(
-                "call declaration mismatch for `{target_name}`: expected \
-                 {sig_arity} parameter(s), returns={target_ret}: {e}"
-            )
-        });
-    let local_callee = module.declare_func_in_func(callee, builder.func);
+    let local_callee = match runtime_target {
+        Some(function) => import_runtime_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            function,
+        ),
+        None => {
+            let callee =
+                declare_compiled_execution_function(module, target_name, linkage, &target_sig)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "call declaration mismatch for `{target_name}`: expected \
+                             {sig_arity} parameter(s), returns={target_ret}: {e}"
+                        )
+                    });
+            module.declare_func_in_func(callee, builder.func)
+        }
+    };
 
     // Every static target has an exact call signature, including closures and
     // void imports. Execution-frame tracing is callee-owned; routing through the
@@ -605,14 +611,12 @@ fn handle_call_direct_op(
         // (no TLS on the hot path). The data-symbol inline
         // approach was reverted because Cranelift global_value
         // addresses caused segfaults on some programs.
-        let enter_ref = import_func_ref(
+        let enter_ref = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_recursion_enter_fast",
-            &[],
-            &[types::I64],
+            RuntimeFn::RecursionEnterFast,
         );
         let enter_call = builder.ins().call(enter_ref, &[]);
         let guard_ok = builder.inst_results(enter_call)[0];
@@ -631,14 +635,12 @@ fn handle_call_direct_op(
         // swallowed as None when no check_exception follows.
         switch_to_block_materialized(&mut *builder, error_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, error_block);
-        let raise_ref = import_func_ref(
+        let raise_ref = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_raise_recursion_error",
-            &[],
-            &[types::I64],
+            RuntimeFn::RaiseRecursionError,
         );
         let raise_call = builder.ins().call(raise_ref, &[]);
         // No callee took the adopted arguments over.
@@ -677,14 +679,12 @@ fn handle_call_direct_op(
         };
 
         // Exit recursion guard.
-        let exit_ref = import_func_ref(
+        let exit_ref = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_recursion_exit_fast",
-            &[],
-            &[],
+            RuntimeFn::RecursionExitFast,
         );
         builder.ins().call(exit_ref, &[]);
         // The error arm returns from the function, so the successful call arm
@@ -697,11 +697,11 @@ fn handle_call_direct_op(
 
     // A borrowed return may alias a temporary boxed argument. Acquire its
     // independent result owner before any argument or call-boundary cleanup.
-    if runtime_result.is_some() {
+    if let (Some(function), Some(_)) = (runtime_target, runtime_result) {
         bind_runtime_import_result(
             op,
             res,
-            target_name,
+            function,
             sig_arity,
             module,
             import_ids,
@@ -761,7 +761,7 @@ fn handle_call_internal_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -787,23 +787,17 @@ fn handle_call_internal_op(
         let func_obj_bits = *operands
             .word(func_obj_var)
             .expect("Closure func obj not found for direct call");
-        let extract_local = import_func_ref(
+        let extract_local = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_function_closure_bits",
-            &[types::I64],
-            &[types::I64],
+            RuntimeFn::FunctionClosureBits,
         );
         let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
         let env_bits = builder.inst_results(extract_call)[0];
         args.insert(0, env_bits);
     }
-    assert!(
-        runtime_boxed_abi(target_name, args.len()).is_none(),
-        "call_internal requires a compiled function, not runtime target `{target_name}`"
-    );
     let target_returns = *function_has_ret.get(target_name).unwrap_or_else(|| {
         panic!("call_internal target `{target_name}` has no compiled function ABI")
     });
@@ -826,7 +820,7 @@ fn handle_call_internal_op(
         Linkage::Import
     };
 
-    let callee = match declare_python_execution_function(module, target_name, linkage, &sig) {
+    let callee = match declare_compiled_execution_function(module, target_name, linkage, &sig) {
         Ok(id) => id,
         Err(e) => {
             panic!(
@@ -859,7 +853,7 @@ fn handle_call_internal_op(
 #[allow(clippy::too_many_arguments)]
 fn emit_positional_call_bind(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     callee_bits: Value,
@@ -867,14 +861,12 @@ fn emit_positional_call_bind(
     func_name: &str,
     op_idx: usize,
 ) -> Value {
-    let callargs_new_local = import_func_ref(
+    let callargs_new_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_callargs_new",
-        &[types::I64, types::I64],
-        &[types::I64],
+        RuntimeFn::CallargsNew,
     );
     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
     let kw_capacity = builder.ins().iconst(types::I64, 0);
@@ -882,28 +874,24 @@ fn emit_positional_call_bind(
         .ins()
         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
     let callargs_ptr = builder.inst_results(callargs_call)[0];
-    let callargs_push_local = import_func_ref(
+    let callargs_push_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_callargs_push_pos",
-        &[types::I64, types::I64],
-        &[types::I64],
+        RuntimeFn::CallargsPushPos,
     );
     for arg in args {
         builder
             .ins()
             .call(callargs_push_local, &[callargs_ptr, *arg]);
     }
-    let call_bind_local = import_func_ref(
+    let call_bind_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_call_bind_ic",
-        &[types::I64, types::I64, types::I64],
-        &[types::I64],
+        RuntimeFn::CallBindIc,
     );
     let site_bits = builder.ins().iconst(
         types::I64,
@@ -966,7 +954,7 @@ fn handle_call_guarded_op(
     master_return_block: Block,
     returns_value: bool,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1029,7 +1017,7 @@ fn handle_call_guarded_op(
         Linkage::Import
     };
 
-    let callee = declare_python_execution_function(module, target_name, linkage, &sig)
+    let callee = declare_compiled_execution_function(module, target_name, linkage, &sig)
         .unwrap_or_else(|e| {
             panic!(
                 "call_guarded declaration mismatch for `{target_name}`: expected \
@@ -1039,32 +1027,26 @@ fn handle_call_guarded_op(
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let expected_addr = builder.ins().func_addr(types::I64, local_callee);
 
-    let is_func_local = import_func_ref(
+    let is_func_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_function_direct_call_eligible",
-        &[types::I64, types::I64, types::I64],
-        &[types::I64],
+        RuntimeFn::FunctionDirectCallEligible,
     );
-    let guard_enter_local = import_func_ref(
+    let guard_enter_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_recursion_enter_fast",
-        &[],
-        &[types::I64],
+        RuntimeFn::RecursionEnterFast,
     );
-    let guard_exit_local = import_func_ref(
+    let guard_exit_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_recursion_exit_fast",
-        &[],
-        &[],
+        RuntimeFn::RecursionExitFast,
     );
     let supplied = builder.ins().iconst(types::I64, args.len() as i64);
     // Bit 0: the entry takes the closure first; bit 1: the entry's custody
@@ -1079,14 +1061,12 @@ fn handle_call_guarded_op(
     let eligible = builder.inst_results(eligible_call)[0];
     let is_func_bool = builder.ins().icmp_imm_s(IntCC::NotEqual, eligible, 0);
 
-    let resolve_local = import_func_ref(
+    let resolve_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_handle_resolve",
-        &[types::I64],
-        &[types::I64],
+        RuntimeFn::HandleResolve,
     );
     let merge_block = builder.create_block();
     builder.append_block_param(merge_block, types::I64);
@@ -1150,14 +1130,12 @@ fn handle_call_guarded_op(
     // The failure blocks below still release the adopted operands themselves.
     let mut direct_args = args.clone();
     if has_closure {
-        let extract_local = import_func_ref(
+        let extract_local = import_runtime_func_ref(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_function_closure_bits",
-            &[types::I64],
-            &[types::I64],
+            RuntimeFn::FunctionClosureBits,
         );
         let extract_call = builder.ins().call(extract_local, &[*callee_bits]);
         let env_bits = builder.inst_results(extract_call)[0];
@@ -1179,14 +1157,12 @@ fn handle_call_guarded_op(
 
     switch_to_block_materialized(&mut *builder, then_fail_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_fail_block);
-    let raise_local = import_func_ref(
+    let raise_local = import_runtime_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_raise_recursion_error",
-        &[],
-        &[types::I64],
+        RuntimeFn::RaiseRecursionError,
     );
     let _ = builder.ins().call(raise_local, &[]);
     release_adopted_call_inputs(
@@ -1224,7 +1200,7 @@ fn handle_call_func_op(
     operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1267,14 +1243,12 @@ fn handle_call_func_op(
         append_live_through_params(builder, merge_block, &inline_live_through);
         let slow_block = builder.create_block();
         let direct_call_block = builder.create_block();
-        let eligibility_ref = import_func_ref(
+        let eligibility_ref = import_runtime_func_ref(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_function_direct_call_eligible",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::FunctionDirectCallEligible,
         );
         let supplied = builder.ins().iconst(types::I64, nargs as i64);
         // No closure; bit 1 admits only an entry whose custody matches ours.
@@ -1290,28 +1264,24 @@ fn handle_call_func_op(
 
         switch_to_block_materialized(builder, direct_call_block);
         seal_block_once(builder, sealed_blocks, direct_call_block);
-        let resolve_ref = import_func_ref(
+        let resolve_ref = import_runtime_func_ref(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_handle_resolve",
-            &[types::I64],
-            &[types::I64],
+            RuntimeFn::HandleResolve,
         );
         let resolve_call = builder.ins().call(resolve_ref, &[*func_bits]);
         let ptr_val = builder.inst_results(resolve_call)[0];
         let fn_ptr_v = builder
             .ins()
             .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
-        let guard_enter = import_func_ref(
+        let guard_enter = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_recursion_enter_fast",
-            &[],
-            &[types::I64],
+            RuntimeFn::RecursionEnterFast,
         );
         let enter_call = builder.ins().call(guard_enter, &[]);
         let guard_ok = builder.inst_results(enter_call)[0];
@@ -1331,14 +1301,12 @@ fn handle_call_func_op(
         // Guard fail: raise RecursionError (cold)
         switch_to_block_materialized(&mut *builder, guard_fail_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, guard_fail_block);
-        let raise_ref = import_func_ref(
+        let raise_ref = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_raise_recursion_error",
-            &[],
-            &[types::I64],
+            RuntimeFn::RaiseRecursionError,
         );
         let raise_call = builder.ins().call(raise_ref, &[]);
         let err_val = builder.inst_results(raise_call)[0];
@@ -1359,14 +1327,12 @@ fn handle_call_func_op(
         // Direct call via call_indirect
         switch_to_block_materialized(&mut *builder, call_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
-        let guard_exit = import_func_ref(
+        let guard_exit = import_runtime_func_ref(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_recursion_exit_fast",
-            &[],
-            &[],
+            RuntimeFn::RecursionExitFast,
         );
         let (record, outer_invocation) =
             emit_invocation_publish(builder, thread_record_slot, *func_bits);
@@ -1406,22 +1372,19 @@ fn handle_call_func_op(
                 code_id,
             )
         } else {
-            let fast_name: &'static str = match nargs {
-                0 => "molt_call_func_fast0",
-                1 => "molt_call_func_fast1",
-                2 => "molt_call_func_fast2",
-                3 => "molt_call_func_fast3",
+            let fast_name = match nargs {
+                0 => RuntimeFn::CallFuncFast0,
+                1 => RuntimeFn::CallFuncFast1,
+                2 => RuntimeFn::CallFuncFast2,
+                3 => RuntimeFn::CallFuncFast3,
                 _ => unreachable!(),
             };
-            let param_types = vec![types::I64; nargs + 1];
-            let fast_ref = import_func_ref(
+            let fast_ref = import_runtime_func_ref(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
                 fast_name,
-                &param_types,
-                &[types::I64],
             );
             let mut slow_call_args = Vec::with_capacity(nargs + 1);
             slow_call_args.push(*func_bits);
@@ -1450,17 +1413,12 @@ fn handle_call_func_op(
         // Adopted arguments belong to the call: the owned lane of the same
         // invocation authority moves or releases them.
         let dispatch = if adopts {
-            "molt_call_func_owned"
+            RuntimeFn::CallFuncOwned
         } else {
-            "molt_call_func_dispatch"
+            RuntimeFn::CallFuncDispatch
         };
-        let callee = SimpleBackend::import_func_id_split(
-            &mut *module,
-            &mut *import_ids,
-            dispatch,
-            &[types::I64, types::I64, types::I64, types::I64],
-            &[types::I64],
-        );
+        let callee =
+            SimpleBackend::import_runtime_func_id_split(&mut *module, &mut *import_ids, dispatch);
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(
             local_callee,
@@ -1537,7 +1495,7 @@ fn declare_native_callable_symbol(
 #[allow(clippy::too_many_arguments)]
 fn emit_native_forward_f32_call(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1547,41 +1505,33 @@ fn emit_native_forward_f32_call(
 ) -> Value {
     let pointer_type = module.target_config().pointer_type();
     let direct_symbol = declare_native_callable_symbol(module, builder, symbol, signature);
-    let bytes_as_ptr = import_func_ref(
+    let bytes_as_ptr = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_bytes_as_ptr",
-        &[types::I64, pointer_type],
-        &[pointer_type],
+        RuntimeFn::BytesAsPtr,
     );
-    let scratch_alloc = import_func_ref(
+    let scratch_alloc = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_scratch_alloc",
-        &[types::I64],
-        &[types::I64],
+        RuntimeFn::ScratchAlloc,
     );
-    let scratch_free = import_func_ref(
+    let scratch_free = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_scratch_free",
-        &[types::I64, types::I64],
-        &[],
+        RuntimeFn::ScratchFree,
     );
-    let bytes_from = import_func_ref(
+    let bytes_from = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_bytes_from",
-        &[pointer_type, types::I64],
-        &[types::I64],
+        RuntimeFn::BytesFrom,
     );
 
     let length_slot =
@@ -1670,7 +1620,7 @@ fn handle_invoke_ffi_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1750,14 +1700,12 @@ fn handle_invoke_ffi_op(
                     } else {
                         builder.ins().uextend(types::I64, initializer_addr)
                     };
-                    let run_init = import_func_ref(
+                    let run_init = import_runtime_func_ref(
                         module,
                         import_ids,
                         builder,
                         import_refs,
-                        "molt_cpython_abi_run_static_extension_init",
-                        &[types::I64, types::I64],
-                        &[types::I64],
+                        RuntimeFn::CpythonAbiRunStaticExtensionInit,
                     );
                     let call = builder
                         .ins()
@@ -1848,14 +1796,12 @@ fn handle_invoke_ffi_op(
         for name in &args_names[1..] {
             args.push(*operands.word(name).expect("Arg not found"));
         }
-        let callargs_new_local = import_func_ref(
+        let callargs_new_local = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_callargs_new",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::CallargsNew,
         );
         let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
         let kw_capacity = builder.ins().iconst(types::I64, 0);
@@ -1864,14 +1810,12 @@ fn handle_invoke_ffi_op(
             .call(callargs_new_local, &[pos_capacity, kw_capacity]);
         let callargs_ptr = builder.inst_results(callargs_call)[0];
 
-        let callargs_push_local = import_func_ref(
+        let callargs_push_local = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_callargs_push_pos",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::CallargsPushPos,
         );
         for arg in &args {
             builder
@@ -1895,12 +1839,10 @@ fn handle_invoke_ffi_op(
         .ins()
         .iconst(types::I64, box_bool(if bridge_lane { 1 } else { 0 }));
 
-    let invoke_fn = SimpleBackend::import_func_id_split(
+    let invoke_fn = SimpleBackend::import_runtime_func_id_split(
         &mut *module,
         &mut *import_ids,
-        "molt_invoke_ffi_ic",
-        &[types::I64, types::I64, types::I64, types::I64],
-        &[types::I64],
+        RuntimeFn::InvokeFfiIc,
     );
     let invoke_local = module.declare_func_in_func(invoke_fn, builder.func);
     let invoke_call = builder.ins().call(
@@ -1933,7 +1875,7 @@ fn handle_call_bind_indirect_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -1955,33 +1897,34 @@ fn handle_call_bind_indirect_op(
     // dispatch is the same. An expanded call keeps its callable borrowed.
     let owned_callable = operand_adopted(op, 0);
     let callee_name = if op.kind == OpKind::CallIndirect {
-        "molt_call_indirect_ic"
+        RuntimeFn::CallIndirectIc
     } else {
-        "molt_call_bind_ic"
+        RuntimeFn::CallBindIc
     };
     let local_callee = if owned_callable {
-        import_func_ref(
+        import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_call_bind_ic_owned",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::CallBindIcOwned,
         )
     } else if op.kind == OpKind::CallBind {
-        import_func_ref(
+        import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_call_bind_ic",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::CallBindIc,
         )
     } else {
-        let callee = declare_runtime_execution_function(module, callee_name, &sig).unwrap();
-        module.declare_func_in_func(callee, builder.func)
+        import_runtime_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            callee_name,
+        )
     };
     let call_site_label = if op.kind == OpKind::CallIndirect {
         "call_indirect"
@@ -2027,12 +1970,12 @@ fn handle_call_bind_indirect_op(
 /// The runtime entries for CPython's CALL after a method load, by positional
 /// argument count; wider calls spill their arguments.
 #[cfg(feature = "native-backend")]
-const LOADED_METHOD_CALLS: [&str; 5] = [
-    "molt_call_loaded_method0",
-    "molt_call_loaded_method1",
-    "molt_call_loaded_method2",
-    "molt_call_loaded_method3",
-    "molt_call_loaded_method4",
+const LOADED_METHOD_CALLS: [RuntimeFn; 5] = [
+    RuntimeFn::CallLoadedMethod0,
+    RuntimeFn::CallLoadedMethod1,
+    RuntimeFn::CallLoadedMethod2,
+    RuntimeFn::CallLoadedMethod3,
+    RuntimeFn::CallLoadedMethod4,
 ];
 
 /// CPython's CALL after a method load: `[callable, self_or_null, args...]`.
@@ -2046,7 +1989,7 @@ fn handle_call_loaded_method_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -2063,26 +2006,19 @@ fn handle_call_loaded_method_op(
         .map(|name| *operands.word(name).expect("call_loaded_method operand"))
         .collect();
     let (pair, args) = words.split_at(2);
-    let res = if let Some(symbol) = LOADED_METHOD_CALLS.get(args.len()) {
-        let callee = SimpleBackend::import_func_id_split(
-            &mut *module,
-            &mut *import_ids,
-            symbol,
-            &vec![types::I64; words.len()],
-            &[types::I64],
-        );
+    let res = if let Some(&symbol) = LOADED_METHOD_CALLS.get(args.len()) {
+        let callee =
+            SimpleBackend::import_runtime_func_id_split(&mut *module, &mut *import_ids, symbol);
         let local = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local, &words);
         builder.inst_results(call)[0]
     } else {
         let (args_ptr, nargs) =
             spill_call_arguments(&mut *builder, module.target_config().pointer_type(), args);
-        let callee = SimpleBackend::import_func_id_split(
+        let callee = SimpleBackend::import_runtime_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_call_loaded_method_spilled",
-            &[types::I64; 4],
-            &[types::I64],
+            RuntimeFn::CallLoadedMethodSpilled,
         );
         let local = module.declare_func_in_func(callee, builder.func);
         let call = builder
@@ -2115,7 +2051,7 @@ fn handle_call_method_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -2135,12 +2071,10 @@ fn handle_call_method_op(
         match sv {
             // list.append(elem) — 1 extra arg
             "BoundMethod:list:append" if extra_args.len() == 1 => {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_fast_list_append",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::FastListAppend,
                 );
                 let local = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local, &[*method_bits, extra_args[0]]);
@@ -2148,12 +2082,10 @@ fn handle_call_method_op(
             }
             // str.join(iterable) — 1 extra arg
             "BoundMethod:str:join" if extra_args.len() == 1 => {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_fast_str_join",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::FastStrJoin,
                 );
                 let local = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local, &[*method_bits, extra_args[0]]);
@@ -2161,12 +2093,10 @@ fn handle_call_method_op(
             }
             // dict.get(key, default) — 2 extra args
             "BoundMethod:dict:get" if extra_args.len() == 2 => {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_fast_dict_get",
-                    &[types::I64, types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::FastDictGet,
                 );
                 let local = module.declare_func_in_func(callee, builder.func);
                 let call = builder
@@ -2176,12 +2106,10 @@ fn handle_call_method_op(
             }
             // str.startswith(prefix) — 1 extra arg
             "BoundMethod:str:startswith" if extra_args.len() == 1 => {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_fast_str_startswith",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::FastStrStartswith,
                 );
                 let local = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local, &[*method_bits, extra_args[0]]);
@@ -2189,12 +2117,10 @@ fn handle_call_method_op(
             }
             // str.upper() — 0 extra args
             "BoundMethod:str:upper" if extra_args.is_empty() => {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_fast_str_upper",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::FastStrUpper,
                 );
                 let local = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local, &[*method_bits]);
@@ -2202,12 +2128,10 @@ fn handle_call_method_op(
             }
             // str.lower() — 0 extra args
             "BoundMethod:str:lower" if extra_args.is_empty() => {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_fast_str_lower",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::FastStrLower,
                 );
                 let local = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local, &[*method_bits]);
@@ -2215,12 +2139,10 @@ fn handle_call_method_op(
             }
             // str.strip() — 0 extra args (no-arg form)
             "BoundMethod:str:strip" if extra_args.is_empty() => {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_fast_str_strip",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::FastStrStrip,
                 );
                 let local = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local, &[*method_bits]);
@@ -2260,14 +2182,12 @@ fn handle_call_method_op(
         )
     } else {
         // Generic path: allocate callargs and dispatch via IC.
-        let callargs_new_local = import_func_ref(
+        let callargs_new_local = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_callargs_new",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::CallargsNew,
         );
         let pos_capacity = builder.ins().iconst(types::I64, extra_args.len() as i64);
         let kw_capacity = builder.ins().iconst(types::I64, 0);
@@ -2275,28 +2195,24 @@ fn handle_call_method_op(
             .ins()
             .call(callargs_new_local, &[pos_capacity, kw_capacity]);
         let callargs_ptr = builder.inst_results(callargs_call)[0];
-        let callargs_push_local = import_func_ref(
+        let callargs_push_local = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_callargs_push_pos",
-            &[types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::CallargsPushPos,
         );
         for arg in &extra_args {
             builder
                 .ins()
                 .call(callargs_push_local, &[callargs_ptr, *arg]);
         }
-        let call_bind_local = import_func_ref(
+        let call_bind_local = import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            "molt_call_bind_ic",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
+            RuntimeFn::CallBindIc,
         );
         let site_bits = builder.ins().iconst(
             types::I64,
@@ -2330,18 +2246,16 @@ fn handle_getframe_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
 ) {
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let depth = operands.word(&args[0]).expect("depth not found");
-    let callee = SimpleBackend::import_func_id_split(
+    let callee = SimpleBackend::import_runtime_func_id_split(
         &mut *module,
         &mut *import_ids,
-        "molt_getframe",
-        &[types::I64],
-        &[types::I64],
+        RuntimeFn::Getframe,
     );
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let call = builder.ins().call(local_callee, &[*depth]);

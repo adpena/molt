@@ -17,6 +17,7 @@ from collections.abc import Mapping
 import ast
 import hashlib
 import json
+import tomllib
 import os
 import sys
 from pathlib import Path
@@ -1140,25 +1141,31 @@ def render_native_exception_observer_abi_rs(data: dict) -> str:
     lines = [_header("//")]
     lines.extend(
         [
-            "/// Resolve a native runtime symbol from manifest-owned marked op-loop calls.\n",
+            "/// Resolve a native runtime entry from manifest-owned marked op-loop calls.\n",
             "///\n",
             "/// The base import name is also accepted as a semantic alias. A marker only\n",
             "/// changes rows that declare `marked_import_name` in the WASM ABI manifest.\n",
-            "pub(crate) fn pending_exception_observer_runtime_symbol(\n",
+            "pub(crate) fn pending_exception_observer_runtime_fn(\n",
             "    kind: molt_ir::OpKind,\n",
             "    marked: bool,\n",
-            ") -> Option<&'static str> {\n",
+            ") -> Option<molt_ir::runtime_fn_generated::RuntimeFn> {\n",
             "    match kind {\n",
         ]
     )
     for runtime_symbol, names in marked_groups.items():
         pattern = " | ".join(_rust_op_kind(name) for name in names)
+        variant = _wire_kind_variant(runtime_symbol.removeprefix("molt_"))
         lines.append(
-            f"        {pattern} if marked => Some({_rust_string(runtime_symbol)}),\n"
+            f"        {pattern} if marked => "
+            f"Some(molt_ir::runtime_fn_generated::RuntimeFn::{variant}),\n"
         )
     for runtime_symbol, names in base_groups.items():
         pattern = " | ".join(_rust_op_kind(name) for name in names)
-        lines.append(f"        {pattern} => Some({_rust_string(runtime_symbol)}),\n")
+        variant = _wire_kind_variant(runtime_symbol.removeprefix("molt_"))
+        lines.append(
+            f"        {pattern} => "
+            f"Some(molt_ir::runtime_fn_generated::RuntimeFn::{variant}),\n"
+        )
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return rustfmt_source("".join(lines), label="exception_observer_abi.rs")
 
@@ -1367,16 +1374,39 @@ _RUNTIME_BOXED_RETURNS = {
 }
 
 
+def _callable_trampoline(callables: dict, spec: dict) -> str:
+    callable = callables.get(spec["runtime_name"])
+    if callable is None:
+        return "None"
+    if callable["arity"] != spec["params"]:
+        raise ValueError(
+            f"runtime callable {spec['runtime_name']} arity {callable['arity']} "
+            f"differs from its RuntimeFn arity {spec['params']}"
+        )
+    trampoline = (
+        "CallFrame" if callable["trampoline_abi"] == "call_frame" else "UnpackArgs"
+    )
+    return f"Some(RuntimeCallableTrampolineAbi::{trampoline})"
+
+
 def render_runtime_fn_rs(data: dict) -> str:
     specs = runtime_fn_specs(data)
     lines = [
         _header("//"),
-        "//! Closed identities of the runtime entries compiled code calls by name.\n",
+        "//! Closed identities of the runtime entries compiled code calls.\n",
         "//! Every backend names a runtime entry by `RuntimeFn`, never by spelling its\n",
-        "//! symbol. Each identity has one all-word machine signature on every target\n",
-        "//! (64-bit words in, at most one word out) and one return contract.\n",
+        "//! symbol. Each identity has one machine signature (`RuntimeMachineType`\n",
+        "//! per parameter and result), one linker symbol, one execution context and\n",
+        "//! one return contract; backends derive declarations from them and state none.\n",
         "//! Machine i64 signatures alone never authorize object semantics: only the\n",
         "//! `Boxed` form promises Python-value operands and results.\n\n",
+        "use crate::runtime_callable_abi_generated::{\n",
+        "    RuntimeCallableTrampolineAbi, RuntimeExecutionContext,\n",
+        "};\n\n",
+        "/// The machine class of one runtime parameter or result. `Word` is 64 bits on\n",
+        "/// every target; `Address` is pointer width (wasm32 `i32`, the native pointer).\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeMachineType { Word, Address, I32, F64 }\n\n",
         "/// What a runtime entry's result word means, from the manifest's one return authority.\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub enum RuntimeReturnContract {\n",
@@ -1400,6 +1430,8 @@ def render_runtime_fn_rs(data: dict) -> str:
         "pub enum RuntimeEffects {\n",
         "    /// May raise, call Python and write anything: the floor of every entry.\n",
         "    Impure,\n",
+        "    /// May raise and write runtime state; never calls Python code; always returns.\n",
+        "    MayRaise,\n",
         "    /// Cannot raise or call Python and writes nothing; its answer may change between calls.\n",
         "    NothrowRead,\n",
         "    /// Cannot raise or call Python; writes runtime state.\n",
@@ -1407,8 +1439,16 @@ def render_runtime_fn_rs(data: dict) -> str:
         "}\n\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub struct RuntimeFnAbi {\n",
+        "    /// The logical export name: TIR serialization and diagnostics only.\n",
         "    pub symbol: &'static str,\n",
+        "    /// The object-file symbol; the only producer of a runtime entry's link name.\n",
+        "    pub linker_symbol: &'static str,\n",
+        "    pub context: RuntimeExecutionContext,\n",
         "    pub params: u8,\n",
+        "    pub param_types: &'static [RuntimeMachineType],\n",
+        "    pub result_type: Option<RuntimeMachineType>,\n",
+        "    /// The trampoline ABI when the entry is published as a Python callable.\n",
+        "    pub callable_trampoline: Option<RuntimeCallableTrampolineAbi>,\n",
         "    pub result: RuntimeReturnContract,\n",
         "    pub form: RuntimeCallForm,\n",
         "    pub effects: RuntimeEffects,\n",
@@ -1443,14 +1483,41 @@ def render_runtime_fn_rs(data: dict) -> str:
             "    pub const ALL: &'static [Self] = &[\n",
             *(f"        Self::{variant},\n" for variant in variants),
             "    ];\n\n",
+            "    /// The number of identities: the length of a dense side table.\n",
+            f"    pub const COUNT: usize = {len(variants)};\n\n",
             "    pub const fn abi(self) -> &'static RuntimeFnAbi { &RUNTIME_FN_ABIS[self as usize] }\n",
+            "    /// The dense index of this identity in `0..COUNT`.\n",
+            "    pub const fn index(self) -> usize { self as usize }\n",
             "    pub const fn symbol(self) -> &'static str { self.abi().symbol }\n",
-            "    /// Word parameters on every target.\n",
+            "    /// The object-file symbol a declaration of this entry uses.\n",
+            "    pub const fn linker_symbol(self) -> &'static str { self.abi().linker_symbol }\n",
+            "    /// Whether a call passes the caller's execution context first.\n",
+            "    pub const fn context(self) -> RuntimeExecutionContext { self.abi().context }\n",
+            "    /// Logical parameters, excluding the execution context.\n",
             "    pub const fn params(self) -> usize { self.abi().params as usize }\n",
+            "    pub const fn param_types(self) -> &'static [RuntimeMachineType] { self.abi().param_types }\n",
+            "    pub const fn result_type(self) -> Option<RuntimeMachineType> { self.abi().result_type }\n",
             "    pub const fn result(self) -> RuntimeReturnContract { self.abi().result }\n",
-            "    /// Whether the entry returns one word; a void entry returns nothing.\n",
+            "    /// The trampoline ABI of the entry's Python callable; its arity is `params()`.\n",
+            "    pub const fn callable_trampoline(self) -> Option<RuntimeCallableTrampolineAbi> {\n",
+            "        self.abi().callable_trampoline\n",
+            "    }\n",
+            "    /// Whether the entry returns one 64-bit word.\n",
             "    pub const fn returns_word(self) -> bool {\n",
-            "        !matches!(self.abi().result, RuntimeReturnContract::Void)\n",
+            "        matches!(self.abi().result_type, Some(RuntimeMachineType::Word))\n",
+            "    }\n",
+            "    /// Every parameter and the result (if any) is a `Word`: the entries late\n",
+            "    /// TIR may call through `CallRuntime`.\n",
+            "    pub const fn is_word_signature(self) -> bool {\n",
+            "        let params = self.abi().param_types;\n",
+            "        let mut index = 0;\n",
+            "        while index < params.len() {\n",
+            "            if !matches!(params[index], RuntimeMachineType::Word) {\n",
+            "                return false;\n",
+            "            }\n",
+            "            index += 1;\n",
+            "        }\n",
+            "        matches!(self.abi().result_type, None | Some(RuntimeMachineType::Word))\n",
             "    }\n",
             "    pub const fn form(self) -> RuntimeCallForm { self.abi().form }\n",
             "    pub const fn effects(self) -> RuntimeEffects { self.abi().effects }\n",
@@ -1485,6 +1552,22 @@ def render_runtime_fn_rs(data: dict) -> str:
             "pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[\n",
         ]
     )
+    execution = {row["symbol"]: row for row in runtime_execution_specs(data)}
+    callables = {spec["runtime_name"]: spec for spec in data["runtime_callable_abi"]}
+    machine = {"i64": "Word", "ptr": "Address", "i32": "I32", "f64": "F64"}
+    letters = {"i64": "W", "ptr": "A", "i32": "I", "f64": "F"}
+    signatures: dict[tuple[str, ...], str] = {}
+    for spec in specs:
+        key = tuple(spec["machine_params"])
+        signatures.setdefault(
+            key, "PARAMS_" + ("".join(letters[value] for value in key) or "NONE")
+        )
+    signature_lines = [
+        f"const {name}: &[RuntimeMachineType] = &["
+        + ", ".join(f"RuntimeMachineType::{machine[value]}" for value in key)
+        + "];\n"
+        for key, name in sorted(signatures.items(), key=lambda item: item[1])
+    ]
     for spec in specs:
         result = RUNTIME_RETURN_CONTRACTS[spec["result"]]
         if spec["form"] == "boxed":
@@ -1493,17 +1576,32 @@ def render_runtime_fn_rs(data: dict) -> str:
             form = "RuntimeCallForm::RawCall"
         else:
             form = "RuntimeCallForm::Helper"
+        row = execution.get(spec["runtime_name"])
+        if row is None:
+            raise ValueError(f"RuntimeFn {spec['runtime_name']} has no execution ABI")
+        result_type = (
+            "None"
+            if spec["machine_result"] is None
+            else f"Some(RuntimeMachineType::{machine[spec['machine_result']]})"
+        )
         lines.append(
             "    RuntimeFnAbi { "
-            f'symbol: "{spec["runtime_name"]}", params: {spec["params"]}, '
+            f'symbol: "{spec["runtime_name"]}", '
+            f'linker_symbol: "{row["physical_symbol"]}", '
+            f"context: RuntimeExecutionContext::{row['context']}, "
+            f"params: {spec['params']}, "
+            f"param_types: {signatures[tuple(spec['machine_params'])]}, "
+            f"result_type: {result_type}, "
+            f"callable_trampoline: {_callable_trampoline(callables, spec)}, "
             f"result: RuntimeReturnContract::{result}, form: {form}, "
             f"effects: RuntimeEffects::{RUNTIME_IMPORT_EFFECTS.get(spec['effects'], 'Impure')}"
             " },\n"
         )
+    lines.append("];\n\n")
+    lines.extend(signature_lines)
     lines.extend(
         [
-            "];\n\n",
-            "/// The boxed call `symbol` with exactly `arity` operands.\n",
+            "\n/// The boxed call `symbol` with exactly `arity` operands.\n",
             "pub fn runtime_boxed_abi(symbol: &str, arity: usize) -> Option<RuntimeBoxedAbi> {\n",
             "    let abi = RuntimeFn::from_symbol(symbol)?.boxed_abi()?;\n",
             "    (abi.arity() == arity).then_some(abi)\n",
@@ -1560,6 +1658,27 @@ def render_runtime_fn_rs(data: dict) -> str:
         lines.append(
             f"        {_rust_op_kind(entry['kind'])} => Some(RuntimeFn::{variant}),\n"
         )
+    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
+    from tools.op_kinds.registration import registered_simpleir_kinds
+    from tools.wasm_abi_gen.paths import OP_KINDS_TABLE
+
+    op_data = tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
+    lines.extend(
+        [
+            "\n/// The runtime entry that implements a preserved op of this kind, by the\n",
+            "/// manifest's `molt_<kind>` export convention, decided here once. Backends\n",
+            "/// check its form and arity; they never format a symbol from a kind.\n",
+            "pub const fn preserved_op_runtime_fn(kind: molt_ir::OpKind) -> Option<RuntimeFn> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for kind in sorted(registered_simpleir_kinds(op_data)):
+        symbol = f"molt_{kind}"
+        if symbol in entries:
+            variant = _wire_kind_variant(symbol.removeprefix("molt_"))
+            lines.append(
+                f"        {_rust_op_kind(kind)} => Some(RuntimeFn::{variant}),\n"
+            )
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines).replace("molt_ir::OpKind", "crate::OpKind")
 

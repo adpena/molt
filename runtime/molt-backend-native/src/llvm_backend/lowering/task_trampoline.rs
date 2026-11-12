@@ -44,7 +44,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             usize::from(has_closure),
             kind.trampoline_kind().symbol_suffix(),
         );
-        if let Some(trampoline) = self.backend.module.get_execution_function(&trampoline_name) {
+        if let Some(trampoline) = self.backend.module.get_compiled_function(&trampoline_name) {
             return (poll, trampoline);
         }
         let i64_ty = self.backend.context.i64_type();

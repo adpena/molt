@@ -76,23 +76,19 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
             }
         }
         let mut refs = NativeFunctionImports::default();
-        retain = import_func_ref(
+        retain = import_runtime_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut refs,
-            "molt_inc_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::IncRefObj,
         );
-        release = import_func_ref(
+        release = import_runtime_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut refs,
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::DecRefObj,
         );
         let retain_site = detached_refcount_site(&mut builder, retain, RefcountOperation::Retain);
         let release_site =
@@ -102,12 +98,12 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         let (hoists, materialization) =
             prepare_heap_literals(&input, &mut builder, pointer_type, &plan);
         for runtime_func in [
-            "molt_string_from_bytes",
-            "molt_bytes_from_bytes",
-            "molt_bigint_from_bytes",
+            RuntimeFn::StringFromBytes,
+            RuntimeFn::BytesFromBytes,
+            RuntimeFn::BigintFromBytes,
         ] {
             assert!(
-                !backend.import_ids.contains_key(runtime_func),
+                backend.import_ids.get(runtime_func).is_none(),
                 "literal preparation must not import or emit constructors"
             );
         }
@@ -132,11 +128,11 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         );
         seal_block_once(&mut builder, &mut sealed_blocks, body_entry);
         materializers = [
-            "molt_string_from_bytes",
-            "molt_bytes_from_bytes",
-            "molt_bigint_from_bytes",
+            RuntimeFn::StringFromBytes,
+            RuntimeFn::BytesFromBytes,
+            RuntimeFn::BigintFromBytes,
         ]
-        .map(|name| backend.import_ids[name].0);
+        .map(|function| backend.import_ids.get(function).unwrap());
         for (index, op) in input.ops.iter().enumerate() {
             handle_const_literal_op(
                 op,
@@ -307,7 +303,7 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
             verify_function(function, &settings::Flags::new(settings::builder()))
                 .unwrap_or_else(|errors| panic!("{kind}: {errors}\n{}", function.display()));
             assert!(
-                !backend.import_ids.contains_key("molt_bigint_from_bytes"),
+                backend.import_ids.get(RuntimeFn::BigintFromBytes).is_none(),
                 "raw literals and discarded outputs need no boxed-literal constructor: {kind}"
             );
             assert!(

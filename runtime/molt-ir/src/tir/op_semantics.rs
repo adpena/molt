@@ -383,6 +383,10 @@ fn call_runtime_facts(runtime: crate::runtime_fn_generated::RuntimeFn) -> OpInst
     };
     let effects = match runtime.effects() {
         RuntimeEffects::Impure => OPCODE_EFFECTS_IMPURE,
+        RuntimeEffects::MayRaise => OpcodeEffects {
+            may_call_python: false,
+            ..OPCODE_EFFECTS_IMPURE
+        },
         RuntimeEffects::NothrowRead => nothrow(true),
         RuntimeEffects::NothrowWrite => nothrow(false),
     };

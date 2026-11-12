@@ -300,6 +300,7 @@ fn native_call_frame_trampoline_forwards_the_canonical_three_argument_abi() {
         trampoline_ids,
         import_ids,
         "call_frame_target",
+        None,
         Linkage::Import,
         TrampolineSpec {
             arity: 3,

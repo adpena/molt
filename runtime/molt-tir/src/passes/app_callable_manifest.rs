@@ -202,7 +202,8 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
 /// told apart by their spelling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AppCallableKind {
-    RuntimeCallable,
+    /// A runtime entry, by its typed identity (HF-821 B1).
+    RuntimeCallable(molt_ir::runtime_fn_generated::RuntimeFn),
     CompiledBody,
 }
 
@@ -230,7 +231,11 @@ impl AppCallableManifest {
     pub fn entries(&self) -> BTreeMap<&str, AppCallableKind> {
         let mut entries = BTreeMap::new();
         for name in &self.runtime_callables {
-            entries.insert(name.as_str(), AppCallableKind::RuntimeCallable);
+            // The manifest's names come from the runtime callable surface, a
+            // subset of the generated RuntimeFn table: decoded here, once.
+            let function = molt_ir::runtime_fn_generated::RuntimeFn::from_symbol(name)
+                .unwrap_or_else(|| panic!("app runtime callable `{name}` has no RuntimeFn"));
+            entries.insert(name.as_str(), AppCallableKind::RuntimeCallable(function));
         }
         for name in &self.compiled_bodies {
             assert!(

@@ -83,7 +83,7 @@ pub(in crate::native_backend::function_compiler) fn emit_raw_int_div_intmin_debu
 pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -106,10 +106,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -137,9 +134,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             // symbol changes — molt_inplace_div tries __itruediv__ before
             // the binary __truediv__/__rtruediv__ chain.
             let boxed_sym = if op.kind == OpKind::InplaceDiv {
-                "molt_inplace_div"
+                RuntimeFn::InplaceDiv
             } else {
-                "molt_div"
+                RuntimeFn::Div
             };
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Defer var_get per-branch: float path defers into cold
@@ -218,12 +215,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
@@ -278,12 +273,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let fast_block = builder.create_block();
@@ -364,12 +357,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -481,9 +472,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             // tries __ifloordiv__ before the binary __floordiv__/
             // __rfloordiv__ chain.
             let boxed_sym = if op.kind == OpKind::InplaceFloordiv {
-                "molt_inplace_floordiv"
+                RuntimeFn::InplaceFloordiv
             } else {
-                "molt_floordiv"
+                RuntimeFn::Floordiv
             };
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
@@ -498,12 +489,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .as_ref()
                     .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out));
 
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
 
@@ -674,12 +663,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -763,9 +750,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             // molt_inplace_mod tries __imod__ before the binary
             // __mod__/__rmod__ chain.
             let boxed_sym = if op.kind == OpKind::InplaceMod {
-                "molt_inplace_mod"
+                RuntimeFn::InplaceMod
             } else {
-                "molt_mod"
+                RuntimeFn::Mod
             };
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
@@ -779,12 +766,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .as_ref()
                     .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out));
 
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
 
@@ -949,12 +934,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -1051,12 +1034,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 // Python floor_div: divide and floor towards negative infinity.
                 // sdiv truncates towards zero; we adjust when signs differ and
                 // there is a remainder.
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_floordiv",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Floordiv,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let fast_block = builder.create_block();
@@ -1109,12 +1090,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             } else {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_floordiv",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::Floordiv,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -1140,9 +1119,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             // changes — molt_inplace_pow tries __ipow__ before the binary
             // __pow__/__rpow__ chain.
             let boxed_sym = if op.kind == OpKind::InplacePow {
-                "molt_inplace_pow"
+                RuntimeFn::InplacePow
             } else {
-                "molt_pow"
+                RuntimeFn::Pow
             };
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
@@ -1172,12 +1151,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 .expect("RHS not found");
                 // Inline pow for small non-negative exponents (0, 1, 2).
                 // Exponent >= 3 or negative falls back to runtime.
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
 
@@ -1280,12 +1257,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     representation_plan,
                 )
                 .expect("RHS not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     boxed_sym,
-                    &[types::I64, types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -1340,12 +1315,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 representation_plan,
             )
             .expect("Mod not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_pow_mod",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::PowMod,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs, *modulus]);
@@ -1399,12 +1372,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 representation_plan,
             )
             .expect("Round ndigits flag not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_round",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::Round,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -1438,12 +1409,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 representation_plan,
             )
             .expect("Trunc arg not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_trunc",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::Trunc,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val]);

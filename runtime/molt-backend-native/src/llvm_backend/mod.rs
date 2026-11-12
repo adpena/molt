@@ -45,17 +45,17 @@ pub struct LlvmBackend<'ctx> {
     /// LLVM backend's integer-carrier and container dispatch decisions from the
     /// same typed facts the native/WASM/Luau backends consume.
     pub(crate) function_repr_facts: BTreeMap<String, ProducerCarrierPlan>,
-    /// The set of `molt_*` symbols the linked runtime staticlib defines (the
-    /// active stdlib profile's callable surface, from
-    /// `MOLT_RUNTIME_CALLABLE_SYMBOLS`). Used by the generic preserved-op
-    /// runtime-call fallback to confirm `molt_<kind>` actually exists before
-    /// emitting an external call to it — so an operator kind with no dedicated
-    /// lowering routes to its real runtime entry, and an unmappable kind fails
-    /// the build loud instead of silently degrading to an operand-0 pass-through.
+    /// The runtime entries the linked runtime staticlib defines (the active
+    /// stdlib profile's callable surface, from `MOLT_RUNTIME_CALLABLE_SYMBOLS`),
+    /// decoded once into a typed set. Runtime calls confirm their entry exists
+    /// before emitting an external call to it, so an unavailable entry fails the
+    /// build loud instead of silently degrading to an operand-0 pass-through.
     /// Empty when the env var is unset (e.g. in-crate codegen unit tests that
     /// never link a final binary); the generic fallback then declines, matching
     /// the resolver machinery's same `cfg(test)` carve-out.
-    pub(crate) runtime_callable_symbols: std::sync::Arc<std::collections::BTreeSet<String>>,
+    pub(crate) runtime_callable_symbols: molt_ir::runtime_callable_symbols::RuntimeFnSet,
+    /// This module's runtime declarations, by typed identity (HF-821).
+    pub(crate) runtime_imports: runtime_imports::LlvmRuntimeImports<'ctx>,
 }
 
 /// Exact LLVM CPU inputs shared by target-machine construction and cache identity.
@@ -92,7 +92,8 @@ impl<'ctx> LlvmBackend<'ctx> {
             builder,
             function_linkage_abis: BTreeMap::new(),
             function_repr_facts: BTreeMap::new(),
-            runtime_callable_symbols: symbols.shared_symbols().unwrap_or_default(),
+            runtime_callable_symbols: symbols.runtime_fn_set(),
+            runtime_imports: runtime_imports::LlvmRuntimeImports::default(),
         };
         backend.ensure_generated_object_abi_anchor();
         backend

@@ -38,7 +38,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_exception_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -54,10 +54,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -95,12 +92,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 types::I64,
                 op.value.expect("exception_match_builtin missing tag value"),
             );
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_match_builtin",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionMatchBuiltin,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*exc_bits, tag]);
@@ -110,12 +105,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             }
         }
         OpKind::ExceptionLast => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_last",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionLast,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -125,18 +118,13 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             }
         }
         OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
-            let symbol = crate::exception_observer_abi::pending_exception_observer_runtime_symbol(
+            let symbol = crate::exception_observer_abi::pending_exception_observer_runtime_fn(
                 op.kind,
                 op.is_async_work_poll(),
             )
             .expect("pending-exception observer kind must have a runtime projection");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                symbol,
-                &[],
-                &[types::I64],
-            );
+            let callee =
+                SimpleBackend::import_runtime_func_id_split(&mut *module, &mut *import_ids, symbol);
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let res = if op.is_async_work_poll() {
                 let fast = SimpleBackend::import_runtime_func_id_split(
@@ -172,12 +160,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             }
         }
         OpKind::ExceptionActive => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_active",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionActive,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -187,12 +173,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             }
         }
         OpKind::ExceptionCurrent => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_current",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionCurrent,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -225,12 +209,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Args not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_new",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*kind, *args_bits]);
@@ -254,12 +236,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Args not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_new_builtin",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionNewBuiltin,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[tag_val, *args_bits]);
@@ -273,12 +253,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 .value
                 .expect("exception_new_builtin_empty missing tag value");
             let tag_val = builder.ins().iconst(types::I64, tag);
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_new_builtin_empty",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionNewBuiltinEmpty,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[tag_val]);
@@ -304,12 +282,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Exception arg not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_new_builtin_one",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionNewBuiltinOne,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[tag_val, *arg_bits]);
@@ -342,12 +318,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Args not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_new_from_class",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionNewFromClass,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*class_bits, *args_bits]);
@@ -380,12 +354,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Matcher not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exceptiongroup_match",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptiongroupMatch,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*exc, *matcher]);
@@ -407,12 +379,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Exception list not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exceptiongroup_combine",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptiongroupCombine,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*items]);
@@ -422,12 +392,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             }
         }
         OpKind::ExceptionClear => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_clear",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionClear,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -449,12 +417,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Exception kind not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_class",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionClass,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*kind]);
@@ -476,12 +442,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Exception not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_set_last",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionSetLast,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*exc]);
@@ -503,12 +467,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 representation_plan,
             )
             .expect("Exception not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_context_set",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionContextSet,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*exc]);

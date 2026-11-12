@@ -1,997 +1,212 @@
 use super::attributes::MEMORY_READ;
+use super::declarations::runtime_function_type;
 use super::*;
-#[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionModuleExt;
-use crate::runtime_import_abi::{RuntimeReturnAbi, TRAMPOLINE_RUNTIME_IMPORTS};
+use crate::runtime_import_abi::TRAMPOLINE_RUNTIME_IMPORTS;
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::context::Context;
-use inkwell::types::FunctionType;
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::FunctionValue;
-use molt_ir::runtime_fn_generated::RuntimeFn;
-use std::collections::HashSet;
+use molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext;
+use molt_ir::runtime_fn_generated::{RuntimeEffects, RuntimeFn, RuntimeMachineType};
 
-fn runtime_function_type<'ctx>(
-    ctx: &'ctx Context,
-    param_count: usize,
-    return_abi: RuntimeReturnAbi,
-) -> FunctionType<'ctx> {
-    let i64_ty = ctx.i64_type();
-    let params = vec![i64_ty.into(); param_count];
-    match return_abi {
-        RuntimeReturnAbi::I64 => i64_ty.fn_type(&params, false),
-        RuntimeReturnAbi::Void => ctx.void_type().fn_type(&params, false),
-    }
-}
-
-/// Check the hidden physical context independently, then inspect the logical
-/// signature owned by the boxed/raw runtime ABI tables.
-fn logical_parameter_types(function: FunctionValue<'_>) -> Vec<inkwell::types::BasicTypeEnum<'_>> {
-    let mut params = function.get_type().get_param_types();
-    if function
-        .get_name()
-        .to_str()
-        .unwrap()
-        .ends_with(molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX)
-    {
-        assert!(params[0].is_int_type());
-        assert_eq!(params[0].into_int_type().get_bit_width(), 64);
-        params.remove(0);
-    }
-    params
-        .into_iter()
-        .map(|param| {
-            inkwell::types::BasicTypeEnum::try_from(param)
-                .expect("logical runtime parameters must be value types, not metadata")
-        })
-        .collect()
-}
-
-/// Check that a function has an enum attribute with the given name.
 fn has_fn_attr(func: FunctionValue<'_>, attr_name: &str) -> bool {
-    let kind_id = Attribute::get_named_enum_kind_id(attr_name);
-    if kind_id == 0 {
-        // Unknown attribute name in this LLVM version — skip check.
-        return true;
-    }
-    func.get_enum_attribute(AttributeLoc::Function, kind_id)
+    let kind = Attribute::get_named_enum_kind_id(attr_name);
+    func.get_enum_attribute(AttributeLoc::Function, kind)
         .is_some()
 }
 
-#[test]
-fn runtime_functions_are_declared() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_rt");
-    declare_runtime_functions(&ctx, &module);
-    for spec in fixed::FIXED_RUNTIME_IMPORTS {
-        let abi = molt_ir::runtime_callable_abi_generated::runtime_execution_abi(spec.name)
-            .expect("every fixed import has a generated execution ABI");
-        let function = module
-            .get_function(abi.physical_symbol)
-            .expect("the declared import uses its schema-bound physical symbol");
-        if abi.context == molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext::Attached
-        {
-            assert!(
-                module.get_function(spec.name).is_none(),
-                "{} must have no old-signature alias",
-                spec.name
-            );
-            assert_eq!(
-                function.get_first_param().unwrap().get_type(),
-                ctx.i64_type().into(),
-                "{} requires one leading context word",
-                spec.name
-            );
-        }
-    }
-
-    // Spot-check a few key functions exist
-    assert!(module.get_execution_function("molt_add").is_some());
-    assert!(module.get_execution_function("molt_sub").is_some());
-    assert!(module.get_execution_function("molt_eq").is_some());
-    assert!(module.get_execution_function("molt_inc_ref_obj").is_some());
-    assert!(module.get_execution_function("molt_dec_ref_obj").is_some());
-    assert!(module.get_execution_function("molt_alloc").is_some());
-    assert!(
-        module
-            .get_execution_function("molt_get_attr_name")
-            .is_some()
-    );
-    assert!(module.get_execution_function("molt_raise").is_some());
-    assert!(module.get_execution_function("molt_is_truthy").is_some());
-    assert!(module.get_execution_function("molt_code_new").is_some());
-    assert!(
-        module
-            .get_execution_function("molt_print_newline")
-            .is_some()
-    );
-    assert!(module.get_execution_function("molt_print_obj").is_some());
-    assert!(
-        module
-            .get_execution_function("molt_bigint_from_bytes")
-            .is_some()
-    );
-    assert!(
-        module
-            .get_execution_function("molt_function_defaults_version")
-            .is_some()
-    );
-    // The augmented-assignment entries the boxed `emit_binary_arith` fallback
-    // calls are fixed declarations. A
-    // TIR→LLVM-lowered function carrying `+=`/`-=`/`*=` (an inlined or
-    // generator-fused caller) panics without these.
-    assert!(module.get_execution_function("molt_inplace_add").is_some());
-    assert!(module.get_execution_function("molt_inplace_sub").is_some());
-    assert!(module.get_execution_function("molt_inplace_mul").is_some());
+fn memory_attr(func: FunctionValue<'_>) -> Option<u64> {
+    let kind = Attribute::get_named_enum_kind_id("memory");
+    func.get_enum_attribute(AttributeLoc::Function, kind)
+        .map(|attribute| attribute.get_enum_value())
 }
 
-#[test]
-fn shared_runtime_helper_imports_have_llvm_abi_authority() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_shared_runtime_helpers");
-    declare_runtime_functions(&ctx, &module);
-
-    for &function in TRAMPOLINE_RUNTIME_IMPORTS {
-        let return_abi = RuntimeReturnAbi::of(function);
-        let func = module
-            .get_execution_function(function.symbol())
-            .unwrap_or_else(|| {
-                assert_eq!(
-                    runtime_import_return_abi(function.symbol(), function.params()),
-                    Some(return_abi),
-                    "{} should be declared or classified",
-                    function.symbol()
-                );
-                declare_conservative_runtime_function(
-                    &ctx,
-                    &module,
-                    function.symbol(),
-                    runtime_function_type(&ctx, function.params(), return_abi),
-                )
-            });
-        assert_eq!(logical_parameter_types(func).len(), function.params());
-        match return_abi {
-            RuntimeReturnAbi::I64 => {
-                let ret_ty = func
-                    .get_type()
-                    .get_return_type()
-                    .unwrap_or_else(|| panic!("{} should return i64", function.symbol()));
-                assert!(
-                    ret_ty.is_int_type(),
-                    "{} should return an integer",
-                    function.symbol()
-                );
-                assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-            }
-            RuntimeReturnAbi::Void => {
-                assert!(
-                    func.get_type().get_return_type().is_none(),
-                    "{} should return void",
-                    function.symbol()
-                );
-            }
-        }
+/// The machine class an LLVM parameter or result type denotes, read back from
+/// the module. The oracle for every declaration is the generated record.
+fn machine_class(ty: BasicTypeEnum<'_>) -> RuntimeMachineType {
+    match ty {
+        BasicTypeEnum::IntType(int) if int.get_bit_width() == 64 => RuntimeMachineType::Word,
+        BasicTypeEnum::IntType(int) if int.get_bit_width() == 32 => RuntimeMachineType::I32,
+        BasicTypeEnum::FloatType(_) => RuntimeMachineType::F64,
+        BasicTypeEnum::PointerType(_) => RuntimeMachineType::Address,
+        other => panic!("runtime declaration uses non-machine type {other:?}"),
     }
 }
 
-#[test]
-fn unchecked_iterator_has_no_llvm_machine_abi() {
-    // HF-571: `molt_iter` returns None for a non-iterable instead of raising
-    // CPython's TypeError. LLVM acquires iterators only through the checked
-    // runtime-call contract, so no route may declare the unchecked entrypoint.
-    assert_eq!(runtime_import_return_abi("molt_iter", 1), None);
-    assert_eq!(
-        runtime_import_return_abi("molt_iter_checked", 1),
-        Some(RuntimeReturnAbi::I64)
-    );
+fn param_class(ty: BasicMetadataTypeEnum<'_>) -> RuntimeMachineType {
+    machine_class(BasicTypeEnum::try_from(ty).expect("runtime parameter is a basic type"))
 }
 
+/// Every runtime entry declares under its generated linker symbol with
+/// exactly its record's machine signature, the context word first when it is
+/// attached, and nothing else.
 #[test]
-fn fixed_runtime_imports_agree_with_the_generated_runtime_identity() {
-    // A fixed declaration adds LLVM attributes; its word signature must be the
-    // generated RuntimeFn's, or the two authorities disagree about one symbol.
-    let mut fixed_names = HashSet::new();
-    for spec in fixed::FIXED_RUNTIME_IMPORTS {
-        assert!(
-            fixed_names.insert(spec.name),
-            "fixed LLVM runtime import `{}` appears more than once",
-            spec.name,
-        );
-        let fixed::FixedRuntimeSignature::Boxed {
-            param_count,
-            return_abi,
-        } = spec.signature
-        else {
-            continue;
-        };
-        if let Some(function) = RuntimeFn::from_symbol(spec.name) {
-            assert_eq!(
-                (function.params(), RuntimeReturnAbi::of(function)),
-                (param_count, return_abi),
-                "fixed LLVM runtime import `{}` disagrees with RuntimeFn",
-                spec.name,
-            );
-        }
-    }
-}
-
-#[test]
-fn buffer_shape_accessors_return_boxed_integers() {
+fn every_runtime_entry_declares_its_record_signature() {
     let ctx = Context::create();
-    let module = ctx.create_module("test_buffer_shape");
-    for name in ["molt_buffer2d_rows", "molt_buffer2d_cols"] {
+    let module = ctx.create_module("runtime_imports");
+    let imports = LlvmRuntimeImports::default();
+    for &function in RuntimeFn::ALL {
+        let declared = imports.get(&ctx, &module, function);
         assert_eq!(
-            runtime_import_return_abi(name, 1),
-            Some(RuntimeReturnAbi::I64)
+            declared.get_name().to_str().unwrap(),
+            function.linker_symbol(),
+            "{} declares under its linker symbol",
+            function.symbol()
         );
-        assert_eq!(runtime_import_return_abi(name, 2), None);
-        let function = declare_conservative_runtime_function(
-            &ctx,
-            &module,
-            name,
-            runtime_function_type(&ctx, 1, RuntimeReturnAbi::I64),
-        );
-        assert_eq!(logical_parameter_types(function).len(), 1);
+        let ty = declared.get_type();
+        let mut params = ty.get_param_types().into_iter();
+        if function.context() == RuntimeExecutionContext::Attached {
+            assert_eq!(
+                params.next().map(param_class),
+                Some(RuntimeMachineType::Word),
+                "{} takes its execution context first",
+                function.symbol()
+            );
+        }
+        let logical: Vec<RuntimeMachineType> = params.map(param_class).collect();
         assert_eq!(
+            logical,
+            function.param_types(),
+            "{} parameters",
+            function.symbol()
+        );
+        assert_eq!(
+            ty.get_return_type().map(machine_class),
+            function.result_type(),
+            "{} result",
+            function.symbol()
+        );
+        assert_eq!(ty, runtime_function_type(&ctx, function));
+    }
+}
+
+/// A second request returns the first declaration, and a declaration made
+/// through the uncached path is the same function: the module never holds a
+/// renamed duplicate (`name.1`) of a runtime entry.
+#[test]
+fn a_runtime_entry_is_declared_once_per_module() {
+    let ctx = Context::create();
+    let module = ctx.create_module("runtime_imports_once");
+    let imports = LlvmRuntimeImports::default();
+    let early = runtime_function(&ctx, &module, RuntimeFn::IntFromI64);
+    let cached = imports.get(&ctx, &module, RuntimeFn::IntFromI64);
+    let again = imports.get(&ctx, &module, RuntimeFn::IntFromI64);
+    assert_eq!(early, cached);
+    assert_eq!(cached, again);
+    let count = module
+        .get_functions()
+        .filter(|function| {
             function
-                .get_type()
-                .get_return_type()
+                .get_name()
+                .to_str()
                 .unwrap()
-                .into_int_type()
-                .get_bit_width(),
-            64,
-        );
-    }
+                .starts_with(RuntimeFn::IntFromI64.linker_symbol())
+        })
+        .count();
+    assert_eq!(count, 1);
 }
 
+/// LLVM attributes follow the manifest's effects alone (I7): every entry is
+/// nounwind; only an entry that never runs Python code may promise to return;
+/// only a nothrow reader may promise not to write memory.
 #[test]
-fn generated_boxed_contracts_supply_machine_abis_without_native_whitelists() {
-    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
-
-    for abi in RuntimeFn::ALL
-        .iter()
-        .filter_map(|function| function.boxed_abi())
-    {
-        let result = match abi.result {
-            RuntimeBoxedReturn::OwnedValue
-            | RuntimeBoxedReturn::BorrowedValue
-            | RuntimeBoxedReturn::PollValue => RuntimeReturnAbi::I64,
-            RuntimeBoxedReturn::Void => RuntimeReturnAbi::Void,
+fn llvm_attributes_follow_manifest_effects() {
+    let ctx = Context::create();
+    let module = ctx.create_module("runtime_attributes");
+    let imports = LlvmRuntimeImports::default();
+    let mut seen = [false; 4];
+    for &function in RuntimeFn::ALL {
+        let declared = imports.get(&ctx, &module, function);
+        assert!(has_fn_attr(declared, "nounwind"), "{}", function.symbol());
+        let (willreturn, memory_read, slot) = match function.effects() {
+            RuntimeEffects::Impure => (false, false, 0),
+            RuntimeEffects::MayRaise => (true, false, 1),
+            RuntimeEffects::NothrowWrite => (true, false, 2),
+            RuntimeEffects::NothrowRead => (true, true, 3),
         };
+        seen[slot] = true;
         assert_eq!(
-            runtime_import_return_abi(abi.symbol(), abi.arity()),
-            Some(result),
+            has_fn_attr(declared, "willreturn"),
+            willreturn,
+            "{} willreturn",
+            function.symbol()
+        );
+        assert_eq!(
+            memory_attr(declared) == Some(MEMORY_READ),
+            memory_read,
+            "{} memory(read)",
+            function.symbol()
+        );
+    }
+    assert!(
+        seen[0] && seen[2] && seen[3],
+        "the manifest exercises each effect class"
+    );
+}
+
+/// Entries that run Python code lost the unsound `willreturn` the hand-written
+/// table gave them: `__next__`, `__str__`, `__del__` and `__bool__` may loop.
+#[test]
+fn entries_that_may_run_python_do_not_promise_to_return() {
+    let ctx = Context::create();
+    let module = ctx.create_module("runtime_python_entries");
+    let imports = LlvmRuntimeImports::default();
+    for function in [
+        RuntimeFn::IterNext,
+        RuntimeFn::PrintObj,
+        RuntimeFn::DecRefObj,
+        RuntimeFn::IsTruthyInt,
+        RuntimeFn::IsTruthyBool,
+    ] {
+        let declared = imports.get(&ctx, &module, function);
+        assert!(
+            !has_fn_attr(declared, "willreturn"),
             "{}",
-            abi.symbol()
+            function.symbol()
         );
+        assert_eq!(memory_attr(declared), None, "{}", function.symbol());
     }
+    let pending = imports.get(&ctx, &module, RuntimeFn::ExceptionPending);
+    assert!(has_fn_attr(pending, "willreturn"));
+    assert_eq!(memory_attr(pending), Some(MEMORY_READ));
 }
 
+/// Pointer, status and float signatures reach LLVM as `ptr`, `i32` and
+/// `double`, so an address is never truncated and a status never widened.
 #[test]
-fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() {
-    use molt_ir::runtime_callable_abi_generated::RUNTIME_CALLABLE_ABIS;
-
-    for abi in RUNTIME_CALLABLE_ABIS {
-        assert_eq!(
-            runtime_import_return_abi(abi.symbol, abi.arity),
-            Some(RuntimeReturnAbi::I64),
-            "{}",
-            abi.symbol
-        );
-    }
-    // Compiler calls use the exact five-object transport independently of the
-    // observable Python callable's retained trampoline-table dispatch.
-    let symbol = "molt_importlib_import_transaction";
+fn non_word_signatures_keep_their_machine_classes() {
+    let ctx = Context::create();
+    let module = ctx.create_module("runtime_machine_classes");
+    let imports = LlvmRuntimeImports::default();
+    let ptr = ctx.ptr_type(inkwell::AddressSpace::default());
+    let string_from_bytes = imports.get(&ctx, &module, RuntimeFn::StringFromBytes);
+    let ty = string_from_bytes.get_type();
+    assert_eq!(ty.get_return_type(), Some(ctx.i32_type().into()));
+    let params = ty.get_param_types();
+    assert_eq!(params.last().copied(), Some(ptr.into()));
+    let float = imports.get(&ctx, &module, RuntimeFn::FloatAsF64);
     assert_eq!(
-        runtime_import_return_abi(symbol, 5),
-        Some(RuntimeReturnAbi::I64)
+        float.get_type().get_return_type(),
+        Some(ctx.f64_type().into())
     );
-    assert_eq!(runtime_import_return_abi(symbol, 4), None);
-    let boxed = molt_ir::runtime_fn_generated::runtime_boxed_abi(symbol, 5)
-        .expect("explicit compiler boxed-call admission");
-    assert_eq!(
-        boxed.result,
-        molt_ir::runtime_fn_generated::RuntimeBoxedReturn::OwnedValue
-    );
-    // Some callables also own a fixed declaration with stronger attributes.
-    // Its hand-written signature must agree with the generated callable ABI,
-    // or the shared declaration path would reject the builtin at build time.
-    let ctx = Context::create();
-    let module = ctx.create_module("callable_abi_fixed_agreement");
-    for abi in RUNTIME_CALLABLE_ABIS {
-        let Some(function) = fixed::declare_fixed_runtime_function(&ctx, &module, abi.symbol)
-        else {
-            continue;
-        };
-        let expected = runtime_function_type(&ctx, abi.arity, RuntimeReturnAbi::I64);
-        assert_eq!(
-            function.get_type().print_to_string().to_string(),
-            crate::llvm_backend::execution_abi::runtime_execution_type(abi.symbol, expected)
-                .print_to_string()
-                .to_string(),
-            "{} fixed declaration disagrees with the callable ABI",
-            abi.symbol
-        );
-    }
-}
-
-#[test]
-fn generated_raw_contracts_supply_machine_abis_without_native_whitelists() {
-    use molt_ir::runtime_callable_abi_generated::runtime_callable_abi;
-    use molt_ir::runtime_fn_generated::{
-        RuntimeCallForm, RuntimeFn, runtime_boxed_abi, runtime_raw_abi,
-    };
-
-    for &function in RuntimeFn::ALL
-        .iter()
-        .filter(|function| function.form() == RuntimeCallForm::RawCall)
-    {
-        let symbol = function.symbol();
-        assert_eq!(
-            runtime_import_return_abi(symbol, function.params()),
-            Some(RuntimeReturnAbi::I64),
-            "{symbol}"
-        );
-        assert!(
-            runtime_boxed_abi(symbol, function.params()).is_none()
-                && runtime_callable_abi(symbol).is_none(),
-            "{symbol} raw bits must not also claim object semantics"
-        );
-    }
-    // The host init entry the CLI calls directly: zero words in, raw bits out.
-    assert_eq!(
-        runtime_raw_abi("molt_runtime_init", 0).map(RuntimeFn::params),
-        Some(0)
-    );
-    assert!(runtime_raw_abi("molt_runtime_init", 1).is_none());
-}
-
-#[test]
-fn raw_integer_carriers_do_not_authorize_boxed_calls() {
-    use molt_ir::runtime_fn_generated::runtime_boxed_abi;
-
-    for (symbol, arity) in [
-        ("molt_int_from_i64", 1),
-        ("molt_int_as_i64", 1),
-        ("molt_is_truthy", 1),
-        ("molt_obj_get_state", 1),
-        ("molt_object_field_get_ptr", 2),
-        ("molt_tuple_from_values", 2),
-        ("molt_list_from_values", 2),
-    ] {
-        assert!(
-            runtime_import_return_abi(symbol, arity).is_some(),
-            "{symbol}"
-        );
-        assert!(runtime_boxed_abi(symbol, arity).is_none(), "{symbol}");
-    }
-}
-
-#[test]
-fn field_accessor_runtime_import_family_has_one_conservative_abi() {
-    for (name, param_count) in [
-        ("molt_object_field_get", 2),
-        ("molt_object_field_get_ptr", 2),
-        ("molt_object_field_init", 3),
-        ("molt_object_field_init_ptr", 3),
-        ("molt_object_field_set", 3),
-        ("molt_object_field_set_ptr", 3),
-    ] {
-        assert!(
-            is_runtime_import_abi(name, param_count, RuntimeReturnAbi::I64),
-            "{name}"
-        );
-        assert!(
-            !is_runtime_import_abi(name, param_count + 1, RuntimeReturnAbi::I64),
-            "{name}"
-        );
-        assert!(
-            !is_runtime_import_abi(name, param_count, RuntimeReturnAbi::Void),
-            "{name}"
-        );
-        assert!(RuntimeFn::from_symbol(name).is_some(), "{name}");
-    }
-}
-
-#[test]
-fn fused_async_work_observers_have_callback_safe_runtime_declarations() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_fused_async_work_observers");
-    declare_runtime_functions(&ctx, &module);
-    for name in [
-        "molt_async_work_poll_and_exception_pending",
-        "molt_async_work_poll_and_exception_last_pending",
-    ] {
-        let function = module.get_execution_function(name).expect(name);
-        assert_eq!(logical_parameter_types(function).len(), 0);
-        assert_eq!(
-            function.get_type().get_return_type(),
-            Some(ctx.i64_type().into())
-        );
-        assert!(has_fn_attr(function, "nounwind"));
-        for attr in ["willreturn", "memory", "readonly", "readnone"] {
-            let kind = Attribute::get_named_enum_kind_id(attr);
-            if kind != 0 {
-                assert!(
-                    function
-                        .get_enum_attribute(AttributeLoc::Function, kind)
-                        .is_none(),
-                    "{name} executes arbitrary pending callbacks and must not promise {attr}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn custom_fixed_runtime_import_signatures_are_typed() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_custom_fixed_runtime_imports");
-    declare_runtime_functions(&ctx, &module);
-
-    let string_from_bytes = module
-        .get_execution_function("molt_string_from_bytes")
-        .expect("molt_string_from_bytes should be fixed-declared");
-    assert_eq!(logical_parameter_types(string_from_bytes).len(), 3);
-    let params = logical_parameter_types(string_from_bytes);
-    assert!(params[0].is_pointer_type());
-    assert_eq!(params[1].into_int_type().get_bit_width(), 64);
-    assert!(params[2].is_pointer_type());
-    let ret_ty = string_from_bytes
-        .get_type()
-        .get_return_type()
-        .expect("molt_string_from_bytes should return i32");
-    assert!(ret_ty.is_int_type());
-    assert_eq!(ret_ty.into_int_type().get_bit_width(), 32);
-    assert!(has_fn_attr(string_from_bytes, "nounwind"));
-    assert!(has_fn_attr(string_from_bytes, "willreturn"));
-
-    let bigint_from_bytes = module
-        .get_execution_function("molt_bigint_from_bytes")
-        .expect("molt_bigint_from_bytes should be fixed-declared");
-    assert_eq!(logical_parameter_types(bigint_from_bytes).len(), 2);
-    let params = logical_parameter_types(bigint_from_bytes);
-    assert!(params[0].is_pointer_type());
-    assert_eq!(params[1].into_int_type().get_bit_width(), 64);
-    let ret_ty = bigint_from_bytes
-        .get_type()
-        .get_return_type()
-        .expect("molt_bigint_from_bytes should return i64");
-    assert!(ret_ty.is_int_type());
-    assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-    assert!(has_fn_attr(bigint_from_bytes, "nounwind"));
-    assert!(has_fn_attr(bigint_from_bytes, "willreturn"));
-
-    let get_attr_object_ic = module
-        .get_execution_function("molt_get_attr_object_ic")
-        .expect("molt_get_attr_object_ic should be fixed-declared");
-    assert_eq!(logical_parameter_types(get_attr_object_ic).len(), 4);
-    let params = logical_parameter_types(get_attr_object_ic);
-    assert_eq!(params[0].into_int_type().get_bit_width(), 64);
-    assert!(params[1].is_pointer_type());
-    assert_eq!(params[2].into_int_type().get_bit_width(), 64);
-    assert_eq!(params[3].into_int_type().get_bit_width(), 64);
-    let ret_ty = get_attr_object_ic
-        .get_type()
-        .get_return_type()
-        .expect("molt_get_attr_object_ic should return i64");
-    assert!(ret_ty.is_int_type());
-    assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-}
-
-#[test]
-fn method_load_runtime_functions_are_declared() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_method_load");
-    declare_runtime_functions(&ctx, &module);
-
-    // molt_load_method: site + receiver + name_ptr + name_len + self_out = 5.
-    // molt_load_super_method: site + class + first_arg + name_ptr + name_len
-    // + self_out = 6. `name_ptr` is a native pointer in the LLVM ABI; all
-    // other values are i64 carriers. molt_call_loaded_methodN: callable +
-    // self_or_null + N args; the spilled form takes (pointer, count) words.
-    // Lookups and calls run arbitrary user code, so they carry `nounwind`
-    // (catch_unwind boundary) but must NOT carry `willreturn`.
-    let willreturn_kind = Attribute::get_named_enum_kind_id("willreturn");
-    for (name, arity, ptr_index) in &[
-        ("molt_load_method", 5usize, Some(2usize)),
-        ("molt_load_super_method", 6, Some(3)),
-        ("molt_call_loaded_method0", 2, None),
-        ("molt_call_loaded_method1", 3, None),
-        ("molt_call_loaded_method2", 4, None),
-        ("molt_call_loaded_method3", 5, None),
-        ("molt_call_loaded_method4", 6, None),
-        ("molt_call_loaded_method_spilled", 4, None),
-    ] {
-        let func = module
-            .get_execution_function(name)
-            .unwrap_or_else(|| panic!("{name} should be declared"));
-        assert_eq!(
-            logical_parameter_types(func).len(),
-            *arity,
-            "{name} should have {arity} i64 parameters"
-        );
-        let params = logical_parameter_types(func);
-        for (idx, param) in params.iter().enumerate() {
-            if Some(idx) == *ptr_index {
-                assert!(param.is_pointer_type(), "{name} param {idx} should be ptr");
-            } else {
-                assert!(param.is_int_type(), "{name} param {idx} should be integer");
-                assert_eq!(
-                    param.into_int_type().get_bit_width(),
-                    64,
-                    "{name} param {idx} should be i64"
-                );
-            }
-        }
-        assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
-        // Method dispatch runs arbitrary user code (may loop/suspend): the
-        // declaration must not promise termination.
-        if willreturn_kind != 0 {
-            assert!(
-                func.get_enum_attribute(AttributeLoc::Function, willreturn_kind)
-                    .is_none(),
-                "{name} must NOT have willreturn (dispatches arbitrary user code)"
-            );
-        }
-    }
-}
-
-#[test]
-fn function_and_code_runtime_functions_are_declared() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_function_code_runtime");
-    declare_runtime_functions(&ctx, &module);
-
-    let memory_kind = Attribute::get_named_enum_kind_id("memory");
-    for (name, arity) in &[
-        ("molt_func_new", 4usize),
-        ("molt_func_new_closure", 5),
-        ("molt_code_new", 9),
-        ("molt_code_slot_set", 3),
-        ("molt_code_slots_init", 1),
-        ("molt_function_defaults_version", 1),
-    ] {
-        let func = module
-            .get_execution_function(name)
-            .unwrap_or_else(|| panic!("{name} should be declared"));
-        assert_eq!(
-            logical_parameter_types(func).len(),
-            *arity,
-            "{name} should have {arity} i64 parameters"
-        );
-        let ret_ty = func
+    let resolve = imports.get(&ctx, &module, RuntimeFn::HandleResolve);
+    assert_eq!(resolve.get_type().get_return_type(), Some(ptr.into()));
+    let load_method = imports.get(&ctx, &module, RuntimeFn::LoadMethod);
+    assert!(
+        load_method
             .get_type()
-            .get_return_type()
-            .unwrap_or_else(|| panic!("{name} should return i64"));
-        assert!(ret_ty.is_int_type(), "{name} should return an integer");
-        assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-        assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
-        assert!(
-            has_fn_attr(func, "willreturn"),
-            "{name} should have willreturn"
-        );
-        if memory_kind != 0 {
-            assert!(
-                func.get_enum_attribute(AttributeLoc::Function, memory_kind)
-                    .is_none(),
-                "{name} should not claim a read-only/no-memory effect"
-            );
-        }
-    }
-}
-
-#[test]
-fn diagnostics_and_constant_runtime_functions_are_declared() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_diagnostics_constants_runtime");
-    declare_runtime_functions(&ctx, &module);
-
-    let print_newline = module
-        .get_execution_function("molt_print_newline")
-        .expect("molt_print_newline should be declared");
-    assert_eq!(logical_parameter_types(print_newline).len(), 0);
-    assert!(
-        print_newline.get_type().get_return_type().is_none(),
-        "molt_print_newline should return void"
-    );
-    assert!(has_fn_attr(print_newline, "nounwind"));
-    assert!(has_fn_attr(print_newline, "willreturn"));
-
-    let print_obj = module
-        .get_execution_function("molt_print_obj")
-        .expect("molt_print_obj should be declared");
-    assert_eq!(logical_parameter_types(print_obj).len(), 1);
-    assert!(
-        print_obj.get_type().get_return_type().is_none(),
-        "molt_print_obj should return void"
-    );
-    assert!(has_fn_attr(print_obj, "nounwind"));
-    assert!(has_fn_attr(print_obj, "willreturn"));
-
-    let bigint_from_bytes = module
-        .get_execution_function("molt_bigint_from_bytes")
-        .expect("molt_bigint_from_bytes should be declared");
-    assert_eq!(logical_parameter_types(bigint_from_bytes).len(), 2);
-    let ret_ty = bigint_from_bytes
-        .get_type()
-        .get_return_type()
-        .expect("molt_bigint_from_bytes should return i64");
-    assert!(ret_ty.is_int_type());
-    assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-    assert!(has_fn_attr(bigint_from_bytes, "nounwind"));
-    assert!(has_fn_attr(bigint_from_bytes, "willreturn"));
-}
-
-#[test]
-fn dynamic_call_runtime_functions_are_declared_without_willreturn() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_dynamic_call_runtime");
-    declare_runtime_functions(&ctx, &module);
-
-    let willreturn_kind = Attribute::get_named_enum_kind_id("willreturn");
-    for (name, arity) in &[
-        ("molt_call_bind", 2usize),
-        ("molt_call_bind_ic", 3),
-        ("molt_call_indirect_ic", 3),
-        ("molt_call_func_fast0", 1),
-        ("molt_call_func_fast1", 2),
-        ("molt_call_func_fast2", 3),
-        ("molt_call_func_fast3", 4),
-    ] {
-        let func = module
-            .get_execution_function(name)
-            .unwrap_or_else(|| panic!("{name} should be declared"));
-        assert_eq!(
-            logical_parameter_types(func).len(),
-            *arity,
-            "{name} should have {arity} i64 parameters"
-        );
-        assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
-        if willreturn_kind != 0 {
-            assert!(
-                func.get_enum_attribute(AttributeLoc::Function, willreturn_kind)
-                    .is_none(),
-                "{name} must NOT have willreturn (dispatches arbitrary user code)"
-            );
-        }
-    }
-}
-
-fn parse_literal_ensure_runtime_calls(source: &str) -> Vec<(String, usize, RuntimeReturnAbi)> {
-    let mut calls = Vec::new();
-    for (needle, return_abi) in [
-        ("ensure_runtime_i64_fn(\"", RuntimeReturnAbi::I64),
-        ("ensure_runtime_void_fn(\"", RuntimeReturnAbi::Void),
-    ] {
-        let mut rest = source;
-        while let Some(start) = rest.find(needle) {
-            rest = &rest[start + needle.len()..];
-            let Some(end_name) = rest.find('"') else {
-                break;
-            };
-            let name = &rest[..end_name];
-            let after_name = &rest[end_name + 1..];
-            let Some(comma) = after_name.find(',') else {
-                rest = after_name;
-                continue;
-            };
-            let mut digits = String::new();
-            for ch in after_name[comma + 1..].chars() {
-                if ch.is_ascii_digit() {
-                    digits.push(ch);
-                } else if !digits.is_empty() || !ch.is_whitespace() {
-                    break;
-                }
-            }
-            if let Ok(param_count) = digits.parse::<usize>() {
-                calls.push((name.to_string(), param_count, return_abi));
-            }
-            rest = after_name;
-        }
-    }
-    calls
-}
-
-#[test]
-fn lowering_literal_runtime_imports_are_declared_or_classified() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_lowering_literal_runtime_imports");
-    declare_runtime_functions(&ctx, &module);
-    // The former monolith now delegates to nested modules. Walk the production
-    // source tree so newly split modules cannot silently escape this ABI audit.
-    fn append_sources(path: &std::path::Path, source: &mut String) {
-        if path.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(path)
-                .expect("LLVM lowering sources must be readable")
-                .map(|entry| entry.expect("lowering source entry").path())
-                .collect();
-            entries.sort();
-            for entry in entries {
-                if entry.file_name().is_some_and(|name| name == "tests") {
-                    continue;
-                }
-                append_sources(&entry, source);
-            }
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            source.push_str(&std::fs::read_to_string(path).expect("lowering source must be UTF-8"));
-            source.push('\n');
-        }
-    }
-    let mut source = include_str!("../lowering.rs").to_string();
-    append_sources(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm_backend/lowering"),
-        &mut source,
-    );
-
-    let mut missing = Vec::new();
-    let calls = parse_literal_ensure_runtime_calls(&source);
-    assert!(
-        calls
-            .iter()
-            .any(|(name, _, _)| name == "molt_object_field_get_ptr"),
-        "the audit must cover split lowering modules"
-    );
-    for (name, param_count, return_abi) in calls {
-        if let Some(func) = module.get_execution_function(&name) {
-            assert_eq!(
-                logical_parameter_types(func).len(),
-                param_count,
-                "{name} central declaration arity must match lowering call"
-            );
-            match return_abi {
-                RuntimeReturnAbi::I64 => {
-                    let ret_ty = func
-                        .get_type()
-                        .get_return_type()
-                        .unwrap_or_else(|| panic!("{name} should return i64"));
-                    assert!(ret_ty.is_int_type(), "{name} should return an integer");
-                    assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
-                }
-                RuntimeReturnAbi::Void => {
-                    assert!(
-                        func.get_type().get_return_type().is_none(),
-                        "{name} should return void"
-                    );
-                }
-            }
-            continue;
-        }
-        if !is_runtime_import_abi(&name, param_count, return_abi) {
-            missing.push(format!("{name}/{param_count}/{return_abi:?}"));
-        }
-    }
-
-    assert!(
-        missing.is_empty(),
-        "lowering literal runtime imports must be centrally declared or classified: {}",
-        missing.join(", ")
+            .get_param_types()
+            .contains(&ptr.into())
     );
 }
 
 #[test]
-fn module_namespace_and_named_acquisition_have_callback_safe_declarations() {
+fn trampoline_runtime_imports_are_typed_entries() {
     let ctx = Context::create();
-    let module = ctx.create_module("test_module_runtime");
-    declare_runtime_functions(&ctx, &module);
-
-    for (name, arity) in &[
-        ("molt_func_new_builtin_named", 4usize),
-        ("molt_frame_record_enter", 1),
-        ("molt_frame_locals_set", 1),
-        ("molt_frame_record_exit", 1),
-        ("molt_module_import", 1),
-        ("molt_module_new", 1),
-        ("molt_module_cache_get", 1),
-        ("molt_module_cache_del", 1),
-        ("molt_module_cache_set", 2),
-        ("molt_module_get_attr", 2),
-        ("molt_module_import_from", 2),
-        ("molt_module_get_global", 2),
-        ("molt_module_get_name", 2),
-        ("molt_module_del_global", 2),
-        ("molt_module_del_global_if_present", 2),
-        ("molt_module_set_attr", 3),
-    ] {
-        let func = module
-            .get_execution_function(name)
-            .unwrap_or_else(|| panic!("{name} should be declared"));
-        assert_eq!(
-            logical_parameter_types(func).len(),
-            *arity,
-            "{name} should have {arity} i64 parameters"
-        );
-        assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
-        for attr in ["willreturn", "memory", "readonly", "readnone"] {
-            let kind = Attribute::get_named_enum_kind_id(attr);
-            if kind != 0 {
-                assert!(
-                    func.get_enum_attribute(AttributeLoc::Function, kind)
-                        .is_none(),
-                    "{name} can execute namespace callbacks and must not promise {attr}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn dynamic_namespace_mapping_imports_keep_conservative_attributes() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_dynamic_namespace_runtime");
-    for (name, arity) in [("molt_namespace_get", 3), ("molt_namespace_del", 2)] {
-        assert_eq!(
-            runtime_import_return_abi(name, arity),
-            Some(RuntimeReturnAbi::I64)
-        );
-        let function = declare_conservative_runtime_function(
-            &ctx,
-            &module,
-            name,
-            runtime_function_type(&ctx, arity, RuntimeReturnAbi::I64),
-        );
-        assert!(has_fn_attr(function, "nounwind"));
-        for attr in ["willreturn", "memory", "readonly", "readnone"] {
-            let kind = Attribute::get_named_enum_kind_id(attr);
-            if kind != 0 {
-                assert!(
-                    function
-                        .get_enum_attribute(AttributeLoc::Function, kind)
-                        .is_none(),
-                    "{name} may execute mapping callbacks and must not promise {attr}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn all_functions_have_nounwind() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_nounwind");
-    declare_runtime_functions(&ctx, &module);
-
-    let mut func = module.get_first_function();
-    while let Some(f) = func {
-        assert!(
-            has_fn_attr(f, "nounwind"),
-            "Function {} is missing nounwind attribute",
-            f.get_name().to_str().unwrap()
-        );
-        func = f.get_next_function();
-    }
-}
-
-#[test]
-fn willreturn_on_simple_functions() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_willreturn");
-    declare_runtime_functions(&ctx, &module);
-
-    // These functions always terminate — must have willreturn.
-    for name in &[
-        "molt_alloc",
-        "molt_inc_ref_obj",
-        "molt_dec_ref_obj",
-        "molt_slice_new",
-        "molt_exception_pending",
-    ] {
-        let f = module.get_execution_function(name).expect(name);
-        assert!(
-            has_fn_attr(f, "willreturn"),
-            "Function {} is missing willreturn attribute",
-            name
-        );
-    }
-}
-
-#[test]
-fn no_willreturn_on_control_flow_functions() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_no_willreturn");
-    declare_runtime_functions(&ctx, &module);
-
-    let willreturn_kind = Attribute::get_named_enum_kind_id("willreturn");
-    if willreturn_kind == 0 {
-        return; // LLVM version doesn't recognize this attribute.
-    }
-
-    // These functions may not return (coroutine suspension, loops,
-    // deopt transfer, arbitrary user code execution).
-    for name in &[
-        "molt_add",
-        "molt_str_concat",
-        "molt_sub",
-        "molt_mul",
-        "molt_div",
-        "molt_floordiv",
-        "molt_mod",
-        "molt_pow",
-        "molt_inplace_add",
-        "molt_inplace_sub",
-        "molt_inplace_mul",
-        "molt_inplace_div",
-        "molt_inplace_floordiv",
-        "molt_inplace_mod",
-        "molt_inplace_pow",
-        "molt_inplace_lshift",
-        "molt_inplace_rshift",
-        "molt_neg",
-        "molt_not",
-        "molt_invert",
-        "molt_is_truthy",
-        "molt_eq",
-        "molt_ne",
-        "molt_lt",
-        "molt_le",
-        "molt_gt",
-        "molt_ge",
-        "molt_contains",
-        "molt_bit_and",
-        "molt_bit_or",
-        "molt_bit_xor",
-        "molt_lshift",
-        "molt_rshift",
-        "molt_inplace_bit_and",
-        "molt_inplace_bit_or",
-        "molt_inplace_bit_xor",
-        "molt_get_attr_name",
-        "molt_get_attr_object_ic",
-        "molt_set_attr_name",
-        "molt_set_attr_object_ic",
-        "molt_del_attr_name",
-        "molt_getitem_method",
-        "molt_getitem_unchecked",
-        "molt_setitem_method",
-        "molt_delitem_method",
-        "molt_call_builtin",
-        "molt_call_bind",
-        "molt_call_bind_ic",
-        "molt_call_indirect_ic",
-        "molt_call_func_fast0",
-        "molt_call_func_fast1",
-        "molt_call_func_fast2",
-        "molt_call_func_fast3",
-        "molt_module_import",
-    ] {
-        let f = module.get_execution_function(name).expect(name);
-        assert!(
-            f.get_enum_attribute(AttributeLoc::Function, willreturn_kind)
-                .is_none(),
-            "Function {} should NOT have willreturn (may not terminate)",
-            name
-        );
-    }
-}
-
-#[test]
-fn memory_read_on_pure_readers() {
-    let ctx = Context::create();
-    let module = ctx.create_module("test_memory_read");
-    declare_runtime_functions(&ctx, &module);
-
-    let memory_kind = Attribute::get_named_enum_kind_id("memory");
-    if memory_kind == 0 {
-        return; // LLVM version doesn't support memory attribute.
-    }
-
-    // These functions only read memory.
-    for name in &[
-        "molt_is_truthy_int",
-        "molt_is_truthy_bool",
-        "molt_is_truthy_int_nogil",
-        "molt_is_truthy_bool_nogil",
-        "molt_exception_pending",
-    ] {
-        let f = module.get_execution_function(name).expect(name);
-        let attr = f
-            .get_enum_attribute(AttributeLoc::Function, memory_kind)
-            .unwrap_or_else(|| panic!("{} missing memory attribute", name));
-        assert_eq!(
-            attr.get_enum_value(),
-            MEMORY_READ,
-            "Function {} should have memory(read) = {}",
-            name,
-            MEMORY_READ
-        );
+    let module = ctx.create_module("trampoline_imports");
+    let imports = LlvmRuntimeImports::default();
+    for &function in TRAMPOLINE_RUNTIME_IMPORTS {
+        let declared = imports.get(&ctx, &module, function);
+        assert_eq!(declared.get_type(), runtime_function_type(&ctx, function));
     }
 }

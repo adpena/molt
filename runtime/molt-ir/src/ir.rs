@@ -570,6 +570,11 @@ pub struct OpIR {
     /// the callee; the backend must thread its active context at this call site.
     #[serde(default)]
     pub passes_execution_context: bool,
+    /// The runtime entry this call executes: decoded once from `s_value` at TIR
+    /// ingest (`call_targets::ingest_runtime_target`) and carried by every
+    /// TIR-to-SimpleIR projection. Backends read only this field (HF-821 B1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
     /// Role-preserving eval-breaker marker for observations that cannot use the
     /// established `async_work_poll` CheckException wire alias. A marked
     /// `exception_finally_pending_observer` polls before returning the pending
@@ -680,6 +685,7 @@ impl OpIR {
             class_definition: Default::default(),
             runtime_requirement_bits: Default::default(),
             passes_execution_context: Default::default(),
+            runtime: None,
             async_work_poll: Default::default(),
             argument_custody: Default::default(),
             type_hint: Default::default(),
@@ -2154,6 +2160,7 @@ mod json_parse_tests {
             class_definition: Some("class:module:Owner".to_string()),
             runtime_requirement_bits: 3,
             passes_execution_context: true,
+            runtime: None,
             async_work_poll: true,
             argument_custody: Some(vec![
                 super::ParameterCustody::Borrowed,

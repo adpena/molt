@@ -689,13 +689,12 @@ def _validate_sealed_tar_handle(
         padding = (-info.size) % 512
         if opened.stream.read(padding) != bytes(padding):
             raise ValueError("sealed root archive has noncanonical member padding")
+    # tarfile ends an archive with two zero blocks, then zero-pads to its
+    # 10240-byte record: exactly this many bytes, up to 10752.
     last_end = opened.stream.tell()
-    padding = opened.stream.read(10241)
-    if (
-        not 1024 <= len(padding) <= 10240
-        or any(padding)
-        or (last_end + len(padding)) % 10240
-    ):
+    expected_trailer = 1024 + (-(last_end + 1024)) % 10240
+    padding = opened.stream.read(expected_trailer + 1)
+    if len(padding) != expected_trailer or any(padding):
         raise ValueError("sealed root archive has noncanonical trailing data")
 
 

@@ -34,7 +34,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -48,10 +48,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -85,12 +82,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Bytes source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytes_from_obj",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::BytesFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*src]);
@@ -134,12 +129,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Bytes errors not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytes_from_str",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytesFromStr,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -163,12 +156,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Bytearray source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytearray_from_obj",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::BytearrayFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*src]);
@@ -212,12 +203,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Bytearray errors not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytearray_from_str",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytearrayFromStr,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -241,12 +230,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Float source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_float_from_obj",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FloatFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*src]);
@@ -301,12 +288,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Int base flag not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_int_from_obj",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::IntFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val, *base, *has_base]);
@@ -350,12 +335,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Int base flag not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_int_from_str_of_obj",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::IntFromStrOfObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val, *base, *has_base]);
@@ -399,12 +382,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Complex flag not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_complex_from_obj",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::ComplexFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val, *imag, *has_imag]);
@@ -419,7 +400,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
             emit_operand_transaction_call(
                 op,
                 args,
-                "molt_operator_index",
+                RuntimeFn::OperatorIndex,
                 module,
                 import_ids,
                 builder,
@@ -445,12 +426,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Str source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_str_from_obj",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::StrFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*src]);
@@ -472,12 +451,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Repr source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_repr_from_obj",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ReprFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*src]);
@@ -499,12 +476,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 representation_plan,
             )
             .expect("Ascii source not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_ascii_from_obj",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::AsciiFromObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*src]);

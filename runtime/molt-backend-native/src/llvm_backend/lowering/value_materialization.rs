@@ -3,7 +3,6 @@ use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::values::BasicValue;
 use molt_tir::trampolines::TaskConstructorLayout;
 use std::collections::BTreeMap;
@@ -638,9 +637,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     /// The generated boxed-ABI return custody of a dedicated call whose symbol
     /// has a canonical row; a missing row is generator drift, not a fallback.
-    pub(super) fn canonical_boxed_return(symbol: &str, arity: usize) -> RuntimeResultCustody {
-        let abi = runtime_boxed_abi(symbol, arity)
-            .unwrap_or_else(|| panic!("{symbol}/{arity} must have a generated boxed ABI row"));
+    pub(super) fn canonical_boxed_return(
+        function: RuntimeFn,
+        arity: usize,
+    ) -> RuntimeResultCustody {
+        let abi = function
+            .boxed_abi()
+            .filter(|abi| abi.arity() == arity)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}/{arity} must have a generated boxed ABI row",
+                    function.symbol()
+                )
+            });
         RuntimeResultCustody::Boxed(abi.result)
     }
 
@@ -727,7 +736,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         let (args_ptr, nargs) = self.spill_call_words_with_builder(builder, owners, "call_retired");
-        let release = self.ensure_runtime_void_fn("molt_call_inputs_release", 3);
+        let release = self.ensure_runtime_import(RuntimeFn::CallInputsRelease);
         let callable = callable.unwrap_or_else(|| self.backend.context.i64_type().const_zero());
         builder
             .build_execution_call(
@@ -814,19 +823,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Resolve the specialized `len` runtime function from the operand's
     /// refined TIR type. Container specialization is derived directly from TIR
     /// types, not from SimpleIR-name lookup.
-    pub(super) fn container_len_fn(&self, operand_id: ValueId) -> &'static str {
+    pub(super) fn container_len_fn(&self, operand_id: ValueId) -> RuntimeFn {
         let operand_ty = self
             .value_types
             .get(&operand_id)
             .cloned()
             .unwrap_or(TirType::DynBox);
         match operand_ty {
-            TirType::List(_) => "molt_len_list",
-            TirType::Str => "molt_len_str",
-            TirType::Dict(_, _) => "molt_len_dict",
-            TirType::Tuple(_) => "molt_len_tuple",
-            TirType::Set(_) => "molt_len_set",
-            _ => "molt_len",
+            TirType::List(_) => RuntimeFn::LenList,
+            TirType::Str => RuntimeFn::LenStr,
+            TirType::Dict(_, _) => RuntimeFn::LenDict,
+            TirType::Tuple(_) => RuntimeFn::LenTuple,
+            TirType::Set(_) => RuntimeFn::LenSet,
+            _ => RuntimeFn::Len,
         }
     }
 
@@ -879,10 +888,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &self,
         raw: inkwell::values::IntValue<'ctx>,
     ) -> inkwell::values::IntValue<'ctx> {
-        let from_i64_fn = self.ensure_runtime_i64_fn("molt_int_from_i64", 1);
+        let from_i64_fn = self.ensure_runtime_import(RuntimeFn::IntFromI64);
         self.backend
             .builder
-            .build_execution_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+            .build_execution_call(from_i64_fn, &[raw.into()], "int_from_i64")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -1079,11 +1088,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     _ => {
                         // DynBox: call molt_is_truthy
                         let cond_i64 = self.ensure_i64(cond_val);
-                        let truthy_fn = self
-                            .backend
-                            .module
-                            .get_execution_function("molt_is_truthy")
-                            .unwrap();
+                        let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
                         let result = self
                             .backend
                             .builder
@@ -1235,7 +1240,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // each dispatch edge's incomings, which `finalize_phis` fills.
                 let i64_ty = self.backend.context.i64_type();
                 let self_bits = self.poll_frame_address();
-                let get_state_fn = self.ensure_runtime_i64_fn("molt_obj_get_state", 1);
+                let get_state_fn = self.ensure_runtime_import(RuntimeFn::ObjGetState);
                 let state_val = self
                     .backend
                     .builder
@@ -1809,36 +1814,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    pub(super) fn ensure_runtime_decl(
-        &self,
-        name: &str,
-        fn_ty: inkwell::types::FunctionType<'ctx>,
-        param_count: usize,
-        return_abi: RuntimeReturnAbi,
-    ) -> FunctionValue<'ctx> {
-        let physical_ty = runtime_execution_type(name, fn_ty);
-        if let Some(func) = self.backend.module.get_execution_function(name) {
-            return require_llvm_function_type(name, func, physical_ty);
-        }
-        if let Some(func) =
-            declare_fixed_runtime_function(self.backend.context, &self.backend.module, name)
-        {
-            return require_llvm_function_type(name, func, physical_ty);
-        }
-        if !is_runtime_import_abi(name, param_count, return_abi) {
-            panic!(
-                "LLVM runtime import `{name}` has no ABI classification for conservative declaration"
-            );
-        }
-        let func = declare_conservative_runtime_function(
-            self.backend.context,
-            &self.backend.module,
-            name,
-            fn_ty,
-        );
-        require_llvm_function_type(name, func, physical_ty)
-    }
-
     /// This invocation's thread record (invariant J1, `call_anatomy.md` 4.1):
     /// one load from the execution context every compiled function takes,
     /// in the actual LLVM entry, including a CFG trampoline. The execution
@@ -1969,14 +1944,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // Serviced work is Python code that can read this frame.
             self.store_frame_location(location);
         }
-        let cold_fn = self.ensure_runtime_i64_fn(
-            if payload {
-                "molt_async_work_poll_and_exception_last_pending"
-            } else {
-                "molt_async_work_poll_and_exception_pending"
-            },
-            0,
-        );
+        let cold_fn = self.ensure_runtime_import(if payload {
+            RuntimeFn::AsyncWorkPollAndExceptionLastPending
+        } else {
+            RuntimeFn::AsyncWorkPollAndExceptionPending
+        });
         let cold_call = self
             .backend
             .builder
@@ -2028,7 +2000,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .const_int(molt_codegen_abi::QNAN_TAG_NONE_I64 as u64, false),
             );
             self.backend.builder.position_at_end(capture);
-            let observer = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
+            let observer = self.ensure_runtime_import(RuntimeFn::ExceptionLastPending);
             self.backend
                 .builder
                 .build_execution_call(observer, &[], "pending_exception_payload")
@@ -2071,7 +2043,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &mut self,
         name: &str,
     ) -> inkwell::values::IntValue<'ctx> {
-        let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
+        let pending_fn = self.ensure_runtime_import(RuntimeFn::ExceptionPending);
         let record = self.thread_record();
         let context = self.backend.context;
         let byte_ptr = unsafe {
@@ -2150,44 +2122,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         pending.as_basic_value().into_int_value()
     }
 
-    pub(super) fn ensure_runtime_i64_fn(
-        &self,
-        name: &str,
-        param_count: usize,
-    ) -> FunctionValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            (0..param_count).map(|_| i64_ty.into()).collect();
-        self.ensure_runtime_decl(
-            name,
-            i64_ty.fn_type(&params, false),
-            param_count,
-            RuntimeReturnAbi::I64,
-        )
-    }
-
-    pub(super) fn ensure_runtime_void_fn(
-        &self,
-        name: &str,
-        param_count: usize,
-    ) -> FunctionValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            (0..param_count).map(|_| i64_ty.into()).collect();
-        self.ensure_runtime_decl(
-            name,
-            self.backend.context.void_type().fn_type(&params, false),
-            param_count,
-            RuntimeReturnAbi::Void,
-        )
-    }
-
+    /// The module's declaration of runtime entry `function` (HF-821): its
+    /// linker symbol, type and attributes come from the generated record.
     pub(super) fn ensure_runtime_import(&self, function: RuntimeFn) -> FunctionValue<'ctx> {
-        if function.returns_word() {
-            self.ensure_runtime_i64_fn(function.symbol(), function.params())
-        } else {
-            self.ensure_runtime_void_fn(function.symbol(), function.params())
-        }
+        self.backend
+            .runtime_imports
+            .get(self.backend.context, &self.backend.module, function)
     }
 
     pub(super) fn unbox_ptr_bits(

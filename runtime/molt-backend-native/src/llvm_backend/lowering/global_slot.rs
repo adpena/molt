@@ -143,7 +143,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             false,
         );
         let signature = prepend_execution_context(logical_signature);
-        if let Some(function) = self.backend.module.get_execution_function(&name) {
+        if let Some(function) = self.backend.module.get_compiled_function(&name) {
             return require_llvm_function_type(&name, function, signature);
         }
         let retain = self.ensure_refcount_helper(RefcountOperation::Retain);

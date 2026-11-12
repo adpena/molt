@@ -3,20 +3,22 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
-/// Resolve a native runtime symbol from manifest-owned marked op-loop calls.
+/// Resolve a native runtime entry from manifest-owned marked op-loop calls.
 ///
 /// The base import name is also accepted as a semantic alias. A marker only
 /// changes rows that declare `marked_import_name` in the WASM ABI manifest.
-pub(crate) fn pending_exception_observer_runtime_symbol(
+pub(crate) fn pending_exception_observer_runtime_fn(
     kind: molt_ir::OpKind,
     marked: bool,
-) -> Option<&'static str> {
+) -> Option<molt_ir::runtime_fn_generated::RuntimeFn> {
     match kind {
         molt_ir::OpKind::ExceptionFinallyPendingObserver if marked => {
-            Some("molt_async_work_poll_and_exception_last_pending")
+            Some(molt_ir::runtime_fn_generated::RuntimeFn::AsyncWorkPollAndExceptionLastPending)
         }
         molt_ir::OpKind::ExceptionFinallyPendingObserver
-        | molt_ir::OpKind::ExceptionLastPending => Some("molt_exception_last_pending"),
+        | molt_ir::OpKind::ExceptionLastPending => {
+            Some(molt_ir::runtime_fn_generated::RuntimeFn::ExceptionLastPending)
+        }
         _ => None,
     }
 }

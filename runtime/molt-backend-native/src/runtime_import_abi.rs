@@ -1,28 +1,9 @@
-//! Machine return shapes of runtime imports. Each entry's identity, word
-//! arity and return contract come from the generated `RuntimeFn` table
-//! (`molt_ir::runtime_fn_generated`); this module only projects them.
+//! Runtime imports the native helpers' tests name. Each entry's identity,
+//! machine signature and execution facts come from the generated `RuntimeFn`
+//! table (`molt_ir::runtime_fn_generated`).
 
-#[cfg(any(test, feature = "llvm"))]
+#[cfg(test)]
 use molt_ir::runtime_fn_generated::RuntimeFn;
-
-/// Only the LLVM backend declares imports by machine return shape.
-#[cfg(feature = "llvm")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeReturnAbi {
-    I64,
-    Void,
-}
-
-#[cfg(feature = "llvm")]
-impl RuntimeReturnAbi {
-    pub(crate) const fn of(function: RuntimeFn) -> Self {
-        if function.returns_word() {
-            Self::I64
-        } else {
-            Self::Void
-        }
-    }
-}
 
 #[cfg(test)]
 pub(crate) const NATIVE_RUNTIME_HELPER_IMPORTS: &[RuntimeFn] = &[

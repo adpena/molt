@@ -1,5 +1,6 @@
 use super::*;
 use inkwell::context::Context;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 use object::{Object, ObjectSection, ObjectSymbol};
 
 #[test]
@@ -22,7 +23,6 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
         for attempt in 0..8 {
             let ctx = Context::create();
             let mut backend = LlvmBackend::new(&ctx, "rc_determinism");
-            super::runtime_imports::declare_runtime_functions(&ctx, &backend.module);
             let mut func = TirFunction::new(
                 "rc_determinism".into(),
                 vec![TirType::Bool, TirType::DynBox],
@@ -110,8 +110,8 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
             );
             let undefined = crate::test_support::native_object_symbols(&bytes).undefined;
             assert!(
-                undefined.contains(&execution_abi::execution_symbol("molt_inc_ref_obj"))
-                    && undefined.contains(&execution_abi::execution_symbol("molt_dec_ref_obj")),
+                undefined.contains(RuntimeFn::IncRefObj.linker_symbol())
+                    && undefined.contains(RuntimeFn::DecRefObj.linker_symbol()),
                 "dynamic cold transitions must survive: {undefined:?}"
             );
             if let Some(expected) = &first_object {
@@ -260,16 +260,16 @@ fn test_dump_ir_contains_module_name() {
 }
 
 #[test]
-fn modules_in_one_request_share_the_admitted_callable_buffer() {
+fn modules_in_one_request_decode_one_admitted_callable_buffer() {
     use molt_ir::backend_environment::{self, BackendEnvironment};
     use std::sync::Arc;
     let artifacts =
         cargo_test_artifacts::CargoTestArtifacts::new("llvm-callable-snapshot").unwrap();
     let path = artifacts.path().join("callables.txt");
-    std::fs::write(&path, b"molt_init_sys\nmolt_main\n").unwrap();
+    std::fs::write(&path, b"molt_len\nmolt_main\n").unwrap();
     let payload = serde_json::json!({
         "MOLT_RUNTIME_CALLABLE_SYMBOLS": path.to_str().unwrap(),
-        "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "cd85e5b7627ffa5a6821fde44e31407d23a4d3da80a6e07a5b675af8d0925784",
+        "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "48fdbb5063ff53d73dcb52df55844e0069a21e917c09efbd1fc277400623bea5",
     });
     let environment =
         Arc::new(BackendEnvironment::from_request(payload.as_object().unwrap()).unwrap());
@@ -278,21 +278,18 @@ fn modules_in_one_request_share_the_admitted_callable_buffer() {
     let first = LlvmBackend::new(&context, "first");
     std::fs::remove_file(&path).unwrap();
     let second = LlvmBackend::new(&context, "second");
-    assert!(Arc::ptr_eq(
-        &first.runtime_callable_symbols,
-        &second.runtime_callable_symbols
-    ));
+    // The second module reads the request's admitted snapshot, not the file.
     assert_eq!(
-        first
-            .runtime_callable_symbols
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        vec!["molt_init_sys", "molt_main"]
+        first.runtime_callable_symbols,
+        second.runtime_callable_symbols
     );
+    // The admission decodes to typed entries; `molt_main` is the program's
+    // own entry, not a runtime entry, so it has no member.
+    assert!(first.runtime_callable_symbols.contains(RuntimeFn::Len));
+    assert!(!first.runtime_callable_symbols.contains(RuntimeFn::PrintObj));
     // A fixture's intentional mutation still owns an independent set.
     let mut fixture = second;
-    Arc::make_mut(&mut fixture.runtime_callable_symbols).remove("molt_main");
-    assert!(first.runtime_callable_symbols.contains("molt_main"));
-    assert!(!fixture.runtime_callable_symbols.contains("molt_main"));
+    fixture.runtime_callable_symbols.remove(RuntimeFn::Len);
+    assert!(first.runtime_callable_symbols.contains(RuntimeFn::Len));
+    assert!(!fixture.runtime_callable_symbols.contains(RuntimeFn::Len));
 }

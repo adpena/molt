@@ -69,7 +69,7 @@ impl<'ctx> LlvmBackend<'ctx> {
                 "module registry reloc offset {offset} is not 8-aligned"
             );
             push_bytes(&blob[cursor..offset], &mut field_types, &mut field_values);
-            let init_fn = module.get_execution_function(symbol).unwrap_or_else(|| {
+            let init_fn = module.get_compiled_function(symbol).unwrap_or_else(|| {
                 // Address-taken only: with opaque pointers the declared
                 // signature is irrelevant; declare External so relocations
                 // resolve against the sibling batch object or staticlib.

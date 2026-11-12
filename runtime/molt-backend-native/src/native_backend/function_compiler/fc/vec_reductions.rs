@@ -26,7 +26,7 @@ const VEC_REDUCTION_ARITY: usize = 3;
 pub(in crate::native_backend::function_compiler) fn handle_vec_reduction(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -37,10 +37,10 @@ pub(in crate::native_backend::function_compiler) fn handle_vec_reduction(
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
     let symbol = match op.kind {
-        OpKind::VecSum => "molt_vec_sum",
-        OpKind::VecProd => "molt_vec_prod",
-        OpKind::VecMin => "molt_vec_min",
-        OpKind::VecMax => "molt_vec_max",
+        OpKind::VecSum => RuntimeFn::VecSum,
+        OpKind::VecProd => RuntimeFn::VecProd,
+        OpKind::VecMin => RuntimeFn::VecMin,
+        OpKind::VecMax => RuntimeFn::VecMax,
         _ => unreachable!("handler invoked with non-matching op.kind"),
     };
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

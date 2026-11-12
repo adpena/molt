@@ -10,10 +10,10 @@ use molt_ir::OpKind;
 pub(in crate::native_backend::function_compiler) fn bind_runtime_import_result(
     op: &OpIR,
     result: Value,
-    symbol: &str,
+    symbol: RuntimeFn,
     arity: usize,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -36,17 +36,24 @@ pub(in crate::native_backend::function_compiler) fn bind_runtime_import_result(
 fn bind_runtime_import_result_name(
     out: Option<&str>,
     result: Value,
-    symbol: &str,
+    symbol: RuntimeFn,
     arity: usize,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
-    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
-    let contract = runtime_boxed_abi(symbol, arity)
-        .unwrap_or_else(|| panic!("runtime result has no canonical boxed ABI: {symbol}/{arity}"))
+    use molt_ir::runtime_fn_generated::RuntimeBoxedReturn;
+    let contract = symbol
+        .boxed_abi()
+        .filter(|abi| abi.arity() == arity)
+        .unwrap_or_else(|| {
+            panic!(
+                "runtime result has no canonical boxed ABI: {}/{arity}",
+                symbol.symbol()
+            )
+        })
         .result;
     match contract {
         RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue => {
@@ -62,12 +69,10 @@ fn bind_runtime_import_result_name(
         }
         RuntimeBoxedReturn::BorrowedValue => {
             if let Some(out) = out {
-                let retain = SimpleBackend::import_func_id_split(
+                let retain = SimpleBackend::import_runtime_func_id_split(
                     module,
                     import_ids,
-                    "molt_inc_ref_obj",
-                    &[types::I64],
-                    &[],
+                    RuntimeFn::IncRefObj,
                 );
                 let retain = module.declare_func_in_func(retain, builder.func);
                 emit_refcount(
@@ -83,7 +88,8 @@ fn bind_runtime_import_result_name(
         }
         RuntimeBoxedReturn::Void => assert!(
             out.is_none(),
-            "void runtime import {symbol} cannot bind a result"
+            "void runtime import {} cannot bind a result",
+            symbol.symbol()
         ),
     }
 }
@@ -238,7 +244,7 @@ impl<'op> NativeOperandTransaction<'op> {
         &self,
         op: &OpIR,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
     ) {
@@ -260,14 +266,12 @@ impl<'op> NativeOperandTransaction<'op> {
                 .any(|(index, argument)| argument == name && !Self::call_takes_position(op, index));
             let retains = count - usize::from(!borrowed);
             if retains != 0 {
-                let retain = import_func_ref(
+                let retain = import_runtime_func_ref(
                     module,
                     import_ids,
                     builder,
                     import_refs,
-                    "molt_inc_ref_obj",
-                    &[types::I64],
-                    &[],
+                    RuntimeFn::IncRefObj,
                 );
                 let word = self.materialized[name];
                 for _ in 0..retains {
@@ -327,21 +331,19 @@ impl<'op> NativeOperandTransaction<'op> {
     pub(in crate::native_backend::function_compiler) fn release_temporaries(
         &self,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
     ) {
         if self.owners.is_empty() {
             return;
         }
-        let release = import_func_ref(
+        let release = import_runtime_func_ref(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::DecRefObj,
         );
         for &owner in self.owners.values().rev() {
             let word = builder.use_var(owner);
@@ -365,7 +367,7 @@ impl<'op> NativeOperandTransaction<'op> {
         self,
         op: &OpIR,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
@@ -399,14 +401,12 @@ impl<'op> NativeOperandTransaction<'op> {
                 let callable = self
                     .adopted_callable
                     .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-                let release = import_func_ref(
+                let release = import_runtime_func_ref(
                     module,
                     import_ids,
                     builder,
                     import_refs,
-                    "molt_call_inputs_release",
-                    &[types::I64; 3],
-                    &[],
+                    RuntimeFn::CallInputsRelease,
                 );
                 builder.ins().call(release, &[callable, arguments, count]);
             }
@@ -450,7 +450,7 @@ impl<'op> NativeOperandTransaction<'op> {
         &mut self,
         name: &'op str,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
@@ -493,7 +493,7 @@ impl<'op> NativeOperandTransaction<'op> {
     pub(in crate::native_backend::function_compiler) fn continue_unless_pending(
         &mut self,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
@@ -542,7 +542,7 @@ impl<'op> NativeOperandTransaction<'op> {
         result: Value,
         abandon: Option<Value>,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
@@ -557,14 +557,12 @@ impl<'op> NativeOperandTransaction<'op> {
                 switch_to_block_materialized(builder, failed);
                 seal_block_once(builder, sealed_blocks, failed);
                 if let Some(partial) = abandon {
-                    let release = import_func_ref(
+                    let release = import_runtime_func_ref(
                         module,
                         import_ids,
                         builder,
                         import_refs,
-                        "molt_dec_ref_obj",
-                        &[types::I64],
-                        &[],
+                        RuntimeFn::DecRefObj,
                     );
                     emit_refcount(
                         builder,
@@ -597,7 +595,7 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
     op: &OpIR,
     call: molt_ir::runtime_calls::RuntimeCall,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -621,7 +619,7 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
     emit_operand_transaction_call(
         op,
         args,
-        function.symbol(),
+        function,
         module,
         import_ids,
         builder,
@@ -646,9 +644,9 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
 pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_call(
     op: &OpIR,
     args: &[String],
-    symbol: &'static str,
+    symbol: RuntimeFn,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -658,18 +656,22 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
-    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
-    let contract = runtime_boxed_abi(symbol, args.len())
+    use molt_ir::runtime_fn_generated::RuntimeBoxedReturn;
+    let contract = symbol
+        .boxed_abi()
+        .filter(|abi| abi.arity() == args.len())
         .unwrap_or_else(|| {
             panic!(
-                "runtime call has no canonical boxed ABI: {symbol}/{}",
+                "runtime call has no canonical boxed ABI: {}/{}",
+                symbol.symbol(),
                 args.len()
             )
         })
         .result;
     assert!(
         contract != RuntimeBoxedReturn::Void,
-        "operand transaction call {symbol} must return a value"
+        "operand transaction call {} must return a value",
+        symbol.symbol()
     );
     let out = crate::tir::simple_def_use::simple_ir_out_result(op);
     let mut transaction = NativeOperandTransaction::begin(
@@ -691,27 +693,17 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
             nbc,
         ));
     }
-    let callee = import_func_ref(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        symbol,
-        &vec![types::I64; args.len()],
-        &[types::I64],
-    );
+    let callee = import_runtime_func_ref(module, import_ids, builder, import_refs, symbol);
     let call = builder.ins().call(callee, &words);
     let result = builder.inst_results(call)[0];
     let borrowed = contract == RuntimeBoxedReturn::BorrowedValue;
     if borrowed && out.is_some() {
-        let retain = import_func_ref(
+        let retain = import_runtime_func_ref(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_inc_ref_obj",
-            &[types::I64],
-            &[],
+            RuntimeFn::IncRefObj,
         );
         emit_refcount(
             builder,
@@ -771,7 +763,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     op: &OpIR,
     constructor: FixedAggregateConstructor,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -783,14 +775,14 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
 ) -> Option<Vec<Value>> {
     let args = op.args.as_deref().unwrap_or(&[]);
     let (symbol, first_word, arity) = match constructor {
-        FixedAggregateConstructor::List => ("molt_list_from_values", 0, 2),
-        FixedAggregateConstructor::Tuple => ("molt_tuple_from_values", 0, 2),
+        FixedAggregateConstructor::List => (RuntimeFn::ListFromValues, 0, 2),
+        FixedAggregateConstructor::Tuple => (RuntimeFn::TupleFromValues, 0, 2),
         FixedAggregateConstructor::Dict => {
             assert!(
                 args.len().is_multiple_of(2),
                 "dict literal needs complete pairs"
             );
-            ("molt_dict_from_pairs", 0, 3)
+            (RuntimeFn::DictFromPairs, 0, 3)
         }
         FixedAggregateConstructor::ClassDefinition { nbases, nattrs, .. } => {
             let expected = nattrs
@@ -803,14 +795,14 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
                 expected,
                 "class_def operands disagree with metadata"
             );
-            ("molt_guarded_class_def", 1, 8)
+            (RuntimeFn::GuardedClassDef, 1, 8)
         }
         FixedAggregateConstructor::Slice => {
             assert!(
                 args.len() <= 3,
                 "slice construction takes at most three bounds"
             );
-            ("molt_slice_new", 0, 3)
+            (RuntimeFn::SliceNew, 0, 3)
         }
     };
     assert!(
@@ -887,15 +879,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
             .map(|position| words.get(position).copied().unwrap_or(none))
             .collect(),
     };
-    let callee = import_func_ref(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        symbol,
-        &vec![types::I64; arity],
-        &[types::I64],
-    );
+    let callee = import_runtime_func_ref(module, import_ids, builder, import_refs, symbol);
     let call = builder.ins().call(callee, &call_args);
     let result = builder.inst_results(call)[0];
     let owns_temporaries = transaction.owns_temporaries();
@@ -936,7 +920,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
 pub(in crate::native_backend::function_compiler) fn emit_hash_container_constructor(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -964,8 +948,8 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
         return;
     }
     let (new_symbol, insert_symbol) = match op.kind {
-        OpKind::SetNew => ("molt_set_new", "molt_set_add"),
-        OpKind::FrozensetNew => ("molt_frozenset_new", "molt_frozenset_add"),
+        OpKind::SetNew => (RuntimeFn::SetNew, RuntimeFn::SetAdd),
+        OpKind::FrozensetNew => (RuntimeFn::FrozensetNew, RuntimeFn::FrozensetAdd),
         kind => panic!("not a hash container constructor: {kind}"),
     };
     let args = op.args.as_deref().unwrap_or(&[]);
@@ -976,24 +960,8 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
         representation_plan,
         args.iter().map(String::as_str),
     );
-    let create = import_func_ref(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        new_symbol,
-        &[types::I64],
-        &[types::I64],
-    );
-    let insert = import_func_ref(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        insert_symbol,
-        &[types::I64; 2],
-        &[types::I64],
-    );
+    let create = import_runtime_func_ref(module, import_ids, builder, import_refs, new_symbol);
+    let insert = import_runtime_func_ref(module, import_ids, builder, import_refs, insert_symbol);
     let capacity = builder.ins().iconst(types::I64, args.len() as i64);
     let created = builder.ins().call(create, &[capacity]);
     let aggregate = builder.inst_results(created)[0];
@@ -1056,7 +1024,7 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result(
     op: &OpIR,
     result: Value,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -1079,7 +1047,7 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result_na
     out: Option<&str>,
     result: Value,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -1087,13 +1055,8 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result_na
     if let Some(out) = out.filter(|name| *name != "none") {
         def_var_named(builder, vars, out, result);
     } else {
-        let release = SimpleBackend::import_func_id_split(
-            module,
-            import_ids,
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
-        );
+        let release =
+            SimpleBackend::import_runtime_func_id_split(module, import_ids, RuntimeFn::DecRefObj);
         let release = module.declare_func_in_func(release, builder.func);
         emit_refcount(
             builder,

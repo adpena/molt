@@ -378,19 +378,19 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
         (
             OpCode::ConstStr,
             TirType::Str,
-            "molt_string_from_bytes",
+            RuntimeFn::StringFromBytes,
             AttrValue::Bytes(b"same\0literal".to_vec()),
         ),
         (
             OpCode::ConstBytes,
             TirType::Bytes,
-            "molt_bytes_from_bytes",
+            RuntimeFn::BytesFromBytes,
             AttrValue::Bytes(vec![0xff, 0, 0x80]),
         ),
         (
             OpCode::ConstBigInt,
             TirType::DynBox,
-            "molt_bigint_from_bytes",
+            RuntimeFn::BigintFromBytes,
             AttrValue::Bytes(vec![
                 0x01, 0x8e, 0xe9, 0x0f, 0xf6, 0xc3, 0x73, 0xe0, 0xee, 0x4e, 0x3f, 0x0a, 0xd2,
             ]),
@@ -464,7 +464,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
             "one owned call per result and one drop: {ir}"
         );
         assert!(
-            calls[0].contains_execution(&format!("@{runtime_name}(")),
+            calls[0].contains_execution(&format!("@{}(", runtime_name.symbol())),
             "{ir}"
         );
         assert!(
@@ -472,24 +472,23 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
             "{ir}"
         );
         assert!(
-            calls[2].contains_execution(&format!("@{runtime_name}(")),
+            calls[2].contains_execution(&format!("@{}(", runtime_name.symbol())),
             "{ir}"
         );
-        let materializer = backend.module.get_execution_function(runtime_name).unwrap();
-        let ptr_ty = ctx.ptr_type(inkwell::AddressSpace::default());
-        let expected_abi = if opcode == OpCode::ConstBigInt {
-            ctx.i64_type()
-                .fn_type(&[ptr_ty.into(), ctx.i64_type().into()], false)
-        } else {
-            ctx.i32_type().fn_type(
-                &[ptr_ty.into(), ctx.i64_type().into(), ptr_ty.into()],
-                false,
-            )
-        };
+        let materializer = backend
+            .module
+            .get_function(runtime_name.linker_symbol())
+            .unwrap();
         assert_eq!(
             materializer.get_type(),
-            runtime_execution_type(runtime_name, expected_abi),
-            "{runtime_name}"
+            crate::llvm_backend::runtime_imports::runtime_function(
+                &ctx,
+                &backend.module,
+                runtime_name
+            )
+            .get_type(),
+            "{}",
+            runtime_name.symbol()
         );
     }
 }
@@ -515,7 +514,7 @@ fn repeated_attribute_name_literals_use_owned_string_materialization() {
     let mut results = Vec::new();
     for _ in 0..2 {
         results.push(lowering.with_owned_name("same_name", |this, name_bits| {
-            let import = this.ensure_runtime_i64_fn("molt_module_import", 1);
+            let import = this.ensure_runtime_import(RuntimeFn::ModuleImport);
             this.backend
                 .builder
                 .build_execution_call(import, &[name_bits.into()], "name_consumer")

@@ -135,14 +135,14 @@ fn first_heap_write_uses_init_but_displaced_heap_release_stays_generic() {
         Some(&FieldStoreMode::FreshInit)
     );
     assert_eq!(
-        typed_slot_store_helper_name(analysis.field_store_modes.get(&3).copied()),
-        "molt_object_field_init_ptr"
+        typed_slot_store_runtime_fn(analysis.field_store_modes.get(&3).copied()),
+        RuntimeFn::ObjectFieldInitPtr
     );
     for index in [4, 5] {
         assert!(!analysis.field_store_modes.contains_key(&index));
         assert_eq!(
-            typed_slot_store_helper_name(analysis.field_store_modes.get(&index).copied()),
-            "molt_object_field_set_ptr"
+            typed_slot_store_runtime_fn(analysis.field_store_modes.get(&index).copied()),
+            RuntimeFn::ObjectFieldSetPtr
         );
     }
 }
@@ -201,8 +201,8 @@ fn observers_captures_and_unrelated_callbacks_permanently_revoke_history() {
                 "{kind} at {index}"
             );
             assert_eq!(
-                typed_slot_store_helper_name(analysis.field_store_modes.get(&index).copied()),
-                "molt_object_field_set_ptr",
+                typed_slot_store_runtime_fn(analysis.field_store_modes.get(&index).copied()),
+                RuntimeFn::ObjectFieldSetPtr,
                 "{kind} at {index}"
             );
         }

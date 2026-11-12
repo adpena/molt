@@ -1,6 +1,5 @@
 use super::*;
 use crate::llvm_backend::LlvmBackend;
-use crate::llvm_backend::runtime_imports::declare_runtime_functions;
 use crate::tir::blocks::{Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -10,6 +9,75 @@ use inkwell::attributes::Attribute;
 use inkwell::context::Context;
 use inkwell::values::AnyValue;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
+
+/// Admit the runtime entry a test fixture names into the selected runtime
+/// set. Fixtures spell entries; the backend admits only typed identities.
+pub(super) fn admit_runtime_entry(backend: &mut LlvmBackend<'_>, symbol: &str) {
+    if let Some(&function) = RuntimeFn::ALL
+        .iter()
+        .find(|function| function.symbol() == symbol)
+    {
+        backend.runtime_callable_symbols.insert(function);
+    }
+}
+
+/// Fixtures author TIR directly, past the SimpleIR ingest that types runtime
+/// call targets (HF-821 B1); give them the same decode before lowering. A
+/// `call_internal` target is always a compiled function.
+fn with_typed_runtime_targets(func: &TirFunction) -> TirFunction {
+    let mut func = func.clone();
+    for block in func.blocks.values_mut() {
+        for op in &mut block.ops {
+            if op.runtime.is_some() || op.origin == Some(OpKind::CallInternal) {
+                continue;
+            }
+            let names_target = crate::tir::call_targets::direct_call_symbol_for_op(op).is_some()
+                || matches!(op.origin, Some(OpKind::BuiltinFunc | OpKind::CallAsync));
+            if let (true, Some(AttrValue::Str(symbol))) = (names_target, op.attrs.get("s_value")) {
+                op.runtime = RuntimeFn::ALL
+                    .iter()
+                    .copied()
+                    .find(|function| function.symbol() == symbol);
+            }
+        }
+    }
+    func
+}
+
+/// The production lowering entry points, over fixtures given their ingest
+/// decode. They shadow the glob-imported originals for every test module.
+fn lower_tir_to_llvm<'ctx>(
+    func: &TirFunction,
+    backend: &LlvmBackend<'ctx>,
+) -> inkwell::values::FunctionValue<'ctx> {
+    super::lower_tir_to_llvm(&with_typed_runtime_targets(func), backend)
+}
+
+fn try_lower_tir_to_llvm<'ctx>(
+    func: &TirFunction,
+    backend: &LlvmBackend<'ctx>,
+) -> Result<inkwell::values::FunctionValue<'ctx>, LlvmLoweringError> {
+    super::try_lower_tir_to_llvm(&with_typed_runtime_targets(func), backend)
+}
+
+/// Withdraw the runtime entry a test fixture names from the selected set.
+pub(super) fn retire_runtime_entry(backend: &mut LlvmBackend<'_>, symbol: &str) {
+    if let Some(&function) = RuntimeFn::ALL
+        .iter()
+        .find(|function| function.symbol() == symbol)
+    {
+        backend.runtime_callable_symbols.remove(function);
+    }
+}
+
+/// The physical symbol an expected-IR fixture's logical name projects to:
+/// a runtime entry's generated linker symbol, else a compiled function's.
+pub(super) fn test_execution_symbol(name: &str) -> String {
+    molt_ir::runtime_callable_abi_generated::runtime_execution_abi(name)
+        .map(|abi| abi.physical_symbol.to_owned())
+        .unwrap_or_else(|| molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(name))
+}
 
 /// Expected IR spells logical names; project those expectations through the
 /// generated execution ABI. The emitted IR is inspected without rewriting it.
@@ -38,7 +106,7 @@ fn execution_ir_pattern(pattern: &str) -> String {
         if callable {
             let abi = runtime_execution_abi(name);
             let attached = abi.is_none_or(|abi| abi.context == RuntimeExecutionContext::Attached);
-            result.push_str(&crate::llvm_backend::execution_abi::execution_symbol(name));
+            result.push_str(&test_execution_symbol(name));
             result.push('(');
             cursor += 1;
             if attached {
@@ -89,7 +157,6 @@ impl ExecutionIrAssertions for str {
 
 fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
     let backend = LlvmBackend::new(ctx, "test");
-    declare_runtime_functions(ctx, &backend.module);
     backend
 }
 

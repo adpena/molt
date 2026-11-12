@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::ir::OpIR;
 
-use super::super::call_targets::gpu_runtime_symbol_for_simple_kind;
+use super::super::call_targets::{gpu_runtime_fn_for_simple_kind, ingest_runtime_target};
 use super::super::dominators;
 use super::super::op_kinds_generated::{
     kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
@@ -157,9 +157,12 @@ impl<'a> SsaContext<'a> {
             attrs.insert("s_value".into(), AttrValue::Str(v.clone()));
         }
         if op.s_value.is_none()
-            && let Some(symbol) = gpu_runtime_symbol_for_simple_kind(op.kind)
+            && let Some(function) = gpu_runtime_fn_for_simple_kind(op.kind)
         {
-            attrs.insert("s_value".into(), AttrValue::Str(symbol.to_string()));
+            attrs.insert(
+                "s_value".into(),
+                AttrValue::Str(function.symbol().to_string()),
+            );
         }
         if let Some(ref v) = op.bytes {
             attrs.insert("bytes".into(), AttrValue::Bytes(v.clone()));
@@ -362,7 +365,7 @@ impl<'a> SsaContext<'a> {
 
         let mut tir_op = TirOp {
             origin,
-            runtime: None,
+            runtime: ingest_runtime_target(op),
             dialect: Dialect::Molt,
             opcode,
             operands,

@@ -117,8 +117,9 @@ WASM through LLVM) do:
 
 Foundation order, by duplicate code each step deletes: delete WASM `lir_fast` (10,246 lines,
 admitted only by a function-name substring no producer emits); the LLVM `wasm32` spike; the
-builder trait and walker with LLVM as its first implementation; Cranelift onto final TIR (retires
-its 251 spelled runtime imports). Measured reason the order matters (2026-11-11, LLVM release,
+builder trait and walker with LLVM as its first implementation; Cranelift onto final TIR. Both
+native backends already call runtime entries only by typed `RuntimeFn`, decoded once at the TIR
+lift ([typed runtime imports](typed_runtime_imports.md), 2026-11-12). Measured reason the order matters (2026-11-11, LLVM release,
 macOS arm64, instructions retired, managed CPython 3.12.16 -I): the worst gaps are fannkuch 8.2x
 CPython (27.0 G excess), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
 mandelbrot 4.7x (6.6 G), `bench_dict` and `bench_list` 2.3x; their buckets (object lifecycle,

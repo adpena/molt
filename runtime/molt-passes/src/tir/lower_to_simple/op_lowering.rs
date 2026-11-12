@@ -740,6 +740,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     .symbol()
                     .to_string(),
             ),
+            runtime: Some(molt_ir::runtime_fn_generated::RuntimeFn::GlobalSlotBase),
             args: Some(operand_args(op)),
             out: out_var,
             ..OpIR::new(molt_ir::OpKind::Call)

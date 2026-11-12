@@ -228,7 +228,7 @@ impl SimpleBackend {
             module,
             ctx,
             trampoline_ids: BTreeMap::new(),
-            import_ids: BTreeMap::new(),
+            import_ids: RuntimeImportIds::default(),
             skip_ir_passes: false,
             skip_shared_stdlib_partition: false,
             tir_cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,

@@ -100,8 +100,8 @@ fn lower_with_wide_operands(
         .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));
     let ids = backend
         .import_ids
-        .iter()
-        .map(|(&symbol, (id, _))| (symbol, id.as_u32()))
+        .declared()
+        .map(|(function, id)| (function.symbol(), id.as_u32()))
         .collect();
     (function, ids)
 }
@@ -224,7 +224,7 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
             super::super::shared::emit_operand_transaction_call(
                 &op,
                 op.args.as_deref().unwrap(),
-                "molt_dict_set",
+                RuntimeFn::DictSet,
                 &mut backend.module,
                 &mut backend.import_ids,
                 builder,
@@ -306,7 +306,7 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
                     super::super::shared::emit_operand_transaction_call(
                         &op,
                         op.args.as_deref().unwrap(),
-                        abi.symbol(),
+                        abi.function,
                         &mut backend.module,
                         &mut backend.import_ids,
                         builder,

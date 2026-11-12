@@ -52,7 +52,7 @@ impl SimpleBackend {
             {
                 id
             } else {
-                declare_python_execution_function(
+                declare_compiled_execution_function(
                     &mut self.module,
                     symbol,
                     Linkage::Import,

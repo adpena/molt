@@ -29,7 +29,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -41,10 +41,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -97,19 +94,17 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 // Dispatch to specialized fast-path len when container
                 // type is known, skipping the 18-type dispatch in molt_len.
                 let fn_name = match representation_plan.name_container_kind(&args[0]) {
-                    Some(ContainerKind::List) => "molt_len_list",
-                    Some(ContainerKind::Str) => "molt_len_str",
-                    Some(ContainerKind::Dict) => "molt_len_dict",
-                    Some(ContainerKind::Tuple) => "molt_len_tuple",
-                    Some(ContainerKind::Set) => "molt_len_set",
-                    _ => "molt_len",
+                    Some(ContainerKind::List) => RuntimeFn::LenList,
+                    Some(ContainerKind::Str) => RuntimeFn::LenStr,
+                    Some(ContainerKind::Dict) => RuntimeFn::LenDict,
+                    Some(ContainerKind::Tuple) => RuntimeFn::LenTuple,
+                    Some(ContainerKind::Set) => RuntimeFn::LenSet,
+                    _ => RuntimeFn::Len,
                 };
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
                     fn_name,
-                    &[types::I64],
-                    &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*val]);
@@ -159,12 +154,10 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("Range step not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_range_new",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::RangeNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
@@ -251,14 +244,12 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             );
 
             // Call molt_unpack_sequence(seq_bits, expected_count, output_ptr) -> u64
-            let unpack_local = import_func_ref(
+            let unpack_local = import_runtime_func_ref(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                "molt_unpack_sequence",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::UnpackSequence,
             );
             builder
                 .ins()
@@ -313,12 +304,10 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("Tuple count value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_tuple_count",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::TupleCount,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*tuple, *val]);
@@ -351,12 +340,10 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("Tuple index value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_tuple_index",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::TupleIndex,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*tuple, *val]);
@@ -400,12 +387,10 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("Enumerate has_start not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_enumerate",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::Enumerate,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -451,14 +436,12 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 3,
             ));
             let value_ptr = builder.ins().stack_addr(types::I64, value_slot, 0);
-            let callee = import_func_ref(
+            let callee = import_runtime_func_ref(
                 module,
                 import_ids,
                 builder,
                 import_refs,
-                "molt_iter_next_unboxed",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::IterNextUnboxed,
             );
             let call = builder.ins().call(callee, &[*iter, value_ptr]);
             let done = builder.inst_results(call)[0];
@@ -509,14 +492,12 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("iterator source not found");
-            let callee = import_func_ref(
+            let callee = import_runtime_func_ref(
                 module,
                 import_ids,
                 builder,
                 import_refs,
-                "molt_iter_next",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::IterNext,
             );
             let call = builder.ins().call(callee, &[*iter]);
             let pair = builder.inst_results(call)[0];

@@ -1180,3 +1180,40 @@ fn parameter_custody_survives_tir_artifact_roundtrip() {
             .contains_key(crate::tir::function::PARAMETER_CUSTODY_ATTR)
     );
 }
+
+/// The SimpleIR-to-TIR lift carries the decode on the op's typed field.
+#[test]
+fn tir_lift_sets_the_typed_runtime_field() {
+    use molt_ir::OpKind;
+    let function = molt_ir::FunctionIR {
+        name: "lift_runtime_target".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        params: vec!["value".into()],
+        ops: vec![
+            molt_ir::OpIR {
+                s_value: Some(
+                    molt_ir::runtime_fn_generated::RuntimeFn::Len
+                        .symbol()
+                        .into(),
+                ),
+                args: Some(vec!["value".into()]),
+                out: Some("length".into()),
+                ..molt_ir::OpIR::new(OpKind::Call)
+            },
+            molt_ir::OpIR {
+                args: Some(vec!["length".into()]),
+                ..molt_ir::OpIR::new(OpKind::Ret)
+            },
+        ],
+        ..molt_ir::FunctionIR::default()
+    };
+    let lifted = crate::tir::lower_from_simple::lower_to_tir(&function);
+    let runtimes: Vec<_> = lifted
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(|op| op.runtime)
+        .collect();
+    assert_eq!(runtimes, [molt_ir::runtime_fn_generated::RuntimeFn::Len]);
+    molt_ir::tir::verify::verify_function(&lifted).expect("a typed call target verifies");
+}

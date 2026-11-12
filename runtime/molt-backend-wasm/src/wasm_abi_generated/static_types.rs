@@ -226,4 +226,8 @@ pub(crate) const STATIC_FUNC_TYPES: &[StaticFuncTypeSpec] = &[
         ],
         results: &[ValType::I64],
     },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64],
+        results: &[ValType::F64],
+    },
 ];

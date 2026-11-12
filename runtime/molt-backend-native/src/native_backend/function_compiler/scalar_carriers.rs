@@ -262,7 +262,7 @@ pub(in crate::native_backend::function_compiler) fn bool_raw_value(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -301,7 +301,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_safe(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -330,14 +330,12 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
 
     switch_to_block_materialized(builder, slow_blk);
     seal_block_once(builder, sealed_blocks, slow_blk);
-    let big_fn = import_func_ref(
+    let big_fn = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_int_from_i64",
-        &[types::I64],
-        &[types::I64],
+        RuntimeFn::IntFromI64,
     );
     let big_call = builder.ins().call(big_fn, &[raw_val]);
     let big_res = builder.inst_results(big_call)[0];
@@ -361,7 +359,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_base(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -510,7 +508,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_bool_safe(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -560,7 +558,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_var_from_boxed_transport(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -600,7 +598,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_boxed_transport
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_var_from_numeric_result(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -743,7 +741,7 @@ impl CapturedScalarTransport {
     pub(super) fn value_for_home(
         &mut self,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
@@ -786,7 +784,7 @@ impl CapturedScalarTransport {
     pub(super) fn value_for_storage(
         &mut self,
         module: &mut dyn Module,
-        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        import_ids: &mut RuntimeImportIds,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
@@ -852,7 +850,7 @@ impl CapturedScalarTransport {
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_storage(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -877,7 +875,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_var_from_merge_rebind_storage(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -996,25 +994,17 @@ pub(in crate::native_backend::function_compiler) enum BoxedBitwiseOp {
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_guarded_boxed_bitwise(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     lhs: Value,
     rhs: Value,
-    runtime_name: &'static str,
+    runtime_name: RuntimeFn,
     op: BoxedBitwiseOp,
     nbc: &crate::NanBoxConsts,
 ) -> Value {
-    let callee = import_func_ref(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        runtime_name,
-        &[types::I64, types::I64],
-        &[types::I64],
-    );
+    let callee = import_runtime_func_ref(module, import_ids, builder, import_refs, runtime_name);
     let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(builder, lhs, nbc);
     let (rhs_xored, rhs_val) = fused_tag_check_and_unbox_int(builder, rhs, nbc);
     let both_inline_int = fused_both_int_check(builder, lhs_xored, rhs_xored, nbc);
@@ -1088,19 +1078,17 @@ pub(in crate::native_backend::function_compiler) fn dead_scrub_value_for_var(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn float_value_from_boxed_extended(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     boxed: Value,
 ) -> Value {
-    let as_float = import_func_ref(
+    let as_float = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_float_as_f64",
-        &[types::I64],
-        &[types::F64],
+        RuntimeFn::FloatAsF64,
     );
     let call = builder.ins().call(as_float, &[boxed]);
     builder.inst_results(call)[0]
@@ -1114,7 +1102,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_from_boxed_exten
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -1179,7 +1167,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,

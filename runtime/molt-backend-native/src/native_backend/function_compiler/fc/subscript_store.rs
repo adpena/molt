@@ -1,5 +1,5 @@
 use super::super::*;
-use super::list_index_fast_path::store_index_fallback_import_name;
+use super::list_index_fast_path::store_index_fallback_runtime_fn;
 #[cfg(test)]
 use molt_ir::OpKind;
 
@@ -18,7 +18,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_store_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -38,7 +38,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_store_op(
     // Runtime dispatch is the live representation authority: compact int/bool
     // lists store directly only while their physical type remains specialized;
     // ABI publication promotes them to the generic transactional list.
-    let symbol = store_index_fallback_import_name(representation_plan, op);
+    let symbol = store_index_fallback_runtime_fn(representation_plan, op);
     emit_operand_transaction_call(
         op,
         args,

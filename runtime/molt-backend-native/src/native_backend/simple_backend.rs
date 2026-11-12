@@ -75,7 +75,7 @@ pub struct SimpleBackend {
     pub(crate) ctx: Context,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
-    pub(crate) import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    pub(crate) import_ids: RuntimeImportIds,
     pub skip_ir_passes: bool,
     pub skip_shared_stdlib_partition: bool,
     /// Where the persistent TIR cache lives: the backend process's own root,

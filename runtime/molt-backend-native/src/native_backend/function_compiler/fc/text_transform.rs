@@ -49,7 +49,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_text_transform(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -61,10 +61,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -91,14 +88,11 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
     // result, and binds the single result. Their arg-arities differ but the
     // shape is identical, so one closure removes the ~30-line-per-op boilerplate.
     let emit_split_field_op = |module: &mut dyn Module,
-                               import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                               import_ids: &mut RuntimeImportIds,
                                builder: &mut FunctionBuilder<'_>,
                                import_refs: &mut NativeFunctionImports,
                                sealed_blocks: &mut BTreeSet<Block>,
-                               symbol: &'static str,
+                               symbol: RuntimeFn,
                                op: &OpIR| {
         let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
         let mut arg_vals = Vec::with_capacity(args.len());
@@ -118,13 +112,8 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             arg_vals.push(*v);
             sig.push(types::I64);
         }
-        let callee = SimpleBackend::import_func_id_split(
-            &mut *module,
-            &mut *import_ids,
-            symbol,
-            &sig,
-            &[types::I64],
-        );
+        let callee =
+            SimpleBackend::import_runtime_func_id_split(&mut *module, &mut *import_ids, symbol);
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &arg_vals);
         let res = builder.inst_results(call)[0];
@@ -179,12 +168,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("bytearray fill value not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytearray_fill_range",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytearrayFillRange,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -219,12 +206,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Format spec not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_format_builtin",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::FormatBuiltin,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*val, *spec]);
@@ -257,12 +242,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Join items not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_join",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringJoin,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*sep, *items]);
@@ -295,12 +278,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split needle not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_split",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringSplit,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *needle]);
@@ -333,12 +314,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split needle not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_split_validate",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringSplitValidate,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *needle]);
@@ -382,12 +361,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split field index not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_split_field",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringSplitField,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *needle, *index]);
@@ -431,12 +408,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split field index not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_split_field_len",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringSplitFieldLen,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *needle, *index]);
@@ -491,12 +466,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split field expected string not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_split_field_eq",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringSplitFieldEq,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -542,12 +515,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split maxsplit not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_split_max",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringSplitMax,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -571,12 +542,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Lower string not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_lower",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::StringLower,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay]);
@@ -598,12 +567,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Upper string not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_upper",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::StringUpper,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay]);
@@ -625,12 +592,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Capitalize string not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_capitalize",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::StringCapitalize,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay]);
@@ -663,12 +628,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Strip chars not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_strip",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringStrip,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *chars]);
@@ -701,12 +664,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Lstrip chars not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_lstrip",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringLstrip,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *chars]);
@@ -739,12 +700,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Rstrip chars not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_rstrip",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringRstrip,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *chars]);
@@ -799,12 +758,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Replace count not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_string_replace",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StringReplace,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -839,12 +796,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split needle not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytes_split",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytesSplit,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *needle]);
@@ -888,12 +843,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split maxsplit not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytes_split_max",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytesSplitMax,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -928,12 +881,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split needle not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytearray_split",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytearraySplit,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*hay, *needle]);
@@ -977,12 +928,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Split maxsplit not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytearray_split_max",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytearraySplitMax,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -1039,12 +988,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Replace count not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytes_replace",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytesReplace,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -1101,12 +1048,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 representation_plan,
             )
             .expect("Replace count not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_bytearray_replace",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::BytearrayReplace,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
@@ -1123,7 +1068,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             &mut *builder,
             &mut *import_refs,
             &mut *sealed_blocks,
-            "molt_string_split_field_start",
+            RuntimeFn::StringSplitFieldStart,
             op,
         ),
         OpKind::StringSplitFieldEnd => emit_split_field_op(
@@ -1132,7 +1077,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             &mut *builder,
             &mut *import_refs,
             &mut *sealed_blocks,
-            "molt_string_split_field_end",
+            RuntimeFn::StringSplitFieldEnd,
             op,
         ),
         OpKind::StringSplitFieldIsAscii => emit_split_field_op(
@@ -1141,7 +1086,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             &mut *builder,
             &mut *import_refs,
             &mut *sealed_blocks,
-            "molt_string_split_field_is_ascii",
+            RuntimeFn::StringSplitFieldIsAscii,
             op,
         ),
         OpKind::StringSplitFieldLenFromBounds => emit_split_field_op(
@@ -1150,7 +1095,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             &mut *builder,
             &mut *import_refs,
             &mut *sealed_blocks,
-            "molt_string_split_field_len_from_bounds",
+            RuntimeFn::StringSplitFieldLenFromBounds,
             op,
         ),
         OpKind::StringSplitFieldOrdAtBounds => emit_split_field_op(
@@ -1159,7 +1104,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             &mut *builder,
             &mut *import_refs,
             &mut *sealed_blocks,
-            "molt_string_split_field_ord_at_bounds",
+            RuntimeFn::StringSplitFieldOrdAtBounds,
             op,
         ),
         OpKind::StringSplitFieldToInt => emit_split_field_op(
@@ -1168,7 +1113,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             &mut *builder,
             &mut *import_refs,
             &mut *sealed_blocks,
-            "molt_string_split_field_to_int",
+            RuntimeFn::StringSplitFieldToInt,
             op,
         ),
         _ => unreachable!("handler invoked with non-matching op.kind"),

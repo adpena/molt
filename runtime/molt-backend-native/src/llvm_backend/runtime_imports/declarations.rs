@@ -1,66 +1,134 @@
 #[cfg(feature = "llvm")]
-use super::attributes::add_nounwind;
+use super::attributes::{add_memory_read, add_nounwind, add_willreturn};
 #[cfg(feature = "llvm")]
-use super::fixed;
-#[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionModuleExt;
-use crate::llvm_backend::execution_abi::{execution_symbol, runtime_execution_type};
+use inkwell::AddressSpace;
 #[cfg(feature = "llvm")]
 use inkwell::context::Context;
 #[cfg(feature = "llvm")]
 use inkwell::module::Module;
 #[cfg(feature = "llvm")]
-use inkwell::types::FunctionType;
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FunctionType};
 #[cfg(feature = "llvm")]
 use inkwell::values::FunctionValue;
-
-/// Declare a runtime symbol that is not in the fixed import table yet.
-///
-/// This is the only on-demand conservative declaration path lowering may use.
-/// It deliberately applies the weakest globally valid runtime attribute set:
-/// `nounwind` only. Stronger facts such as `willreturn` or `memory(read)` must
-/// be encoded by adding the symbol to `fixed::FIXED_RUNTIME_IMPORTS`.
 #[cfg(feature = "llvm")]
-pub(crate) fn declare_conservative_runtime_function<'ctx>(
+use molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext;
+#[cfg(feature = "llvm")]
+use molt_ir::runtime_fn_generated::{RuntimeEffects, RuntimeFn, RuntimeMachineType};
+#[cfg(feature = "llvm")]
+use std::cell::Cell;
+
+/// The LLVM type of one runtime machine type.
+#[cfg(feature = "llvm")]
+fn machine_type<'ctx>(ctx: &'ctx Context, value: RuntimeMachineType) -> BasicTypeEnum<'ctx> {
+    match value {
+        RuntimeMachineType::Word => ctx.i64_type().into(),
+        RuntimeMachineType::Address => ctx.ptr_type(AddressSpace::default()).into(),
+        RuntimeMachineType::I32 => ctx.i32_type().into(),
+        RuntimeMachineType::F64 => ctx.f64_type().into(),
+    }
+}
+
+/// The physical LLVM type of a runtime entry, from its generated record alone:
+/// the execution context word first when the entry is attached, then one
+/// parameter per machine type (I2).
+#[cfg(feature = "llvm")]
+pub(crate) fn runtime_function_type<'ctx>(
+    ctx: &'ctx Context,
+    function: RuntimeFn,
+) -> FunctionType<'ctx> {
+    let mut params: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::with_capacity(function.params() + 1);
+    if function.context() == RuntimeExecutionContext::Attached {
+        params.push(ctx.i64_type().into());
+    }
+    params.extend(
+        function
+            .param_types()
+            .iter()
+            .map(|&value| BasicMetadataTypeEnum::from(machine_type(ctx, value))),
+    );
+    match function
+        .result_type()
+        .map(|result| machine_type(ctx, result))
+    {
+        Some(BasicTypeEnum::IntType(result)) => result.fn_type(&params, false),
+        Some(BasicTypeEnum::FloatType(result)) => result.fn_type(&params, false),
+        Some(BasicTypeEnum::PointerType(result)) => result.fn_type(&params, false),
+        Some(other) => unreachable!("runtime machine type {other:?} is not a scalar"),
+        None => ctx.void_type().fn_type(&params, false),
+    }
+}
+
+/// Every runtime entry is `nounwind`: panics become pending exceptions at the
+/// export boundary. Stronger facts come only from the manifest's `effects`
+/// (I7): an entry that may run Python code may not terminate, so it never
+/// receives `willreturn`.
+#[cfg(feature = "llvm")]
+fn apply_runtime_attributes(ctx: &Context, func: FunctionValue<'_>, effects: RuntimeEffects) {
+    add_nounwind(ctx, func);
+    match effects {
+        RuntimeEffects::Impure => {}
+        RuntimeEffects::MayRaise | RuntimeEffects::NothrowWrite => add_willreturn(ctx, func),
+        RuntimeEffects::NothrowRead => {
+            add_willreturn(ctx, func);
+            add_memory_read(ctx, func);
+        }
+    }
+}
+
+/// The module's declaration of `function`: the one LLVM path that declares a
+/// runtime function. The linker symbol, the type and the attributes all come
+/// from the generated record. An existing declaration (made earlier through
+/// this same path) is returned as is, so a second request cannot duplicate it.
+#[cfg(feature = "llvm")]
+pub(crate) fn runtime_function<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,
-    name: &str,
-    fn_ty: FunctionType<'ctx>,
+    function: RuntimeFn,
 ) -> FunctionValue<'ctx> {
-    let physical_ty = runtime_execution_type(name, fn_ty);
-    if let Some(func) = module.get_execution_function(name) {
-        return func;
+    if let Some(declared) = module.get_function(function.linker_symbol()) {
+        return declared;
     }
-    let func = module.add_function(
-        &execution_symbol(name),
-        physical_ty,
+    let declared = module.add_function(
+        function.linker_symbol(),
+        runtime_function_type(ctx, function),
         Some(inkwell::module::Linkage::External),
     );
-    add_nounwind(ctx, func);
-    func
+    apply_runtime_attributes(ctx, declared, function.effects());
+    declared
 }
 
-/// Declare one fixed runtime import by name, if the fixed table owns it.
-///
-/// Callers that need a runtime import before the module-wide declaration pass
-/// should use this instead of the conservative path so typed pointer/i32
-/// signatures and stronger LLVM attributes still come from the fixed authority.
+/// One LLVM module's runtime declarations, by dense `RuntimeFn` index, so a
+/// lowering asks the module once per entry.
 #[cfg(feature = "llvm")]
-pub(crate) fn declare_fixed_runtime_function<'ctx>(
-    ctx: &'ctx Context,
-    module: &Module<'ctx>,
-    name: &str,
-) -> Option<FunctionValue<'ctx>> {
-    fixed::declare_fixed_runtime_function(ctx, module, name)
+pub(crate) struct LlvmRuntimeImports<'ctx> {
+    slots: Box<[Cell<Option<FunctionValue<'ctx>>>]>,
 }
 
-/// Declare all fixed runtime functions that lowered code may call.
-///
-/// Fixed imports are external linkage symbols resolved by the Molt runtime
-/// shared library or static archive. Their signature and optimization
-/// attributes live in `fixed::FIXED_RUNTIME_IMPORTS`; generated boxed contracts
-/// and residual dedicated machine signatures supply on-demand declarations.
 #[cfg(feature = "llvm")]
-pub(crate) fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>) {
-    fixed::declare_fixed_runtime_functions(ctx, module);
+impl Default for LlvmRuntimeImports<'_> {
+    fn default() -> Self {
+        Self {
+            slots: (0..RuntimeFn::COUNT).map(|_| Cell::new(None)).collect(),
+        }
+    }
+}
+
+#[cfg(feature = "llvm")]
+impl<'ctx> LlvmRuntimeImports<'ctx> {
+    /// The module's declaration of `function`. Requires `module` to be the
+    /// module this table belongs to.
+    pub(crate) fn get(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        function: RuntimeFn,
+    ) -> FunctionValue<'ctx> {
+        let slot = &self.slots[function.index()];
+        if let Some(declared) = slot.get() {
+            return declared;
+        }
+        let declared = runtime_function(ctx, module, function);
+        slot.set(Some(declared));
+        declared
+    }
 }

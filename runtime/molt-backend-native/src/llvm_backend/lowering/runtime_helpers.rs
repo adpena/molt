@@ -32,14 +32,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.emit_boxed_runtime_call(op, abi);
             return true;
         }
-        let symbol = format!("molt_{kind}");
-        let Some(abi) = runtime_boxed_abi(&symbol, op.operands.len()) else {
-            if !self.backend.runtime_callable_symbols.contains(&symbol) {
+        let Some(function) = molt_ir::runtime_fn_generated::preserved_op_runtime_fn(kind) else {
+            return false;
+        };
+        let Some(abi) = function
+            .boxed_abi()
+            .filter(|abi| abi.arity() == op.operands.len())
+        else {
+            if !self.backend.runtime_callable_symbols.contains(function) {
                 return false;
             }
             self.record_fatal(format!(
-                "preserved SimpleIR op `{kind}` maps to runtime symbol `{symbol}`, \
-                 but that symbol has no positional boxed-value ABI classification"
+                "preserved SimpleIR op `{kind}` maps to runtime entry `{}`, \
+                 but that entry has no positional boxed-value ABI classification at this arity",
+                function.symbol()
             ));
             return true;
         };
@@ -55,7 +61,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // Semantic classification is not availability in the selected runtime.
         // Direct calls and preserved operations must share this admission before
         // declaring symbols or materializing any temporary argument owners.
-        if !self.backend.runtime_callable_symbols.contains(symbol) {
+        if !self.backend.runtime_callable_symbols.contains(abi.function) {
             self.record_fatal(format!(
                 "boxed runtime symbol `{symbol}` is unavailable in the selected runtime"
             ));
@@ -67,36 +73,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ));
             return;
         }
-        let return_abi = match abi.result {
-            RuntimeBoxedReturn::OwnedValue
-            | RuntimeBoxedReturn::BorrowedValue
-            | RuntimeBoxedReturn::PollValue => RuntimeReturnAbi::I64,
-            RuntimeBoxedReturn::Void => RuntimeReturnAbi::Void,
-        };
-        // Keep declaration custody distinct from value semantics. Dedicated
-        // raw/mixed lowering may use the same machine-signature authority.
-        if runtime_import_return_abi(symbol, abi.arity()) != Some(return_abi) {
-            self.record_fatal(format!(
-                "boxed runtime symbol `{symbol}` has no matching LLVM machine ABI"
-            ));
-            return;
-        }
         if op.results.len() > 1 {
             self.record_fatal(format!(
                 "boxed runtime symbol `{symbol}` has multiple result values"
             ));
             return;
         }
-        if return_abi == RuntimeReturnAbi::Void && !op.results.is_empty() {
+        if abi.result == RuntimeBoxedReturn::Void && !op.results.is_empty() {
             self.record_fatal(format!(
                 "call to void runtime symbol `{symbol}` has result values"
             ));
             return;
         }
-        let callee = match return_abi {
-            RuntimeReturnAbi::Void => self.ensure_runtime_void_fn(symbol, abi.arity()),
-            RuntimeReturnAbi::I64 => self.ensure_runtime_i64_fn(symbol, abi.arity()),
-        };
+        let callee = self.ensure_runtime_import(abi.function);
         self.emit_positional_runtime_call(
             op,
             callee,
@@ -112,7 +101,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// without an owner and never released.
     pub(super) fn emit_raw_runtime_call(&mut self, op: &TirOp, function: RuntimeFn) {
         let symbol = function.symbol();
-        if !self.backend.runtime_callable_symbols.contains(symbol) {
+        if !self.backend.runtime_callable_symbols.contains(function) {
             self.record_fatal(format!(
                 "raw runtime symbol `{symbol}` is unavailable in the selected runtime"
             ));
@@ -155,7 +144,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             return;
         }
-        let callee = self.ensure_runtime_i64_fn(symbol, function.params());
+        let callee = self.ensure_runtime_import(function);
         self.emit_positional_runtime_call(
             op,
             callee,
@@ -197,7 +186,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         ) -> inkwell::values::IntValue<'ctx>,
     ) -> inkwell::values::IntValue<'ctx> {
         let i64_ty = self.backend.context.i64_type();
-        let new_fn = self.ensure_runtime_i64_fn("molt_callargs_new", 2);
+        let new_fn = self.ensure_runtime_import(RuntimeFn::CallargsNew);
         let builder_bits = self
             .backend
             .builder
@@ -213,7 +202,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value();
-        let push_fn = self.ensure_runtime_i64_fn("molt_callargs_push_pos", 2);
+        let push_fn = self.ensure_runtime_import(RuntimeFn::CallargsPushPos);
         for &arg in args {
             self.backend
                 .builder
@@ -259,7 +248,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         callable: inkwell::values::IntValue<'ctx>,
         args: &[inkwell::values::IntValue<'ctx>],
     ) -> inkwell::values::IntValue<'ctx> {
-        let bind_fn = self.ensure_runtime_i64_fn("molt_call_bind", 2);
+        let bind_fn = self.ensure_runtime_import(RuntimeFn::CallBind);
         self.with_callargs(args, |this, builder| {
             this.backend
                 .builder
@@ -281,8 +270,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if args.len() > 3 {
             return self.bind_call_words(callable, args);
         }
-        let rt_name = format!("molt_call_func_fast{}", args.len());
-        let fast_fn = self.ensure_runtime_i64_fn(&rt_name, args.len() + 1);
+        let fast_fn = self.ensure_runtime_import(match args.len() {
+            0 => RuntimeFn::CallFuncFast0,
+            1 => RuntimeFn::CallFuncFast1,
+            2 => RuntimeFn::CallFuncFast2,
+            _ => RuntimeFn::CallFuncFast3,
+        });
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             Vec::with_capacity(args.len() + 1);
         call_args.push(callable.into());
@@ -343,7 +336,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .map(|&operand| self.borrowed_operand(&mut custody, operand))
             .collect();
         let (args_ptr, nargs) = self.spill_call_words(&words[1..], "owned_call_args");
-        let owned_fn = self.ensure_runtime_i64_fn("molt_call_func_owned", 4);
+        let owned_fn = self.ensure_runtime_import(RuntimeFn::CallFuncOwned);
         let no_site = self.backend.context.i64_type().const_zero();
         self.surrender_borrowed_owners(&custody, &op.operands, &[]);
         let result = self
@@ -374,7 +367,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> BasicValueEnum<'ctx> {
         let (custody, callable_bits, arg_bits) =
             self.borrow_dynamic_call_operands(callable, arg_ids);
-        let is_func_fn = self.ensure_runtime_i64_fn("molt_is_function_obj", 1);
+        let is_func_fn = self.ensure_runtime_import(RuntimeFn::IsFunctionObj);
         let is_func_bits = self
             .backend
             .builder
@@ -383,7 +376,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value();
-        let truthy_fn = self.ensure_runtime_i64_fn("molt_is_truthy", 1);
+        let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
         let is_func_truthy = self
             .backend
             .builder

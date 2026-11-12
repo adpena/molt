@@ -77,27 +77,12 @@ impl<'ctx> LlvmBackend<'ctx> {
             );
             names_blob.extend_from_slice(bytes);
 
-            // Address-take the callable. Declare it `External` if a prior
-            // runtime-import declaration did not already create it; with opaque
-            // pointers the declared signature is irrelevant for address use.
+            // Address-take the callable. A runtime entry is declared by its
+            // typed identity; a compiled body keeps a placeholder signature,
+            // which opaque pointers make irrelevant for address use.
             let callable_fn = match kind {
-                AppCallableKind::RuntimeCallable => {
-                    module.get_execution_function(name).unwrap_or_else(|| {
-                        assert!(
-                            molt_ir::runtime_callable_abi_generated::runtime_execution_abi(name)
-                                .is_some(),
-                            "LLVM resolver runtime callable `{name}` has no execution ABI"
-                        );
-                        let placeholder_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-                        module.add_function(
-                            &crate::llvm_backend::execution_abi::execution_symbol(name),
-                            crate::llvm_backend::execution_abi::runtime_execution_type(
-                                name,
-                                placeholder_ty,
-                            ),
-                            Some(Linkage::External),
-                        )
-                    })
+                AppCallableKind::RuntimeCallable(function) => {
+                    crate::llvm_backend::runtime_imports::runtime_function(ctx, module, function)
                 }
                 AppCallableKind::CompiledBody => module
                     .get_function(
@@ -426,8 +411,12 @@ mod tests {
         let backend = LlvmBackend::new(&ctx, "app_resolver_smoke");
         let manifest = AppCallableManifest {
             runtime_callables: std::collections::BTreeSet::from([
-                "molt_len".to_string(),
-                "molt_print_obj".to_string(),
+                molt_ir::runtime_fn_generated::RuntimeFn::Len
+                    .symbol()
+                    .to_string(),
+                molt_ir::runtime_fn_generated::RuntimeFn::PrintObj
+                    .symbol()
+                    .to_string(),
             ]),
             compiled_bodies: Default::default(),
         };

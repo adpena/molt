@@ -127,6 +127,20 @@ impl RuntimeCallableSymbols {
         self.symbols.clone()
     }
 
+    /// The admitted runtime entries as a typed set, decoded once here (HF-821
+    /// B1): backends test membership by `RuntimeFn`, never by spelling. A
+    /// symbol outside the generated table is not a runtime entry a backend
+    /// calls, so it has no member. Empty when no admission was selected.
+    pub fn runtime_fn_set(&self) -> RuntimeFnSet {
+        let mut set = RuntimeFnSet::default();
+        for symbol in self.symbols().into_iter().flatten() {
+            if let Some(function) = crate::runtime_fn_generated::RuntimeFn::from_symbol(symbol) {
+                set.insert(function);
+            }
+        }
+        set
+    }
+
     /// Resolver emission requires the selected callable set. The existing
     /// carve-out remains confined to molt-ir's own unit-test configuration;
     /// dependencies and production consumers fail closed without admission.
@@ -150,3 +164,35 @@ impl RuntimeCallableSymbols {
 
 #[cfg(test)]
 mod tests;
+
+/// A set of runtime entries as a dense bitset over `RuntimeFn` indices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeFnSet {
+    bits: Box<[u64]>,
+}
+
+impl Default for RuntimeFnSet {
+    fn default() -> Self {
+        Self {
+            bits: vec![0; crate::runtime_fn_generated::RuntimeFn::COUNT.div_ceil(64)]
+                .into_boxed_slice(),
+        }
+    }
+}
+
+impl RuntimeFnSet {
+    pub fn insert(&mut self, function: crate::runtime_fn_generated::RuntimeFn) {
+        let index = function.index();
+        self.bits[index / 64] |= 1 << (index % 64);
+    }
+
+    pub fn remove(&mut self, function: crate::runtime_fn_generated::RuntimeFn) {
+        let index = function.index();
+        self.bits[index / 64] &= !(1 << (index % 64));
+    }
+
+    pub fn contains(&self, function: crate::runtime_fn_generated::RuntimeFn) -> bool {
+        let index = function.index();
+        self.bits[index / 64] & (1 << (index % 64)) != 0
+    }
+}

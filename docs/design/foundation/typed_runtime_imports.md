@@ -1,7 +1,8 @@
 # Typed runtime imports in the native backends
 
-Status: design, awaiting Goldfish review (2026-11-12). Ledger row: HF-821 (family A, P0 item 2:
-"calls by `RuntimeFn`"). Owner of the implementation: lane `foundation/typed-runtime-imports`.
+Status: implemented (2026-11-12) after one Goldfish round; section 10 records the settled change
+(B1) and where the implementation differs from the text below. Ledger row: HF-821 (family A, P0
+item 2: "calls by `RuntimeFn`"). Lane: `foundation/typed-runtime-imports`.
 
 ## 1. Problem
 
@@ -385,6 +386,37 @@ Follow-ups this design does not do (the integrator assigns them):
 - F2. LLVM module-local helpers (`FrameHelper`, global-slot readers, inline refcount) get typed
   keys instead of formatted names.
 - F3. The WASM backend's import table, if WASM does not move to LLVM.
+
+## 10. As implemented (2026-11-12)
+
+- **B1, settled in review.** No backend file decodes a runtime target from a string
+  (`rg from_symbol runtime/molt-backend-native/src` is empty). The SimpleIR-to-TIR lift decodes once
+  (`molt_ir::tir::call_targets::ingest_runtime_target`, called from the SSA op translation) into
+  `TirOp.runtime` for `call` (role `external_or_runtime`), `builtin_func`, `call_async` (its poll
+  function) and the GPU intrinsics; `call_internal` never gains one. The TIR-to-SimpleIR projection
+  copies the field to the new `OpIR.runtime`, so Cranelift reads the same fact. The two passes that
+  create runtime calls after the lift (`global_slot_sites`, drop-insertion activation) set it
+  themselves. The verifier admits `runtime` only on an op whose own target names that entry. The app
+  resolver manifest decodes its runtime callables in `molt-tir`; the linked profile's callable set
+  is decoded once into `RuntimeFnSet` in `molt-ir`.
+- **Coverage of the signature check (I3).** All 2,839 `RuntimeFn` rows have a parsed runtime export
+  and pass the class check, so the generator check covers every row the deleted
+  `tools/llvm_runtime_abi_audit.py` checked (its fixed table and its boxed facts).
+  `tools/audit_op_kinds.py --check` now reports the generator's refusal.
+- **R3.** The `ptr` vocabulary change regenerated every output byte-identically (304 outputs, no
+  diff). G2 has 18 entries, not the 20 section 1 counted; their 18 new `[[import]]` rows (one new
+  static type, `(i64) -> f64`, for `float_as_f64`) add rows to the WASM import tables only.
+- **Cranelift tables.** `NativeFunctionImports` is a dense table allocated per function (one
+  `PackedOption<FuncRef>` per `RuntimeFn`, about 11 KiB), not the sparse set the skeleton showed;
+  the reuse saves nothing measurable against the per-function Cranelift context.
+- **LLVM.** `runtime_imports::runtime_function` is the one declaration path (lookup by the
+  generated linker symbol, else declare); `LlvmRuntimeImports` caches it by dense index.
+  `get_execution_function` became `get_compiled_function`: it never consults the runtime table.
+- **Not done here (follow-ups).** The calling convention is still chosen by the attached-context
+  symbol suffix in `build_execution_call` (LLVM) and `complete_attached_calls` (Cranelift); the
+  typed `RuntimeCallee` of section 4.3 is not implemented. Task construction still selects a
+  runtime poll key with `runtime_poll_native_key(name)`. Both are compile-time string tests on
+  names the compiler produced; they are the next typed-identity sites in these files.
 
 ## GoldfishContext
 

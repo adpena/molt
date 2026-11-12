@@ -14,7 +14,7 @@ use molt_ir::OpKind;
 use std::{cell::RefCell, collections::HashMap};
 
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::{prepend_execution_context, runtime_execution_type};
+use crate::llvm_backend::execution_abi::prepend_execution_context;
 #[cfg(feature = "llvm")]
 use inkwell::basic_block::BasicBlock;
 #[cfg(feature = "llvm")]
@@ -24,21 +24,14 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue, PhiValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_fn_generated::{
-    RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn, runtime_boxed_abi, runtime_raw_abi,
-};
+use molt_ir::runtime_fn_generated::{RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn};
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::runtime_imports::{
-    declare_conservative_runtime_function, declare_fixed_runtime_function, is_runtime_import_abi,
-    runtime_import_return_abi,
-};
+use crate::llvm_backend::runtime_imports::runtime_function;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
-#[cfg(feature = "llvm")]
-use crate::runtime_import_abi::RuntimeReturnAbi;
 #[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
 #[cfg(feature = "llvm")]
@@ -260,14 +253,9 @@ fn heap_int_box_with_builder<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
-    let from_i64_fn = module
-        .get_execution_function("molt_int_from_i64")
-        .unwrap_or_else(|| {
-            declare_fixed_runtime_function(context, module, "molt_int_from_i64")
-                .expect("integer boxer has a fixed runtime ABI")
-        });
+    let from_i64_fn = runtime_function(context, module, RuntimeFn::IntFromI64);
     builder
-        .build_execution_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+        .build_execution_call(from_i64_fn, &[raw.into()], "int_from_i64")
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
@@ -439,12 +427,7 @@ fn unbox_i64_with_builder<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
-    let runtime = module
-        .get_execution_function("molt_int_as_i64")
-        .unwrap_or_else(|| {
-            declare_fixed_runtime_function(context, module, "molt_int_as_i64")
-                .expect("integer extractor has a fixed runtime ABI")
-        });
+    let runtime = runtime_function(context, module, RuntimeFn::IntAsI64);
     builder
         .build_execution_call(runtime, &[raw.into()], "unbox_i64")
         .unwrap()
@@ -847,7 +830,7 @@ pub fn declare_tir_function<'ctx>(
     // If not, create a new function.  This avoids LLVM appending `.1` to
     // the name when a declaration already exists.
 
-    let llvm_fn = if let Some(existing) = backend.module.get_execution_function(&func.name) {
+    let llvm_fn = if let Some(existing) = backend.module.get_compiled_function(&func.name) {
         let existing = require_llvm_function_type(&func.name, existing, fn_ty);
         // Verify it's just a declaration (no basic blocks yet).
         if existing.count_basic_blocks() == 0 {
@@ -897,7 +880,7 @@ pub fn declare_extern_tir_function<'ctx>(
             .fn_type(&param_llvm_types, false),
     };
     let fn_ty = prepend_execution_context(logical_fn_ty);
-    let llvm_fn = if let Some(existing) = backend.module.get_execution_function(&func.name) {
+    let llvm_fn = if let Some(existing) = backend.module.get_compiled_function(&func.name) {
         let existing = require_llvm_function_type(&func.name, existing, fn_ty);
         assert_eq!(
             existing.count_basic_blocks(),
@@ -934,15 +917,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .push(format!("{}: {}", self.func.name, message.into()));
     }
 
-    fn record_removed_runtime_delegate(
-        &mut self,
-        op: &TirOp,
-        runtime_symbol: &str,
-        structural_path: &str,
-    ) {
+    fn record_unlowered_structured_op(&mut self, op: &TirOp, structural_path: &str) {
         self.record_fatal(format!(
-            "{:?} reached LLVM lowering through removed runtime delegate `{runtime_symbol}`; \
-             {structural_path}",
+            "{:?} reached LLVM lowering with no runtime delegate; {structural_path}",
             op.opcode
         ));
         let undef: BasicValueEnum<'ctx> = self.backend.context.i64_type().get_undef().into();

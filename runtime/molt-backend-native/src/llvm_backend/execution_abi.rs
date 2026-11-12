@@ -6,15 +6,8 @@ use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, FunctionType};
 use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue};
 use molt_ir::runtime_callable_abi_generated::{
-    ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
-    runtime_execution_abi,
+    ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, compiled_execution_symbol,
 };
-
-pub(crate) fn execution_symbol(logical: &str) -> String {
-    runtime_execution_abi(logical)
-        .map(|abi| abi.physical_symbol.to_owned())
-        .unwrap_or_else(|| compiled_execution_symbol(logical))
-}
 
 pub(crate) fn prepend_execution_context<'ctx>(logical: FunctionType<'ctx>) -> FunctionType<'ctx> {
     let context = logical.get_context();
@@ -28,18 +21,6 @@ pub(crate) fn prepend_execution_context<'ctx>(logical: FunctionType<'ctx>) -> Fu
     }
 }
 
-pub(crate) fn runtime_execution_type<'ctx>(
-    name: &str,
-    logical: FunctionType<'ctx>,
-) -> FunctionType<'ctx> {
-    let abi = runtime_execution_abi(name)
-        .unwrap_or_else(|| panic!("LLVM runtime import `{name}` has no execution ABI"));
-    match abi.context {
-        RuntimeExecutionContext::Attached => prepend_execution_context(logical),
-        RuntimeExecutionContext::Boundary => logical,
-    }
-}
-
 pub(crate) fn name_execution_context(function: FunctionValue<'_>) {
     function
         .get_first_param()
@@ -49,7 +30,10 @@ pub(crate) fn name_execution_context(function: FunctionValue<'_>) {
 }
 
 pub(crate) trait ExecutionModuleExt<'ctx> {
-    fn get_execution_function(&self, logical: &str) -> Option<FunctionValue<'ctx>>;
+    /// A compiled (application or module-local) function by its logical name.
+    /// Runtime entries are never looked up here: they are declared by typed
+    /// identity through `runtime_imports`.
+    fn get_compiled_function(&self, logical: &str) -> Option<FunctionValue<'ctx>>;
     fn add_compiled_function(
         &self,
         logical: &str,
@@ -59,8 +43,8 @@ pub(crate) trait ExecutionModuleExt<'ctx> {
 }
 
 impl<'ctx> ExecutionModuleExt<'ctx> for Module<'ctx> {
-    fn get_execution_function(&self, logical: &str) -> Option<FunctionValue<'ctx>> {
-        self.get_function(&execution_symbol(logical))
+    fn get_compiled_function(&self, logical: &str) -> Option<FunctionValue<'ctx>> {
+        self.get_function(&compiled_execution_symbol(logical))
     }
 
     fn add_compiled_function(

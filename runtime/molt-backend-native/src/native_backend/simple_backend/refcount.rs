@@ -7,19 +7,28 @@ use molt_codegen_abi::word::{WordBuilder, WordComparison};
 /// Function-local imports and the admission belonging to this exact body.
 /// Keeping the invocation fact here makes helpers consume the entry's value
 /// rather than rediscovering attachment or borrowing another function's fact.
-#[derive(Default)]
 pub(crate) struct NativeFunctionImports {
-    refs: BTreeMap<&'static str, FuncRef>,
+    /// This body's reference to each runtime entry, by dense `RuntimeFn` index.
+    refs: Box<[cranelift_codegen::packed_option::PackedOption<FuncRef>]>,
     refcount_admission: Option<Value>,
 }
 
+impl Default for NativeFunctionImports {
+    fn default() -> Self {
+        Self {
+            refs: vec![Default::default(); RuntimeFn::COUNT].into_boxed_slice(),
+            refcount_admission: None,
+        }
+    }
+}
+
 impl NativeFunctionImports {
-    pub(crate) fn get(&self, name: &str) -> Option<&FuncRef> {
-        self.refs.get(name)
+    pub(crate) fn get(&self, function: RuntimeFn) -> Option<FuncRef> {
+        self.refs[function.index()].expand()
     }
 
-    pub(crate) fn insert(&mut self, name: &'static str, value: FuncRef) {
-        self.refs.insert(name, value);
+    pub(crate) fn insert(&mut self, function: RuntimeFn, value: FuncRef) {
+        self.refs[function.index()] = value.into();
     }
 
     pub(crate) fn set_refcount_admission(&mut self, value: Value) {

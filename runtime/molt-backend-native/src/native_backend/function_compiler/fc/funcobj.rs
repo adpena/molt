@@ -175,7 +175,7 @@ fn emit_frame_home_release(
 #[allow(clippy::too_many_arguments)]
 fn box_frame_home_raw_int(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     sealed_blocks: &mut BTreeSet<Block>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -218,13 +218,8 @@ fn box_frame_home_raw_int(
     switch_to_block_materialized(builder, slow);
     seal_block_once(builder, sealed_blocks, slow);
     let home = builder.ins().iadd_imm_s(homes, i64::from(offset));
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        "molt_frame_home_load",
-        &[types::I64],
-        &[types::I64],
-    );
+    let callee =
+        SimpleBackend::import_runtime_func_id_split(module, import_ids, RuntimeFn::FrameHomeLoad);
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let call = builder.ins().call(local_callee, &[home]);
     let loaded = builder.inst_results(call)[0];
@@ -254,7 +249,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     rc_authority: NativeRcAuthority,
     in_loop: bool,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -278,10 +273,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -307,32 +299,24 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let Some(func_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let abi = molt_ir::runtime_callable_abi_generated::runtime_callable_abi(func_name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "builtin_func target `{func_name}` has no runtime callable ABI; use func_new for compiled functions"
-                    )
-                });
+            // The typed runtime entry decoded at TIR ingest (HF-821 B1).
+            let runtime = op.runtime.unwrap_or_else(|| {
+                panic!(
+                    "builtin_func target `{func_name}` has no runtime callable ABI; use func_new for compiled functions"
+                )
+            });
+            let trampoline_abi = runtime.callable_trampoline().unwrap_or_else(|| {
+                panic!("builtin_func target `{func_name}` has no runtime callable ABI")
+            });
             let claimed_arity = op.value.unwrap_or(0);
             assert_eq!(
                 usize::try_from(claimed_arity).ok(),
-                Some(abi.arity),
+                Some(runtime.params()),
                 "builtin_func arity mismatch for `{func_name}`: manifest requires {}",
-                abi.arity,
+                runtime.params(),
             );
-            let arity = abi.arity;
-            let mut func_sig = module.make_signature();
-            for _ in 0..arity {
-                func_sig.params.push(AbiParam::new(types::I64));
-            }
-            func_sig.returns.push(AbiParam::new(types::I64));
-            let func_id = declare_function_object_target(
-                &mut *module,
-                OpKind::BuiltinFunc,
-                func_name,
-                Linkage::Import,
-                &func_sig,
-            );
+            let arity = runtime.params();
+            let func_id = import_ids.func_id(&mut *module, runtime);
             declared_func_arities.insert(func_name.clone(), arity);
             let func_ref = module.declare_func_in_func(func_id, builder.func);
             let func_addr = builder.ins().func_addr(types::I64, func_ref);
@@ -341,11 +325,12 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *trampoline_ids,
                 &mut *import_ids,
                 func_name,
+                Some(runtime),
                 Linkage::Import,
                 TrampolineSpec {
                     arity,
                     has_closure: false,
-                    kind: TrampolineKind::from(abi.trampoline_abi),
+                    kind: TrampolineKind::from(trampoline_abi),
                     closure_size: 0,
                     target_has_ret: true,
                 },
@@ -367,24 +352,20 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 )
                 .map(|value| value.0)
             {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_func_new_builtin_named",
-                    &[types::I64, types::I64, types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::FuncNewBuiltinNamed,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 builder
                     .ins()
                     .call(local_callee, &[name_bits, func_addr, tramp_addr, arity_val])
             } else {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_func_new_builtin",
-                    &[types::I64, types::I64, types::I64],
-                    &[types::I64],
+                    RuntimeFn::FuncNewBuiltin,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 builder
@@ -445,6 +426,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *trampoline_ids,
                 &mut *import_ids,
                 func_name,
+                None,
                 Linkage::Export,
                 TrampolineSpec {
                     arity: arity as usize,
@@ -466,12 +448,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             };
             let custody_val = builder.ins().iconst(types::I64, entry_custody as i64);
 
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_func_new",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::FuncNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(
@@ -557,6 +537,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *trampoline_ids,
                 &mut *import_ids,
                 func_name,
+                None,
                 Linkage::Export,
                 TrampolineSpec {
                     arity: arity as usize,
@@ -578,12 +559,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             };
             let custody_val = builder.ins().iconst(types::I64, entry_custody as i64);
 
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_func_new_closure",
-                &[types::I64, types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::FuncNewClosure,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(
@@ -698,22 +677,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 representation_plan,
             )
             .expect("kwonly not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_code_new",
-                &[
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                ],
-                &[types::I64],
+                RuntimeFn::CodeNew,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(
@@ -782,12 +749,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 module,
                 builder,
             );
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_code_slot_set",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::CodeSlotSet,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder
@@ -845,12 +810,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             );
             let func_ref = module.declare_func_in_func(func_id, builder.func);
             let func_addr = builder.ins().func_addr(types::I64, func_ref);
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_stateful_locals_register",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::StatefulLocalsRegister,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder
@@ -860,12 +823,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         OpKind::CodeSlotsInit => {
             let count = op.value.expect("admitted code_slots_init count");
             let count_val = builder.ins().iconst(types::I64, count);
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_code_slots_init",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::CodeSlotsInit,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[count_val]);
@@ -1058,12 +1019,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             switch_to_block_materialized(&mut *builder, slow);
             seal_block_once(&mut *builder, &mut *sealed_blocks, slow);
             let home = builder.ins().iadd_imm_s(homes, i64::from(offset));
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_frame_home_load",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FrameHomeLoad,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[home]);
@@ -1088,12 +1047,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let home = builder
                 .ins()
                 .iadd_imm_s(homes, i64::from(frame_home_offset(op)));
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_frame_home_take",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FrameHomeTake,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[home]);
@@ -1142,12 +1099,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             // `locals()`, `vars()`, `dir()`: the runtime's one authority reads
             // the executing frame's bindings; the operand pairs are for
             // targets that build the dict themselves.
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_locals_builtin",
-                &[],
-                &[types::I64],
+                RuntimeFn::LocalsBuiltin,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -1174,12 +1129,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     .expect("frame context operand not found")
                 })
                 .collect();
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_frame_context_set",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::FrameContextSet,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             // ABI returns borrowed None; the typed service has no SSA result
@@ -1204,12 +1157,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     .expect("Arg not found")
                 })
                 .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_frame_locals_set",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FrameLocalsSet,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[dict_bits]);
@@ -1244,12 +1195,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             }
         }
         OpKind::Missing => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_missing",
-                &[],
-                &[types::I64],
+                RuntimeFn::Missing,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -1271,12 +1220,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 representation_plan,
             )
             .expect("Func not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_function_closure_bits",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FunctionClosureBits,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits]);
@@ -1300,7 +1247,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
 pub(in crate::native_backend::function_compiler) fn handle_gpu_intrinsic_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
@@ -1312,21 +1259,19 @@ pub(in crate::native_backend::function_compiler) fn handle_gpu_intrinsic_op(
         | OpKind::GpuGridDim
         | OpKind::GpuBarrier => {
             let symbol = match op.kind {
-                OpKind::GpuThreadId => "molt_gpu_thread_id",
-                OpKind::GpuBlockId => "molt_gpu_block_id",
-                OpKind::GpuBlockDim => "molt_gpu_block_dim",
-                OpKind::GpuGridDim => "molt_gpu_grid_dim",
-                OpKind::GpuBarrier => "molt_gpu_barrier",
+                OpKind::GpuThreadId => RuntimeFn::GpuThreadId,
+                OpKind::GpuBlockId => RuntimeFn::GpuBlockId,
+                OpKind::GpuBlockDim => RuntimeFn::GpuBlockDim,
+                OpKind::GpuGridDim => RuntimeFn::GpuGridDim,
+                OpKind::GpuBarrier => RuntimeFn::GpuBarrier,
                 _ => unreachable!(),
             };
-            let local_callee = import_func_ref(
+            let local_callee = import_runtime_func_ref(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
                 symbol,
-                &[],
-                &[types::I64],
             );
             let call = builder.ins().call(local_callee, &[]);
             let res = builder.inst_results(call)[0];

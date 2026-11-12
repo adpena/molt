@@ -28,7 +28,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -40,10 +40,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -65,12 +62,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
     };
     match op.kind {
         OpKind::ExceptionPush => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_push",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionPush,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -80,12 +75,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
             }
         }
         OpKind::ExceptionPop => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_pop",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionPop,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -95,12 +88,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
             }
         }
         OpKind::ExceptionStackClear => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_stack_clear",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionStackClear,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -110,12 +101,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
             }
         }
         OpKind::ExceptionStackDepth => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_stack_depth",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionStackDepth,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -125,12 +114,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
             }
         }
         OpKind::ExceptionStackEnter => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_stack_enter",
-                &[],
-                &[types::I64],
+                RuntimeFn::ExceptionStackEnter,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -152,12 +139,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 representation_plan,
             )
             .expect("exception baseline not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_stack_exit",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionStackExit,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*prev]);
@@ -181,12 +166,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 representation_plan,
             )
             .expect("exception depth not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_exception_stack_set_depth",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ExceptionStackSetDepth,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*depth]);

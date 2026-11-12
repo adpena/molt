@@ -22,10 +22,11 @@ impl CallArgumentForm {
         }
     }
 
-    pub const fn runtime_constructor(self) -> &'static str {
+    pub const fn runtime_constructor(self) -> crate::runtime_fn_generated::RuntimeFn {
+        use crate::runtime_fn_generated::RuntimeFn;
         match self {
-            Self::Stack => "molt_callargs_new",
-            Self::Expanded => "molt_callargs_new_expanded",
+            Self::Stack => RuntimeFn::CallargsNew,
+            Self::Expanded => RuntimeFn::CallargsNewExpanded,
         }
     }
 }

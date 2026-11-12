@@ -29,7 +29,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -41,10 +41,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -73,14 +70,12 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             let self_ptr = compiled_argument(builder, 0);
             // State may live inline or in the stable aux sidecar — call through
             // the C API instead of an inline memory load.
-            let get_state_ref = import_func_ref(
+            let get_state_ref = import_runtime_func_ref(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                "molt_obj_get_state",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::ObjGetState,
             );
             let state_call = builder.ins().call(get_state_ref, &[self_ptr]);
             let state = builder.inst_results(state_call)[0];
@@ -107,14 +102,12 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             let state = op.value.expect("state_set requires its state");
             let self_ptr = compiled_argument(builder, 0);
             let state_val = builder.ins().iconst(types::I64, state);
-            let set_state = import_func_ref(
+            let set_state = import_runtime_func_ref(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                "molt_obj_set_state",
-                &[types::I64, types::I64],
-                &[],
+                RuntimeFn::ObjSetState,
             );
             builder.ins().call(set_state, &[self_ptr, state_val]);
         }
@@ -156,14 +149,12 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             );
             let self_ptr = compiled_argument(builder, 0);
             let future_ptr = unbox_ptr_value(&mut *builder, word);
-            let sleep_register = import_func_ref(
+            let sleep_register = import_runtime_func_ref(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                "molt_sleep_register",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::SleepRegister,
             );
             builder.ins().call(sleep_register, &[self_ptr, future_ptr]);
         }

@@ -18,7 +18,7 @@ pub(in crate::native_backend::function_compiler) fn handle_slice_op(
     op_idx: usize,
     func_name: &str,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -29,8 +29,8 @@ pub(in crate::native_backend::function_compiler) fn handle_slice_op(
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
     let (symbol, arity) = match op.kind {
-        OpKind::DelIndex => ("molt_del_index", 2),
-        OpKind::Slice => ("molt_slice", 3),
+        OpKind::DelIndex => (RuntimeFn::DelIndex, 2),
+        OpKind::Slice => (RuntimeFn::Slice, 3),
         OpKind::SliceNew => {
             emit_fixed_aggregate_constructor(
                 op,

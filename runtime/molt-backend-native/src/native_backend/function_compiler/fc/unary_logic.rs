@@ -33,7 +33,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     op: &OpIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -64,10 +64,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -113,12 +110,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 representation_plan,
             )
             .expect("RHS not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_is",
-                &[types::I64, types::I64],
-                &[types::I64],
+                RuntimeFn::Is,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -168,12 +163,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 not_raw = Some(builder.ins().bxor_imm_u(bit0, 1));
                 box_bool_value(&mut *builder, is_zero, nbc)
             } else {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_not",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::Not,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let val = var_get_boxed_overflow_safe(
@@ -257,12 +250,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         representation_plan,
                     )
                     .expect("Value not found");
-                    let callee = SimpleBackend::import_func_id_split(
+                    let callee = SimpleBackend::import_runtime_func_id_split(
                         &mut *module,
                         &mut *import_ids,
-                        "molt_neg",
-                        &[types::I64],
-                        &[types::I64],
+                        RuntimeFn::Neg,
                     );
                     let local_callee = module.declare_func_in_func(callee, builder.func);
                     let fast_block = builder.create_block();
@@ -314,12 +305,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     representation_plan,
                 )
                 .expect("Value not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_neg",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::Neg,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*val]);
@@ -388,12 +377,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     representation_plan,
                 )
                 .expect("Value not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_pos",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::Pos,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*val]);
@@ -410,12 +397,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     representation_plan,
                 )
                 .expect("Value not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_pos",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::Pos,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*val]);
@@ -468,12 +453,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         representation_plan,
                     )
                     .expect("Value not found");
-                    let callee = SimpleBackend::import_func_id_split(
+                    let callee = SimpleBackend::import_runtime_func_id_split(
                         &mut *module,
                         &mut *import_ids,
-                        "molt_abs_builtin",
-                        &[types::I64],
-                        &[types::I64],
+                        RuntimeFn::AbsBuiltin,
                     );
                     let local_callee = module.declare_func_in_func(callee, builder.func);
                     let fast_block = builder.create_block();
@@ -527,12 +510,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     representation_plan,
                 )
                 .expect("Value not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_abs_builtin",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::AbsBuiltin,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*val]);
@@ -590,12 +571,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     // being truncated by the trusted unbox. `~x` of an
                     // inline int never overflows the inline range, so no
                     // fits-inline check is needed on the fast path.
-                    let invert_callee = SimpleBackend::import_func_id_split(
+                    let invert_callee = SimpleBackend::import_runtime_func_id_split(
                         &mut *module,
                         &mut *import_ids,
-                        "molt_invert",
-                        &[types::I64],
-                        &[types::I64],
+                        RuntimeFn::Invert,
                     );
                     let invert_local_callee =
                         module.declare_func_in_func(invert_callee, builder.func);
@@ -638,12 +617,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     representation_plan,
                 )
                 .expect("Value not found");
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_invert",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::Invert,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*val]);
@@ -737,12 +714,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 let is_nonzero = builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0);
                 (box_bool_value(&mut *builder, is_nonzero, nbc), Some(bit0))
             } else {
-                let callee = SimpleBackend::import_func_id_split(
+                let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_is_truthy",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::IsTruthy,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let val = var_get_boxed_overflow_safe(
@@ -827,12 +802,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0)
             } else {
                 // Unknown type: GIL-wrapped truthy check.
-                let truthy = SimpleBackend::import_func_id_split(
+                let truthy = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_is_truthy",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::IsTruthy,
                 );
                 let truthy_ref = module.declare_func_in_func(truthy, builder.func);
                 let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
@@ -910,12 +883,10 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0)
             } else {
                 // Unknown type: GIL-wrapped truthy check.
-                let truthy = SimpleBackend::import_func_id_split(
+                let truthy = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_is_truthy",
-                    &[types::I64],
-                    &[types::I64],
+                    RuntimeFn::IsTruthy,
                 );
                 let truthy_ref = module.declare_func_in_func(truthy, builder.func);
                 let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
@@ -961,18 +932,19 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             )
             .expect("Item not found");
             let func_name = match representation_plan.name_container_kind(&args[0]) {
-                Some(ContainerKind::Set) => "molt_set_contains",
-                Some(ContainerKind::Dict) => "molt_dict_contains",
-                Some(ContainerKind::List) => "molt_list_contains",
-                Some(ContainerKind::Str) => "molt_str_contains",
-                _ => "molt_contains",
+                Some(ContainerKind::Set) => RuntimeFn::SetContains,
+                Some(ContainerKind::Dict) => RuntimeFn::DictContains,
+                Some(ContainerKind::List) => RuntimeFn::ListContains,
+                Some(ContainerKind::Str) => RuntimeFn::StrContains,
+                _ => RuntimeFn::Contains,
             };
-            let mut sig = module.make_signature();
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-            let callee = declare_runtime_execution_function(module, func_name, &sig).unwrap();
-            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let local_callee = import_runtime_func_ref(
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+                func_name,
+            );
             let call = builder.ins().call(local_callee, &[*container, *item]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {

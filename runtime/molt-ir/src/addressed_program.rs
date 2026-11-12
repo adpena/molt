@@ -445,6 +445,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         class_definition,
         runtime_requirement_bits: _,
         passes_execution_context: _,
+        runtime: _,
         async_work_poll: _,
         argument_custody,
         type_hint,

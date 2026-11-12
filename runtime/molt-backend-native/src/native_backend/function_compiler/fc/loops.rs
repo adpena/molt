@@ -79,7 +79,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     op_idx: usize,
     func_ir: &FunctionIR,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -113,10 +113,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     let var_is_bool =
         |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_bool_scalar(name);
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -857,12 +854,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         representation_plan,
                     )
                     .expect("Loop break cond not found");
-                    let callee = SimpleBackend::import_func_id_split(
+                    let callee = SimpleBackend::import_runtime_func_id_split(
                         &mut *module,
                         &mut *import_ids,
-                        "molt_is_truthy",
-                        &[types::I64],
-                        &[types::I64],
+                        RuntimeFn::IsTruthy,
                     );
                     let local_callee = module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*cond]);
@@ -1020,12 +1015,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         representation_plan,
                     )
                     .expect("Loop break cond not found");
-                    let callee = SimpleBackend::import_func_id_split(
+                    let callee = SimpleBackend::import_runtime_func_id_split(
                         &mut *module,
                         &mut *import_ids,
-                        "molt_is_truthy",
-                        &[types::I64],
-                        &[types::I64],
+                        RuntimeFn::IsTruthy,
                     );
                     let local_callee = module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*cond]);

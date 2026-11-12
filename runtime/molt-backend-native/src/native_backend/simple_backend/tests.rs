@@ -160,7 +160,7 @@ fn attached_arguments(function: &Function, instruction: Inst) -> &[Value] {
 
 fn declared_import_ids(module: &dyn Module) -> BTreeMap<String, FuncId> {
     // Direct runtime calls and helper calls share the module's declarations;
-    // the helper cache contains only calls made through import_func_ref.
+    // the helper cache contains only calls made through import_runtime_func_ref.
     module
         .declarations()
         .get_functions()

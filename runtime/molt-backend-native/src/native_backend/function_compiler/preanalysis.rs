@@ -56,39 +56,23 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) use crate::tir::passes::typed_slot_access::TypedSlotStoreMode as FieldStoreMode;
 
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn import_func_ref(
-    module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    builder: &mut FunctionBuilder,
-    local_refs: &mut NativeFunctionImports,
-    name: &'static str,
-    params: &[types::Type],
-    returns: &[types::Type],
-) -> FuncRef {
-    let func_id = SimpleBackend::import_func_id_split(module, import_ids, name, params, returns);
-    if let Some(func_ref) = local_refs.get(name) {
-        return *func_ref;
-    }
-    let func_ref = module.declare_func_in_func(func_id, builder.func);
-    local_refs.insert(name, func_ref);
-    func_ref
-}
-
+/// The one Cranelift path from a runtime entry to a callable reference in
+/// this body: the module declaration, then this function's reference, each
+/// cached by dense `RuntimeFn` index.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn import_runtime_func_ref(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder,
     local_refs: &mut NativeFunctionImports,
-    function: molt_ir::runtime_fn_generated::RuntimeFn,
+    function: RuntimeFn,
 ) -> FuncRef {
-    let func_id = SimpleBackend::import_runtime_func_id_split(module, import_ids, function);
-    if let Some(func_ref) = local_refs.get(function.symbol()) {
-        return *func_ref;
+    if let Some(func_ref) = local_refs.get(function) {
+        return func_ref;
     }
+    let func_id = import_ids.func_id(module, function);
     let func_ref = module.declare_func_in_func(func_id, builder.func);
-    local_refs.insert(function.symbol(), func_ref);
+    local_refs.insert(function, func_ref);
     func_ref
 }
 
@@ -102,7 +86,7 @@ pub(in crate::native_backend::function_compiler) fn declare_function_object_targ
 ) -> cranelift_module::FuncId {
     let expected_params = sig.params.len();
     let returns_value = !sig.returns.is_empty();
-    declare_python_execution_function(module, func_name, linkage, sig).unwrap_or_else(|err| {
+    declare_compiled_execution_function(module, func_name, linkage, sig).unwrap_or_else(|err| {
         panic!(
             "{op_kind} declaration mismatch for `{func_name}`: expected \
                  {expected_params} parameter(s), returns={returns_value}: {err}"
@@ -122,7 +106,7 @@ pub(in crate::native_backend::function_compiler) fn require_static_target_symbol
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_get(
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -151,14 +135,12 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
     seal_block_once(builder, sealed_blocks, load_block);
     let obj_ptr = unbox_ptr_value(builder, obj_bits);
     let offset = builder.ins().iconst(types::I64, offset_bytes);
-    let callee = import_func_ref(
+    let callee = import_runtime_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
-        "molt_object_field_get_ptr",
-        &[types::I64, types::I64],
-        &[types::I64],
+        RuntimeFn::ObjectFieldGetPtr,
     );
     let call = builder.ins().call(callee, &[obj_ptr, offset]);
     let result = builder.inst_results(call)[0];

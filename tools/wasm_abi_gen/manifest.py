@@ -49,6 +49,17 @@ WASM_VAL_TYPES = {
     "f32": "F32",
     "f64": "F64",
 }
+#: Machine value types an [[import]] signature may declare. `ptr` is a target
+#: pointer: wasm32 `i32`, the native pointer elsewhere. Every other spelling is
+#: the same value type on every target.
+MACHINE_VAL_TYPES = frozenset({*WASM_VAL_TYPES, "ptr"})
+
+
+def wasm_val_type(machine: str) -> str:
+    """The wasm32 value type of one machine value type."""
+    return "i32" if machine == "ptr" else machine
+
+
 STRIP_IMPORT_CATEGORIES = {
     "essential",
     "io_stdout",
@@ -1067,10 +1078,12 @@ RUNTIME_FN_FORMS = ("boxed", "raw_call", "helper")
 
 
 #: What a runtime entry may do, for the optimizer (HF-821). Absent: the impure
-#: floor (may raise, may call Python, may write anything). A reader's answer can
-#: change between calls (a function's fields are mutable), so neither value
-#: lets two calls be merged.
+#: floor (may raise, may call Python, may write anything). `may_raise`: may
+#: raise and write runtime state, never calls Python code, always returns. A
+#: reader's answer can change between calls (a function's fields are mutable),
+#: so no value lets two calls be merged.
 RUNTIME_IMPORT_EFFECTS = {
+    "may_raise": "MayRaise",
     "nothrow_read": "NothrowRead",
     "nothrow_write": "NothrowWrite",
 }
@@ -1093,16 +1106,14 @@ def runtime_import_effects(data: dict) -> dict[str, str]:
 
 
 def runtime_fn_specs(data: dict) -> list[dict]:
-    """One typed identity per runtime entry compiled code may call by name.
+    """One typed identity per runtime entry compiled code may call.
 
     Every backend names a runtime entry by this identity instead of spelling
-    its symbol (HF-384, HF-485). The rows are the boxed calls (object operands,
-    runtime_boxed_call_specs) and every import whose machine signature is all
-    i64 words with at most one i64 result, the same on wasm32 and on 64-bit
-    native targets. An import with a wasm32 pointer or length word proves no
-    native signature, so it gets no identity here.
-
-    Each row carries its word arity, its return contract (one of
+    its symbol (HF-384, HF-485, HF-821). The rows are the boxed calls (object
+    operands, runtime_boxed_call_specs) and every [[import]] row with a runtime
+    export. Each row carries its machine signature from the row's declared
+    machine types (`machine_params`, `machine_result`: `i64`, `i32`, `f64` or
+    `ptr`, a target pointer), its return contract (one of
     RUNTIME_RETURN_CONTRACTS, from runtime_import_return_specs), and its form:
     "boxed" (a generic call target whose operands and result are Python
     values), "raw_call" (a generic call target whose raw result is bound
@@ -1120,17 +1131,17 @@ def runtime_fn_specs(data: dict) -> list[dict]:
         rows[spec["runtime_name"]] = {
             "runtime_name": spec["runtime_name"],
             "params": spec["arity"],
+            "machine_params": ["i64"] * spec["arity"],
+            "machine_result": None if result == "void" else "i64",
             "result": result,
             "form": "boxed",
         }
     for entry in data["import"]:
-        signature = data["static_type"][entry["type"]]
-        if any(param != "i64" for param in signature["params"]) or signature[
-            "results"
-        ] not in ([], ["i64"]):
-            continue
+        signature = data["machine_static_type"][entry["type"]]
         symbol = _runtime_export_name_or_raise(entry)
-        params = len(signature["params"])
+        machine_params = list(signature["params"])
+        machine_result = signature["results"][0] if signature["results"] else None
+        params = len(machine_params)
         result = contracts[entry["name"]]
         form = "raw_call" if symbol in raw else "helper"
         prior = rows.get(symbol)
@@ -1138,15 +1149,21 @@ def runtime_fn_specs(data: dict) -> list[dict]:
             rows[symbol] = {
                 "runtime_name": symbol,
                 "params": params,
+                "machine_params": machine_params,
+                "machine_result": machine_result,
                 "result": result,
                 "form": form,
             }
             continue
-        if form == "raw_call" or (prior["params"], prior["result"]) != (params, result):
+        if form == "raw_call" or (
+            prior["machine_params"],
+            prior["machine_result"],
+            prior["result"],
+        ) != (machine_params, machine_result, result):
             raise WasmAbiManifestError(
                 f"runtime entry {symbol!r} has conflicting call contracts: "
-                f"{prior['form']} {prior['params']} -> {prior['result']} and "
-                f"{form} {params} -> {result}"
+                f"{prior['form']} {prior['machine_params']} -> {prior['result']} and "
+                f"{form} {machine_params} -> {result}"
             )
     if len(rows) > 0xFFFF:
         raise WasmAbiManifestError("RuntimeFn identities exceed the u16 index")
@@ -1162,7 +1179,47 @@ def runtime_fn_specs(data: dict) -> list[dict]:
             )
     for symbol, row in rows.items():
         row["effects"] = effects.get(symbol)
+    _check_runtime_fn_machine_signatures(rows)
     return [rows[symbol] for symbol in sorted(rows)]
+
+
+def _check_runtime_fn_machine_signatures(rows: dict[str, dict]) -> None:
+    """Refuse a RuntimeFn whose declared machine signature differs from every
+    native signature of the runtime export it names (I3). A wrong class would
+    truncate an address or misread a result at every call. Entries a source
+    macro produces have no parsed signature here; the link proves their names.
+    """
+    exports = _rust_export_signatures(include_native=True, machine=True)
+    mismatches: list[str] = []
+    for symbol, row in sorted(rows.items()):
+        signatures = exports.get(symbol)
+        if not signatures:
+            continue
+        declared = (
+            tuple(row["machine_params"]),
+            row["machine_result"] or "void",
+        )
+        if declared not in signatures:
+            observed = "; ".join(
+                f"({', '.join(params)}) -> {result}"
+                for params, result in sorted(signatures)
+            )
+            mismatches.append(
+                f"{symbol}: declared ({', '.join(declared[0])}) -> {declared[1]}, "
+                f"runtime {observed}"
+            )
+    if mismatches:
+        raise WasmAbiManifestError(
+            "RuntimeFn machine signatures differ from their runtime exports: "
+            + "; ".join(mismatches)
+        )
+
+
+def runtime_fn_signature_coverage(data: dict) -> tuple[int, int]:
+    """(RuntimeFn rows, rows whose runtime export signature the check read)."""
+    exports = _rust_export_signatures(include_native=True, machine=True)
+    specs = runtime_fn_specs(data)
+    return len(specs), sum(1 for spec in specs if spec["runtime_name"] in exports)
 
 
 def _runtime_export_name_or_raise(entry: dict) -> str:
@@ -1378,7 +1435,13 @@ def _rust_fn_cfg_allows_wasm(text: str, fn_start: int) -> bool:
     return True
 
 
-def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
+def _normalize_rust_wasm_scalar(
+    typ: str, aliases: dict[str, str], *, machine: bool = False
+) -> str:
+    """Project one Rust ABI type onto its wasm32 value type, or with
+    `machine` onto its machine class, where a pointer or pointer-width integer
+    is `ptr` (the RuntimeFn signature vocabulary)."""
+    pointer = "ptr" if machine else "i32"
     typ = typ.strip().removeprefix("mut ").strip()
     seen: set[str] = set()
     while typ in aliases and typ not in seen:
@@ -1392,7 +1455,7 @@ def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
         # Nullable C function pointers retain the C pointer ABI. No other
         # optional Rust representation is admitted as a scalar projection.
         if 'extern "C" fn' in callback:
-            return "i32"
+            return pointer
     typ = typ.strip().removeprefix("std::os::raw::")
     if (
         typ.startswith("*const ")
@@ -1400,9 +1463,11 @@ def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
         or 'extern "C" fn' in typ
         or 'unsafe extern "C" fn' in typ
     ):
-        return "i32"
+        return pointer
     if typ in {"u64", "i64"}:
         return "i64"
+    if machine and typ in {"usize", "isize"}:
+        return pointer
     if typ in {
         "u8",
         "i8",
@@ -1425,9 +1490,9 @@ def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
     return typ
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _rust_export_signatures(
-    *, include_native: bool = False
+    *, include_native: bool = False, machine: bool = False
 ) -> dict[str, set[tuple[tuple[str, ...], str]]]:
     from tools.wasm_abi_gen.attached_entries import functions, split_params, BODY_SUFFIX
 
@@ -1468,10 +1533,14 @@ def _rust_export_signatures(
                     )
                 params = params[1:]
             normalized = tuple(
-                _normalize_rust_wasm_scalar(p.rsplit(":", 1)[-1].strip(), aliases)
+                _normalize_rust_wasm_scalar(
+                    p.rsplit(":", 1)[-1].strip(), aliases, machine=machine
+                )
                 for p in params
             )
-            result = _normalize_rust_wasm_scalar(function.result, aliases)
+            result = _normalize_rust_wasm_scalar(
+                function.result, aliases, machine=machine
+            )
             exports.setdefault(name, set()).add((normalized, result))
     return exports
 
@@ -2161,10 +2230,10 @@ def _validate_val_type_list(
         )
     vals: list[str] = []
     for val_idx, val in enumerate(value):
-        if not isinstance(val, str) or val not in WASM_VAL_TYPES:
+        if not isinstance(val, str) or val not in MACHINE_VAL_TYPES:
             raise WasmAbiManifestError(
                 f"{entry_kind} entry {entry_idx} field {field!r} has invalid "
-                f"WASM value type at index {val_idx}: {val!r}"
+                f"machine value type at index {val_idx}: {val!r}"
             )
         vals.append(val)
     return vals
@@ -2246,6 +2315,7 @@ MANIFEST_FIELDS = frozenset(
 )
 DERIVED_MANIFEST_FIELDS = frozenset(
     {
+        "machine_static_type",
         "runtime_import",
         "runtime_callable_abi",
         "runtime_raw_abi",
@@ -2595,6 +2665,16 @@ def validate_loaded_manifest(
             "static_type", idx, "results", entry.get("results")
         )
     # Catalog positions identify import signatures, never emitted module types.
+    _static_type_index_by_signature(static_types)
+    # The declared machine signatures feed RuntimeFn; every WASM consumer reads
+    # the wasm32 projection, in which a pointer is an i32.
+    data["machine_static_type"] = [
+        {"params": list(entry["params"]), "results": list(entry["results"])}
+        for entry in static_types
+    ]
+    for entry in static_types:
+        entry["params"] = [wasm_val_type(val) for val in entry["params"]]
+        entry["results"] = [wasm_val_type(val) for val in entry["results"]]
     _static_type_index_by_signature(static_types)
     static_type_count = len(static_types)
     imports = data.get("import")

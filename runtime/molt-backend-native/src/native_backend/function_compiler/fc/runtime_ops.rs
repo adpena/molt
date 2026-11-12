@@ -26,7 +26,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     func_name: &str,
     is_block_filled: bool,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -38,10 +38,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
+                                       import_ids: &mut RuntimeImportIds,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
@@ -115,12 +112,10 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 representation_plan,
             )
             .expect("FunctionDefaultsVersion arg not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_function_defaults_version",
-                &[types::I64],
-                &[types::I64],
+                RuntimeFn::FunctionDefaultsVersion,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_boxed]);
@@ -151,12 +146,10 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 builder.ins().iconst(types::I64, box_none())
             };
 
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_print_obj",
-                &[types::I64],
-                &[],
+                RuntimeFn::PrintObj,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[val]);
@@ -180,23 +173,19 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 representation_plan,
             )
             .expect("warn_stderr arg");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_warn_stderr",
-                &[types::I64],
-                &[],
+                RuntimeFn::WarnStderr,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[*val]);
         }
         OpKind::PrintNewline => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_print_newline",
-                &[],
-                &[],
+                RuntimeFn::PrintNewline,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[]);
