@@ -3465,11 +3465,13 @@ def test_wasm_abi_manifest_owns_runtime_callable_keys() -> None:
     assert "PollTableImportSpec" in rendered_rs
     assert "POLL_TABLE_IMPORTS" in rendered_rs
     assert "import: WasmRuntimeImport::AsyncSleepPoll" in rendered_rs
-    assert "pub(crate) const fn poll_table_import_slot" in rendered_rs
+    # The poll key offset lives on its POLL_TABLE_IMPORTS row only; no
+    # slot lookup function remains without a production consumer.
+    assert "pub(crate) const fn poll_table_import_slot" not in rendered_rs
     assert (
-        "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(27)"
-        in rendered_rs
-    )
+        "        table_slot: 27,\n"
+        "        import: WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll,"
+    ) in rendered_rs
     assert "POLL_TABLE_FUNCS" not in rendered_rs
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
     assert '(27, "contextlib_async_exitstack_enter_context_poll")' in rendered_py

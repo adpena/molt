@@ -142,42 +142,6 @@ pub(crate) const POLL_TABLE_IMPORTS: &[PollTableImportSpec] = &[
     },
 ];
 
-#[inline]
-pub(crate) const fn poll_table_import_slot(import: WasmRuntimeImport) -> Option<u32> {
-    match import {
-        WasmRuntimeImport::AsyncSleepPoll => Some(1),
-        WasmRuntimeImport::AnextDefaultPoll => Some(2),
-        WasmRuntimeImport::AsyncgenPoll => Some(3),
-        WasmRuntimeImport::PromisePoll => Some(4),
-        WasmRuntimeImport::IoWait => Some(5),
-        WasmRuntimeImport::ThreadPoll => Some(6),
-        WasmRuntimeImport::ProcessPoll => Some(7),
-        WasmRuntimeImport::WsWait => Some(8),
-        WasmRuntimeImport::AsyncioSocketReaderReadPoll => Some(9),
-        WasmRuntimeImport::AsyncioSocketReaderReadlinePoll => Some(10),
-        WasmRuntimeImport::AsyncioStreamReaderReadPoll => Some(11),
-        WasmRuntimeImport::AsyncioStreamReaderReadlinePoll => Some(12),
-        WasmRuntimeImport::AsyncioStreamSendAllPoll => Some(13),
-        WasmRuntimeImport::AsyncioSockRecvPoll => Some(14),
-        WasmRuntimeImport::AsyncioSockConnectPoll => Some(15),
-        WasmRuntimeImport::AsyncioSockAcceptPoll => Some(16),
-        WasmRuntimeImport::AsyncioSockRecvIntoPoll => Some(17),
-        WasmRuntimeImport::AsyncioSockSendallPoll => Some(18),
-        WasmRuntimeImport::AsyncioSockRecvfromPoll => Some(19),
-        WasmRuntimeImport::AsyncioSockRecvfromIntoPoll => Some(20),
-        WasmRuntimeImport::AsyncioSockSendtoPoll => Some(21),
-        WasmRuntimeImport::AsyncioFdWatcherPoll => Some(22),
-        WasmRuntimeImport::AsyncioServerAcceptLoopPoll => Some(23),
-        WasmRuntimeImport::ContextlibAsyncgenEnterPoll => Some(24),
-        WasmRuntimeImport::ContextlibAsyncgenExitPoll => Some(25),
-        WasmRuntimeImport::ContextlibAsyncExitstackExitPoll => Some(26),
-        WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(27),
-        WasmRuntimeImport::AwaitIteratorPoll => Some(28),
-        WasmRuntimeImport::CoroutineWrapperPoll => Some(29),
-        _ => None,
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeCallableImportSpec {
     pub(crate) runtime_name: &'static str,

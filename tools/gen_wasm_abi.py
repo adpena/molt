@@ -407,9 +407,10 @@ def _render_rs_mod() -> str:
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,\n",
-            "    RUNTIME_CALLABLE_KEY_BASE, RUNTIME_POLL_CALLABLE_KEY_BASE, poll_table_import_slot,\n",
-            "    runtime_callable_import,\n",
+            "    RUNTIME_POLL_CALLABLE_KEY_BASE, runtime_callable_import,\n",
             "};\n",
+            "#[cfg(test)]\n",
+            "pub(crate) use runtime_callables::RUNTIME_CALLABLE_KEY_BASE;\n",
             "pub(crate) use static_types::STATIC_FUNC_TYPES;\n",
         ]
     )
@@ -1668,20 +1669,6 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
     lines.extend(
         [
             "];\n\n",
-            "#[inline]\n",
-            "pub(crate) const fn poll_table_import_slot(import: WasmRuntimeImport) -> Option<u32> {\n",
-            "    match import {\n",
-        ]
-    )
-    for slot, name in poll_imports:
-        lines.append(
-            f"        {_rust_runtime_import(import_variants, name)} => Some({slot}),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeCallableImportSpec {\n",
             "    pub(crate) runtime_name: &'static str,\n",

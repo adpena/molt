@@ -141,7 +141,10 @@ fn runtime_polls_are_keys_the_app_neither_imports_nor_tables() {
         WasmRuntimeImport::WsWait,
     ];
     let slot_of = |import: WasmRuntimeImport| {
-        crate::wasm_abi::poll_table_import_slot(import)
+        crate::wasm_abi::POLL_TABLE_IMPORTS
+            .iter()
+            .find(|spec| spec.import == import)
+            .map(|spec| spec.table_slot)
             .unwrap_or_else(|| panic!("missing generated poll key offset for {}", import.name()))
     };
     let reduced = absent.iter().fold(

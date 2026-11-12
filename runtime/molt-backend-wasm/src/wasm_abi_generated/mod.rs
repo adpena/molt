@@ -41,9 +41,10 @@ pub(crate) use numeric_runtime_selector::{
     WasmNumericOpLoopKind, WasmNumericRuntimeSelection, wasm_numeric_runtime_selection,
 };
 pub(crate) use pure_profile::pure_profile_skips_import;
+#[cfg(test)]
+pub(crate) use runtime_callables::RUNTIME_CALLABLE_KEY_BASE;
 pub(crate) use runtime_callables::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,
-    RUNTIME_CALLABLE_KEY_BASE, RUNTIME_POLL_CALLABLE_KEY_BASE, poll_table_import_slot,
-    runtime_callable_import,
+    RUNTIME_POLL_CALLABLE_KEY_BASE, runtime_callable_import,
 };
 pub(crate) use static_types::STATIC_FUNC_TYPES;

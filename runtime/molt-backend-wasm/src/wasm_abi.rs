@@ -1,12 +1,12 @@
 use wasm_encoder::ValType;
 
+#[cfg(test)]
+pub(crate) use crate::wasm_abi_generated::RUNTIME_CALLABLE_KEY_BASE;
 pub(crate) use crate::wasm_abi_generated::{
     CALL_INDIRECT_IMPORTS, IMPORT_REGISTRY, POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_IMPORTS, RUNTIME_POLL_CALLABLE_KEY_BASE, RuntimeImportSpec, WasmRuntimeImport,
     runtime_callable_import, wasm_runtime_import,
 };
-#[cfg(test)]
-pub(crate) use crate::wasm_abi_generated::{RUNTIME_CALLABLE_KEY_BASE, poll_table_import_slot};
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
     TASK_KIND_GENERATOR,
