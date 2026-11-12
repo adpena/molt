@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -20,26 +19,19 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.git_identity import (  # noqa: E402
+from tools.command_execution import CommandExecutor
+from tools.git_identity import (
     branch_changed_paths,
     immutable_git_environment,
     require_git_object_id,
 )
-from tools.import_file import bind_repository_imports  # noqa: E402
-
-ROOT = bind_repository_imports(__file__)
-
-from molt.cargo_workspace import (  # noqa: E402
+from molt.cargo_workspace import (
     workspace_manifest_facts,
     workspace_member_packages,
 )
-from molt.cli.cargo_source_closure import cargo_locked_dependency_projection  # noqa: E402
+from molt.cli.cargo_source_closure import cargo_locked_dependency_projection
 
+ROOT = Path(__file__).resolve().parents[1]
 COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 WORKSPACE_INPUTS = frozenset({"Cargo.toml", "Cargo.lock"})
 TOOLCHAIN_INPUTS = frozenset({"rust-toolchain.toml", "clippy.toml"})
