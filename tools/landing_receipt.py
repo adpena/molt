@@ -29,6 +29,7 @@ import tempfile
 import textwrap
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -232,13 +233,13 @@ def _counts_text(counts: Mapping[str, int]) -> str:
     return text
 
 
-def commit_message(subject: str, receipt: Mapping[str, object]) -> str:
+def commit_message(subject: str, receipt: Mapping[str, Any]) -> str:
     """The landing commit's message: the subject, then text projected from the
     receipt alone. The commit-msg hook appends Change-Id after it."""
     subject = subject.strip()
     if not subject or "\n" in subject:
         raise ValueError("a landing subject is one non-empty line")
-    gates = list(receipt["gates"])  # type: ignore[arg-type]
+    gates = list(receipt["gates"])
     static = [gate for gate in gates if gate["phase"] == "static"]
     tried = [gate for gate in gates if gate["phase"] != "static"]
     lines = [
@@ -249,19 +250,21 @@ def commit_message(subject: str, receipt: Mapping[str, object]) -> str:
     ]
     for gate in tried:
         counts = gate.get("counts")
+        carried = gate.get("carried_from_base")
         lines.append(
-            f"Ran {gate['command']}"
+            (f"Carried from base {str(carried)[:12]} " if carried else "Ran ")
+            + str(gate["command"])
             + (f": {_counts_text(counts)}." if counts else ": exit 0.")
         )
-    waived = list(receipt.get("waived", ()))  # type: ignore[arg-type]
+    waived = list(receipt.get("waived", ()))
     lines.append(
         "Waived to the queue batch: " + ("; ".join(waived) if waived else "none") + "."
     )
     for label, key in (("Narrowed", "narrowed"), ("Unverified here", "unverified")):
-        items = list(receipt.get(key, ()))  # type: ignore[arg-type]
+        items = list(receipt.get(key, ()))
         if items:
             lines.append(f"{label}: " + "; ".join(items) + ".")
-    left = len(list(receipt.get("postsubmit_only", ())))  # type: ignore[arg-type]
+    left = len(list(receipt.get("postsubmit_only", ())))
     if left:
         lines.append(
             f"Left to postsubmit: {left} data-reader test file(s); "

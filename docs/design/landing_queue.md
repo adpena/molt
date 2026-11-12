@@ -745,6 +745,18 @@ Steps:
     `git-hooks` input in the lane checkout (now identical to main), which
     installs the pre-push hook for the repository (4.4 Bootstrap).
 
+    A repeat after main moved from `B` to `B'` reruns the static gates and only
+    the try-run gates the move can affect (owner, 2026-11-11; measured: one
+    landing spent 6,056 s, about half of it re-running every gate after an
+    unrelated landing): a pytest cohort that the move's own selection also
+    picks; a Cargo gate when the reverse-dependency closures of the lane's
+    paths and the move's paths share a package, or either reaches the whole
+    workspace or the toolchain; every other try-run gate. A move that changes
+    no path reruns none. The receipt for `(T', B')` carries each skipped
+    gate's record from `B` with `carried_from_base`, and the landing commit
+    says "Carried from base"; postsubmit still runs everything on main.
+    Chromium's commit queue and TAP make the same trade.
+
 Idempotence: a re-run whose `HEAD` is a commit listed by the receipt for
 `(T, B)` with `B` still current goes straight to step 10. Same tree and same
 base, so no result crosses inputs. `--dry-run` fetches, prints the merge it
