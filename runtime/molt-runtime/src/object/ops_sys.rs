@@ -1697,14 +1697,14 @@ pub(crate) fn molt_gc_garbage_attached_body(_py: &crate::PyToken<'_>) -> u64 {
 
 pub(crate) fn molt_gc_freeze_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        crate::object::gc::freeze_tracked_registry(_py);
+        crate::object::gc::freeze_tracked_members(_py);
         MoltObject::none().bits()
     })
 }
 
 pub(crate) fn molt_gc_unfreeze_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        crate::object::gc::unfreeze_tracked_registry(_py);
+        crate::object::gc::unfreeze_tracked_members(_py);
         MoltObject::none().bits()
     })
 }

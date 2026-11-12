@@ -21,9 +21,9 @@ collector for the remainder. The collector has one scheduling authority in
   poll owns automatic collection, so constructors never synchronously traverse a
   partially initialized graph.
 - Collection statistics are per runtime and exposed through `gc.get_stats()`.
-  Embedded teardown resets thresholds, counts, pending work, statistics, registry
-  ordinals, and reusable workspace together.
-- `freeze()` moves ordinary registry entries to permanent generation 3 without
+  Embedded teardown resets thresholds, counts, pending work, statistics,
+  membership, ordinals, and reusable workspace together.
+- `freeze()` moves ordinary members to permanent generation 3 without
   changing allocation order; `unfreeze()` returns them to generation 2. Normal
   snapshots and `get_objects()` exclude permanent entries, while referrer scans
   include every generation.
@@ -41,45 +41,93 @@ collector for the remainder. The collector has one scheduling authority in
   `DEBUG_SAVEALL` retains the final unreachable partition there without clearing
   its edges.
 
+## Membership representation (HF-816)
+
+CPython links every tracked object into its generation's list through a
+`PyGC_Head` placed before the object (`Include/internal/pycore_gc.h`), so
+`PyObject_GC_Track` and `PyObject_GC_UnTrack` are a few pointer writes. Molt
+follows the same layout rule with one word:
+
+- **GC head.** Each allocation whose kind the collector can track reserves an
+  8-byte head before its `MoltHeader`; `HEADER_FLAG_GC_HEAD` records the
+  reservation. Kinds come from the generated `heap_track_projection`
+  (`kind_reserves_gc_head`): every projection except `Never` and
+  `NativeSubtype`, plus `list[int]`/`list[bool]`, which promote in place to a
+  tracked list. A `NativeSubtype` kind reserves a head only at its subtype
+  allocation, so plain `str`/`bytes` pay nothing. Heap, arena and frame storage
+  all reserve it. The 24-byte header, `HEADER_SIZE_BYTES` and every codegen
+  offset are unchanged; compiled code never allocates objects itself, and C-API
+  views are separate allocations. The size class still describes header and
+  payload; deallocation frees from the head with the extra 8 bytes, and the
+  resource tracker and allocation profile count them.
+- **Head word.** Zero when untracked; otherwise generation (2 bits) and the
+  object's position in its runtime's member list for that generation.
+- **Membership.** Each `RuntimeState` owns `GcRuntimeState::membership`: one
+  dense vector of `(object, allocation ordinal)` per generation, including the
+  permanent one, and the runtime's ordinal counter. Track pushes and writes the
+  head; untrack swap-removes and rewrites the head of the member that moved;
+  promotion, `freeze()` and `unfreeze()` move members between vectors. No hash,
+  no lock: a `PyToken` proves the runtime GIL on every access.
+- **Ownership.** An isolate's objects are members of its own state. Every
+  removal asserts that the head's position names the object in the current
+  runtime's list, so a cross-runtime free or a corrupt head fails loud.
+- **Order.** Members keep allocation ordinals, and snapshots sort by ordinal as
+  before; vector order, which swap-removal permutes, never reaches finalizer,
+  weakref or clear order.
+- **Retirement count.** A collection's `retired` count needs to know which first
+  unreachable candidates ended their tracking lifetime after the pins drop,
+  without reading freed memory. While the pins still hold, each runtime
+  candidate's head says whether its lifetime already ended; the rest are
+  watched by ordinal, and `Membership::remove` counts each watched ordinal that
+  leaves. The watch capacity is reserved before any callback.
+- **Teardown.** Embedded teardown untracks every remaining member (it clears
+  their heads), so an object that outlives its runtime reads "untracked" when a
+  later retirement frees it.
+- **Native nodes.** ABI-owned C objects have no head, so they keep one
+  process-wide table keyed by address under one mutex, with an owner per entry
+  and ordinals from the owner's counter. Only the C-API tracking path uses it.
+
+Rejected: a third map per generation (four lookups per allocation), a lock-free
+thread-local registry (still a hash per transition), and walking allocator pages
+as CPython 3.13t does (it has no per-object generation, and Molt keeps 3.12
+generations). The 3.13t design becomes the model when Molt executes without its
+GIL: per-thread member vectors merged at a stop-the-world point.
+
 ## Concurrency and target contract
 
-The default deterministic-GIL and wasm32 builds use `Cell` control words, while
-all targets use the same mutex-sharded membership authority. In deterministic
-builds the GIL makes shard contention zero; retaining the same safe storage type
-avoids an alternate unsafe-cell implementation for a measured sub-percent
-steady-state difference. Explicit native `free-threaded` builds use lock-free
-atomic words for bookkeeping and the same mutex-protected shards, but tracing
-fails before snapshot or mutation until the scheduler supplies a real
-stop-the-world epoch. A GIL-shaped compatibility lock is not a substitute.
+The default deterministic-GIL and wasm32 builds use `Cell` control words. Explicit
+native `free-threaded` builds use lock-free atomic words for bookkeeping, but
+Python execution still holds the runtime GIL, so membership needs no lock in any
+build; tracing fails before snapshot or mutation until the scheduler supplies a
+real stop-the-world epoch. A GIL-shaped compatibility lock is not a substitute.
+Head words are relaxed atomics, which cost a plain load or store and keep a reader
+without the GIL free of data races.
 
-The registry stores opaque provenance-safe pointers behind 64 shards. Its keys
-are heap addresses, which the allocator chooses, so both maps hash them with one
-folded 64x64->128-bit multiply instead of keyed SipHash. The shard takes bits
-32..38 of that hash; each table takes its bucket from the low bits and its
-control tag from the top seven. Snapshot
-and promotion freeze all shards as one metadata transaction; graph traversal runs
-after releasing registry locks. wasm32 and i686 use the same u64 allocation
+The native-node table keys C object addresses, which the allocator chooses, so it
+hashes them with one folded 64x64->128-bit multiply instead of keyed SipHash; the
+table takes its bucket from the low bits and its control tag from the top seven.
+Snapshot and promotion borrow membership and lock the table once; graph traversal
+runs after both are released. wasm32 and i686 use the same u64 allocation
 ordinal and i64 trial-ref lanes, so pointer width cannot alter ordering or
 reachability.
 
-Registry storage is process-global to provide one address-stable membership
-authority and to release learned capacity at embedded teardown. Its process owner
-is bound before initialization allocates. Shared threads use that runtime;
-explicit native isolates have separate `RuntimeState` owners. Every tracked
-managed/native membership records its owning runtime. Collection, introspection,
-freeze/unfreeze and permanent-generation counts select only that owner's entries,
-so callbacks, version policy and GC counters operate on the same heap. Supported
-isolate transport copies bytes; it does not transfer heap ownership. Untracked
-exact dictionaries keep their header-only allocation accounting fast path.
+Shared threads use their process runtime; explicit native isolates have separate
+`RuntimeState` owners and therefore separate membership. Every native-node entry
+records its owning runtime. Collection, introspection, freeze/unfreeze and
+permanent-generation counts select only the current runtime's members and
+native nodes, so callbacks, version policy and GC counters operate on the same
+heap. Supported isolate transport copies bytes; it does not transfer heap
+ownership. Untracked exact dictionaries keep their header-only allocation
+accounting fast path.
 
 The existing C thread-state registry also records runtime ownership. Isolate
 class retirement checks its own C owners; process retirement still requires the
 aggregate C/native owner sets to drain. Process-static extensions remain refused
 in isolates before native GC admission. A successful isolate retires all its
-memberships and C records before releasing its registry lifetime and state.
+memberships and C records before releasing its isolate lifetime and state.
 Failed teardown preserves both and keeps the failing thread's TLS runtime binding
 through native thread exit: no fallback to primary ownership, state address reuse,
-foreign membership clear, or subsequent process registry reset is allowed.
+foreign membership clear, or subsequent process membership reset is allowed.
 
 Synchronous C thread-state drains propagate invariant failures to their existing
 runtime-owner boundary in every teardown mode. Embedding lifecycle entrypoints
@@ -222,24 +270,22 @@ and callback-bearing batch latency require measurements on claimed targets;
 source bounds do not establish a latency or RSS result.
 
 
-Membership attribution adds one owner word per tracked managed/native entry and
-per retained C record/registration. Native isolate spawn also reserves the process;
-shared spawn reserves process and origin, with one admission atomic per native
-RuntimeState. GREEN allocations and initially untracked exact dictionaries gain
-no membership allocation or lookup. Scoped snapshots scan process-wide registry
-metadata before traversing the selected owner's graph. Scoped retirement checks
-also scan the existing registries. These costs and failure-retained storage have
-not yet been measured across native targets; no per-owner index or performance
-improvement is implied. Atomic-refcount free-threaded builds still refuse tracing
-without a real stop-the-world epoch; this ownership correction does not remove
-that hold.
+Membership is per runtime, so it needs no owner word; native-node entries and
+retained C records/registrations keep one. Native isolate spawn also reserves the
+process; shared spawn reserves process and origin, with one admission atomic per
+native RuntimeState. GREEN allocations gain no membership storage or lookup. An
+initially untracked exact dictionary or tuple carries its 8-byte GC head but no
+member entry. A snapshot reads only the selected runtime's selected generations;
+the native-node table is scanned whole. Atomic-refcount free-threaded builds
+still refuse tracing without a real stop-the-world epoch.
 
 ## Performance and allocation proof
 
 After workspace warm-up, repeated collection performs zero Rust heap allocations.
 The cycle-capable allocation/deallocation probe separately records wall time,
-allocator calls/bytes/peak live bytes, and the exact registry-access count over
-4,096-object rounds. Five warm runs measured a 9.55 ms median round on
+allocator calls/bytes/peak live bytes, and (since HF-816) checks that every
+tracked list retires its membership, over 4,096-object rounds. The earlier
+registry-access count left with the registry. Five warm runs measured a 9.55 ms median round on
 `origin/main` and 9.50 ms with a GIL-only shard cell (0.5%, within noise), with
 equivalent allocation telemetry. The safe shared mutex authority is therefore
 retained; the runtime profiler's contention-count and wait-nanosecond counters
@@ -254,13 +300,27 @@ shard cell (`RefCell`, no lock) on top of that moved the same minimums by about
 1%: lock and unlock were 3.2% of tee samples, and the cell's own borrow and
 inlining took back most of it (tee catch-up 955.9 to 951.3 ns per item,
 generator `next` 543.4 to 536.1, `enumerate` 176.3 to 169.6, tuple allocation
-116.5 to 117.1). The safe mutex authority stays.
+116.5 to 117.1). That result kept the mutex while the hash stayed; HF-816
+removed both together (below).
+
+HF-816 phase 2 (intrusive membership) measured 2026-11-12, macOS arm64, release,
+`/usr/bin/time -l` instructions retired, minimum of 2 interleaved runs against
+main ec4f533d1, identical output: `fannkuch_redux.py 9` LLVM 30.62 G to 27.78 G
+(-9.3%, cycles -15%) and Cranelift 31.01 G to 28.08 G (-9.5%); `bench_struct`
+LLVM 23.27 G to 21.87 G (-6.0%) and Cranelift 23.36 G to 21.94 G (-6.1%);
+`bench_gc_pressure` LLVM 32.13 G to 28.76 G (-10.5%, cycles -29%, user 4.34 s to
+3.09 s, peak RSS 1,177 MB to 1,070 MB) and Cranelift 31.86 G to 28.53 G (-10.5%).
+In the symbolized `fannkuch_redux.py 10` profile, tracking frames fell from
+1,394 of 11,390 self samples (12.2%: `gc_admit_membership` 510, `gc_untrack`
+239, shard lock 183, pthread lock/unlock 353+66 stubs, `gc_track_if_cyclic` 43)
+to 382 of 9,581 (4.0%: `gc_untrack` 213, `gc_admit_membership` 131,
+`gc_track_if_cyclic` 38), with no lock or hash frame left in either transition.
 The generational probe holds a long-lived population, creates a small young set,
 and attests both exact scanned-candidate counts and median/p95 latency for young
 versus full collection. Graph traversal for a young sweep covers its selected generation-0 cohort,
 while a full collection traverses the selected runtime's ordinary generations.
-Both first inspect the shared registry metadata; young-collection wall cost is
-not an `O(generation 0)` guarantee for that process-wide scan.
+Both read only the selected runtime's selected member lists plus the native-node
+table, so a young sweep's runtime-object cost is `O(generation 0)`.
 
 ### Shared native thread call identity
 

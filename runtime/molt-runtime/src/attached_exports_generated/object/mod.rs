@@ -17,13 +17,13 @@ pub unsafe extern "C" fn molt_obj_set_state(__context: u64, data_ptr_bits: u64, 
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_object_init_stack(
     __context: u64,
-    header_ptr: *mut u8,
+    storage: *mut u8,
     cls_bits: u64,
     payload_size_bytes: u64,
 ) -> u64 {
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    unsafe { molt_object_init_stack_attached_body(_py, header_ptr, cls_bits, payload_size_bytes) }
+    unsafe { molt_object_init_stack_attached_body(_py, storage, cls_bits, payload_size_bytes) }
 }
 #[unsafe(export_name = "molt_inc_ref__molt_context_047a33b55bc1b76d")]
 #[allow(clippy::missing_safety_doc)]

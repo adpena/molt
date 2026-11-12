@@ -1176,6 +1176,10 @@ pub(crate) const HEADER_FLAG_TASK_QUEUED: u32 = 1 << 7;
 pub(crate) const HEADER_FLAG_TASK_RUNNING: u32 = 1 << 8;
 pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
 pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
+/// The allocation reserved a GC head (`gc::GC_HEAD_BYTES`) before this header: the
+/// word that records the object's collector membership. Set once, before
+/// publication, by the allocator, and read by tracking and by deallocation.
+pub(crate) const HEADER_FLAG_GC_HEAD: u32 = 1 << 11;
 pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
 /// Runtime-owned storage whose identity must never escape through public heap
 /// introspection. Set while unpublished and retained for the object's lifetime;
@@ -1261,7 +1265,7 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 31] = [
+const HEADER_FLAG_REGISTRY: [u32; 32] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_REVIVAL_WINDOW,
     HEADER_FLAG_CORO_RUNNING,
@@ -1273,6 +1277,7 @@ const HEADER_FLAG_REGISTRY: [u32; 31] = [
     HEADER_FLAG_TASK_RUNNING,
     HEADER_FLAG_TASK_WAKE_PENDING,
     HEADER_FLAG_TASK_DONE,
+    HEADER_FLAG_GC_HEAD,
     HEADER_FLAG_COROUTINE,
     HEADER_FLAG_INTERNAL_OWNER,
     HEADER_FLAG_GC_ACCOUNTED,
@@ -1844,9 +1849,15 @@ pub(crate) fn total_size_from_header(header: &MoltHeader, _data_ptr: *mut u8) ->
     total_size_from_header_fields(header.size_class, snapshot.kind, snapshot.word)
 }
 
+/// One object allocation: `head_bytes` of GC head (zero or
+/// [`gc::GC_HEAD_BYTES`]), then the header and payload, whose rounded extent
+/// is `object_size` and whose size class the header records. `alloc_size`
+/// covers both, and the layout is the allocator's.
 #[derive(Clone, Copy)]
 struct ObjectAllocationPlan {
     alloc_size: usize,
+    object_size: usize,
+    head_bytes: usize,
     layout: Layout,
     size_class: u16,
 }
@@ -1888,7 +1899,9 @@ pub(crate) unsafe fn alloc_scoped_boxed_object(
     let Some(total_size) = boxed_object_total_size(py, payload_bits) else {
         return MoltObject::none().bits();
     };
-    let Some(plan) = object_allocation_plan(total_size) else {
+    const GC_HEAD: bool = kind_reserves_gc_head(TYPE_ID_OBJECT);
+    const GC_HEAD_FLAG: u32 = if GC_HEAD { HEADER_FLAG_GC_HEAD } else { 0 };
+    let Some(plan) = object_allocation_plan(total_size, gc_head_bytes(GC_HEAD)) else {
         crate::record_memory_error_without_allocation(py);
         return MoltObject::none().bits();
     };
@@ -1899,45 +1912,48 @@ pub(crate) unsafe fn alloc_scoped_boxed_object(
     }
     unsafe {
         std::ptr::write_bytes(storage, 0, plan.alloc_size);
-        let header = storage.cast::<MoltHeader>();
+        let header = storage.add(plan.head_bytes).cast::<MoltHeader>();
         (*header).type_id = TYPE_ID_OBJECT;
         MoltHeader::initialize_refcount_before_publication(header, 1);
         MoltHeader::initialize_flags_gc_unpublished(
             header,
-            HEADER_FLAG_SCOPED | HEADER_FLAG_RAW_ALLOC,
+            HEADER_FLAG_SCOPED | HEADER_FLAG_RAW_ALLOC | GC_HEAD_FLAG,
         );
         (*header).size_class = plan.size_class;
         if !initialize_header_aux(
             header,
             TYPE_ID_OBJECT,
             plan.size_class,
-            plan.alloc_size,
+            plan.object_size,
             ObjectAuxPreselection::Default,
         ) {
             crate::record_memory_error_without_allocation(py);
             return MoltObject::none().bits();
         }
-        let data = storage.add(std::mem::size_of::<MoltHeader>());
+        let data = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
         gc::gc_track_if_cyclic(py, data, TYPE_ID_OBJECT);
         MoltObject::from_ptr(data).bits()
     }
 }
 
 #[inline]
-fn object_allocation_plan(total_size: usize) -> Option<ObjectAllocationPlan> {
+fn object_allocation_plan(total_size: usize, head_bytes: usize) -> Option<ObjectAllocationPlan> {
     if total_size < std::mem::size_of::<MoltHeader>() {
         return None;
     }
     let size_class = size_class_for(total_size);
-    let alloc_size = if size_class != 0 {
+    let object_size = if size_class != 0 {
         SIZE_CLASS_TABLE.get(size_class as usize).copied()?
     } else {
         total_size
     };
+    let alloc_size = object_size.checked_add(head_bytes)?;
     let layout =
         Layout::from_size_align(alloc_size, molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES).ok()?;
     Some(ObjectAllocationPlan {
         alloc_size,
+        object_size,
+        head_bytes,
         layout,
         size_class,
     })
@@ -2287,19 +2303,20 @@ pub(crate) fn molt_obj_set_state_attached_body(
 /// prove the lifetime of caller storage or of references stored by the caller.
 ///
 /// # Safety
-/// `header_ptr` must identify 8-byte-aligned exclusively writable storage of at
-/// least `MoltHeader::SIZE + payload_size_bytes` bytes. The caller must keep it
+/// `storage` must identify 8-byte-aligned exclusively writable storage of at
+/// least `gc::GC_HEAD_BYTES + MoltHeader::SIZE + payload_size_bytes` bytes: the
+/// instance is cycle-capable, so its GC head precedes its header. The caller must keep it
 /// valid until every owner, including cyclic/internal owners, has been released
 /// and terminal cleanup has completed. Neither returning a boxed reference nor
 /// dropping only the caller's initial reference establishes that condition.
 pub(crate) unsafe fn molt_object_init_stack_attached_body(
     _py: &crate::PyToken<'_>,
-    header_ptr: *mut u8,
+    storage: *mut u8,
     cls_bits: u64,
     payload_size_bytes: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        if header_ptr.is_null() {
+        if storage.is_null() {
             return MoltObject::none().bits();
         }
         let cls_ptr = match obj_from_bits(cls_bits).as_ptr() {
@@ -2323,18 +2340,24 @@ pub(crate) unsafe fn molt_object_init_stack_attached_body(
             {
                 return crate::molt_object_new_bound_attached_body(_py, cls_bits);
             }
-            let Some(total) = std::mem::size_of::<MoltHeader>().checked_add(payload) else {
+            const _: () = assert!(kind_reserves_gc_head(TYPE_ID_OBJECT));
+            let Some(total) =
+                (gc::GC_HEAD_BYTES + std::mem::size_of::<MoltHeader>()).checked_add(payload)
+            else {
                 return MoltObject::none().bits();
             };
-            std::ptr::write_bytes(header_ptr, 0, total);
-            let header = header_ptr as *mut MoltHeader;
+            std::ptr::write_bytes(storage, 0, total);
+            let header = storage.add(gc::GC_HEAD_BYTES) as *mut MoltHeader;
             (*header).type_id = class_instance_type_id(cls_ptr);
             MoltHeader::initialize_refcount_before_publication(header, 1);
-            MoltHeader::initialize_flags_gc_unpublished(header, HEADER_FLAG_SCOPED);
+            MoltHeader::initialize_flags_gc_unpublished(
+                header,
+                HEADER_FLAG_SCOPED | HEADER_FLAG_GC_HEAD,
+            );
             (*header).size_class = 0;
             (*header).aux_kind = HEADER_AUX_KIND_CLASS_INLINE;
             std::ptr::write(std::ptr::addr_of_mut!((*header).aux), MoltAuxWord::new(0));
-            let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
+            let data_ptr = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
             assert!(object_init_class_edge_unpublished(
                 _py,
                 data_ptr,
@@ -2404,13 +2427,48 @@ pub(crate) fn pending_bits_i64() -> i64 {
     MoltObject::pending().bits() as i64
 }
 
+/// Whether every allocation of `type_id` reserves a GC head: each kind that
+/// the collector can track, and the scalar list representations, which promote
+/// in place to a tracked list. A native subtype instance (`str`, `bytes` and
+/// the other `NativeSubtype` kinds with class fields) reserves one at its
+/// subtype allocation instead, so plain instances of those kinds pay nothing.
+#[inline(always)]
+pub(crate) const fn kind_reserves_gc_head(type_id: u32) -> bool {
+    match heap_track_projection(type_id) {
+        Some(
+            HeapTrackProjection::Always
+            | HeapTrackProjection::CodeDynamic
+            | HeapTrackProjection::DictDynamic
+            | HeapTrackProjection::ForeignDynamic
+            | HeapTrackProjection::TupleDynamic,
+        ) => true,
+        Some(HeapTrackProjection::Never) => {
+            matches!(type_id, TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
+        }
+        Some(HeapTrackProjection::NativeSubtype) | None => false,
+    }
+}
+
+/// Bytes an allocation reserves before its header.
+#[inline(always)]
+const fn gc_head_bytes(gc_head: bool) -> usize {
+    if gc_head { gc::GC_HEAD_BYTES } else { 0 }
+}
+
+/// Bytes an allocation with these header flags reserves before its header.
+#[inline(always)]
+pub(crate) const fn gc_head_bytes_for_flags(flags: u32) -> usize {
+    gc_head_bytes(flags & HEADER_FLAG_GC_HEAD != 0)
+}
+
 pub(crate) fn alloc_object_zeroed_with_aux(
     _py: &PyToken<'_>,
     total_size: usize,
     type_id: u32,
     aux: ObjectAuxPreselection,
 ) -> *mut u8 {
-    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, false)
+    let gc_head = kind_reserves_gc_head(type_id);
+    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, false, gc_head)
 }
 
 pub(crate) fn alloc_object_zeroed_unpublished_with_aux(
@@ -2419,7 +2477,19 @@ pub(crate) fn alloc_object_zeroed_unpublished_with_aux(
     type_id: u32,
     aux: ObjectAuxPreselection,
 ) -> *mut u8 {
-    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, true)
+    let gc_head = kind_reserves_gc_head(type_id);
+    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, true, gc_head)
+}
+
+/// An unpublished native subtype instance: its class fields let the collector
+/// track it, so it reserves a GC head whatever its kind.
+pub(crate) fn alloc_native_subtype_unpublished_with_aux(
+    _py: &PyToken<'_>,
+    total_size: usize,
+    type_id: u32,
+    aux: ObjectAuxPreselection,
+) -> *mut u8 {
+    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, true, true)
 }
 
 fn alloc_object_zeroed_with_aux_policy(
@@ -2428,9 +2498,10 @@ fn alloc_object_zeroed_with_aux_policy(
     type_id: u32,
     aux: ObjectAuxPreselection,
     unpublished: bool,
+    gc_head: bool,
 ) -> *mut u8 {
     crate::gil_assert();
-    let Some(plan) = object_allocation_plan(total_size) else {
+    let Some(plan) = object_allocation_plan(total_size, gc_head_bytes(gc_head)) else {
         if debug_oom() {
             eprintln!(
                 "molt OOM alloc_object_zeroed type_id={} invalid total_size={}",
@@ -2457,13 +2528,15 @@ fn alloc_object_zeroed_with_aux_policy(
             crate::record_memory_error_without_allocation(_py);
             return std::ptr::null_mut();
         }
-        let header = ptr as *mut MoltHeader;
+        // The zeroed GC head, when reserved, reads "untracked".
+        let header = ptr.add(plan.head_bytes) as *mut MoltHeader;
+        let head_flag = if gc_head { HEADER_FLAG_GC_HEAD } else { 0 };
         (*header).type_id = type_id;
         MoltHeader::initialize_refcount_before_publication(header, 1);
         if unpublished {
-            MoltHeader::initialize_flags_gc_unpublished(header, 0);
+            MoltHeader::initialize_flags_gc_unpublished(header, head_flag);
         } else {
-            MoltHeader::initialize_flags_before_publication(header, 0);
+            MoltHeader::initialize_flags_before_publication(header, head_flag);
         }
         (*header).size_class = plan.size_class;
         if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
@@ -2479,7 +2552,7 @@ fn alloc_object_zeroed_with_aux_policy(
         profile_alloc_aux_kind(_py, header_aux_snapshot(header).kind);
         profile_alloc_type(_py, type_id);
         profile_alloc_type_bytes(_py, type_id, tracked_bytes);
-        let data_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
+        let data_ptr = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
         gc::gc_track_if_cyclic(_py, data_ptr, type_id);
         data_ptr
     }
@@ -2516,7 +2589,7 @@ pub(crate) fn alloc_object_with_aux(
     }
     // Ordinary and explicitly zeroed allocations have the same payload and
     // failure contract; publication policy is their only semantic variation.
-    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, false)
+    alloc_object_zeroed_with_aux(_py, total_size, type_id, aux)
 }
 
 #[inline(always)]
@@ -4323,8 +4396,10 @@ unsafe fn dec_ref_ptr_terminal_body(
         // oversized exact size is immutable inside the sidecar.
         let object_bytes =
             total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
-        let dealloc_bytes =
-            object_bytes.saturating_add(header_aux_storage_bytes(header_aux.kind)) as u64;
+        let dealloc_bytes = object_bytes
+            .saturating_add(gc_head_bytes_for_flags(header_flags))
+            .saturating_add(header_aux_storage_bytes(header_aux.kind))
+            as u64;
         if debug_dec_ref_zero() {
             eprintln!(
                 "molt dec_ref_zero ptr=0x{:x} type_id={}",
@@ -4715,16 +4790,18 @@ unsafe fn dec_ref_ptr_terminal_body(
             release_ptr(ptr);
             // Arena chunks account their own bytes; frame storage is not a
             // heap allocation. Both still retire all typed owned edges.
+            // A head-bearing allocation begins at its GC head.
+            let head_bytes = gc_head_bytes_for_flags(header_flags);
             if (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
+                let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size + head_bytes));
             }
             if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
                 free_aux_sidecar(header_aux.word);
             }
             if total_size != 0 && (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                let layout = std::alloc::Layout::from_size_align(total_size, 8)
+                let layout = std::alloc::Layout::from_size_align(total_size + head_bytes, 8)
                     .unwrap_or_else(|_| std::process::abort());
-                std::alloc::dealloc(header_ptr as *mut u8, layout);
+                std::alloc::dealloc(header_ptr.cast::<u8>().sub(head_bytes), layout);
             }
         });
         if (header_flags & HEADER_FLAG_SCOPED) == 0 {
@@ -4955,16 +5032,18 @@ mod tests {
         });
     }
 
+    const OBJECT_HEAD: usize = super::gc_head_bytes(super::kind_reserves_gc_head(TYPE_ID_OBJECT));
+
     #[test]
     fn denied_object_allocation_does_not_poison_tracker_state() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let small_total = std::mem::size_of::<super::MoltHeader>();
-            let small_plan =
-                super::object_allocation_plan(small_total).expect("valid header-sized object");
+            let small_plan = super::object_allocation_plan(small_total, OBJECT_HEAD)
+                .expect("valid header-sized object");
             let large_total = small_plan.alloc_size + 1;
-            let large_plan =
-                super::object_allocation_plan(large_total).expect("valid larger object");
+            let large_plan = super::object_allocation_plan(large_total, OBJECT_HEAD)
+                .expect("valid larger object");
             assert!(large_plan.alloc_size > small_plan.alloc_size);
 
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
@@ -4997,7 +5076,8 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let total = std::mem::size_of::<super::MoltHeader>();
-            let plan = super::object_allocation_plan(total).expect("valid header-sized object");
+            let plan = super::object_allocation_plan(total, OBJECT_HEAD)
+                .expect("valid header-sized object");
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(plan.alloc_size),
                 ..Default::default()

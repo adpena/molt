@@ -203,3 +203,21 @@ def test_importers_needing_landing_built_artifacts_are_left_to_the_landing() -> 
             "wasm.build.shared-runtime",
         )
     }
+
+
+def test_the_default_importer_run_is_presubmits() -> None:
+    """Without --pytest-arg the gate runs importers as presubmit does: in
+    parallel, under their declared worker memory, and without `slow` tests,
+    which postsubmit owns (AGENTS.md; tests/conftest.py --skip-slow). A
+    serial run with slow tests took over an hour and failed on a test the
+    landing never runs."""
+    root = Path(consumer_gate.__file__).resolve().parents[1]
+    argv = consumer_gate.presubmit_pytest_argv(
+        root, ["tests/tools/test_consumer_gate.py"]
+    )
+    assert argv[0] == consumer_gate.sys.executable
+    assert argv[1:3] == ["-m", "pytest"]
+    assert argv[argv.index("-n") + 1] == "auto"
+    assert "--skip-slow" in argv
+    assert any(arg.startswith("--molt-worker-memory-gb=") for arg in argv)
+    assert argv[-1] == "tests/tools/test_consumer_gate.py"

@@ -181,7 +181,8 @@ fn stack_constructor_shares_empty_field_and_payload_extent_authority() {
         let (heap, field) = immutable_field_object(_py);
         let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
         let class_owners = refcount(class);
-        let mut storage = [0u64; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
+        let mut storage = [0u64;
+            (crate::object::gc::GC_HEAD_BYTES + std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let stack = unsafe {
             crate::object::molt_object_init_stack_attached_body(
                 _py,
@@ -238,7 +239,9 @@ fn frame_storage_collects_inline_and_dictionary_cycles_before_scope_exit() {
             let (heap, field) = immutable_field_object(_py);
             let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
             let class_owners = refcount(class);
-            let mut storage = [0u64; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
+            let mut storage = [0u64;
+                (crate::object::gc::GC_HEAD_BYTES + std::mem::size_of::<crate::MoltHeader>() + 16)
+                    / 8];
             let stack = unsafe {
                 crate::object::molt_object_init_stack_attached_body(
                     _py,
@@ -286,7 +289,8 @@ fn frame_candidate_with_different_sealed_extent_returns_owned_heap_storage() {
         let (heap, field) = immutable_field_object(_py);
         let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
         let class_owners = refcount(class);
-        let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 8) / 8];
+        let mut storage = [u64::MAX;
+            (crate::object::gc::GC_HEAD_BYTES + std::mem::size_of::<crate::MoltHeader>() + 8) / 8];
         let result = unsafe {
             crate::object::molt_object_init_stack_attached_body(
                 _py,
@@ -341,7 +345,8 @@ fn mutable_frame_candidate_survives_late_finalizer_resurrection_on_heap() {
         let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
         inc_ref_bits(_py, class);
         dec_ref_bits(_py, heap);
-        let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
+        let mut storage = [u64::MAX;
+            (crate::object::gc::GC_HEAD_BYTES + std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
             crate::object::molt_object_init_stack_attached_body(
                 _py,
@@ -392,7 +397,8 @@ fn immutable_finalizing_class_still_requires_heap_storage() {
         assert!(unsafe {
             crate::object::class_set_immutable(_py, obj_from_bits(class).as_ptr().unwrap())
         });
-        let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
+        let mut storage = [u64::MAX;
+            (crate::object::gc::GC_HEAD_BYTES + std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
             crate::object::molt_object_init_stack_attached_body(
                 _py,
@@ -431,7 +437,8 @@ fn immutable_frame_candidate_with_mutable_base_remains_heap_owned() {
             );
             assert!(crate::object::class_set_immutable(_py, class_ptr));
         }
-        let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
+        let mut storage = [u64::MAX;
+            (crate::object::gc::GC_HEAD_BYTES + std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
             crate::object::molt_object_init_stack_attached_body(
                 _py,
@@ -461,7 +468,8 @@ fn scoped_class_replacement_preserves_lifetime_admission_atomically() {
         let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
         let mutable_class =
             unsafe { object_class_bits(obj_from_bits(mutable_heap).as_ptr().unwrap()) };
-        let mut storage = [0u64; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
+        let mut storage = [0u64;
+            (crate::object::gc::GC_HEAD_BYTES + std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
             crate::object::molt_object_init_stack_attached_body(
                 _py,

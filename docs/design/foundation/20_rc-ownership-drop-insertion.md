@@ -262,7 +262,7 @@ The following summarizes the C-ABI that generated code and the runtime both comm
 | `molt_get_attr_name(obj, name)` | Borrowed | Owned |
 | `molt_store_attr_name(obj, name, val)` | Borrowed | void |
 | `molt_object_new_bound(class_bits)` | Borrowed (instance retains class) | Owned |
-| `molt_object_init_stack(storage, class_bits, payload_size)` (unsafe runtime API, not a compiler opcode) | Caller proves backing outlives every owner; borrowed class | Owned; runtime validates stable class lifetime before touching caller storage |
+| `molt_object_init_stack(storage, class_bits, payload_size)` (unsafe runtime API, not a compiler opcode) | Caller proves backing (GC head, header and payload) outlives every owner; borrowed class | Owned; runtime validates stable class lifetime before touching caller storage |
 | Compiled function call `f(a, b, ...)` | Per parameter custody (§1.6): borrowed `+0`, or transferred `+1` that the call adopts | Owned |
 | `molt_iter_next(iter)` | Borrowed iterator | Owned `(value, done)` carrier; its item is borrowed while that carrier lives |
 | `molt_iter_next_unboxed(iter, value_out)` | Borrowed iterator; writable result slot | False transfers one owned item; true means exhaustion; a pending error leaves a defined `None` result |
