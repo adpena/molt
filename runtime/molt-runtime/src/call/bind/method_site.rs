@@ -551,8 +551,10 @@ impl TestSite {
         let mut image = vec![0u8; size];
         molt_codegen_abi::method_site::write_method_site_record_image(name, &mut image);
         let words = image
-            .chunks_exact(8)
-            .map(|word| u64::from_le_bytes(word.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_le_bytes(*word))
             .collect();
         Self { words }
     }

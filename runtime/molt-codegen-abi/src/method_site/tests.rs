@@ -108,12 +108,11 @@ impl Machine {
 
     fn load(&mut self, receiver: u64) -> u64 {
         self.write(SELF_OUT, 0, 0);
-        let callable = generate_method_site_load(self, RECORD, receiver, SELF_OUT, |b| {
+        generate_method_site_load(self, RECORD, receiver, SELF_OUT, |b| {
             b.events.push(Event::Cold);
             b.write(SELF_OUT, 0, crate::loaded_method_null_bits() as u64);
             COLD
-        });
-        callable
+        })
     }
 
     fn call(&mut self, callable: u64, self_word: u64, args: &[u64]) -> u64 {
