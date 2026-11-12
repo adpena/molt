@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -293,6 +294,10 @@ class PrecheckResult:
     seconds: tuple[tuple[str, float], ...] = ()
     # Selected gates the precheck does not run: the queue batch's.
     waived: tuple[SelectedGate, ...] = ()
+    # Try-run gates an earlier run of this lane passed on an older base and
+    # that main's move since then cannot affect (``rerun``); the caller's
+    # receipt carries their earlier records.
+    carried: tuple[SelectedGate, ...] = ()
     # Data readers of the change that presubmit leaves to postsubmit.
     postsubmit_only: tuple[str, ...] = ()
 
@@ -341,11 +346,15 @@ def precheck_landing(
     session_id: str,
     budget: PrecheckBudget | None = None,
     static_only: bool = False,
+    rerun: Callable[[SelectedGate], bool] | None = None,
 ) -> PrecheckResult:
     """Run ``head``'s static gates, then its try run within ``budget``.
 
     ``static_only`` stops after the static gates. ``land --fast`` passes
-    ``FAST_LANDING_BUDGET`` and pushes only a complete result.
+    ``FAST_LANDING_BUDGET`` and pushes only a complete result. ``rerun``, when
+    given, keeps only the try-run gates it accepts; the others are ``carried``
+    (an earlier run passed them and the caller proved the change since cannot
+    affect them). Static gates always run.
 
     The gates, their toolchains and their environment come from the same
     authorities ``integrate`` uses (``select_landing_gates``, ``prepare``,
@@ -377,7 +386,15 @@ def precheck_landing(
     selected = [
         gate for gate in gates if gate.precheck and (gate.static or not static_only)
     ]
-    waived = tuple(gate for gate in gates if gate not in selected)
+    carried: tuple[SelectedGate, ...] = ()
+    if rerun is not None:
+        carried = tuple(
+            gate for gate in selected if not gate.static and not rerun(gate)
+        )
+        selected = [gate for gate in selected if gate not in carried]
+    waived = tuple(
+        gate for gate in gates if gate not in selected and gate not in carried
+    )
     tried = sum(1 for gate in selected if not gate.static)
     _step(
         f"static gates in the lane ({len(selected)} of {len(gates)} selected gate(s); "
@@ -389,7 +406,12 @@ def precheck_landing(
     )
     if not selected:
         return PrecheckResult(
-            (), None, budget, waived=waived, postsubmit_only=postsubmit_only
+            (),
+            None,
+            budget,
+            waived=waived,
+            carried=carried,
+            postsubmit_only=postsubmit_only,
         )
     drv._assert_integration_source(git, head)
     prepared = config.prepare(
@@ -446,6 +468,7 @@ def precheck_landing(
             tuple(runs),
             seconds(),
             waived=waived,
+            carried=carried,
             postsubmit_only=postsubmit_only,
         )
     from tools.trunk_landing import HOST_SETTING
@@ -483,6 +506,7 @@ def precheck_landing(
                 tuple(runs),
                 seconds(),
                 waived=waived,
+                carried=carried,
                 postsubmit_only=postsubmit_only,
             )
     from molt.disk_capacity import DiskCapacityError
@@ -499,6 +523,7 @@ def precheck_landing(
             tuple(runs),
             seconds(),
             waived=waived,
+            carried=carried,
             postsubmit_only=postsubmit_only,
         )
         _warn(result.report())
@@ -548,6 +573,7 @@ def precheck_landing(
         tuple(runs),
         seconds(),
         waived=waived,
+        carried=carried,
         postsubmit_only=postsubmit_only,
     )
     if refusal is not None:

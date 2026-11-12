@@ -194,6 +194,7 @@ def test_module_registry_origins_are_the_reported_paths(
         native_module_init_specs=(),
         generated_native_init_modules=(),
         spawn_enabled=False,
+        global_layouts={},
     )
     origins = {row.name: row.origin for row in registry.rows}
     assert origins == {

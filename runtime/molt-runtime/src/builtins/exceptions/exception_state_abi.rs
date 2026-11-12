@@ -443,6 +443,11 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
             molt_cpython_abi::api::pending_calls::has_pending_calls,
         );
     }
+    // CPython `_Py_HandlePending` last: a thread that waited the switch
+    // interval gets the GIL here, at a generated poll.
+    if state.pending_work.take(PendingWorkKind::GilDropRequest) {
+        crate::concurrency::gil::yield_gil_to_waiter();
+    }
     drain_failed || exception_pending(_py)
 }
 

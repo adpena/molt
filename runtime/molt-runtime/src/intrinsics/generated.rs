@@ -8461,6 +8461,20 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
     IntrinsicSpec {
+        name: "molt_global_slot_base",
+        symbol: "molt_global_slot_base",
+        arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_global_slot_set",
+        symbol: "molt_global_slot_set",
+        arity: 5,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_build_class_builtin",
         symbol: "molt_build_class_builtin",
         arity: 2,

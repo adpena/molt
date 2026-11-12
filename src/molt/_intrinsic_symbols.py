@@ -1207,6 +1207,8 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_cell_gt": ("molt_cell_gt", 2),
     "molt_cell_ge": ("molt_cell_ge", 2),
     "molt_guard_builtin_bindings": ("molt_guard_builtin_bindings", 1),
+    "molt_global_slot_base": ("molt_global_slot_base", 1),
+    "molt_global_slot_set": ("molt_global_slot_set", 5),
     "molt_build_class_builtin": ("molt_build_class_builtin", 2),
     "molt_class_builder_check": ("molt_class_builder_check", 0),
     "molt_class_body_builtins": ("molt_class_body_builtins", 1),

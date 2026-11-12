@@ -4628,6 +4628,7 @@ unsafe fn dec_ref_ptr_terminal_body(
                 }
                 Some(HeapDropPolicy::List) => drop_detached_tracked_vec(seq_vec_ptr(ptr)),
                 Some(HeapDropPolicy::Dict) => {
+                    crate::builtins::namespace_slots::release(ptr);
                     drop_detached_tracked_vec(dict_entries_ptr(ptr));
                     drop_detached_tracked_vec(dict_table_ptr(ptr));
                 }

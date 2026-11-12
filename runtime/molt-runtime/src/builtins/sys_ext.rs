@@ -841,9 +841,28 @@ pub(crate) fn molt_sys_getfilesystemencoding_attached_body(_py: &crate::PyToken<
     })
 }
 
-// --- Thread switch interval (GIL timeslice stub) ---
+// --- Thread switch interval (the GIL's timeslice) ---
 
 const DEFAULT_SWITCH_INTERVAL_BITS: u64 = 0.005f64.to_bits();
+
+/// How long a GIL waiter waits before it asks the holder to drop the GIL
+/// (`concurrency::gil::take_gil`). A waiter does not hold the GIL, so it reads
+/// the interval through the runtime its custody bound, or the default when
+/// it has none yet. CPython stores microseconds with a floor of one.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gil_switch_interval(bound: *const RuntimeState) -> std::time::Duration {
+    let bits = if bound.is_null() {
+        DEFAULT_SWITCH_INTERVAL_BITS
+    } else {
+        // SAFETY: a non-null bound state is retained by this thread's custody
+        // until the custody ends, and the interval is an atomic.
+        unsafe { &*bound }
+            .sys_ext
+            .switch_interval_bits
+            .load(AtomicOrdering::Relaxed)
+    };
+    std::time::Duration::from_secs_f64(f64::from_bits(bits).max(1e-6))
+}
 
 /// `sys.getswitchinterval()` -> float seconds
 pub(crate) fn molt_sys_getswitchinterval_attached_body(_py: &crate::PyToken<'_>) -> u64 {

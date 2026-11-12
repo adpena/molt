@@ -4493,6 +4493,16 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_global_slot_base",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_global_slot_set",
+        arity: 5,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_globals_builtin",
         arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -19304,6 +19314,14 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_glob_translate" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_glob_translate__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_global_slot_base" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_global_slot_base__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_global_slot_set" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_global_slot_set__molt_context_a8c6010e2cbb56a1",
         },
         "molt_globals_builtin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

@@ -38,6 +38,20 @@ fn publication_during_service_survives_clear_and_preserves_other_sources() {
 }
 
 #[test]
+fn take_reports_and_clears_only_its_own_request() {
+    let word = PendingWork::new();
+    assert!(!word.take(PendingWorkKind::GilDropRequest));
+    word.request(PendingWorkKind::Signals);
+    word.request(PendingWorkKind::GilDropRequest);
+    assert!(word.take(PendingWorkKind::GilDropRequest));
+    assert!(!word.take(PendingWorkKind::GilDropRequest));
+    assert_eq!(
+        word.0.load(Ordering::Relaxed),
+        PendingWorkKind::Signals as u32
+    );
+}
+
+#[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn c_thread_publication_reaches_inline_poll_and_omitted_notification_starves_it() {
     use std::sync::atomic::AtomicUsize;

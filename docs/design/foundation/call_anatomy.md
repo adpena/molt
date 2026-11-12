@@ -18,7 +18,7 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a) | guarded call promotion design (HF-773 slice D) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5) | guarded call promotion design (HF-773 slice D); `module.attr` slot reads and the guarded builtin call (lane module-slots) | HF-507, HF-79, HF-200 |
 | 4 inline caches | not started | - | - | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -1202,6 +1202,18 @@ must be equal in hot-path instructions (gate in the anatomy tool).
 - **Names.** Attribute and method names are interned name handles in the op format (typed keys,
   HF-202), never `(ptr, len)` bytes.
 
+**Implementation (lane module-slots, 2026-11-11).** A module's layout is the sorted
+non-dunder names its own code reads, writes or deletes as globals; the module registry
+(schema 6) carries it. The namespace dictionary owns every value; its slot table mirrors
+them inside the dictionary's commit primitives (insert, replace, remove, compaction,
+reset), with a row-to-slot inverse so a replacement needs no probe. A non-exact-`str` key
+degrades the table for good. Compiled reads: `GlobalSlotBase` (one runtime call per
+activation, merged by GVN and hoisted by LICM; the frame's globals table when it uses the
+site's layout, else an all-unbound array) and `GlobalSlotGet`, whose meaning is the shared
+`molt_codegen_abi::global_slot` generator. Stores replace the dictionary row by slot
+index (`molt_global_slot_set`). Free-threaded runtimes take the by-name path. The base
+becomes inline loads once the frame record exposes the function's globals (stage 1).
+
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,
 module slot write, builtins version). Check: mutation tests per guard kind (rebind a global, add a
@@ -1309,7 +1321,7 @@ a static layout, such as big integers) remain.
 | Object header layout | exists | `molt-codegen-abi` `HEADER_*` constants |
 | `NativeSignature` per function | **missing** (pieces are name-keyed) | new typed fact in TIR |
 | Call-site binding class (`Proven`/`Guarded`/`Monomorphic`/`Dynamic`) | **missing** as a typed fact | new, from binding flow |
-| `GlobalSlot(ModuleId, k)` | **missing**; globals are dict entries | new, with the module slot array |
+| `GlobalSlot(ModuleId, k)` | exists for global reads and stores (`OpIR::global_slot`, `TirOp::global_slot`); `module.attr` sites open | layouts in the module registry (schema 6); `builtins/namespace_slots.rs`; `molt_codegen_abi::global_slot` |
 | `FramePlan` (record or none, home count, class cell) | partial (runtime code-slot frame plan) | move to compile time |
 | `FieldSlot(ClassId, j)` for attribute sites | **missing** at compile time (runtime site caches exist) | new, from class layout facts |
 | Interprocedural may-raise summary | **missing** | new TIR analysis |

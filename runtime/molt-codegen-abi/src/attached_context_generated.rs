@@ -1695,6 +1695,8 @@ macro_rules! attached_symbol {
     ("molt_glob_has_magic") => { "molt_glob_has_magic__molt_context_a8c6010e2cbb56a1" };
     ("molt_glob_iter") => { "molt_glob_iter__molt_context_a8c6010e2cbb56a1" };
     ("molt_glob_translate") => { "molt_glob_translate__molt_context_a8c6010e2cbb56a1" };
+    ("molt_global_slot_base") => { "molt_global_slot_base__molt_context_a8c6010e2cbb56a1" };
+    ("molt_global_slot_set") => { "molt_global_slot_set__molt_context_a8c6010e2cbb56a1" };
     ("molt_globals_builtin") => { "molt_globals_builtin__molt_context_a8c6010e2cbb56a1" };
     ("molt_gpu_barrier") => { "molt_gpu_barrier__molt_context_a8c6010e2cbb56a1" };
     ("molt_gpu_block_dim") => { "molt_gpu_block_dim__molt_context_a8c6010e2cbb56a1" };

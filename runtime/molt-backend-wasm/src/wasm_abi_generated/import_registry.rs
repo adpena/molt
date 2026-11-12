@@ -623,6 +623,14 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "guard_builtin_bindings",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::GlobalSlotBase,
+        name: "global_slot_base",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::GlobalSlotSet,
+        name: "global_slot_set",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::BuildClassBuiltin,
         name: "build_class_builtin",
     },
@@ -11519,6 +11527,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_cell_ge" => Some(WasmRuntimeImport::CellGe),
         "guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
         "molt_guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
+        "global_slot_base" => Some(WasmRuntimeImport::GlobalSlotBase),
+        "molt_global_slot_base" => Some(WasmRuntimeImport::GlobalSlotBase),
+        "global_slot_set" => Some(WasmRuntimeImport::GlobalSlotSet),
+        "molt_global_slot_set" => Some(WasmRuntimeImport::GlobalSlotSet),
         "build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
         "molt_build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
         "class_builder_check" => Some(WasmRuntimeImport::ClassBuilderCheck),

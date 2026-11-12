@@ -533,6 +533,7 @@ pub fn finalize_function_drops(
         func.name,
     );
     let mut lowering_changed = prepare_final_backend_lowering(func, tti);
+    lowering_changed |= super::pass_manager::run_global_slot_sites(func, tti);
     let audit_start = Instant::now();
     let had_drop_inserted = matches!(
         func.attrs.get(DROP_INSERTED_ATTR),

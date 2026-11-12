@@ -275,6 +275,7 @@ FrontendOpKind = Literal[
     'GET_ATTR_SPECIAL_OBJ',
     'GET_ITEM',
     'GET_ITER',
+    'GLOBAL_SLOT_GET',
     'GOTO',
     'GPU_BARRIER',
     'GPU_BLOCK_DIM',
@@ -807,6 +808,7 @@ WireOpKind = Literal[
     'get_item',
     'get_iter',
     'getframe',
+    'global_slot_get',
     'goto',
     'gpu_barrier',
     'gpu_block_dim',
@@ -1340,6 +1342,7 @@ class FrontendKinds:
     GET_ATTR_SPECIAL_OBJ: Final = 'GET_ATTR_SPECIAL_OBJ'
     GET_ITEM: Final = 'GET_ITEM'
     GET_ITER: Final = 'GET_ITER'
+    GLOBAL_SLOT_GET: Final = 'GLOBAL_SLOT_GET'
     GOTO: Final = 'GOTO'
     GPU_BARRIER: Final = 'GPU_BARRIER'
     GPU_BLOCK_DIM: Final = 'GPU_BLOCK_DIM'
@@ -1872,6 +1875,7 @@ class WireKinds:
     GET_ITEM: Final = 'get_item'
     GET_ITER: Final = 'get_iter'
     GETFRAME: Final = 'getframe'
+    GLOBAL_SLOT_GET: Final = 'global_slot_get'
     GOTO: Final = 'goto'
     GPU_BARRIER: Final = 'gpu_barrier'
     GPU_BLOCK_DIM: Final = 'gpu_block_dim'
@@ -2399,6 +2403,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'GET_ATTR_SPECIAL_OBJ': 'get_attr_special_obj',
     'GET_ITEM': 'get_item',
     'GET_ITER': 'get_iter',
+    'GLOBAL_SLOT_GET': 'global_slot_get',
     'GOTO': 'goto',
     'GPU_BARRIER': 'gpu_barrier',
     'GPU_BLOCK_DIM': 'gpu_block_dim',
@@ -2932,6 +2937,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "get_item",
         "get_iter",
         "getframe",
+        "global_slot_get",
         "goto",
         "gpu_barrier",
         "gpu_block_dim",
@@ -3498,6 +3504,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "GET_ATTR_SPECIAL_OBJ",
         "GET_ITEM",
         "GET_ITER",
+        "GLOBAL_SLOT_GET",
         "GOTO",
         "GPU_BARRIER",
         "GPU_BLOCK_DIM",
@@ -3981,6 +3988,7 @@ CANONICAL_KIND: dict[str, str] = {
     "module_get_attr": "module_get_attr",
     "module_import_from": "module_import_from",
     "module_get_global": "module_get_global",
+    "global_slot_get": "global_slot_get",
     "module_get_name": "module_get_name",
     "module_set_attr": "module_set_attr",
     "module_del_global": "module_del_global",
@@ -4099,6 +4107,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "module_get_attr",
         "module_import_from",
         "module_get_global",
+        "global_slot_get",
         "module_get_name",
         "module_set_attr",
         "module_del_global",
@@ -4384,6 +4393,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "GET_ATTR_GENERIC_PTR": True,
     "GET_ATTR_NAME": True,
     "GET_ITER": True,
+    "GLOBAL_SLOT_GET": True,
     "GOTO": False,
     "GPU_BARRIER": True,
     "GPU_BLOCK_DIM": True,
@@ -4849,6 +4859,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "get_item": 64,
     "get_iter": 32,
     "getframe": 16384,
+    "global_slot_get": 64,
     "goto": 2048,
     "gpu_barrier": 4096,
     "gpu_block_dim": 4096,

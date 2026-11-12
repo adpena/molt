@@ -102,6 +102,7 @@ mod constant_ops;
 mod container_ops;
 #[cfg(feature = "llvm")]
 mod frame_record;
+mod global_slot;
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
