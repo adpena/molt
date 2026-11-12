@@ -70,8 +70,9 @@ fn builtin_func_of_a_reserved_unpack_args_callable_stores_its_key() {
     );
 }
 
-/// Table entries that take `(closure, argv, argc)` and call `import_name`
-/// directly: the app trampolines of that runtime callable.
+/// Table entries that take `(context, closure, argv, argc)` and call
+/// `import_name` directly: the app trampolines of that runtime callable. The
+/// leading attached execution context is not a Python argument (HF-198).
 fn argv_trampolines_calling(wasm: &[u8], import_name: &str) -> usize {
     let imports = wasm_function_import_indices(wasm);
     let Some(&import_idx) = imports.get(import_name) else {
@@ -86,7 +87,7 @@ fn argv_trampolines_calling(wasm: &[u8], import_name: &str) -> usize {
         .filter(|&func_idx| func_idx >= import_count)
         .filter(|&func_idx| {
             let type_idx = function_type_indices[(func_idx - import_count) as usize];
-            signatures[type_idx as usize] == (3, 1)
+            signatures[type_idx as usize] == (4, 1)
                 && wasm_direct_call_indices_for_body(wasm, Some(func_idx - import_count))
                     .contains(&import_idx)
         })
