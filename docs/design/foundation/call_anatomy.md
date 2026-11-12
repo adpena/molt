@@ -144,7 +144,13 @@ terminal type refinement, so an expanded int keeps its `I64` type. `bench_fib`, 
 macOS arm64, against C3: 8.40 to 7.57 billion instructions retired (-9.9%, VERIFIED, three
 interleaved runs per binary, output identical); user time 0.25 to 0.23 s, below Cranelift's 0.235 s
 (row above). Next: C5 `Mul` with a cheap exact test; list index and store fast paths (fannkuch's hot
-path); WASM moves once the stage covers its lane parity checklist.
+path); WASM moves once the stage covers its lane parity checklist. C6 (2026-11-12): mixed int and float
+operands take two arms that convert the inline-int payload exactly (`IntToFloat`), and true
+division (`Div`) computes in F64 on every arm; two ints divided by zero leave for the runtime,
+which raises the int message. `spectral_norm` (whose `eval_A` divides ints and adds a float and an
+int), LLVM release, macOS arm64, instructions retired, min of 2: 11.50 to 8.27 billion (-28.1%,
+output identical), below Cranelift's 9.58 billion; `bench_float`, `nbody` and `mandelbrot` within
+0.13%. Cranelift keeps its backend-local mixed paths until it consumes final TIR.
 
 P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
