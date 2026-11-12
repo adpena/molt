@@ -541,7 +541,7 @@ dependencies = [
  "molt-backend",
  "molt-codegen-abi",
  "wasm-encoder",
- "wasmparser",
+ "wasmparser 0.263.0",
 ]
 
 [[package]]
@@ -571,7 +571,7 @@ dependencies = [
  "molt-ir",
  "molt-tir",
  "wasm-encoder",
- "wasmparser",
+ "wasmparser 0.262.0",
 ]
 
 [[package]]
@@ -863,7 +863,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4495a6f85dd94c411c749303efcbc5defade0b0cbdbc0541495241ab917a9b5a"
 dependencies = [
  "leb128fmt",
- "wasmparser",
+ "wasmparser 0.262.0",
 ]
 
 [[package]]
@@ -871,6 +871,19 @@ name = "wasmparser"
 version = "0.262.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "974d643b125b272607e2fff8012ea14a8328acd7621e4bafa7afb32500052b1b"
+dependencies = [
+ "bitflags",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "semver",
+ "serde",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.263.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f5fa0a054ae153606df820eb0a84213e28cda41bbe04ba2628e71b6ba100fcb"
 dependencies = [
  "bitflags",
  "hashbrown 0.17.1",
