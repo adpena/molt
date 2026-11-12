@@ -110,9 +110,14 @@ def test_clippy_selector_edits_do_not_run_landing_simulations(path):
     assert _selected_pytest_targets(cfg, [path]) == {
         "tests/tools/test_import_file.py",
         "tests/tools/test_check_changed_clippy.py",
-        # The crate-test selector imports the clippy selector's reach.
+        # The crate-test selector imports the clippy selector's reach, and so
+        # does land --fast's main-move gate selection (tools/molt_dev_land_fast.py).
         *(
-            [POLICY_ORACLE, "tests/tools/test_check_changed_crate_tests.py"]
+            [
+                POLICY_ORACLE,
+                "tests/tools/test_check_changed_crate_tests.py",
+                "tests/test_molt_dev.py",
+            ]
             if path.startswith("tools/")
             else []
         ),
