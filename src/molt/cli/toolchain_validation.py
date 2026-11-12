@@ -682,28 +682,6 @@ def _planned_validate_steps(
             "smoke",
         ),
         _ValidationStep(
-            "wasm-rust-regressions",
-            [
-                "cargo",
-                "test",
-                "-p",
-                "molt-backend",
-                "--features",
-                "wasm-backend",
-                "--test",
-                "lir_wasm_repr_regressions",
-                "--test",
-                "wasm_lir_fast_path_integration",
-                "--",
-                "--nocapture",
-            ],
-            root,
-            "correctness",
-            ("wasm",),
-            ("dev", "release"),
-            "smoke",
-        ),
-        _ValidationStep(
             "luau-rust-regressions",
             [
                 "cargo",

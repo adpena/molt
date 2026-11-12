@@ -138,63 +138,6 @@ fn wasm_pyinit_provider_object(symbol: &str, raw_module_pointer: i32) -> Vec<u8>
 }
 
 #[test]
-fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
-    assert!(is_production_lir_wasm_fast_path_name(
-        "molt_test____molt_globals_builtin__"
-    ));
-    assert!(!is_production_lir_wasm_fast_path_name(
-        "molt_test_regular_helper"
-    ));
-    assert!(!is_production_lir_wasm_fast_path_name(
-        "molt_test_user_callable"
-    ));
-}
-
-#[test]
-fn lir_fast_literal_const_materialization_emits_valid_wasm() {
-    let literal_bytes = b"hello wasm literal";
-    let mut literal = wasm_test_op(molt_ir::OpKind::ConstStr, Some("literal"), vec![]);
-    literal.s_value = Some(String::from_utf8(literal_bytes.to_vec()).expect("ascii literal"));
-    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["literal"]);
-    ret.args = Some(vec!["literal".to_string()]);
-    let func = wasm_test_function(
-        "m____molt_globals_builtin__literal_const",
-        vec![],
-        None,
-        vec![literal, ret],
-    );
-    let ir = SimpleIR {
-        functions: vec![func],
-        profile: None,
-    };
-    let wasm = WasmBackend::with_options(WasmCompileOptions {
-        native_eh_enabled: false,
-        reloc_enabled: false,
-        ..WasmCompileOptions::default()
-    })
-    .compile(ir);
-
-    wasmparser::Validator::new()
-        .validate_all(&wasm)
-        .expect("LIR-fast literal const materialization must emit valid WASM");
-
-    let imports = wasm_function_import_indices(&wasm);
-    let string_from_bytes = *imports
-        .get("string_from_bytes")
-        .unwrap_or_else(|| panic!("string_from_bytes import missing; imports={imports:?}"));
-    assert!(
-        wasm_direct_call_indices(&wasm).contains(&string_from_bytes),
-        "LIR-fast materialization must emit a direct call to string_from_bytes"
-    );
-    assert!(
-        wasm_data_segment_payloads(&wasm)
-            .iter()
-            .any(|payload| payload.as_slice() == literal_bytes),
-        "LIR-fast materialization must write literal bytes into a data segment"
-    );
-}
-
-#[test]
 fn generic_attr_ic_preserves_boxed_receivers_and_transported_source_op_idx() {
     for kind in [
         molt_ir::OpKind::GetAttrGenericPtr,

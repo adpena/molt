@@ -9,10 +9,9 @@ mod tests;
 
 use crate::OpIR;
 use crate::wasm_abi_generated::{
-    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstOpPolicySpec, WasmConstRawIntEffect,
-    WasmConstScalarValue, WasmRuntimeImport, wasm_const_op_policy, wasm_const_op_policy_for_opcode,
+    WasmConstInlineSeed, WasmConstOpPolicySpec, WasmConstRawIntEffect, WasmRuntimeImport,
+    wasm_const_op_policy,
 };
-use molt_tir::tir::ops::{OpCode, TirOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct WasmConstOpPolicy(&'static WasmConstOpPolicySpec);
@@ -24,10 +23,6 @@ impl WasmConstOpPolicy {
 
     pub(in crate::wasm) fn for_kind(kind: molt_ir::OpKind) -> Option<Self> {
         wasm_const_op_policy(kind).map(Self)
-    }
-
-    pub(in crate::wasm) fn for_tir_opcode(opcode: OpCode) -> Option<Self> {
-        wasm_const_op_policy_for_opcode(opcode).map(Self)
     }
 
     pub(in crate::wasm) fn inline_seed(self) -> WasmConstInlineSeed {
@@ -46,19 +41,11 @@ impl WasmConstOpPolicy {
         self.0.raw_int_effect
     }
 
-    pub(in crate::wasm) fn lir_fast_policy(self) -> WasmConstLirFastPolicy {
-        self.0.lir_fast
-    }
-
     pub(in crate::wasm) fn needs_runtime_anchor(self) -> bool {
         self.0.dispatch_runtime_seed
     }
 
     pub(in crate::wasm) fn materialization_can_fail(self) -> bool {
         self.literal_payload().is_some() || matches!(self.inline_seed(), WasmConstInlineSeed::Int)
-    }
-
-    pub(in crate::wasm) fn required_tir_scalar_value(self, op: &TirOp) -> WasmConstScalarValue {
-        self.0.required_tir_scalar_value(op)
     }
 }

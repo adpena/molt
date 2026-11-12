@@ -1,7 +1,6 @@
 use super::WasmConstOpPolicy;
 use crate::OpIR;
-use molt_ir::literal_payload::{required_simple_literal_bytes, required_tir_literal_bytes};
-use molt_tir::tir::ops::TirOp;
+use molt_ir::literal_payload::required_simple_literal_bytes;
 use std::sync::Arc;
 
 impl WasmConstOpPolicy {
@@ -11,17 +10,5 @@ impl WasmConstOpPolicy {
             "literal policy must match its operation"
         );
         Arc::from(required_simple_literal_bytes(op))
-    }
-
-    pub(in crate::wasm::const_materialization::policy) fn required_tir_literal_bytes(
-        self,
-        op: &TirOp,
-    ) -> Arc<[u8]> {
-        assert_eq!(
-            Some(self.0.kind),
-            molt_ir::tir::op_kinds_generated::opcode_canonical_kind_table(op.opcode),
-            "literal policy must match its operation",
-        );
-        Arc::from(required_tir_literal_bytes(op))
     }
 }

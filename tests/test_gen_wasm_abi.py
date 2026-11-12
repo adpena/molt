@@ -715,9 +715,7 @@ def _boxed_abi_fixture() -> dict:
     return data
 
 
-@pytest.mark.parametrize(
-    "authority", ["callable", "reserved", "lir", "fixed_lir", "compiler", "op_loop"]
-)
+@pytest.mark.parametrize("authority", ["callable", "reserved", "compiler", "op_loop"])
 def test_runtime_boxed_abi_uses_existing_normalized_contracts(authority: str) -> None:
     data = _boxed_abi_fixture()
     entry = data["import"][0]
@@ -729,19 +727,6 @@ def test_runtime_boxed_abi_uses_existing_normalized_contracts(authority: str) ->
                 "import_name": "example",
                 "runtime_name": "molt_example",
                 "callable_arity": 1,
-            }
-        ]
-    elif authority == "lir":
-        data["lir_runtime_call"] = [
-            {"import_name": "example", "boxed_operand_count": 1}
-        ]
-    elif authority == "fixed_lir":
-        data["op_loop_runtime_call"] = [
-            {
-                "kind": "example",
-                "import_name": "example",
-                "lir_variant": "Example",
-                "lir_operand_count": 1,
             }
         ]
     elif authority == "compiler":
@@ -912,9 +897,6 @@ def test_runtime_boxed_abi_keeps_real_void_distinct_from_boxed_none() -> None:
     data = _boxed_abi_fixture()
     data["import"][0].update(type=2, boxed_call=True)
     assert manifest.runtime_boxed_call_specs(data)[0]["result"] == "void"
-    data["lir_runtime_call"] = [{"import_name": "example", "boxed_operand_count": 1}]
-    with pytest.raises(manifest.WasmAbiManifestError, match="boxed LIR shape"):
-        manifest.runtime_boxed_call_specs(data)
 
 
 def test_runtime_return_contract_requires_semantics_for_every_i64_import() -> None:
@@ -1108,7 +1090,7 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     }
     assert len(arms) == len(expected)
     assert {variant: inline or block for variant, inline, block in arms} == expected
-    assert "OpLoopRuntimeSinkSpec" not in modules["lir_runtime_calls.rs"]
+    assert "OpLoopRuntimeSinkSpec" not in modules["op_loop_runtime_calls.rs"]
     shared = gen.render_runtime_fn_rs(data)
     assert "RuntimeBoxedReturn::BorrowedValue" in shared
     assert "RuntimeBoxedReturn::PollValue" in shared
@@ -1119,10 +1101,8 @@ def test_fixed_arity_constructors_take_raw_word_ranges_not_boxed_operands() -> N
     imports = {entry["name"]: entry for entry in data["import"]}
     contracts = manifest.runtime_import_return_specs(data)
     boxed = {row["runtime_name"] for row in manifest.runtime_boxed_call_specs(data)}
-    lir_calls = {row["import_name"]: row for row in data["lir_runtime_call"]}
     # Tuple construction has one constructor; the builder finish is retired.
     assert "tuple_builder_finish" not in imports
-    assert "tuple_builder_finish" not in lir_calls
     for name, arity in (
         ("tuple_from_values", 2),
         ("list_from_values", 2),
@@ -1136,7 +1116,6 @@ def test_fixed_arity_constructors_take_raw_word_ranges_not_boxed_operands() -> N
         # lowering and callable admission must never box or release them.
         assert f"molt_{name}" not in boxed, name
         assert "callable_arity" not in entry, name
-    assert "boxed_operand_count" not in lir_calls["tuple_from_values"]
 
 
 @pytest.mark.parametrize(
@@ -2893,33 +2872,10 @@ def test_python_callable_abi_and_cache_include_native_only_providers(
         manifest._rust_export_signatures.cache_clear()
 
 
-def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
+def test_wasm_abi_manifest_owns_op_loop_runtime_calls() -> None:
     gen = gen_wasm_abi
     data = gen.load_manifest()
-    calls = {entry["variant"]: entry for entry in data["lir_runtime_call"]}
     op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
-
-    assert calls["Add"]["import_name"] == "add"
-    assert calls["Add"]["boxed_operand_count"] == 2
-    assert calls["FloorDiv"]["import_name"] == "floordiv"
-    assert calls["Neg"]["boxed_operand_count"] == 1
-    assert calls["StoreIndex"]["boxed_operand_count"] == 3
-    assert calls["GetAttrName"]["boxed_operand_count"] == 2
-    assert calls["Iter"]["boxed_operand_count"] == 1
-    assert calls["ModuleImportStar"] == {
-        "variant": "ModuleImportStar",
-        "import_name": "module_import_star",
-    }
-    assert calls["ContextExit"] == {
-        "variant": "ContextExit",
-        "import_name": "context_exit",
-    }
-    assert calls["IntFromI64"]["import_name"] == "int_from_i64"
-    assert calls["IntAsI64"]["import_name"] == "int_as_i64"
-    assert op_loop_calls["module_import_star"]["lir_variant"] == "ModuleImportStar"
-    assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
-    assert op_loop_calls["context_exit"]["lir_variant"] == "ContextExit"
-    assert op_loop_calls["context_exit"]["lir_operand_count"] == 2
     # The scalar parse kinds lost their last producer (HF-197).
     assert not {"json_parse", "msgpack_parse", "cbor_parse"} & op_loop_calls.keys()
     assert "sink" not in op_loop_calls["asyncgen_new"]
@@ -2946,31 +2902,19 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     }
 
     rendered_rs_modules = gen.render_rs_modules(data)
-    rendered_lir_rs = rendered_rs_modules["lir_runtime_calls.rs"]
-    assert "enum LirRuntimeCall" in rendered_lir_rs
-    assert "OpLoopRuntimeSinkSpec" not in rendered_lir_rs
-    assert "discard_result: bool" in rendered_lir_rs
-    assert "use super::import_tokens::WasmRuntimeImport;" in rendered_lir_rs
-    assert "pub(crate) const fn import(self) -> WasmRuntimeImport" in rendered_lir_rs
-    assert "Self::FloorDiv => WasmRuntimeImport::Floordiv" in rendered_lir_rs
-    assert "pub(crate) const fn boxed_operand_count" in rendered_lir_rs
-    assert "Self::StoreIndex => Some(3)" in rendered_lir_rs
-    assert "Self::ModuleImport => WasmRuntimeImport::ModuleImport" in rendered_lir_rs
-    assert 'Self::ModuleImport => "module_import"' not in rendered_lir_rs
-    assert "Self::ModuleImport => Some" not in rendered_lir_rs
-    assert "pub(crate) const fn import_name" not in rendered_lir_rs
-    assert "self.import().name()" not in rendered_lir_rs
-    assert "lir_fixed_runtime_call" in rendered_lir_rs
-    assert "molt_ir::OpKind::ContextExit => Some(LirFixedRuntimeCall" in rendered_lir_rs
-    assert "pub(crate) fn op_loop_runtime_call(" in rendered_lir_rs
-    assert "marked: bool" in rendered_lir_rs
+    rendered_op_loop_rs = rendered_rs_modules["op_loop_runtime_calls.rs"]
+    assert "OpLoopRuntimeSinkSpec" not in rendered_op_loop_rs
+    assert "LirRuntimeCall" not in rendered_op_loop_rs
+    assert "use super::import_tokens::WasmRuntimeImport;" in rendered_op_loop_rs
+    assert "pub(crate) fn op_loop_runtime_call(" in rendered_op_loop_rs
+    assert "marked: bool" in rendered_op_loop_rs
     assert (
         "molt_ir::OpKind::ExceptionFinallyPendingObserver if marked => "
-        "Some(OpLoopRuntimeCallSpec {" in rendered_lir_rs
+        "Some(OpLoopRuntimeCallSpec {" in rendered_op_loop_rs
     )
     assert (
         "import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending"
-        in rendered_lir_rs
+        in rendered_op_loop_rs
     )
     native_rows = gen._native_marked_op_loop_symbol_rows(data)
     assert native_rows == (
@@ -3012,28 +2956,12 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         gen.render_native_exception_observer_abi_rs(second_marked)
     )
 
-    broken = copy.deepcopy(data)
-    broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(
-        manifest.WasmAbiManifestError, match="references unknown import"
-    ):
-        manifest.validate_loaded_manifest(broken)
-    broken_count = copy.deepcopy(data)
-    broken_count["lir_runtime_call"][0]["boxed_operand_count"] = -1
-    with pytest.raises(manifest.WasmAbiManifestError, match="boxed_operand_count"):
-        manifest.validate_loaded_manifest(broken_count)
-
     for helper in ("dec_ref_obj", "inc_ref_obj"):
         missing_refcount_import = copy.deepcopy(data)
         missing_refcount_import["import"] = [
             entry
             for entry in missing_refcount_import["import"]
             if entry["name"] != helper
-        ]
-        missing_refcount_import["lir_runtime_call"] = [
-            entry
-            for entry in missing_refcount_import["lir_runtime_call"]
-            if entry["import_name"] != helper
         ]
         with pytest.raises(
             manifest.WasmAbiManifestError,
@@ -3060,51 +2988,30 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     with pytest.raises(manifest.WasmAbiManifestError, match="must differ"):
         manifest.validate_loaded_manifest(duplicate_marked_import)
 
-    local_facade = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/runtime_calls.rs"
-    ).read_text(encoding="utf-8")
-    assert "enum LirRuntimeCall" not in local_facade
-    assert "match kind" not in local_facade
-    assert "lir_fixed_runtime_call" in local_facade
-    assert "LirFixedRuntimeCall" in local_facade
-    assert "crate::wasm_abi_generated::LirRuntimeCall" in local_facade
-
-    call_abi = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/lir_runtime_ops/call_abi.rs"
-    ).read_text(encoding="utf-8")
-    assert "boxed_operand_count().unwrap_or_else" in call_abi
-    assert "runtime_call, 2" not in call_abi
-
 
 def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
     gen = gen_wasm_abi
     data = gen.load_manifest()
     selectors = {
-        (entry["op"], entry["fact"]): (
-            entry["import_name"],
-            entry.get("lir_variant"),
-        )
+        (entry["op"], entry["fact"]): entry["import_name"]
         for entry in data["container_runtime_selector"]
     }
 
     assert selectors == {
-        ("index", "flat_list_int"): ("list_int_getitem", "ListIntGetitem"),
-        ("store_index", "flat_list_int"): (
-            "list_int_setitem",
-            "ListIntSetitem",
-        ),
-        ("index", "dict"): ("dict_getitem", "DictGetitem"),
-        ("index", "tuple"): ("tuple_getitem", "TupleGetitem"),
-        ("store_index", "dict"): ("dict_setitem", "DictSetitem"),
-        ("contains", "set"): ("set_contains", "SetContains"),
-        ("contains", "dict"): ("dict_contains", "DictContains"),
-        ("contains", "list"): ("list_contains", "ListContains"),
-        ("contains", "str"): ("str_contains", "StrContains"),
-        ("len", "list"): ("len_list", None),
-        ("len", "str"): ("len_str", None),
-        ("len", "dict"): ("len_dict", None),
-        ("len", "tuple"): ("len_tuple", None),
-        ("len", "set"): ("len_set", None),
+        ("index", "flat_list_int"): "list_int_getitem",
+        ("store_index", "flat_list_int"): "list_int_setitem",
+        ("index", "dict"): "dict_getitem",
+        ("index", "tuple"): "tuple_getitem",
+        ("store_index", "dict"): "dict_setitem",
+        ("contains", "set"): "set_contains",
+        ("contains", "dict"): "dict_contains",
+        ("contains", "list"): "list_contains",
+        ("contains", "str"): "str_contains",
+        ("len", "list"): "len_list",
+        ("len", "str"): "len_str",
+        ("len", "dict"): "len_dict",
+        ("len", "tuple"): "len_tuple",
+        ("len", "set"): "len_set",
     }
 
     rendered_rs_modules = gen.render_rs_modules(data)
@@ -3115,15 +3022,11 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
     assert "WASM_CONTAINER_RUNTIME_SELECTORS" not in rendered_selector_rs
     assert "WasmContainerRuntimeFact::FlatListInt" in rendered_selector_rs
     assert "import: WasmRuntimeImport::ListIntGetitem" in rendered_selector_rs
-    assert "LirRuntimeCall::ListIntGetitem" in rendered_selector_rs
     assert "wasm_container_runtime_selection" in rendered_selector_rs
     assert "mod container_runtime_selector;" in rendered_mod_rs
     assert "WasmContainerRuntimeOp" in rendered_mod_rs
     assert "WASM_CONTAINER_RUNTIME_SELECTORS" in rendered_py
-    assert (
-        '("index", "flat_list_int", "list_int_getitem", "ListIntGetitem")'
-        in rendered_py
-    )
+    assert '("index", "flat_list_int", "list_int_getitem")' in rendered_py
 
     broken_duplicate = copy.deepcopy(data)
     broken_duplicate["container_runtime_selector"].append(
@@ -3141,13 +3044,6 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
     ):
         manifest.validate_loaded_manifest(broken_import)
 
-    broken_lir = copy.deepcopy(data)
-    broken_lir["container_runtime_selector"][0]["lir_variant"] = "DictGetitem"
-    with pytest.raises(
-        manifest.WasmAbiManifestError, match="does not match lir_variant"
-    ):
-        manifest.validate_loaded_manifest(broken_lir)
-
 
 def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     gen = gen_wasm_abi
@@ -3156,44 +3052,33 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
         entry["kind"]: (
             entry["import_name"],
             entry["op_loop_variant"],
-            entry.get("lir_variant"),
-            entry.get("lir_operand_count"),
             tuple(entry["deps"]),
         )
         for entry in data["numeric_runtime_selector"]
     }
 
-    assert selectors["add"] == ("add", "Add", "Add", 2, ("add", "str_concat"))
+    assert selectors["add"] == ("add", "Add", ("add", "str_concat"))
     assert selectors["inplace_add"] == (
         "inplace_add",
         "Add",
-        "InplaceAdd",
-        2,
         ("inplace_add", "str_concat"),
     )
-    assert selectors["shl"] == ("lshift", "LShift", "LShift", 2, ("lshift",))
-    assert selectors["bit_not"] == ("invert", "Invert", "Invert", 1, ("invert",))
-    assert selectors["pow_mod"] == ("pow_mod", "PowMod", "PowMod", 3, ("pow_mod",))
-    assert selectors["vec_sum"] == (
-        "vec_sum",
-        "VectorReduction",
-        None,
-        None,
-        ("vec_sum",),
-    )
+    assert selectors["shl"] == ("lshift", "LShift", ("lshift",))
+    assert selectors["bit_not"] == ("invert", "Invert", ("invert",))
+    assert selectors["pow_mod"] == ("pow_mod", "PowMod", ("pow_mod",))
+    assert selectors["vec_sum"] == ("vec_sum", "VectorReduction", ("vec_sum",))
     assert not any(
         kind.startswith("vec_") and kind.count("_") > 1 for kind in selectors
     )
 
     rendered_rs_modules = gen.render_rs_modules(data)
     rendered_selector_rs = rendered_rs_modules["numeric_runtime_selector.rs"]
-    rendered_lir_rs = rendered_rs_modules["lir_runtime_calls.rs"]
     rendered_mod_rs = rendered_rs_modules["mod.rs"]
     rendered_py = gen.render_py(data)
     assert "WASM_NUMERIC_RUNTIME_SELECTORS" in rendered_selector_rs
     assert "WasmNumericOpLoopKind::VectorReduction" in rendered_selector_rs
     assert "import: WasmRuntimeImport::InplaceAdd" in rendered_selector_rs
-    assert "LirRuntimeCall::InplaceAdd" in rendered_selector_rs
+    assert "LirRuntimeCall" not in rendered_selector_rs
     assert (
         "deps: &[WasmRuntimeImport::InplaceAdd, WasmRuntimeImport::StrConcat]"
         in rendered_selector_rs
@@ -3202,11 +3087,10 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
         "molt_ir::OpKind::Shl => Some(WasmNumericRuntimeSelection"
         in rendered_selector_rs
     )
-    assert "call: LirRuntimeCall::PowMod" in rendered_lir_rs
     assert "mod numeric_runtime_selector;" in rendered_mod_rs
     assert "WasmNumericOpLoopKind" in rendered_mod_rs
     assert "WASM_NUMERIC_RUNTIME_SELECTORS" in rendered_py
-    assert '("bit_not", "invert", "Invert", "Invert", 1, ("invert",))' in rendered_py
+    assert '("bit_not", "invert", "Invert", ("invert",))' in rendered_py
 
     broken_duplicate = copy.deepcopy(data)
     broken_duplicate["numeric_runtime_selector"].append(
@@ -3224,24 +3108,10 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     ):
         manifest.validate_loaded_manifest(broken_import)
 
-    broken_lir = copy.deepcopy(data)
-    broken_lir["numeric_runtime_selector"][0]["lir_variant"] = "Sub"
-    with pytest.raises(
-        manifest.WasmAbiManifestError, match="does not match lir_variant"
-    ):
-        manifest.validate_loaded_manifest(broken_lir)
-
     broken_deps = copy.deepcopy(data)
     broken_deps["numeric_runtime_selector"][0]["deps"] = ["str_concat"]
     with pytest.raises(manifest.WasmAbiManifestError, match="deps must include"):
         manifest.validate_loaded_manifest(broken_deps)
-
-    broken_count = copy.deepcopy(data)
-    broken_count["numeric_runtime_selector"][0]["lir_operand_count"] = -1
-    with pytest.raises(
-        manifest.WasmAbiManifestError, match="invalid lir_operand_count"
-    ):
-        manifest.validate_loaded_manifest(broken_count)
 
 
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
@@ -3356,7 +3226,6 @@ def test_wasm_abi_policy_projects_ir_owned_literals() -> None:
         "literal_payload": "none",
         "scalar_payload": "int",
         "raw_int_effect": "set_int",
-        "lir_fast": "lower",
         "materializer_import": "int_from_i64",
         "dispatch_runtime_seed": True,
     }
@@ -3366,25 +3235,20 @@ def test_wasm_abi_policy_projects_ir_owned_literals() -> None:
     assert policies["const_str"]["materializer_import"] == "string_from_bytes"
     assert policies["const_str"]["literal_payload"] == "string"
     assert policies["const_str"]["scalar_payload"] == "none"
-    assert policies["const_str"]["lir_fast"] == "materialize"
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
     assert policies["const_bytes"]["literal_payload"] == "bytes"
-    assert policies["const_bytes"]["lir_fast"] == "materialize"
     assert policies["const_bigint"]["materializer_import"] == "bigint_from_bytes"
     assert policies["const_bigint"]["literal_payload"] == "bigint_bytes"
-    assert policies["const_bigint"]["lir_fast"] == "materialize"
     assert all("parse_scalar_literal" not in policy for policy in policies.values())
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "WASM_CONST_OP_POLICIES" in rendered_rs
     assert "WasmConstScalarPayload::Int" in rendered_rs
-    assert "required_tir_scalar_value" in rendered_rs
     assert "Some(OwnedLiteralPayloadKind::BigintBytes)" in rendered_rs
     assert "enum WasmConstLiteralPayload" not in rendered_rs
     assert "wasm_const_op_policy" in rendered_rs
-    assert "wasm_const_op_policy_for_opcode" in rendered_rs
-    assert "opcode_canonical_kind_table(opcode)" in rendered_rs
+    assert "wasm_const_op_policy_for_opcode" not in rendered_rs
     assert "PlaceholderZero" not in rendered_rs
     assert "WASM_CONST_OP_POLICIES" in rendered_py
     assert "parse_scalar_literal" not in rendered_rs

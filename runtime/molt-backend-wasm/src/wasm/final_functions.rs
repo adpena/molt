@@ -1,15 +1,11 @@
-use super::body::WasmLirFallbackReason;
-use super::lir_fast::{
-    WasmFunctionLoweringPlan, is_production_lir_wasm_fast_path_name, prepare_lir_wasm_fast_plan,
-};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::tir::TirFunction;
 use crate::{FunctionIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The emitted body and every scalar/LIR decision have one private owner.
-/// Only function retention and escaped-callable admission may change this
-/// collection after projection; neither changes executable operations.
+/// The emitted body and every scalar decision have one private owner. Only
+/// function retention may change this collection after projection; it never
+/// changes executable operations.
 pub(super) struct WasmFinalFunctions {
     ir: SimpleIR,
     facts: Vec<Option<WasmFunctionFacts>>,
@@ -17,7 +13,6 @@ pub(super) struct WasmFinalFunctions {
 
 pub(super) struct WasmFunctionFacts {
     pub(super) representation: ScalarRepresentationPlan,
-    pub(super) lowering: Option<WasmFunctionLoweringPlan>,
 }
 
 impl WasmFinalFunctions {
@@ -45,24 +40,8 @@ impl WasmFinalFunctions {
                 if external {
                     return None;
                 }
-                let (representation, lowering) =
-                    if is_production_lir_wasm_fast_path_name(&function.name) {
-                        let (representation, lowering) =
-                            ScalarRepresentationPlan::project_final_tir_with_value_consumer(
-                                function,
-                                &typed,
-                                prepare_lir_wasm_fast_plan,
-                            );
-                        (representation, Some(lowering))
-                    } else {
-                        (
-                            ScalarRepresentationPlan::project_final_tir(function, &typed),
-                            None,
-                        )
-                    };
                 Some(WasmFunctionFacts {
-                    representation,
-                    lowering,
+                    representation: ScalarRepresentationPlan::project_final_tir(function, &typed),
                 })
             })
             .collect();
@@ -94,37 +73,10 @@ impl WasmFinalFunctions {
                     representation: ScalarRepresentationPlan::for_function_ir_for_target(
                         function, &target,
                     ),
-                    lowering: None,
                 })
             })
             .collect();
         Self { ir, facts }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn lowering_plans_for_fixtures(
-        ir: &SimpleIR,
-        escaped: &BTreeSet<String>,
-    ) -> BTreeMap<String, WasmFunctionLoweringPlan> {
-        let typed = ir
-            .functions
-            .iter()
-            .map(|function| {
-                let mut typed = crate::tir::lower_from_simple::lower_to_tir(function);
-                crate::tir::type_refine::refine_types(&mut typed);
-                (function.is_extern, typed)
-            })
-            .collect();
-        let mut final_functions = Self::from_final_tir(ir.clone(), typed);
-        final_functions.exclude_escaped_callables(escaped);
-        final_functions
-            .into_functions()
-            .filter_map(|(function, facts)| {
-                facts
-                    .and_then(|facts| facts.lowering)
-                    .map(|plan| (function.name, plan))
-            })
-            .collect()
     }
 
     pub(super) fn ir(&self) -> &SimpleIR {
@@ -146,19 +98,6 @@ impl WasmFinalFunctions {
         }
         self.ir.functions = functions;
         self.facts = facts;
-    }
-
-    pub(super) fn exclude_escaped_callables(&mut self, escaped: &BTreeSet<String>) {
-        for (function, facts) in self.ir.functions.iter().zip(&mut self.facts) {
-            if escaped.contains(&function.name)
-                && let Some(facts) = facts
-                && facts.lowering.is_some()
-            {
-                facts.lowering = Some(WasmFunctionLoweringPlan::Generic {
-                    reason: WasmLirFallbackReason::EscapedCallableTarget,
-                });
-            }
-        }
     }
 
     pub(super) fn into_functions(

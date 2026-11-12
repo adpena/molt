@@ -63,18 +63,6 @@ fn generic_unpack_uses_transactional_runtime_for_nonzero_and_zero_arity() {
 }
 
 #[test]
-fn lir_fast_unpack_uses_the_same_transactional_runtime_authority() {
-    let name = "m____molt_globals_builtin__unpack_exact";
-    let wasm = WasmBackend::with_options(WasmCompileOptions {
-        native_eh_enabled: false,
-        reloc_enabled: false,
-        ..WasmCompileOptions::default()
-    })
-    .compile(unpack_ir(name, 2));
-    assert_transactional_unpack_calls(&wasm, name, 2);
-}
-
-#[test]
 #[should_panic(expected = "UnpackSequence")]
 fn malformed_simple_ir_unpack_is_rejected_before_codegen() {
     let mut ir = unpack_ir("malformed_unpack", 2);

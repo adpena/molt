@@ -101,7 +101,6 @@ impl WasmBackend {
             super::trampoline_analysis::analyze_wasm_trampolines_with_source(ir, source_callables);
         audit("after-trampoline-analysis", &ir.functions);
         let stage_shape = stage_audit.capture_simple_ir_shape(&ir.functions);
-        final_functions.exclude_escaped_callables(&trampoline_analysis.escaped_callable_targets);
         audit("before-module-emission", &final_functions.ir().functions);
         let output = self.emit_wasm_module(final_functions, trampoline_analysis, stage_audit);
         emit_wasm_stage_audit(

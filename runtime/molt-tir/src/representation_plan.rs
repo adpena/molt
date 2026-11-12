@@ -394,7 +394,6 @@ impl ScalarRepresentationPlan {
             &names,
             optimized_tir_func.as_ref(),
             optimized_names.as_ref(),
-            None,
         )
     }
 
@@ -402,28 +401,6 @@ impl ScalarRepresentationPlan {
     /// replace authored names only for this output stream; fresh-input callers
     /// still reject ambiguous authored bindings. No SSA or optimizer is replayed.
     pub fn project_final_tir(func_ir: &mut FunctionIR, tir_func: &TirFunction) -> Self {
-        Self::project_final_tir_with_repr(func_ir, tir_func, None)
-    }
-
-    /// A target lowering may consume the same final SSA representation proof
-    /// as the generic projection. The callback cannot mutate the analyzed body;
-    /// the value facts are scoped to this exact projection and retired together.
-    pub fn project_final_tir_with_value_consumer<R>(
-        func_ir: &mut FunctionIR,
-        tir_func: &TirFunction,
-        consume: impl FnOnce(&TirFunction, &HashMap<ValueId, Repr>, &crate::tir::ValueRangeResult) -> R,
-    ) -> (Self, R) {
-        let ranges = value_range_for(tir_func);
-        let repr = repr_by_value_for(tir_func, Some(&ranges));
-        let representation = Self::project_final_tir_with_repr(func_ir, tir_func, Some(&repr));
-        (representation, consume(tir_func, &repr, &ranges))
-    }
-
-    fn project_final_tir_with_repr(
-        func_ir: &mut FunctionIR,
-        tir_func: &TirFunction,
-        repr: Option<&HashMap<ValueId, Repr>>,
-    ) -> Self {
         assert_eq!(
             func_ir.name, tir_func.name,
             "final projection function identity mismatch"
@@ -447,7 +424,7 @@ impl ScalarRepresentationPlan {
         );
         func_ir.ops = ops;
         let emitted_names = names.into_emission_facts();
-        Self::extract_typed_facts(func_ir, tir_func, &emitted_names, None, None, repr)
+        Self::extract_typed_facts(func_ir, tir_func, &emitted_names, None, None)
     }
 
     fn extract_typed_facts(
@@ -456,7 +433,6 @@ impl ScalarRepresentationPlan {
         names: &SimpleValueNames,
         optimized_tir_func: Option<&TirFunction>,
         optimized_names: Option<&SimpleValueNames>,
-        final_repr: Option<&HashMap<ValueId, Repr>>,
     ) -> Self {
         let trace = backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
             .ok()
@@ -486,18 +462,13 @@ impl ScalarRepresentationPlan {
         let producers = exact_scalar_witnesses(tir_func);
         trace_stage("before_value_facts");
         let needs_carriers = needs_primary || needs_direct_numeric;
-        let derived_repr;
-        let repr = if let Some(repr) = final_repr {
-            repr
+        let derived_repr = if needs_carriers || tir_container_storage_needs_repr(tir_func) {
+            let ranges = value_range_for(tir_func);
+            repr_by_value_for(tir_func, Some(&ranges))
         } else {
-            derived_repr = if needs_carriers || tir_container_storage_needs_repr(tir_func) {
-                let ranges = value_range_for(tir_func);
-                repr_by_value_for(tir_func, Some(&ranges))
-            } else {
-                HashMap::new()
-            };
-            &derived_repr
+            HashMap::new()
         };
+        let repr = &derived_repr;
         let carriers = if needs_carriers {
             native_projectable_scalar_reprs_for(tir_func, repr)
         } else {

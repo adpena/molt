@@ -19,7 +19,7 @@ OUT_RS_FILES = {
     "import_tokens.rs": OUT_RS_DIR / "import_tokens.rs",
     "import_metadata.rs": OUT_RS_DIR / "import_metadata.rs",
     "import_registry.rs": OUT_RS_DIR / "import_registry.rs",
-    "lir_runtime_calls.rs": OUT_RS_DIR / "lir_runtime_calls.rs",
+    "op_loop_runtime_calls.rs": OUT_RS_DIR / "op_loop_runtime_calls.rs",
     "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
     "numeric_runtime_selector.rs": OUT_RS_DIR / "numeric_runtime_selector.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",

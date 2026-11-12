@@ -128,15 +128,7 @@ name = "wasm_compilation"
 required-features = ["wasm-backend"]
 
 [[test]]
-name = "lir_wasm_repr_regressions"
-required-features = ["wasm-backend"]
-
-[[test]]
 name = "wasm_data_segments"
-required-features = ["wasm-backend"]
-
-[[test]]
-name = "wasm_lir_fast_path_integration"
 required-features = ["wasm-backend"]
 
 [[test]]

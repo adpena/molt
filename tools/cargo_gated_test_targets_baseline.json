@@ -13,10 +13,6 @@
    "finding": "HF-565",
    "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
   },
-  "molt-backend::lir_wasm_repr_regressions": {
-   "finding": "HF-565",
-   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
-  },
   "molt-backend::wasm_compilation": {
    "finding": "HF-565",
    "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
@@ -34,10 +30,6 @@
    "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
   },
   "molt-backend::wasm_import_registry": {
-   "finding": "HF-565",
-   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
-  },
-  "molt-backend::wasm_lir_fast_path_integration": {
    "finding": "HF-565",
    "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
   },

@@ -89,10 +89,6 @@ CONST_POLICY_RAW_INT_EFFECTS = {
     "set_int",
     "clear",
 }
-CONST_POLICY_LIR_FAST = {
-    "lower",
-    "materialize",
-}
 CALLABLE_DISPATCH_MODES = {
     "direct",
     "trampoline",
@@ -817,9 +813,9 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
     """Project explicit value semantics, never infer them from an i64 carrier.
 
     Direct Python-callable imports already promise positional object values.
-    LIR boxed-operand calls and op-loop calls with a fixed LIR adapter use the
-    same boxed-operand / boxed-result emitter. Compiler-only imports may declare
-    that representation with boxed_call without becoming Python-callable.
+    Op-loop calls marked boxed_call use the boxed-operand / boxed-result
+    emitter. Compiler-only imports declare that representation with boxed_call
+    without becoming Python-callable.
     Plain op-loop local/result sinks are transport facts, not value semantics,
     so only explicitly boxed op-loop rows authorize this projection.
     Raw imports and trampoline-only callable declarations stay out. Explicit
@@ -833,20 +829,6 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
         entry["import_name"]: entry
         for entry in data.get("reserved_runtime_callable", [])
     }
-    lir_arities: dict[str, int] = {}
-    for source in data.get("lir_runtime_call", []):
-        if (arity := source.get("boxed_operand_count")) is not None:
-            lir_arities[source["import_name"]] = arity
-    for source in data.get("op_loop_runtime_call", []):
-        if source.get("lir_variant") is None:
-            continue
-        arity = source["lir_operand_count"]
-        name = source["import_name"]
-        if name in lir_arities and lir_arities[name] != arity:
-            raise WasmAbiManifestError(
-                f"import {name!r} has conflicting boxed LIR arities"
-            )
-        lir_arities[name] = arity
     op_loop_arities: dict[str, int] = {}
     for source in data.get("op_loop_runtime_call", []):
         boxed = source.get("boxed_call", False)
@@ -875,10 +857,9 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
                 f"import {entry['name']!r} has invalid boxed_call"
             )
         callable_arity = entry.get("callable_arity")
-        lir_arity = lir_arities.get(entry["name"])
         op_loop_arity = op_loop_arities.get(entry["name"])
         direct = entry.get("callable_dispatch", "direct") == "direct"
-        compiler_boxed = explicit or lir_arity is not None or op_loop_arity is not None
+        compiler_boxed = explicit or op_loop_arity is not None
         if not compiler_boxed and not (callable_arity is not None and direct):
             continue
         signature = data["static_type"][entry["type"]]
@@ -891,10 +872,6 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
             )
         arity = len(params)
         result = "i64" if results else "void"
-        if lir_arity is not None and (lir_arity != arity or result != "i64"):
-            raise WasmAbiManifestError(
-                f"import {entry['name']!r} boxed LIR shape disagrees with its import ABI"
-            )
         if op_loop_arity is not None and op_loop_arity != arity:
             raise WasmAbiManifestError(
                 f"import {entry['name']!r} boxed op-loop shape disagrees with its import ABI"
@@ -2080,7 +2057,6 @@ def _expand_op_loop_runtime_calls(
 def _validate_numeric_runtime_selectors(
     data: dict,
     seen_imports: set[str],
-    lir_import_by_variant: dict[str, str],
 ) -> list[dict]:
     selectors = data.get("numeric_runtime_selector", [])
     if not isinstance(selectors, list):
@@ -2136,32 +2112,6 @@ def _validate_numeric_runtime_selectors(
                     f"unknown import {dep!r}"
                 )
         entry["deps"] = deps
-        lir_variant = entry.get("lir_variant")
-        lir_operand_count = entry.get("lir_operand_count")
-        if lir_variant is None:
-            if lir_operand_count is not None:
-                raise WasmAbiManifestError(
-                    f"numeric_runtime_selector {kind!r} cannot define "
-                    "lir_operand_count without lir_variant"
-                )
-            continue
-        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
-            raise WasmAbiManifestError(
-                f"numeric_runtime_selector {kind!r} has invalid "
-                f"lir_variant {lir_variant!r}"
-            )
-        if lir_import_by_variant[lir_variant] != import_name:
-            raise WasmAbiManifestError(
-                f"numeric_runtime_selector {kind!r} import {import_name!r} "
-                f"does not match lir_variant {lir_variant!r} import "
-                f"{lir_import_by_variant[lir_variant]!r}"
-            )
-        if lir_operand_count is not None and (
-            not isinstance(lir_operand_count, int) or lir_operand_count < 0
-        ):
-            raise WasmAbiManifestError(
-                f"numeric_runtime_selector {kind!r} has invalid lir_operand_count"
-            )
     return selectors
 
 
@@ -2231,7 +2181,6 @@ MANIFEST_FIELDS = frozenset(
         "external_native_link_import",
         "import",
         "link_allowed_import",
-        "lir_runtime_call",
         "non_runtime_callable_intrinsic",
         "numeric_runtime_selector",
         "op_loop_runtime_call",
@@ -2759,95 +2708,6 @@ def validate_loaded_manifest(
     data["import"] = imports
     seen_imports = {entry["name"] for entry in imports}
 
-    lir_runtime_calls = data.get("lir_runtime_call", [])
-    if not isinstance(lir_runtime_calls, list) or not lir_runtime_calls:
-        raise WasmAbiManifestError("manifest must define lir_runtime_call entries")
-    seen_lir_variants: set[str] = set()
-    lir_import_by_variant: dict[str, str] = {}
-    seen_lir_imports: set[str] = set()
-    seen_lir_preserved_copy_imports: set[str] = set()
-    from tools.op_kinds.runtime_calls import runtime_call_rows
-
-    contract_rows = {
-        row["kind"]: row
-        for row in runtime_call_rows(
-            tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
-        )
-    }
-    import_by_symbol = {runtime_export_name(entry): entry for entry in imports}
-    for idx, entry in enumerate(lir_runtime_calls):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(f"lir_runtime_call entry {idx} must be a table")
-        if contract_kind := entry.get("contract_kind"):
-            if reject_manual_runtime_cfgs and (
-                "import_name" in entry or "boxed_operand_count" in entry
-            ):
-                raise WasmAbiManifestError(
-                    "contract LIR calls must not restate function or arity"
-                )
-            row = contract_rows.get(contract_kind)
-            if row is None:
-                raise WasmAbiManifestError(
-                    f"unknown LIR runtime-call contract {contract_kind!r}"
-                )
-            provider = import_by_symbol[row["function"]]
-            resolved = {
-                "import_name": provider["name"],
-                "boxed_operand_count": len(
-                    data["static_type"][provider["type"]]["params"]
-                ),
-            }
-            for key, value in resolved.items():
-                if key in entry and entry[key] != value:
-                    raise WasmAbiManifestError(
-                        "contract LIR projection disagrees with its runtime call"
-                    )
-                entry[key] = value
-        variant = _validate_rust_variant("lir_runtime_call", idx, entry.get("variant"))
-        if variant in seen_lir_variants:
-            raise WasmAbiManifestError(
-                f"duplicate LIR runtime-call variant {variant!r}"
-            )
-        seen_lir_variants.add(variant)
-        import_name = entry.get("import_name")
-        if not isinstance(import_name, str) or not import_name:
-            raise WasmAbiManifestError(
-                f"lir_runtime_call {variant!r} has invalid import_name"
-            )
-        if import_name in seen_lir_imports:
-            raise WasmAbiManifestError(
-                f"duplicate LIR runtime-call import {import_name!r}"
-            )
-        seen_lir_imports.add(import_name)
-        if import_name not in seen_imports:
-            raise WasmAbiManifestError(
-                f"lir_runtime_call {variant!r} references unknown import "
-                f"{import_name!r}"
-            )
-        lir_import_by_variant[variant] = import_name
-        boxed_operand_count = entry.get("boxed_operand_count")
-        if boxed_operand_count is not None and (
-            not isinstance(boxed_operand_count, int) or boxed_operand_count < 0
-        ):
-            raise WasmAbiManifestError(
-                f"lir_runtime_call {variant!r} has invalid boxed_operand_count"
-            )
-        preserved_copy_operand_count = entry.get("preserved_copy_operand_count")
-        if preserved_copy_operand_count is None:
-            continue
-        if (
-            not isinstance(preserved_copy_operand_count, int)
-            or preserved_copy_operand_count < 0
-        ):
-            raise WasmAbiManifestError(
-                f"lir_runtime_call {variant!r} has invalid preserved_copy_operand_count"
-            )
-        if import_name in seen_lir_preserved_copy_imports:
-            raise WasmAbiManifestError(
-                f"duplicate preserved-Copy LIR runtime-call import {import_name!r}"
-            )
-        seen_lir_preserved_copy_imports.add(import_name)
-
     op_data = tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
     op_loop_runtime_calls = _expand_op_loop_runtime_calls(
         data,
@@ -2855,7 +2715,6 @@ def validate_loaded_manifest(
         allow_contract_projections=not reject_manual_runtime_cfgs,
     )
     seen_op_loop_runtime_kinds: set[str] = set()
-    seen_op_loop_lir_variants: set[str] = set()
     for idx, entry in enumerate(op_loop_runtime_calls):
         kind = entry.get("kind")
         if not isinstance(kind, str) or not kind:
@@ -2937,29 +2796,6 @@ def validate_loaded_manifest(
             _validate_op_loop_runtime_arg("op_loop_runtime_call", idx, arg_idx, arg)
             for arg_idx, arg in enumerate(args)
         ]
-        lir_variant = entry.get("lir_variant")
-        lir_operand_count = entry.get("lir_operand_count")
-        if lir_variant is None and lir_operand_count is None:
-            continue
-        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
-            raise WasmAbiManifestError(
-                f"op_loop_runtime_call {kind!r} has invalid lir_variant {lir_variant!r}"
-            )
-        if lir_variant in seen_op_loop_lir_variants:
-            raise WasmAbiManifestError(
-                f"duplicate op_loop_runtime_call lir_variant {lir_variant!r}"
-            )
-        seen_op_loop_lir_variants.add(lir_variant)
-        if lir_import_by_variant[lir_variant] != import_name:
-            raise WasmAbiManifestError(
-                f"op_loop_runtime_call {kind!r} import {import_name!r} does not "
-                f"match lir_variant {lir_variant!r} import "
-                f"{lir_import_by_variant[lir_variant]!r}"
-            )
-        if not isinstance(lir_operand_count, int) or lir_operand_count < 0:
-            raise WasmAbiManifestError(
-                f"op_loop_runtime_call {kind!r} has invalid lir_operand_count"
-            )
     data["op_loop_runtime_call"] = op_loop_runtime_calls
     data.pop("op_loop_runtime_call_group", None)
     return_contracts = runtime_import_return_specs(data)
@@ -3035,25 +2871,10 @@ def validate_loaded_manifest(
                 f"container_runtime_selector {selector_key!r} references "
                 f"unknown import {import_name!r}"
             )
-        lir_variant = entry.get("lir_variant")
-        if lir_variant is None:
-            continue
-        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
-            raise WasmAbiManifestError(
-                f"container_runtime_selector {selector_key!r} has invalid "
-                f"lir_variant {lir_variant!r}"
-            )
-        if lir_import_by_variant[lir_variant] != import_name:
-            raise WasmAbiManifestError(
-                f"container_runtime_selector {selector_key!r} import "
-                f"{import_name!r} does not match lir_variant {lir_variant!r} "
-                f"import {lir_import_by_variant[lir_variant]!r}"
-            )
 
     numeric_runtime_selectors = _validate_numeric_runtime_selectors(
         data,
         seen_imports,
-        lir_import_by_variant,
     )
     data["numeric_runtime_selector"] = numeric_runtime_selectors
 
@@ -3098,13 +2919,6 @@ def validate_loaded_manifest(
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} has invalid raw_int_effect {raw_int_effect!r}"
             )
-        lir_fast = entry.get("lir_fast")
-        if not isinstance(lir_fast, str) or not lir_fast:
-            raise WasmAbiManifestError(f"const_op_policy {kind!r} must define lir_fast")
-        if lir_fast not in CONST_POLICY_LIR_FAST:
-            raise WasmAbiManifestError(
-                f"const_op_policy {kind!r} has invalid lir_fast {lir_fast!r}"
-            )
         materializer_import = entry.get("materializer_import")
         if materializer_import is not None:
             if not isinstance(materializer_import, str) or not materializer_import:
@@ -3143,19 +2957,10 @@ def validate_loaded_manifest(
                 f"const_op_policy {kind!r} scalar_payload {scalar_payload!r} "
                 f"must match inline_seed {inline_seed!r}"
             )
-        if lir_fast == "lower" and inline_seed == "none":
-            raise WasmAbiManifestError(
-                f"const_op_policy {kind!r} cannot lower in LIR-fast without inline_seed"
-            )
-        if lir_fast == "materialize" and materializer_import is None:
-            raise WasmAbiManifestError(
-                f"const_op_policy {kind!r} cannot materialize in LIR-fast without materializer_import"
-            )
         entry["inline_seed"] = inline_seed
         entry["literal_payload"] = literal_payload
         entry["scalar_payload"] = scalar_payload
         entry["raw_int_effect"] = raw_int_effect
-        entry["lir_fast"] = lir_fast
         entry["dispatch_runtime_seed"] = dispatch_seed
     prefixes = data.get("pure_skip_prefix", [])
     if not isinstance(prefixes, list):

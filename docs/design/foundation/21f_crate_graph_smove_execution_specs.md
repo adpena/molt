@@ -521,10 +521,10 @@ The live partition is the full WASM authority cluster, not the older
 `wasm.rs`/generated-ABI slice: `runtime/molt-backend-wasm/src/{wasm.rs,
 wasm_abi.rs,wasm_abi_generated/,wasm_abi_manifest.toml,wasm_binary.rs,
 wasm_data.rs,wasm_dispatch.rs,wasm_import_tracking.rs,
-wasm_options.rs,wasm_plan.rs,wasm_values.rs,wasm/**}`. LIR-fast planning lives
-with the LIR-fast lowering authority under `wasm/lir_fast/plan.rs`; `wasm_plan.rs`
-keeps non-LIR WASM planning helpers such as stage audit, GPU symbol,
-and scalar/container import routing. Shared SimpleIR debug and trampoline metadata
+wasm_options.rs,wasm_plan.rs,wasm_values.rs,wasm/**}`. `wasm_plan.rs` keeps
+WASM planning helpers such as stage audit, GPU symbol, and scalar/container
+import routing. (The LIR-fast lane and its planner were deleted 2026-11-11: no
+production function reached it.) Shared SimpleIR debug and trampoline metadata
 live in `molt-tir`; `molt-backend` keeps no private WASM encoder or ABI modules.
 
 ### 7.2 Cargo.toml / wiring

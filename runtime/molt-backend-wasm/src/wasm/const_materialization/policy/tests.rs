@@ -1,8 +1,6 @@
 use super::WasmConstOpPolicy;
 use crate::OpIR;
-use crate::wasm_abi_generated::{
-    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstRawIntEffect, WasmRuntimeImport,
-};
+use crate::wasm_abi_generated::{WasmConstInlineSeed, WasmConstRawIntEffect, WasmRuntimeImport};
 use crate::wasm_values::{box_bool, box_int, box_none};
 use molt_codegen_abi::box_float_bits as box_float;
 use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
@@ -107,30 +105,26 @@ fn const_policy_routes_full_i64_outside_inline_payload_to_runtime_anchor() {
 
 #[test]
 fn const_policy_classifies_runtime_seed_and_literal_payload() {
-    for (kind, payload, import, lir_policy) in [
+    for (kind, payload, import) in [
         (
             molt_ir::OpKind::ConstStr,
             OwnedLiteralPayloadKind::String,
             WasmRuntimeImport::StringFromBytes,
-            WasmConstLirFastPolicy::Materialize,
         ),
         (
             molt_ir::OpKind::ConstBigint,
             OwnedLiteralPayloadKind::BigintBytes,
             WasmRuntimeImport::BigintFromBytes,
-            WasmConstLirFastPolicy::Materialize,
         ),
         (
             molt_ir::OpKind::ConstBytes,
             OwnedLiteralPayloadKind::Bytes,
             WasmRuntimeImport::BytesFromBytes,
-            WasmConstLirFastPolicy::Materialize,
         ),
     ] {
         let policy = WasmConstOpPolicy::for_kind(kind).expect("literal const policy");
         assert_eq!(policy.literal_payload(), Some(payload));
         assert_eq!(policy.materializer_import(), Some(import));
-        assert_eq!(policy.lir_fast_policy(), lir_policy);
         assert!(
             policy.needs_runtime_anchor(),
             "{kind} must be materialized into a function anchor"
@@ -144,10 +138,6 @@ fn const_policy_classifies_runtime_seed_and_literal_payload() {
         let policy = WasmConstOpPolicy::for_kind(kind).expect("runtime singleton policy");
         assert_eq!(policy.literal_payload(), None);
         assert!(policy.materializer_import().is_some());
-        assert_eq!(
-            policy.lir_fast_policy(),
-            WasmConstLirFastPolicy::Materialize
-        );
         assert!(
             policy.needs_runtime_anchor(),
             "{kind} must be materialized into a function anchor"
