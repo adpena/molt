@@ -64,7 +64,7 @@ Who takes the record, and when:
   (`async_poll_context`, `llvm_backend/lowering/value_materialization.rs:1821`).
 - **WASM** calls the `thread_record` import in the prologue of a function with async polls
   (`emit_entry_initializers`, `wasm/function_frame/emission.rs:149`) and keeps it in the
-  `__thread_record` local. The `lir_fast` lane has no such local.
+  `__thread_record` local.
 
 ### 1.2 What one runtime entry costs
 
@@ -227,9 +227,9 @@ costs one load and one branch.
 | LLVM | `check_exception` (`op_dispatch.rs:520`), `ExceptionPending` (`:458`), borrowed-operand continuation (`value_materialization.rs:325`) | `async_poll_context`, in functions that contain an async poll (the record is already paid for) |
 | WASM | `control_ops/exceptions.rs:77`, `control_ops/loops.rs:69`, `state_dispatch/common/branches.rs:97`, `state_dispatch/emit/ops.rs:112`, `core_runtime_ops/runtime_effect_ops.rs:47`, `aggregate_ops/hash_container_ops.rs:69`, `function_frame/emission.rs:119` | the `__thread_record` local, when the function has it |
 
-- **Kept as a call:** WASM `lir_fast` (`lir_fast/lir_ops.rs`, `lir_runtime_ops/exception_ops.rs`,
-  `lir_context/ownership.rs`) has no record local; functions without async polls on both backends
-  have no record, and acquiring one for a single check would cost more than the call.
+- **Kept as a call:** functions without async polls on both backends have no record, and
+  acquiring one for a single check would cost more than the call. (WASM's `lir_fast` lane, which
+  had no record local, was deleted on 2026-11-11.)
 - **Not added:** LLVM emits no recursion charge today, and this change does not add one.
 - **Cranelift** is unchanged; it already tests the byte inline where it holds the record.
 
@@ -506,7 +506,7 @@ is not a bits slice. Release order and allocation-failure behavior remain observ
 
 Migrate native and LLVM declarations, compiled signatures/direct calls/indirect trampolines,
 runtime pointer dispatch, core/runtime vtables, constructors, polls, module initialization,
-isolate bootstrap, launch code, generic and lir_fast WASM, callable tables and split/browser
+isolate bootstrap, launch code, WASM, callable tables and split/browser
 hosts together. Every callable key selects its ABI classification and correctly typed executable
 target together; a raw cast cannot make a body function eligible. Generated Python/JS projections,
 build/install/link/cache consumers and public-header fixtures are direct readers of this change.

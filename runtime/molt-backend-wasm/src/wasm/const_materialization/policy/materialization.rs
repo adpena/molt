@@ -2,8 +2,7 @@ use super::super::WasmConstMaterialization;
 use super::WasmConstOpPolicy;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
-use crate::wasm_abi_generated::{WasmConstInlineSeed, WasmConstScalarValue, WasmRuntimeImport};
-use molt_tir::tir::ops::TirOp;
+use crate::wasm_abi_generated::{WasmConstInlineSeed, WasmRuntimeImport};
 
 impl WasmConstOpPolicy {
     pub(in crate::wasm) fn simple_ir_materialization(
@@ -42,39 +41,6 @@ impl WasmConstOpPolicy {
                 out_local,
                 payload,
                 self.required_simple_ir_literal_bytes(op),
-            ),
-        }
-    }
-
-    pub(in crate::wasm) fn tir_materialization(
-        self,
-        op: &TirOp,
-        out_local: u32,
-    ) -> WasmConstMaterialization {
-        match self.literal_payload() {
-            None if matches!(self.inline_seed(), WasmConstInlineSeed::Int) => {
-                let value = match self.required_tir_scalar_value(op) {
-                    WasmConstScalarValue::Int(value) => value,
-                    other => panic!(
-                        "const op {} requires an i64 payload, got {other:?}",
-                        self.0.kind
-                    ),
-                };
-                WasmConstMaterialization::scalar_i64(
-                    self.required_materializer_import(),
-                    out_local,
-                    value,
-                )
-            }
-            None => WasmConstMaterialization::runtime_singleton(
-                self.required_materializer_import(),
-                out_local,
-            ),
-            Some(payload) => WasmConstMaterialization::literal(
-                self.required_materializer_import(),
-                out_local,
-                payload,
-                self.required_tir_literal_bytes(op),
             ),
         }
     }

@@ -175,10 +175,6 @@ impl SsaRuntimeGuardFacts {
         Self::for_graph(func)
     }
 
-    pub fn for_lir(func: &crate::tir::lir::LirFunction) -> Self {
-        Self::for_graph(func)
-    }
-
     fn for_graph(func: &impl crate::tir::dominators::ProgramPointGraph) -> Self {
         use crate::tir::dominators::ProgramPointDominance;
         use crate::tir::ops::{AttrValue, OpCode};
@@ -385,11 +381,6 @@ mod tests {
                 !SsaRuntimeGuardFacts::for_function(&func).has_profile_only(),
                 "{kind}"
             );
-            let lir = crate::tir::lower_to_lir::lower_function_to_lir(&func);
-            assert!(
-                !SsaRuntimeGuardFacts::for_lir(&lir).has_profile_only(),
-                "{kind}"
-            );
             // Moving the literal above the observation establishes it on both entries.
             func.blocks
                 .get_mut(&func.entry_block)
@@ -398,11 +389,6 @@ mod tests {
                 .swap(0, 1);
             assert!(
                 SsaRuntimeGuardFacts::for_function(&func).has_profile_only(),
-                "{kind}"
-            );
-            let lir = crate::tir::lower_to_lir::lower_function_to_lir(&func);
-            assert!(
-                SsaRuntimeGuardFacts::for_lir(&lir).has_profile_only(),
                 "{kind}"
             );
         }

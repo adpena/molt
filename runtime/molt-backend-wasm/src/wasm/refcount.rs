@@ -7,7 +7,6 @@
 //! transition"). The caller forwards its context, word and admission instead
 //! of repeating the whole decision, which was 76-78% of compiled code.
 use crate::wasm::WasmBackend;
-use crate::wasm::body::WasmBodyOps;
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
@@ -107,17 +106,6 @@ pub(in crate::wasm) fn emit_refcount(
 ) {
     func.instruction(&Instruction::LocalGet(scratch.admission));
     emit_call(func, reloc, imports.refcount_body(operation));
-}
-
-/// A dynamic LIR site: the word is on the operand stack; the body index is
-/// resolved where the LIR body is emitted into its module.
-pub(in crate::wasm) fn emit_lir_refcount(
-    body: &mut WasmBodyOps,
-    scratch: WasmRefcountScratch,
-    operation: RefcountOperation,
-) {
-    body.push(Instruction::LocalGet(scratch.admission));
-    body.push_refcount_body_call(operation);
 }
 
 pub(in crate::wasm) struct BodySink<'a> {

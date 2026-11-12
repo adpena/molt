@@ -102,25 +102,36 @@ def _assert_covered(cfg, paths, expected):
 
 
 @pytest.mark.parametrize(
-    "path",
-    ["tools/check_changed_clippy.py", "tests/tools/test_check_changed_clippy.py"],
+    ("path", "expected"),
+    [
+        (
+            "tools/check_changed_clippy.py",
+            {POLICY_ORACLE, "tests/tools/test_check_changed_clippy.py"},
+        ),
+        (
+            "tests/tools/test_check_changed_clippy.py",
+            {"tests/tools/test_check_changed_clippy.py"},
+        ),
+        # Both selectors and the landing tool's main-move check ask one reach
+        # authority; the landing tool reads it lazily, so its simulations
+        # stay out of a selector edit's cohort.
+        (
+            "tools/cargo_reach.py",
+            {
+                POLICY_ORACLE,
+                "tests/tools/test_check_changed_clippy.py",
+                "tests/tools/test_check_changed_crate_tests.py",
+            },
+        ),
+    ],
 )
-def test_clippy_selector_edits_do_not_run_landing_simulations(path):
+def test_clippy_selector_edits_do_not_run_landing_simulations(
+    path: str, expected: set[str]
+) -> None:
     cfg = GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, [path]) == {
         "tests/tools/test_import_file.py",
-        "tests/tools/test_check_changed_clippy.py",
-        # The crate-test selector imports the clippy selector's reach, and so
-        # does land --fast's main-move gate selection (tools/molt_dev_land_fast.py).
-        *(
-            [
-                POLICY_ORACLE,
-                "tests/tools/test_check_changed_crate_tests.py",
-                "tests/test_molt_dev.py",
-            ]
-            if path.startswith("tools/")
-            else []
-        ),
+        *expected,
     }
     gates, _ = cfg.select([path])
     assert {gate.command for gate in gates} >= set(cfg.always)

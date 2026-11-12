@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
-use molt_backend::tir::lir::{LirFunction, LirRepr};
+use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::ops::{OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::ValueId;
+use molt_ir::repr::Repr;
 
 use super::names::{repr_name, type_name};
 
@@ -21,35 +22,37 @@ pub(crate) struct FunctionStats {
     pub(crate) values_by_type: BTreeMap<String, usize>,
     pub(crate) opcodes: BTreeMap<String, OpcodeStats>,
     pub(crate) scalar_values: usize,
-    pub(crate) reference_values: usize,
     pub(crate) boxed_values: usize,
 }
 
-pub(crate) fn collect_function_stats(func: &LirFunction) -> FunctionStats {
+/// Count each value's carrier from the representation plan that every backend
+/// consumes (`repr_by_value_for` over the final TIR).
+pub(crate) fn collect_function_stats(
+    func: &TirFunction,
+    repr: &HashMap<ValueId, Repr>,
+) -> FunctionStats {
     let mut stats = FunctionStats::default();
-    let mut value_reprs: HashMap<ValueId, LirRepr> = HashMap::new();
+    let mut types = func.value_types.clone();
+    for block in func.blocks.values() {
+        for arg in &block.args {
+            types.entry(arg.id).or_insert_with(|| arg.ty.clone());
+        }
+    }
 
     let mut block_ids = func.blocks.keys().copied().collect::<Vec<_>>();
     block_ids.sort_by_key(|bid| bid.0);
     for block_id in block_ids {
         let block = &func.blocks[&block_id];
         for arg in &block.args {
-            record_value(&mut stats, &mut value_reprs, arg.id, &arg.ty, arg.repr);
+            record_value(&mut stats, &arg.ty, repr.get(&arg.id).copied());
         }
 
         for op in &block.ops {
-            let opcode_name = report_opcode_name(&op.tir_op);
+            let opcode_name = report_opcode_name(op);
             let operand_tuple = op
-                .tir_op
                 .operands
                 .iter()
-                .map(|operand| {
-                    value_reprs
-                        .get(operand)
-                        .copied()
-                        .map(repr_name)
-                        .unwrap_or("unknown")
-                })
+                .map(|operand| repr.get(operand).copied().map_or("unknown", repr_name))
                 .collect::<Vec<_>>()
                 .join(",");
 
@@ -62,18 +65,16 @@ pub(crate) fn collect_function_stats(func: &LirFunction) -> FunctionStats {
                     .or_insert(0) += 1;
             }
 
-            for result in &op.result_values {
-                record_value(
-                    &mut stats,
-                    &mut value_reprs,
-                    result.id,
-                    &result.ty,
-                    result.repr,
-                );
-                let result_repr = repr_name(result.repr).to_string();
+            for result in &op.results {
+                let result_repr = repr.get(result).copied();
+                let ty = types.get(result).cloned().unwrap_or(TirType::DynBox);
+                record_value(&mut stats, &ty, result_repr);
                 let opcode_stats = stats.opcodes.entry(opcode_name.clone()).or_default();
-                *opcode_stats.result_reprs.entry(result_repr).or_insert(0) += 1;
-                if result.repr == LirRepr::DynBox {
+                *opcode_stats
+                    .result_reprs
+                    .entry(result_repr.map_or("unknown", repr_name).to_string())
+                    .or_insert(0) += 1;
+                if result_repr.is_some_and(is_boxed) {
                     opcode_stats.boxed_result_values += 1;
                 }
             }
@@ -93,25 +94,22 @@ pub(crate) fn report_opcode_name(op: &TirOp) -> String {
     }
 }
 
-fn record_value(
-    stats: &mut FunctionStats,
-    value_reprs: &mut HashMap<ValueId, LirRepr>,
-    value: ValueId,
-    ty: &TirType,
-    repr: LirRepr,
-) {
-    value_reprs.insert(value, repr);
+/// A NaN-boxed word: the carrier pays boxing and tag checks.
+fn is_boxed(repr: Repr) -> bool {
+    matches!(repr, Repr::MaybeBigInt | Repr::BoxedImmortal | Repr::DynBox)
+}
+
+fn record_value(stats: &mut FunctionStats, ty: &TirType, repr: Option<Repr>) {
     *stats
         .values_by_repr
-        .entry(repr_name(repr).to_string())
+        .entry(repr.map_or("unknown", repr_name).to_string())
         .or_insert(0) += 1;
     *stats.values_by_type.entry(type_name(ty)).or_insert(0) += 1;
     match repr {
-        LirRepr::I64 | LirRepr::F64 | LirRepr::Bool1 => stats.scalar_values += 1,
-        LirRepr::Ref64 => stats.reference_values += 1,
-        LirRepr::DynBox | LirRepr::Immortal64 => {
-            stats.reference_values += 1;
-            stats.boxed_values += 1;
+        Some(Repr::RawI64FullDeopt | Repr::RawI64Safe | Repr::Bool | Repr::FloatUnboxed) => {
+            stats.scalar_values += 1
         }
+        Some(repr) if is_boxed(repr) => stats.boxed_values += 1,
+        _ => {}
     }
 }

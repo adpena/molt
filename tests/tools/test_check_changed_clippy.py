@@ -11,7 +11,7 @@ import pytest
 
 from molt.cargo_execution_policy import load_ci_cargo_policy
 from molt.cargo_workspace import workspace_package_names
-from tools import check_changed_clippy as gate, proof_plan
+from tools import cargo_reach, check_changed_clippy as gate, proof_plan
 from tools.proof_plan import ProofCommand, ProofPlan
 from tests.process_guard_common import install_module_view
 
@@ -59,7 +59,7 @@ def _package(root: Path, directory: str, name: str, dependencies: str = "") -> N
 
 
 @pytest.fixture
-def workspace(tmp_path: Path) -> gate.Workspace:
+def workspace(tmp_path: Path) -> cargo_reach.Workspace:
     # core <- runtime <- backend (normal edges); tool has core as a dev edge;
     # vendored is a member that patches a registry crate; nested lives inside
     # core's directory but is its own member.
@@ -93,7 +93,7 @@ def workspace(tmp_path: Path) -> gate.Workspace:
         manifest.write_text(
             manifest.read_text(encoding="utf-8") + "[workspace]\n", encoding="utf-8"
         )
-    return gate.Workspace.load(tmp_path)
+    return cargo_reach.Workspace.load(tmp_path)
 
 
 def _command(identifier: str, argv: list[str], **data: object) -> ProofCommand:
@@ -129,8 +129,8 @@ COMMANDS = (
 )
 
 
-def _selected(workspace: gate.Workspace, *paths: str) -> dict[str, str]:
-    change = gate.reach(workspace, paths)
+def _selected(workspace: cargo_reach.Workspace, *paths: str) -> dict[str, str]:
+    change = cargo_reach.reach(workspace, paths)
     return {command.id: reason for command, reason in gate.select(COMMANDS, change)}
 
 
@@ -150,7 +150,7 @@ def test_all_selected_boundaries_are_checked_before_the_first_clippy(
     )
     # This ownership fixture has no historical lock evidence; remain global
     # without invoking Git outside the fixture's modeled boundary.
-    monkeypatch.setattr(gate, "_git", lambda _arguments: "")
+    monkeypatch.setattr(cargo_reach, "_git", lambda _arguments: "")
     monkeypatch.setattr(gate, "local_clippy_commands", lambda _plan: COMMANDS)
     monkeypatch.setattr(gate.ProofPlan, "load", lambda: object())
 
@@ -210,7 +210,7 @@ def test_selected_cells_stop_on_failure_and_all_run_on_success(
 
 
 def test_change_reaches_its_member_and_every_dependent(workspace) -> None:
-    change = gate.reach(workspace, ["crates/core/src/lib.rs"])
+    change = cargo_reach.reach(workspace, ["crates/core/src/lib.rs"])
     assert change.packages == {"core", "runtime", "backend", "tool"}
     assert not change.whole_workspace
     assert _selected(workspace, "crates/core/src/lib.rs") == {
@@ -226,7 +226,7 @@ def test_leaf_change_selects_only_commands_that_lint_it(workspace) -> None:
         "backend": "backend",
     }
     # The deepest member owns a nested path; its parent member is not reached.
-    assert gate.reach(workspace, ["crates/core/nested/src/lib.rs"]).packages == {
+    assert cargo_reach.reach(workspace, ["crates/core/nested/src/lib.rs"]).packages == {
         "nested"
     }
 
@@ -247,7 +247,7 @@ def test_non_rust_paths_outside_members_reach_nothing(workspace) -> None:
     ],
 )
 def test_workspace_inputs_reach_every_member(workspace, path: str) -> None:
-    change = gate.reach(workspace, [path])
+    change = cargo_reach.reach(workspace, [path])
     assert change.whole_workspace and not change.toolchain
     assert set(_selected(workspace, path)) == {"ws", "runtime-micro", "backend"}
 
@@ -351,7 +351,7 @@ def test_local_clippy_reuses_only_the_declared_host_execution(
     ] == load_ci_cargo_policy().execution_budgets.timeout_seconds(budget)
     # A matching host policy is selected before reach filtering, so the real
     # workspace input still reaches the same packages without altering its cell.
-    reached = gate.Reach(frozenset({"molt-ir"}), False, False, frozenset())
+    reached = cargo_reach.Reach(frozenset({"molt-ir"}), False, False, frozenset())
     selected = dict(
         (command.id, command) for command, _ in gate.select(actual, reached)
     )
@@ -478,8 +478,8 @@ def _impact_selection(tmp_path, before, after, paths):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    workspace = gate.Workspace.load(tmp_path)
-    change = gate.dependency_reach(workspace, paths, before.__getitem__)
+    workspace = cargo_reach.Workspace.load(tmp_path)
+    change = cargo_reach.dependency_reach(workspace, paths, before.__getitem__)
     return change, tuple(command for command, _ in gate.select(COMMANDS, change))
 
 
@@ -608,9 +608,11 @@ def test_registered_wasi_lint_driver_retains_scope_and_execution_protocol(monkey
         "molt-tir",
     )
     assert gate.clippy_packages(command) == frozenset({"molt-runtime", "molt-tir"})
-    change = gate.Reach(frozenset({"molt-tir"}), False, False, frozenset())
+    change = cargo_reach.Reach(frozenset({"molt-tir"}), False, False, frozenset())
     assert gate.select((command,), change) == ((command, "molt-tir"),)
-    unrelated = gate.Reach(frozenset({"molt-wasm-host"}), False, False, frozenset())
+    unrelated = cargo_reach.Reach(
+        frozenset({"molt-wasm-host"}), False, False, frozenset()
+    )
     assert gate.select((command,), unrelated) == ()
     lifecycle = next(
         row for row in plan.commands if row.id == "rust.test.wasi-runtime-lifecycle"

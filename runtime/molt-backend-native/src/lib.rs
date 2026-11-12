@@ -104,11 +104,6 @@ pub(crate) const fn native_task_runtime_kind_bits(
     }
 }
 
-/// The representation lattice element (the orthogonal carrier axis to
-/// `TirType`). Re-exported publicly because it appears in the signature of the
-/// `pub` `tir::lower_to_lir::lower_function_to_lir`, which backend codegen paths
-/// drive with the proven `repr_by_value`.
-pub use molt_ir::repr::Repr;
 pub use molt_ir::stdlib_module_symbols::{
     parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };

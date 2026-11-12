@@ -10,7 +10,7 @@ tools/check_changed_clippy.py derives lint cells (docs/design/landing_queue.md,
 section 9.4.2):
 
 * reach: the members a change touches and their reverse dependencies, through
-  check_changed_clippy's `dependency_reach` (root Cargo inputs and toolchain
+  cargo_reach's `dependency_reach` (root Cargo inputs and toolchain
   files reach every member);
 * sources: every `cargo test` gate of a `[[rule]]` and every `cargo test`
   `[[command]]` of the `pre-push` tier; a source names packages with `-p`;
@@ -58,7 +58,7 @@ ROOT = bind_repository_imports(__file__)
 
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.cargo_workspace import workspace_member_packages  # noqa: E402
-from tools.check_changed_clippy import (  # noqa: E402
+from tools.cargo_reach import (  # noqa: E402
     Reach,
     Workspace,
     base_reader,

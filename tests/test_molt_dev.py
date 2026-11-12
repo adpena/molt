@@ -6950,15 +6950,32 @@ toolchains = ["lane-tool"]
 """
 
 
-def _try_run_policy(counter: Path, *, try_gate: str) -> str:
+_CARGO_TOOL_POLICY = """
+[[toolchain_policy]]
+name = "cargo"
+executable = "git"
+version_args = ["--version"]
+version_pattern = ".*"
+setup_value = "git package"
+setup_evidence = ["host::install git"]
+"""
+
+
+def _try_run_policy(counter: Path, *, try_gate: str, cargo: bool = False) -> str:
     # Both rules use a toolchain outside PRECHECK_TOOLCHAINS; only the rule
-    # that declares `precheck` runs in the lane.
+    # that declares `precheck` runs in the lane. A `cargo` try gate is a Cargo
+    # gate by its typed target access, as the landing tool reads it.
+    lint_tools = (
+        '["lane-tool", "cargo"]\ncargo_target_access = "isolated"'
+        if cargo
+        else '["lane-tool"]'
+    )
     return (
         f"""
 always = [{json.dumps(f"echo static >> {shlex.quote(str(counter))}")}]
 [[rule]]
 name = "lane-lint"
-toolchains = ["lane-tool"]
+toolchains = {lint_tools}
 precheck = true
 globs = ["**"]
 gates = [{json.dumps(try_gate)}]
@@ -6969,6 +6986,7 @@ globs = ["**"]
 gates = [{json.dumps(f"echo batch >> {shlex.quote(str(counter))}")}]
 """
         + _LANE_TOOL_POLICY
+        + (_CARGO_TOOL_POLICY if cargo else "")
     )
 
 
@@ -7444,22 +7462,17 @@ def test_land_fast_carries_a_cargo_gate_when_no_package_sees_both_changes(
         tmp_path,
         counter,
         path="docs/note.md",
-        label="tools/check_changed_clippy.py",
+        label="cargo-gate",
     )
     _commit_file(work, "Cargo.toml", "[workspace]\nmembers = []\n", "workspace")
     _git(work, "push", "-q", "origin", "HEAD:main")
-    _publish_policy(work, _try_run_policy(counter, try_gate=move))
+    _publish_policy(work, _try_run_policy(counter, try_gate=move, cargo=True))
     lane = work.parent / "lane-fast-cargo-disjoint"
     _lane(work, "fast-cargo-disjoint", {"a.py": "a = 1\n"})
 
     assert _land_fast(drv, lane, "--subject", "Land across a docs move") == EXIT_OK
 
-    assert (
-        counter.read_text(encoding="utf-8")
-        .split()
-        .count("tools/check_changed_clippy.py")
-        == 1
-    )
+    assert counter.read_text(encoding="utf-8").split().count("cargo-gate") == 1
 
 
 def test_land_fast_reruns_a_cargo_gate_when_the_move_reaches_the_whole_workspace(
@@ -7474,22 +7487,17 @@ def test_land_fast_reruns_a_cargo_gate_when_the_move_reaches_the_whole_workspace
         tmp_path,
         counter,
         path="shared/support.rs",
-        label="tools/check_changed_clippy.py",
+        label="cargo-gate",
     )
     _commit_file(work, "Cargo.toml", "[workspace]\nmembers = []\n", "workspace")
     _git(work, "push", "-q", "origin", "HEAD:main")
-    _publish_policy(work, _try_run_policy(counter, try_gate=move))
+    _publish_policy(work, _try_run_policy(counter, try_gate=move, cargo=True))
     lane = work.parent / "lane-fast-cargo"
     _lane(work, "fast-cargo", {"a.py": "a = 1\n"})
 
     assert _land_fast(drv, lane, "--subject", "Land across a Rust move") == EXIT_OK
 
-    assert (
-        counter.read_text(encoding="utf-8")
-        .split()
-        .count("tools/check_changed_clippy.py")
-        == 2
-    )
+    assert counter.read_text(encoding="utf-8").split().count("cargo-gate") == 2
 
 
 def test_land_fast_no_push_then_push_reuses_the_receipt_for_the_same_tree_and_base(
@@ -9728,11 +9736,11 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
     selection_gate = (
         _integration_python(
             imports
-            + "from tools import check_changed_clippy as clippy, check_rustfmt as rustfmt; "
-            + "clippy.ROOT = rustfmt.ROOT = Path.cwd(); "
-            + "assert clippy.changed_paths('origin/main') == (); "
+            + "from tools import cargo_reach as reach, check_rustfmt as rustfmt; "
+            + "reach.ROOT = rustfmt.ROOT = Path.cwd(); "
+            + "assert reach.changed_paths('origin/main') == (); "
             + "assert rustfmt._changed_rust_paths('origin/main') == (); "
-            + "assert set(clippy.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "
+            + "assert set(reach.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "
             + "assert rustfmt._changed_rust_paths(sys.argv[1]) == (Path('feature.rs'),); "
             + f"assert sys.argv[1] == {expected!r}; "
             + "print('selected-upstream-path' + '-gates-passed', flush=True)"

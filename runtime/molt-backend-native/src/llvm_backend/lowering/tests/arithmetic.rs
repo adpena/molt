@@ -18,7 +18,9 @@ fn lower_i64_add_overflow_safe_uses_native_add() {
     // (the parameter-ABI carrier rule), so prove all three here — the
     // realistic shape under which the plan admits raw machine arithmetic.
     for v in [ValueId(0), ValueId(1), v_sum] {
-        facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
+        facts
+            .repr_by_value
+            .insert(v, molt_ir::repr::Repr::RawI64Safe);
     }
     backend.function_repr_facts.insert(func.name.clone(), facts);
 

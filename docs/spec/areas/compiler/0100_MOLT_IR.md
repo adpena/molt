@@ -1,6 +1,6 @@
 # Molt IR
 
-Molt IR is typed SSA with explicit control flow, ownership, and effects. It exists in multiple layers (HIR, TIR, LIR), each enforcing stronger invariants to enable aggressive optimization while preserving soundness.
+Molt IR is typed SSA with explicit control flow, ownership, and effects. It exists in two layers (HIR, TIR), the second enforcing stronger invariants to enable aggressive optimization while preserving soundness.
 
 ## Module transformations and demanded analyses
 
@@ -33,10 +33,9 @@ This preserves the existing source transport without treating it as a second
 semantic authority. WASM uses the same retained module owner and runs typed
 dead-operation elimination before release insertion. Existing full or
 exception-only release markers prevent that mutation. Its final projection
-produces each body, scalar facts and demanded LIR plan together, sharing the
+produces each body and its representation facts together, sharing the
 same value-range/representation derivation. Function retention retires whole
-pairs, while escaped-callable admission selects generic lowering without
-changing operations. Public compile/diagnostic/checked entry points all consume
+pairs. Public compile/diagnostic/checked entry points all consume
 this owner; generic frame planning never lifts or optimizes the projection.
 Each body and its facts retire at emission. Native and WASM still project
 source control flow/names; carrying typed control flow through machine lowering
@@ -58,11 +57,13 @@ rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
 ## IR stack
 - **HIR (High-level IR)**: desugared AST with explicit control flow.
 - **TIR (Typed IR)**: SSA with concrete `MoltType` for every value.
-- **LIR (Low-level IR)**: explicit memory operations, reference counting, and layout-level access.
+- Final TIR is the last IR: every backend lowers it directly. The LIR layer
+  (and WASM's LIR fast lane) was deleted on 2026-11-11 after its last code
+  generator went.
 
 ## Canonical backend contract
 - The canonical optimization/codegen contract is representation-aware SSA carried
-  through TIR and, where needed, made explicit in LIR.
+  through final TIR to every backend.
 - Representation is part of the IR contract, not backend-local recovery
   metadata. Values proven inline or unboxed must stay in that lane through SSA
   values, block parameters, and join points until an explicit conversion is
@@ -104,7 +105,7 @@ rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
   explicit carrier eligibility filters. Non-primary bool and float values are
   represented immediately in their main boxed I64 variable. The 100-year
   endpoint is to move the bool/F64 representation facts through typed
-  value-keyed TIR/LIR and every backend without re-deriving native name facts.
+  value-keyed TIR and every backend without re-deriving native name facts.
 - Native operation selection consumes `ExactScalarWitness`, minted only by
   the canonical exact SSA producer solver. The name projection preserves that
   witness across admitted identity and storage joins; annotations cannot create
@@ -116,22 +117,14 @@ rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
   Full-width integers keep exact runtime comparison: arithmetic's rounding
   conversion is not a comparison proof. This preserves Python's
   [precision-preserving numeric comparisons](https://docs.python.org/3.12/reference/expressions.html#value-comparisons).
-  The native planner projects TIR facts directly instead of lowering another
-  semantic-floor LIR body or maintaining an integer type solver. The generated
+  The native planner projects TIR facts directly instead of maintaining an
+  integer type solver. The generated
   field-role table distinguishes copy/load local-name metadata from semantic
   alias inputs. Malformed aliases with a second read cannot mint a witness.
-  LIR has one producer/range representation path. Its parameter and return ABI
-  projections use `Repr::carrier_type`; its verifier checks raw interpretation
-  consistency and allows boxed values with scalar annotations.
-- `LirRepr::Ref64` is a runtime reference-word lane for proven reference
-  values such as stack-eligible user-class allocations. It is physically an
-  `i64` on WASM and native pointer-sized backends, but it is not the semantic
-  `I64` scalar lane: object truthiness, dynamic signature boundaries, and
-  reference provenance must continue to use runtime-object semantics.
 - `Repr::carrier_type` projects exact producer/range facts into machine
   carriers for every scalar kind. An `int`, `float` or `bool` annotation alone
   keeps the value boxed. Frozen native linkage rows, LLVM entry arguments,
-  phis and explicit unboxing, and proven LIR use that same projection. Return
+  phis and explicit unboxing use that same projection. Return
   slots join the carriers of executable return producers, including boxed
   integer paths; callers and providers serialize the same decision. Reference
   counting consumes the lowered physical carrier, so an annotated object
@@ -218,7 +211,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - **Vector**: `VecSum`, `VecProd`, `VecMin`, `VecMax` (one bounded chunk of a fused-loop reduction over the loop's own iterator of a list, tuple or range; operands the iterator, the accumulator and the loop target's previous value; result the tuple (result, last, count, more). The op consumes the `count` next items whose updates provably run no Python code, and result and last are then exactly the accumulator and loop target the loop leaves after them; it stops before the first item it does not admit, at the iterator's end, or at its chunk bound (more). The frontend runs it in a chunk loop that publishes both bindings before each back edge and rereads them, and then the ordinary loop on the same iterator. See 0190 "Fused loops".)
 - **Index**: `OperatorIndex` (`operator.index(x)`: range()'s conversion of a bound to an exact int, calling `__index__` where the value is not already an int.)
 - **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout` (the receiver's class came from one named class statement, at its layout version; HF-220).
-- **RC ops (LIR)**: `IncRef`, `DecRef`, `Borrow`, `Release`.
+- **RC ops**: `IncRef`, `DecRef`, `Borrow`, `Release`.
 - **Conversions**: `Box`, `Unbox`, `Cast`, `Widen`, `StrFromObj`.
 
 ## Invariants
@@ -292,12 +285,10 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   Dominance-frontier walks stop where an earlier walk for the same join already
   recorded it, so frontier work is the frontier size plus the edges. No CFG or
   dominator-tree walk recurses: function size never sets native stack depth.
-- **Executable edges**: typed block-argument meets and LIR branch parameters are
-  computed only from blocks reachable from the function entry through explicit
-  terminators or implicit exception edges. Structural loop metadata blocks that
-  survive optimization but are not executable must not feed typed block
-  arguments; LIR lowering canonicalizes their bodies to `Unreachable` before
-  representation verification.
+- **Executable edges**: typed block-argument meets are computed only from
+  blocks reachable from the function entry through explicit terminators or
+  implicit exception edges. Structural loop metadata blocks that survive
+  optimization but are not executable must not feed typed block arguments.
 - **Explicit effects**: calls and memory ops must declare their effect class.
 - **No implicit exceptions**: operations that can fail must either be guarded or emit `Throw`.
 - **Tier separation**: Tier 0 disallows `Any` and speculative guards; Tier 1 allows guards with deopt exits.
@@ -408,8 +399,8 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     against the frontend op-kind registry generated from
     `runtime/molt-ir/src/tir/op_kinds.toml`.
 - Partial / pending:
-  - Dedicated HIR and LIR modules are not yet split into standalone compiler
-    crates/modules in this tree.
+  - A dedicated HIR module is not yet split into a standalone compiler
+    crate/module in this tree.
   - The Python frontend performs language lowering and serializes wire IR once.
     Rust typed SSA passes own SCCP, GVN, exception-check elimination and DCE.
     The Python fixed-point optimizer and its policy/coverage controls are retired
@@ -426,7 +417,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     native and WASM backends keep each lane, including the distinct call-site
     labels for `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func` and
     `call_indirect` vs `call_bind`.
-  - LIR-level explicit RC ops (`IncRef`/`DecRef`/`Borrow`/`Release`) are
+  - Explicit RC ops (`IncRef`/`DecRef`/`Borrow`/`Release`) are
     specified here but not fully materialized as a separate lowering stage in
     the frontend emitter.
 - Tracking policy:

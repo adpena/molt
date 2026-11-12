@@ -10,8 +10,8 @@ mod container_runtime_selector;
 mod import_metadata;
 mod import_registry;
 mod import_tokens;
-mod lir_runtime_calls;
 mod numeric_runtime_selector;
+mod op_loop_runtime_calls;
 mod pure_profile;
 mod runtime_callables;
 #[cfg(test)]
@@ -20,8 +20,7 @@ mod static_types;
 
 pub(crate) use call_indirect::CALL_INDIRECT_IMPORTS;
 pub(crate) use const_policy::{
-    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstOpPolicySpec, WasmConstRawIntEffect,
-    WasmConstScalarValue, wasm_const_op_policy, wasm_const_op_policy_for_opcode,
+    WasmConstInlineSeed, WasmConstOpPolicySpec, WasmConstRawIntEffect, wasm_const_op_policy,
 };
 pub(crate) use container_runtime_selector::{
     WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
@@ -31,14 +30,13 @@ pub(crate) use container_runtime_selector::{
 pub(crate) use import_registry::wasm_runtime_export_name;
 pub(crate) use import_registry::{IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_import};
 pub(crate) use import_tokens::WasmRuntimeImport;
-pub(crate) use lir_runtime_calls::{
-    LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
-    lir_fixed_runtime_call, op_loop_runtime_call,
-};
 #[cfg(test)]
 pub(crate) use numeric_runtime_selector::WASM_NUMERIC_RUNTIME_SELECTORS;
 pub(crate) use numeric_runtime_selector::{
     WasmNumericOpLoopKind, WasmNumericRuntimeSelection, wasm_numeric_runtime_selection,
+};
+pub(crate) use op_loop_runtime_calls::{
+    OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, op_loop_runtime_call,
 };
 pub(crate) use pure_profile::pure_profile_skips_import;
 #[cfg(test)]

@@ -193,9 +193,6 @@ primitive_operator_effect_cases = [
 #                  reduction-family hints. The registry owns opcode membership;
 #                  LoopForest owns loop shape; vectorize.rs owns accumulator
 #                  recognition, lane typing, and hint emission.
-#   - lir_verify_rules - generated opcode-to-rule lattice for verify_lir.rs
-#                  representation-aware verifier hooks. The registry owns
-#                  dispatch membership; verify_lir.rs owns invariant checking.
 #   - repr_raw_i64_full_deopt_seed_rules /
 #                  repr_projectable_bool_result_rules /
 #                  repr_projectable_float_result_rules - generated opcode-to-role
@@ -296,14 +293,8 @@ primitive_operator_effect_cases = [
 #                  regions, excluding observation-only CheckException.
 #   - structured_scf_marker_opcodes - opcode-only marker set for structured SCF
 #                  operations handled by TIR structured lowering/backconversion.
-#   - i64_overflow_box_dispatch_opcodes - opcode-only raw-i64 overflow-risk fact.
-#                  These ops must use boxed dispatch unless value-range proof
-#                  keeps operands and results inside the inline integer window.
-#   - i64_checked_overflow_triple_opcodes - opcode-only LIR checked-triple fact.
-#                  These ops can lower to raw result + overflow box + overflow
-#                  flag when type/repr/range proof makes that triple sound.
 #   - i64_zero_divisor_guard_opcodes - opcode-only raw-i64 division-family fact.
-#                  These ops require a nonzero divisor proof before raw i64 LIR
+#                  These ops require a nonzero divisor proof before raw i64 code
 #                  can be used or before CheckException can be proven redundant.
 #   - i64_shift_count_guard_opcodes - opcode-only raw-i64 shift-family fact.
 #                  These ops require a count proof in [0, 63] before hoist/machine
@@ -1417,44 +1408,13 @@ structured_scf_marker_opcodes = [
     "ScfYield",
 ]
 
-# i64_overflow_box_dispatch_opcodes: arithmetic opcodes whose raw-i64 operands
-# cannot be lowered as unchecked machine arithmetic unless every operand and
-# result is proven inside the inline-int window. RawI64FullDeopt is a full-i64
-# checked carrier, not a Python-int no-overflow proof; without the stronger
-# value-range proof these ops must route to boxed runtime dispatch to preserve
-# BigInt and overflow semantics. Distinct from zero-divisor and shift-count
-# guards: those prove machine exceptional operands, while this proves overflow
-# custody for whole arithmetic families.
-i64_overflow_box_dispatch_opcodes = [
-    "Add",
-    "Div",
-    "FloorDiv",
-    "InplaceAdd",
-    "InplaceMul",
-    "InplaceSub",
-    "Mod",
-    "Mul",
-    "Neg",
-    "Sub",
-]
-
-# i64_checked_overflow_triple_opcodes: binary arithmetic ops that can lower to
-# the LIR checked-overflow triple (raw result, boxed overflow value, overflow
-# flag) once type/repr/value-range proof is complete. Division-family opcodes are
-# intentionally excluded: their semantic guard is divisor-zero, not overflow-box
-# side-channel generation.
-i64_checked_overflow_triple_opcodes = [
-    "Add",
-    "Mul",
-    "Sub",
-]
 
 # i64_zero_divisor_guard_opcodes: raw i64 lowering for these binary opcodes can
 # machine-trap on a zero RHS (`i64.div_s`/`i64.rem_s`) while Python semantics
-# require `ZeroDivisionError`. The same semantic fact is consumed by
-# lower_to_lir.rs (box unless value-range proves RHS nonzero) and
+# require `ZeroDivisionError`. The same semantic fact is consumed by native
+# division lowering (box unless value-range proves RHS nonzero), LICM and
 # check_exception_elim.rs (only remove CheckException after these ops when the
-# divisor is proven nonzero). Generated exhaustively over OpCode so the two
+# divisor is proven nonzero). Generated exhaustively over OpCode so the
 # consumers cannot drift.
 i64_zero_divisor_guard_opcodes = [
     "Div",
@@ -1779,21 +1739,9 @@ vectorize_opcode_facts = [
     { opcode = "ScfFor", body = "iteration_control", annotation_target = true },
 ]
 
-# lir_verify_rules: opcodes that require representation-aware LIR verifier
-# hooks after generic surface/dominance checks. This table owns dispatch
-# membership; verify_lir.rs owns hook invariants and diagnostic text.
-lir_verify_rules = [
-    { opcode = "BoxVal", rule = "box_value" },
-    { opcode = "UnboxVal", rule = "unbox_value" },
-    { opcode = "Add", rule = "checked_i64_arithmetic" },
-    { opcode = "Sub", rule = "checked_i64_arithmetic" },
-    { opcode = "Mul", rule = "checked_i64_arithmetic" },
-    { opcode = "Bool", rule = "truthy_materialization" },
-]
-
 # repr_projectable_*_result_rules: opcode roles consumed by
 # representation_plan/value_repr.rs when projecting boxed TIR values into native
-# scalar carriers for LIR/WASM/LLVM. The registry owns opcode membership; the
+# scalar carriers for native, LLVM and WASM. The registry owns opcode membership; the
 # representation pass owns live operand carriers, result-index checks, and
 # Copy-source dataflow for each role.
 repr_raw_i64_full_deopt_seed_rules = [

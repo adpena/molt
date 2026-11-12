@@ -49,8 +49,8 @@
 //!
 //! The names map to the S1 spec's `{PredMap, ImmediateDoms, DomChildren,
 //! ExecReachable, MetaReachable, LoopForest, DefMap}` — `MetaReachable` is the
-//! strict terminator-only reachability view (`StrictReachable` here, the
-//! verifier/`verify_lir` view), distinguished from the full-CFG `ExecReachable`
+//! strict terminator-only reachability view (`StrictReachable` here),
+//! distinguished from the full-CFG `ExecReachable`
 //! that also follows implicit exception edges.
 
 use std::any::Any;
@@ -218,8 +218,8 @@ impl Analysis for ExecReachable {
     }
 }
 
-/// Strict terminator-only reachable block set (the verifier / `verify_lir`
-/// view). Blocks reachable *only* via exception edges are excluded.
+/// Strict terminator-only reachable block set. Blocks reachable *only* via
+/// exception edges are excluded.
 pub struct StrictReachable;
 impl Analysis for StrictReachable {
     type Result = HashSet<BlockId>;

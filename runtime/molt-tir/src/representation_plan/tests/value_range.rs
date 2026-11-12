@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 
 use super::super::*;
-use crate::tir::lir::LirRepr;
 use crate::tir::values::ValueId;
 
 // ======================================================================
@@ -743,15 +742,6 @@ fn return_slots_join_raw_full_width_and_boxed_integer_producers_as_boxed() {
     assert_eq!(repr[&wide], Repr::RawI64FullDeopt);
     assert_eq!(repr[&ValueId(1)], Repr::MaybeBigInt);
     assert_eq!(native_linkage_types(&func).1, TirType::DynBox);
-    let lir = crate::tir::lower_to_lir::lower_function_to_lir(&func);
-    assert_eq!(lir.return_types, vec![TirType::DynBox]);
-    assert!(
-        lir.blocks[&raw_exit]
-            .ops
-            .iter()
-            .any(|op| op.tir_op.opcode == TirOpCode::BoxVal)
-    );
-    assert!(lir.blocks[&boxed_exit].ops.is_empty());
 }
 
 #[test]
@@ -913,12 +903,6 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
                 TirType::DynBox
             };
             assert_eq!(native_linkage_types(&func).1, expected_carrier);
-            let lir = crate::tir::lower_to_lir::lower_function_to_lir(&func);
-            assert_eq!(lir.return_types, vec![expected_carrier.clone()]);
-            assert_eq!(
-                lir.blocks[&join].args[0].repr,
-                LirRepr::for_type(&expected_carrier)
-            );
             let exact = match ty {
                 TirType::Bool => Repr::Bool,
                 TirType::F64 => Repr::FloatUnboxed,

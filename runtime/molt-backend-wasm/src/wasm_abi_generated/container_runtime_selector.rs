@@ -4,7 +4,6 @@
 // DO NOT EDIT BY HAND.
 
 use super::import_tokens::WasmRuntimeImport;
-use super::lir_runtime_calls::LirRuntimeCall;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmContainerRuntimeOp {
@@ -27,7 +26,6 @@ pub(crate) enum WasmContainerRuntimeFact {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WasmContainerRuntimeSelection {
     pub(crate) import: WasmRuntimeImport,
-    pub(crate) lir_runtime_call: Option<LirRuntimeCall>,
 }
 
 #[inline]
@@ -50,85 +48,71 @@ pub(crate) fn wasm_container_runtime_selection(
         (WasmContainerRuntimeOp::Index, WasmContainerRuntimeFact::FlatListInt) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::ListIntGetitem,
-                lir_runtime_call: Some(LirRuntimeCall::ListIntGetitem),
             })
         }
         (WasmContainerRuntimeOp::StoreIndex, WasmContainerRuntimeFact::FlatListInt) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::ListIntSetitem,
-                lir_runtime_call: Some(LirRuntimeCall::ListIntSetitem),
             })
         }
         (WasmContainerRuntimeOp::Index, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::DictGetitem,
-                lir_runtime_call: Some(LirRuntimeCall::DictGetitem),
             })
         }
         (WasmContainerRuntimeOp::Index, WasmContainerRuntimeFact::Tuple) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::TupleGetitem,
-                lir_runtime_call: Some(LirRuntimeCall::TupleGetitem),
             })
         }
         (WasmContainerRuntimeOp::StoreIndex, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::DictSetitem,
-                lir_runtime_call: Some(LirRuntimeCall::DictSetitem),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::Set) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::SetContains,
-                lir_runtime_call: Some(LirRuntimeCall::SetContains),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::DictContains,
-                lir_runtime_call: Some(LirRuntimeCall::DictContains),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::List) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::ListContains,
-                lir_runtime_call: Some(LirRuntimeCall::ListContains),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::Str) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::StrContains,
-                lir_runtime_call: Some(LirRuntimeCall::StrContains),
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::List) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::LenList,
-                lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Str) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::LenStr,
-                lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::LenDict,
-                lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Tuple) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::LenTuple,
-                lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Set) => {
             Some(WasmContainerRuntimeSelection {
                 import: WasmRuntimeImport::LenSet,
-                lir_runtime_call: None,
             })
         }
         _ => None,

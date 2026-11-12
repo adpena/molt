@@ -277,7 +277,7 @@ def render_py(
         lines.append(f'    "{import_name}",\n')
     lines.append(")\n\n")
     lines.append(
-        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, str, str], ...] = (\n"
+        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, str], ...] = (\n"
     )
     for entry in data.get("const_op_policy", []):
         materializer = entry.get("materializer_import")
@@ -286,35 +286,24 @@ def render_py(
             f'    ("{entry["kind"]}", "{entry["inline_seed"]}", {materializer_repr}, '
             f'"{entry["literal_payload"]}", "{entry["scalar_payload"]}", '
             f"{entry['dispatch_runtime_seed']}, "
-            f'"{entry["raw_int_effect"]}", '
-            f'"{entry["lir_fast"]}"),\n'
+            f'"{entry["raw_int_effect"]}"),\n'
         )
     lines.append(")\n\n")
     lines.append(
-        "WASM_CONTAINER_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None], ...] = (\n"
+        "WASM_CONTAINER_RUNTIME_SELECTORS: tuple[tuple[str, str, str], ...] = (\n"
     )
     for entry in data.get("container_runtime_selector", []):
-        lir_variant = entry.get("lir_variant")
-        lir_variant_repr = "None" if lir_variant is None else f'"{lir_variant}"'
         lines.append(
-            f'    ("{entry["op"]}", "{entry["fact"]}", '
-            f'"{entry["import_name"]}", {lir_variant_repr}),\n'
+            f'    ("{entry["op"]}", "{entry["fact"]}", "{entry["import_name"]}"),\n'
         )
     lines.append(")\n\n")
     lines.append(
-        "WASM_NUMERIC_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None, int | None, tuple[str, ...]], ...] = (\n"
+        "WASM_NUMERIC_RUNTIME_SELECTORS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (\n"
     )
     for entry in data.get("numeric_runtime_selector", []):
-        lir_variant = entry.get("lir_variant")
-        lir_variant_repr = "None" if lir_variant is None else f'"{lir_variant}"'
-        lir_operand_count = entry.get("lir_operand_count")
-        lir_operand_count_repr = (
-            "None" if lir_operand_count is None else str(lir_operand_count)
-        )
         lines.append(
             f'    ("{entry["kind"]}", "{entry["import_name"]}", '
-            f'"{entry["op_loop_variant"]}", {lir_variant_repr}, '
-            f"{lir_operand_count_repr}, {_py_tuple(entry['deps'])}),\n"
+            f'"{entry["op_loop_variant"]}", {_py_tuple(entry["deps"])}),\n'
         )
     lines.append(")\n\n")
     output_export_policy = data["output_export_policy"]

@@ -1,6 +1,5 @@
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile, WasmRuntimePollSlots};
 mod backend;
-pub(crate) mod body;
 mod class_def_layout;
 mod compile_pipeline;
 mod const_materialization;
@@ -15,7 +14,6 @@ pub(crate) mod frame_record;
 mod function_emitter;
 mod function_frame;
 pub(crate) mod global_slot;
-pub(crate) mod lir_fast;
 mod local_analysis;
 mod module_abi;
 mod module_registry;

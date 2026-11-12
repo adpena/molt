@@ -641,37 +641,6 @@ fn malformed_frame_module() -> Vec<u8> {
 
 #[test]
 fn wasm_compiles_split_local_frame_with_inherited_chunks() {
-    // The optimized LIR lane must preserve lifecycle operations or decline the
-    // function through its existing typed unsupported-operation admission.
-    let mut local_fast_candidate = wasm_test_function(
-        "probe____molt_globals_builtin__owned",
-        vec![],
-        None,
-        vec![
-            OpIR {
-                s_value: Some("probe____molt_globals_builtin__owned".into()),
-                ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
-            },
-            wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
-            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
-        ],
-    );
-    local_fast_candidate.execution_context = ExecutionContextPolicy::Local;
-    let candidate_name = local_fast_candidate.name.clone();
-    let plans = crate::wasm::final_functions::WasmFinalFunctions::lowering_plans_for_fixtures(
-        &SimpleIR {
-            functions: vec![local_fast_candidate],
-            profile: None,
-        },
-        &BTreeSet::new(),
-    );
-    assert!(
-        matches!(
-            plans[&candidate_name],
-            crate::wasm::lir_fast::WasmFunctionLoweringPlan::Generic { .. }
-        ),
-        "the LIR lane must not erase Python frame ownership"
-    );
     let node = PathBuf::from("node");
     let (stub, chunks) = split_frame_fixture("wasm_framed_large");
     assert!(
@@ -1431,8 +1400,8 @@ fn symbolic_code_slots_emit_program_bound_immediates() {
 }
 
 #[test]
-fn symbolic_module_slots_bind_in_generic_and_lir_final_emission() {
-    for name in ["module_slot_probe", "demo____molt_globals_builtin__"] {
+fn symbolic_module_slots_bind_in_final_emission() {
+    for name in ["module_slot_probe"] {
         let function = wasm_test_function(
             name,
             vec![],
@@ -1460,17 +1429,6 @@ fn symbolic_module_slots_bind_in_generic_and_lir_final_emission() {
             error.shape.violation,
             molt_ir::ir_schema::OpShapeViolation::UnboundModuleSlot
         );
-        let plans = crate::wasm::final_functions::WasmFinalFunctions::lowering_plans_for_fixtures(
-            &ir,
-            &Default::default(),
-        );
-        let lir = name.contains("____molt_globals_builtin__");
-        if lir {
-            assert!(
-                plans[name].lir_fast_body().is_some(),
-                "module binding must remain on the LIR path"
-            );
-        }
         for (names, expected) in [(vec!["sys"], 0), (vec!["added", "sys"], 1)] {
             let registry = molt_ir::ModuleRegistryIR {
                 blob: vec![0],
@@ -1493,11 +1451,7 @@ fn symbolic_module_slots_bind_in_generic_and_lir_final_emission() {
                 .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let operators = wasm_operator_debug_for_export(&wasm, name);
-            let value = if lir {
-                expected
-            } else {
-                molt_codegen_abi::box_int_bits(expected)
-            };
+            let value = molt_codegen_abi::box_int_bits(expected);
             assert!(
                 operators.contains(&format!("I64Const {{ value: {value} }}")),
                 "{name}: {operators:?}"

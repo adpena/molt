@@ -705,8 +705,7 @@ pub(in crate::native_backend::function_compiler) struct SumReductionCandidate {
 /// adds: [`match_loop_int_sum_shape`]'s loop whose accumulator, sum and store
 /// the representation plan proves inline ints by value range. Python ints do
 /// not overflow; a full-range checked carrier (`RawI64FullDeopt`) leaves its
-/// checked adds to promote at 2^63, which unchecked adds would instead wrap,
-/// the same rule `lower_to_lir` applies to a raw `I64Add`.
+/// checked adds to promote at 2^63, which unchecked adds would instead wrap.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn scan_loop_int_sum_reduction(
     ops: &[OpIR],

@@ -4,7 +4,6 @@
 // DO NOT EDIT BY HAND.
 
 use super::import_tokens::WasmRuntimeImport;
-use super::lir_runtime_calls::LirRuntimeCall;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmNumericOpLoopKind {
@@ -41,7 +40,6 @@ pub(crate) enum WasmNumericOpLoopKind {
 pub(crate) struct WasmNumericRuntimeSelection {
     pub(crate) import: WasmRuntimeImport,
     pub(crate) op_loop_kind: WasmNumericOpLoopKind,
-    pub(crate) lir_runtime_call: Option<LirRuntimeCall>,
 }
 
 #[allow(dead_code)]
@@ -59,7 +57,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Add,
             op_loop_kind: WasmNumericOpLoopKind::Add,
-            lir_runtime_call: Some(LirRuntimeCall::Add),
         },
         deps: &[WasmRuntimeImport::Add, WasmRuntimeImport::StrConcat],
     },
@@ -68,7 +65,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceAdd,
             op_loop_kind: WasmNumericOpLoopKind::Add,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceAdd),
         },
         deps: &[WasmRuntimeImport::InplaceAdd, WasmRuntimeImport::StrConcat],
     },
@@ -77,7 +73,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Sub,
             op_loop_kind: WasmNumericOpLoopKind::Sub,
-            lir_runtime_call: Some(LirRuntimeCall::Sub),
         },
         deps: &[WasmRuntimeImport::Sub],
     },
@@ -86,7 +81,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceSub,
             op_loop_kind: WasmNumericOpLoopKind::Sub,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceSub),
         },
         deps: &[WasmRuntimeImport::InplaceSub],
     },
@@ -95,7 +89,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Mul,
             op_loop_kind: WasmNumericOpLoopKind::Mul,
-            lir_runtime_call: Some(LirRuntimeCall::Mul),
         },
         deps: &[WasmRuntimeImport::Mul],
     },
@@ -104,7 +97,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceMul,
             op_loop_kind: WasmNumericOpLoopKind::Mul,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceMul),
         },
         deps: &[WasmRuntimeImport::InplaceMul],
     },
@@ -113,7 +105,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Div,
             op_loop_kind: WasmNumericOpLoopKind::TrueDiv,
-            lir_runtime_call: Some(LirRuntimeCall::Div),
         },
         deps: &[WasmRuntimeImport::Div],
     },
@@ -122,7 +113,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceDiv,
             op_loop_kind: WasmNumericOpLoopKind::TrueDiv,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceDiv),
         },
         deps: &[WasmRuntimeImport::InplaceDiv],
     },
@@ -131,7 +121,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Floordiv,
             op_loop_kind: WasmNumericOpLoopKind::FloorDiv,
-            lir_runtime_call: Some(LirRuntimeCall::FloorDiv),
         },
         deps: &[WasmRuntimeImport::Floordiv],
     },
@@ -140,7 +129,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceFloordiv,
             op_loop_kind: WasmNumericOpLoopKind::FloorDiv,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceFloorDiv),
         },
         deps: &[WasmRuntimeImport::InplaceFloordiv],
     },
@@ -149,7 +137,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Mod,
             op_loop_kind: WasmNumericOpLoopKind::Mod,
-            lir_runtime_call: Some(LirRuntimeCall::Mod),
         },
         deps: &[WasmRuntimeImport::Mod],
     },
@@ -158,7 +145,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceMod,
             op_loop_kind: WasmNumericOpLoopKind::Mod,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceMod),
         },
         deps: &[WasmRuntimeImport::InplaceMod],
     },
@@ -167,7 +153,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Matmul,
             op_loop_kind: WasmNumericOpLoopKind::Matmul,
-            lir_runtime_call: Some(LirRuntimeCall::Matmul),
         },
         deps: &[WasmRuntimeImport::Matmul],
     },
@@ -176,7 +161,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceMatmul,
             op_loop_kind: WasmNumericOpLoopKind::Matmul,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceMatmul),
         },
         deps: &[WasmRuntimeImport::InplaceMatmul],
     },
@@ -185,7 +169,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Pow,
             op_loop_kind: WasmNumericOpLoopKind::Pow,
-            lir_runtime_call: Some(LirRuntimeCall::Pow),
         },
         deps: &[WasmRuntimeImport::Pow],
     },
@@ -194,7 +177,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplacePow,
             op_loop_kind: WasmNumericOpLoopKind::Pow,
-            lir_runtime_call: Some(LirRuntimeCall::InplacePow),
         },
         deps: &[WasmRuntimeImport::InplacePow],
     },
@@ -203,7 +185,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::PowMod,
             op_loop_kind: WasmNumericOpLoopKind::PowMod,
-            lir_runtime_call: Some(LirRuntimeCall::PowMod),
         },
         deps: &[WasmRuntimeImport::PowMod],
     },
@@ -212,7 +193,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Round,
             op_loop_kind: WasmNumericOpLoopKind::Round,
-            lir_runtime_call: Some(LirRuntimeCall::Round),
         },
         deps: &[WasmRuntimeImport::Round],
     },
@@ -221,7 +201,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Trunc,
             op_loop_kind: WasmNumericOpLoopKind::Trunc,
-            lir_runtime_call: Some(LirRuntimeCall::Trunc),
         },
         deps: &[WasmRuntimeImport::Trunc],
     },
@@ -230,7 +209,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::BitAnd,
             op_loop_kind: WasmNumericOpLoopKind::BitAnd,
-            lir_runtime_call: Some(LirRuntimeCall::BitAnd),
         },
         deps: &[WasmRuntimeImport::BitAnd],
     },
@@ -239,7 +217,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceBitAnd,
             op_loop_kind: WasmNumericOpLoopKind::BitAnd,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceBitAnd),
         },
         deps: &[WasmRuntimeImport::InplaceBitAnd],
     },
@@ -248,7 +225,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::BitOr,
             op_loop_kind: WasmNumericOpLoopKind::BitOr,
-            lir_runtime_call: Some(LirRuntimeCall::BitOr),
         },
         deps: &[WasmRuntimeImport::BitOr],
     },
@@ -257,7 +233,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceBitOr,
             op_loop_kind: WasmNumericOpLoopKind::BitOr,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceBitOr),
         },
         deps: &[WasmRuntimeImport::InplaceBitOr],
     },
@@ -266,7 +241,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::BitXor,
             op_loop_kind: WasmNumericOpLoopKind::BitXor,
-            lir_runtime_call: Some(LirRuntimeCall::BitXor),
         },
         deps: &[WasmRuntimeImport::BitXor],
     },
@@ -275,7 +249,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceBitXor,
             op_loop_kind: WasmNumericOpLoopKind::BitXor,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceBitXor),
         },
         deps: &[WasmRuntimeImport::InplaceBitXor],
     },
@@ -284,7 +257,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Invert,
             op_loop_kind: WasmNumericOpLoopKind::Invert,
-            lir_runtime_call: Some(LirRuntimeCall::Invert),
         },
         deps: &[WasmRuntimeImport::Invert],
     },
@@ -293,7 +265,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Invert,
             op_loop_kind: WasmNumericOpLoopKind::Invert,
-            lir_runtime_call: Some(LirRuntimeCall::Invert),
         },
         deps: &[WasmRuntimeImport::Invert],
     },
@@ -302,7 +273,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Neg,
             op_loop_kind: WasmNumericOpLoopKind::Neg,
-            lir_runtime_call: Some(LirRuntimeCall::Neg),
         },
         deps: &[WasmRuntimeImport::Neg],
     },
@@ -311,7 +281,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Neg,
             op_loop_kind: WasmNumericOpLoopKind::Neg,
-            lir_runtime_call: Some(LirRuntimeCall::Neg),
         },
         deps: &[WasmRuntimeImport::Neg],
     },
@@ -320,7 +289,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Pos,
             op_loop_kind: WasmNumericOpLoopKind::Pos,
-            lir_runtime_call: Some(LirRuntimeCall::Pos),
         },
         deps: &[WasmRuntimeImport::Pos],
     },
@@ -329,7 +297,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Pos,
             op_loop_kind: WasmNumericOpLoopKind::Pos,
-            lir_runtime_call: Some(LirRuntimeCall::Pos),
         },
         deps: &[WasmRuntimeImport::Pos],
     },
@@ -338,7 +305,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Lshift,
             op_loop_kind: WasmNumericOpLoopKind::LShift,
-            lir_runtime_call: Some(LirRuntimeCall::LShift),
         },
         deps: &[WasmRuntimeImport::Lshift],
     },
@@ -347,7 +313,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Lshift,
             op_loop_kind: WasmNumericOpLoopKind::LShift,
-            lir_runtime_call: Some(LirRuntimeCall::LShift),
         },
         deps: &[WasmRuntimeImport::Lshift],
     },
@@ -356,7 +321,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceLshift,
             op_loop_kind: WasmNumericOpLoopKind::LShift,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceLShift),
         },
         deps: &[WasmRuntimeImport::InplaceLshift],
     },
@@ -365,7 +329,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Rshift,
             op_loop_kind: WasmNumericOpLoopKind::RShift,
-            lir_runtime_call: Some(LirRuntimeCall::RShift),
         },
         deps: &[WasmRuntimeImport::Rshift],
     },
@@ -374,7 +337,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Rshift,
             op_loop_kind: WasmNumericOpLoopKind::RShift,
-            lir_runtime_call: Some(LirRuntimeCall::RShift),
         },
         deps: &[WasmRuntimeImport::Rshift],
     },
@@ -383,7 +345,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceRshift,
             op_loop_kind: WasmNumericOpLoopKind::RShift,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceRShift),
         },
         deps: &[WasmRuntimeImport::InplaceRshift],
     },
@@ -392,7 +353,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Lt,
             op_loop_kind: WasmNumericOpLoopKind::Lt,
-            lir_runtime_call: Some(LirRuntimeCall::Lt),
         },
         deps: &[WasmRuntimeImport::Lt],
     },
@@ -401,7 +361,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Le,
             op_loop_kind: WasmNumericOpLoopKind::Le,
-            lir_runtime_call: Some(LirRuntimeCall::Le),
         },
         deps: &[WasmRuntimeImport::Le],
     },
@@ -410,7 +369,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Gt,
             op_loop_kind: WasmNumericOpLoopKind::Gt,
-            lir_runtime_call: Some(LirRuntimeCall::Gt),
         },
         deps: &[WasmRuntimeImport::Gt],
     },
@@ -419,7 +377,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Ge,
             op_loop_kind: WasmNumericOpLoopKind::Ge,
-            lir_runtime_call: Some(LirRuntimeCall::Ge),
         },
         deps: &[WasmRuntimeImport::Ge],
     },
@@ -428,7 +385,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Eq,
             op_loop_kind: WasmNumericOpLoopKind::Eq,
-            lir_runtime_call: Some(LirRuntimeCall::Eq),
         },
         deps: &[WasmRuntimeImport::Eq],
     },
@@ -437,7 +393,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Ne,
             op_loop_kind: WasmNumericOpLoopKind::Ne,
-            lir_runtime_call: Some(LirRuntimeCall::Ne),
         },
         deps: &[WasmRuntimeImport::Ne],
     },
@@ -446,7 +401,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::StringEq,
             op_loop_kind: WasmNumericOpLoopKind::StringEq,
-            lir_runtime_call: Some(LirRuntimeCall::StringEq),
         },
         deps: &[WasmRuntimeImport::StringEq],
     },
@@ -455,7 +409,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecSum,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         },
         deps: &[WasmRuntimeImport::VecSum],
     },
@@ -464,7 +417,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecProd,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         },
         deps: &[WasmRuntimeImport::VecProd],
     },
@@ -473,7 +425,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecMin,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         },
         deps: &[WasmRuntimeImport::VecMin],
     },
@@ -482,7 +433,6 @@ pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpe
         selection: WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecMax,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         },
         deps: &[WasmRuntimeImport::VecMax],
     },
@@ -496,242 +446,194 @@ pub(crate) fn wasm_numeric_runtime_selection(
         molt_ir::OpKind::Add => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Add,
             op_loop_kind: WasmNumericOpLoopKind::Add,
-            lir_runtime_call: Some(LirRuntimeCall::Add),
         }),
         molt_ir::OpKind::InplaceAdd => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceAdd,
             op_loop_kind: WasmNumericOpLoopKind::Add,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceAdd),
         }),
         molt_ir::OpKind::Sub => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Sub,
             op_loop_kind: WasmNumericOpLoopKind::Sub,
-            lir_runtime_call: Some(LirRuntimeCall::Sub),
         }),
         molt_ir::OpKind::InplaceSub => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceSub,
             op_loop_kind: WasmNumericOpLoopKind::Sub,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceSub),
         }),
         molt_ir::OpKind::Mul => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Mul,
             op_loop_kind: WasmNumericOpLoopKind::Mul,
-            lir_runtime_call: Some(LirRuntimeCall::Mul),
         }),
         molt_ir::OpKind::InplaceMul => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceMul,
             op_loop_kind: WasmNumericOpLoopKind::Mul,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceMul),
         }),
         molt_ir::OpKind::Div => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Div,
             op_loop_kind: WasmNumericOpLoopKind::TrueDiv,
-            lir_runtime_call: Some(LirRuntimeCall::Div),
         }),
         molt_ir::OpKind::InplaceDiv => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceDiv,
             op_loop_kind: WasmNumericOpLoopKind::TrueDiv,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceDiv),
         }),
         molt_ir::OpKind::Floordiv => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Floordiv,
             op_loop_kind: WasmNumericOpLoopKind::FloorDiv,
-            lir_runtime_call: Some(LirRuntimeCall::FloorDiv),
         }),
         molt_ir::OpKind::InplaceFloordiv => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceFloordiv,
             op_loop_kind: WasmNumericOpLoopKind::FloorDiv,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceFloorDiv),
         }),
         molt_ir::OpKind::Mod => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Mod,
             op_loop_kind: WasmNumericOpLoopKind::Mod,
-            lir_runtime_call: Some(LirRuntimeCall::Mod),
         }),
         molt_ir::OpKind::InplaceMod => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceMod,
             op_loop_kind: WasmNumericOpLoopKind::Mod,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceMod),
         }),
         molt_ir::OpKind::Matmul => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Matmul,
             op_loop_kind: WasmNumericOpLoopKind::Matmul,
-            lir_runtime_call: Some(LirRuntimeCall::Matmul),
         }),
         molt_ir::OpKind::InplaceMatmul => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceMatmul,
             op_loop_kind: WasmNumericOpLoopKind::Matmul,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceMatmul),
         }),
         molt_ir::OpKind::Pow => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Pow,
             op_loop_kind: WasmNumericOpLoopKind::Pow,
-            lir_runtime_call: Some(LirRuntimeCall::Pow),
         }),
         molt_ir::OpKind::InplacePow => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplacePow,
             op_loop_kind: WasmNumericOpLoopKind::Pow,
-            lir_runtime_call: Some(LirRuntimeCall::InplacePow),
         }),
         molt_ir::OpKind::PowMod => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::PowMod,
             op_loop_kind: WasmNumericOpLoopKind::PowMod,
-            lir_runtime_call: Some(LirRuntimeCall::PowMod),
         }),
         molt_ir::OpKind::Round => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Round,
             op_loop_kind: WasmNumericOpLoopKind::Round,
-            lir_runtime_call: Some(LirRuntimeCall::Round),
         }),
         molt_ir::OpKind::Trunc => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Trunc,
             op_loop_kind: WasmNumericOpLoopKind::Trunc,
-            lir_runtime_call: Some(LirRuntimeCall::Trunc),
         }),
         molt_ir::OpKind::BitAnd => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::BitAnd,
             op_loop_kind: WasmNumericOpLoopKind::BitAnd,
-            lir_runtime_call: Some(LirRuntimeCall::BitAnd),
         }),
         molt_ir::OpKind::InplaceBitAnd => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceBitAnd,
             op_loop_kind: WasmNumericOpLoopKind::BitAnd,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceBitAnd),
         }),
         molt_ir::OpKind::BitOr => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::BitOr,
             op_loop_kind: WasmNumericOpLoopKind::BitOr,
-            lir_runtime_call: Some(LirRuntimeCall::BitOr),
         }),
         molt_ir::OpKind::InplaceBitOr => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceBitOr,
             op_loop_kind: WasmNumericOpLoopKind::BitOr,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceBitOr),
         }),
         molt_ir::OpKind::BitXor => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::BitXor,
             op_loop_kind: WasmNumericOpLoopKind::BitXor,
-            lir_runtime_call: Some(LirRuntimeCall::BitXor),
         }),
         molt_ir::OpKind::InplaceBitXor => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceBitXor,
             op_loop_kind: WasmNumericOpLoopKind::BitXor,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceBitXor),
         }),
         molt_ir::OpKind::Invert => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Invert,
             op_loop_kind: WasmNumericOpLoopKind::Invert,
-            lir_runtime_call: Some(LirRuntimeCall::Invert),
         }),
         molt_ir::OpKind::BitNot => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Invert,
             op_loop_kind: WasmNumericOpLoopKind::Invert,
-            lir_runtime_call: Some(LirRuntimeCall::Invert),
         }),
         molt_ir::OpKind::Neg => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Neg,
             op_loop_kind: WasmNumericOpLoopKind::Neg,
-            lir_runtime_call: Some(LirRuntimeCall::Neg),
         }),
         molt_ir::OpKind::UnaryNeg => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Neg,
             op_loop_kind: WasmNumericOpLoopKind::Neg,
-            lir_runtime_call: Some(LirRuntimeCall::Neg),
         }),
         molt_ir::OpKind::Pos => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Pos,
             op_loop_kind: WasmNumericOpLoopKind::Pos,
-            lir_runtime_call: Some(LirRuntimeCall::Pos),
         }),
         molt_ir::OpKind::UnaryPos => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Pos,
             op_loop_kind: WasmNumericOpLoopKind::Pos,
-            lir_runtime_call: Some(LirRuntimeCall::Pos),
         }),
         molt_ir::OpKind::Lshift => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Lshift,
             op_loop_kind: WasmNumericOpLoopKind::LShift,
-            lir_runtime_call: Some(LirRuntimeCall::LShift),
         }),
         molt_ir::OpKind::Shl => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Lshift,
             op_loop_kind: WasmNumericOpLoopKind::LShift,
-            lir_runtime_call: Some(LirRuntimeCall::LShift),
         }),
         molt_ir::OpKind::InplaceLshift => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceLshift,
             op_loop_kind: WasmNumericOpLoopKind::LShift,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceLShift),
         }),
         molt_ir::OpKind::Rshift => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Rshift,
             op_loop_kind: WasmNumericOpLoopKind::RShift,
-            lir_runtime_call: Some(LirRuntimeCall::RShift),
         }),
         molt_ir::OpKind::Shr => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Rshift,
             op_loop_kind: WasmNumericOpLoopKind::RShift,
-            lir_runtime_call: Some(LirRuntimeCall::RShift),
         }),
         molt_ir::OpKind::InplaceRshift => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::InplaceRshift,
             op_loop_kind: WasmNumericOpLoopKind::RShift,
-            lir_runtime_call: Some(LirRuntimeCall::InplaceRShift),
         }),
         molt_ir::OpKind::Lt => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Lt,
             op_loop_kind: WasmNumericOpLoopKind::Lt,
-            lir_runtime_call: Some(LirRuntimeCall::Lt),
         }),
         molt_ir::OpKind::Le => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Le,
             op_loop_kind: WasmNumericOpLoopKind::Le,
-            lir_runtime_call: Some(LirRuntimeCall::Le),
         }),
         molt_ir::OpKind::Gt => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Gt,
             op_loop_kind: WasmNumericOpLoopKind::Gt,
-            lir_runtime_call: Some(LirRuntimeCall::Gt),
         }),
         molt_ir::OpKind::Ge => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Ge,
             op_loop_kind: WasmNumericOpLoopKind::Ge,
-            lir_runtime_call: Some(LirRuntimeCall::Ge),
         }),
         molt_ir::OpKind::Eq => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Eq,
             op_loop_kind: WasmNumericOpLoopKind::Eq,
-            lir_runtime_call: Some(LirRuntimeCall::Eq),
         }),
         molt_ir::OpKind::Ne => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::Ne,
             op_loop_kind: WasmNumericOpLoopKind::Ne,
-            lir_runtime_call: Some(LirRuntimeCall::Ne),
         }),
         molt_ir::OpKind::StringEq => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::StringEq,
             op_loop_kind: WasmNumericOpLoopKind::StringEq,
-            lir_runtime_call: Some(LirRuntimeCall::StringEq),
         }),
         molt_ir::OpKind::VecSum => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecSum,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         }),
         molt_ir::OpKind::VecProd => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecProd,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         }),
         molt_ir::OpKind::VecMin => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecMin,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         }),
         molt_ir::OpKind::VecMax => Some(WasmNumericRuntimeSelection {
             import: WasmRuntimeImport::VecMax,
             op_loop_kind: WasmNumericOpLoopKind::VectorReduction,
-            lir_runtime_call: None,
         }),
         _ => None,
     }

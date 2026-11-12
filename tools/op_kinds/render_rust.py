@@ -33,7 +33,6 @@ from .validate import (
 from .render_rust_analysis import (
     _render_predicate_semantics,
     _render_counted_loop_comparison_roles,
-    _render_lir_verify_rule,
     _render_module_slot_promotion_roles,
     _render_operand_independent_result_type,
     _render_range_devirt_role,
@@ -347,7 +346,6 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
     out.append(_render_vectorize_opcode_facts(opcodes, data))
     out.append("\n")
-    out.append(_render_lir_verify_rule(opcodes, data))
     out.append("\n")
     out.append(_render_repr_projectable_result_rules(opcodes, data))
     out.append("\n")
@@ -588,40 +586,13 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, structured_scf_marker_opcodes))
     out.append("    }\n}\n\n")
 
-    i64_overflow_box_dispatch = list(data.get("i64_overflow_box_dispatch_opcodes", []))
-    out.append(
-        "/// Whether raw-i64 arithmetic must fall back to boxed dispatch unless\n"
-        "/// operands and results are proven inside the inline-int window. This is\n"
-        "/// the lower_to_lir.rs overflow-custody authority for full-width\n"
-        "/// RawI64Safe carriers. EXHAUSTIVE over OpCode so new arithmetic cannot\n"
-        "/// silently bypass BigInt/overflow semantics.\n"
-        "#[inline]\n"
-        "pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, i64_overflow_box_dispatch))
-    out.append("    }\n}\n\n")
-
-    i64_checked_overflow_triples = list(
-        data.get("i64_checked_overflow_triple_opcodes", [])
-    )
-    out.append(
-        "/// Whether an opcode can lower to the LIR checked-overflow triple once\n"
-        "/// type/repr/value-range proof is complete. EXHAUSTIVE over OpCode so\n"
-        "/// checked arithmetic eligibility cannot drift from lower_to_lir.rs.\n"
-        "#[inline]\n"
-        "pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, i64_checked_overflow_triples))
-    out.append("    }\n}\n\n")
-
     i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))
     out.append(
         "/// Whether a binary opcode needs a proven nonzero RHS before raw i64\n"
         "/// division/remainder lowering may be used, or before CheckException may\n"
-        "/// be eliminated after it. This is the shared authority for lower_to_lir.rs\n"
-        "/// and check_exception_elim.rs. EXHAUSTIVE over OpCode so a new division\n"
+        "/// be eliminated after it. This is the shared authority for backend\n"
+        "/// division lowering, LICM and check_exception_elim.rs. EXHAUSTIVE over\n"
+        "/// OpCode so a new division\n"
         "/// family opcode cannot silently skip the zero-divisor proof requirement.\n"
         "#[inline]\n"
         "pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {\n"

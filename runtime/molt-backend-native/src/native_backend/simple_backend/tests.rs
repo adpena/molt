@@ -757,7 +757,6 @@ fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
             cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
             cache: crate::tir::pipeline_cache::TirCacheLocation::Directory(cache_dir.clone()),
             process_externs: false,
-            verify_lir: true,
             tir_dump: false,
             tir_stats: false,
             progress_prefix: None,

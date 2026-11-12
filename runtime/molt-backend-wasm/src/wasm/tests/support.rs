@@ -1,7 +1,6 @@
 pub(super) use super::super::container_runtime_select::selected_container_runtime_import;
 pub(super) use super::super::{WasmBackend, WasmCompileOptions, WasmCompileOutput, WasmProfile};
 pub(super) use crate::representation_plan::ScalarRepresentationPlan;
-pub(super) use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 pub(super) use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_KEY_BASE, WasmRuntimeImport, wasm_runtime_import,

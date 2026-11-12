@@ -973,7 +973,7 @@ fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
 
     assert!(
         int_like.contains("code"),
-        "ord_at result must be proven by first-class typed TIR/LIR lowering"
+        "ord_at result must be proven by first-class typed TIR lowering"
     );
     assert!(
         plan.name_is_integer_family("shifted"),
@@ -2794,11 +2794,6 @@ fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consume
             expected,
             "{case}"
         );
-        let mut tir =
-            lower_to_tir_for_target(&func, &crate::tir::TargetInfo::native_release_fast());
-        refine_types(&mut tir);
-        let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
-        assert_eq!(!lir.container_storage.is_empty(), expected, "LIR {case}");
     }
 }
 
@@ -2842,15 +2837,6 @@ fn flat_storage_index_keys_require_exact_integers_not_inline_carriers() {
                 plan.op_has_container_storage(4, &func.ops[4], ContainerStorageKind::FlatListInt),
                 expected,
                 "{case} {access}"
-            );
-            let mut tir =
-                lower_to_tir_for_target(&func, &crate::tir::TargetInfo::native_release_fast());
-            refine_types(&mut tir);
-            let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
-            assert_eq!(
-                !lir.container_storage.is_empty(),
-                expected,
-                "LIR {case} {access}"
             );
         }
     }

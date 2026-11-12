@@ -2,10 +2,9 @@ use crate::OpIR;
 use crate::repr::{ContainerKind, ContainerStorageKind};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi_generated::{
-    LirRuntimeCall, WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmRuntimeImport,
-    wasm_container_runtime_op, wasm_container_runtime_selection,
+    WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmRuntimeImport, wasm_container_runtime_op,
+    wasm_container_runtime_selection,
 };
-use molt_tir::tir::types::TirType;
 
 pub(in crate::wasm) fn selected_container_runtime_import(
     plan: &ScalarRepresentationPlan,
@@ -17,21 +16,6 @@ pub(in crate::wasm) fn selected_container_runtime_import(
     selected_storage_runtime(selector_op, plan, op_index, op)
         .or_else(|| selected_container_kind_runtime(selector_op, plan, op))
         .map(|selection| selection.import)
-}
-
-pub(in crate::wasm) fn selected_lir_container_runtime_call(
-    selector_op: WasmContainerRuntimeOp,
-    has_flat_list_int_storage: bool,
-    container_ty: Option<&TirType>,
-) -> Option<LirRuntimeCall> {
-    if has_flat_list_int_storage
-        && let Some(selection) =
-            wasm_container_runtime_selection(selector_op, WasmContainerRuntimeFact::FlatListInt)
-    {
-        return selection.lir_runtime_call;
-    }
-    let fact = tir_type_container_fact(container_ty?)?;
-    wasm_container_runtime_selection(selector_op, fact)?.lir_runtime_call
 }
 
 fn selected_storage_runtime(
@@ -63,16 +47,5 @@ fn container_kind_fact(kind: ContainerKind) -> Option<WasmContainerRuntimeFact> 
         ContainerKind::Set => Some(WasmContainerRuntimeFact::Set),
         ContainerKind::Str => Some(WasmContainerRuntimeFact::Str),
         ContainerKind::Tuple => Some(WasmContainerRuntimeFact::Tuple),
-    }
-}
-
-fn tir_type_container_fact(ty: &TirType) -> Option<WasmContainerRuntimeFact> {
-    match ty {
-        TirType::Dict(_, _) => Some(WasmContainerRuntimeFact::Dict),
-        TirType::List(_) => Some(WasmContainerRuntimeFact::List),
-        TirType::Set(_) => Some(WasmContainerRuntimeFact::Set),
-        TirType::Str => Some(WasmContainerRuntimeFact::Str),
-        TirType::Tuple(_) => Some(WasmContainerRuntimeFact::Tuple),
-        _ => None,
     }
 }

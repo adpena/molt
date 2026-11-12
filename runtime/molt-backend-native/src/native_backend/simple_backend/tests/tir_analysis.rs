@@ -821,7 +821,6 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                         cache_dir.join(format!("{mode:?}")),
                     ),
                     process_externs: false,
-                    verify_lir: true,
                     tir_dump: false,
                     tir_stats: false,
                     progress_prefix: None,

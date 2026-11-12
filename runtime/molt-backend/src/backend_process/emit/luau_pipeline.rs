@@ -20,7 +20,6 @@ pub(crate) fn run_luau_tir_module_pipeline(
             cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::Luau,
             cache: molt_backend::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
             process_externs: false,
-            verify_lir: false,
             tir_dump: backend_env::var(BackendEnv::TIR_DUMP).ok().as_deref() == Some("1"),
             tir_stats: backend_env::var(BackendEnv::TIR_OPT_STATS).ok().as_deref() == Some("1"),
             progress_prefix: None,
