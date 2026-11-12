@@ -1811,8 +1811,7 @@ unsafe fn invoke_function_trampoline(
                 };
                 target
             };
-            let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
-                std::mem::transmute(call_target);
+            let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(call_target);
             func(
                 _py.attached_context(),
                 closure_bits,

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi;
 use crate::wasm_binary::Function;
+use molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi;
 use wasm_encoder::Instruction;
 
 use crate::wasm::WasmBackend;
