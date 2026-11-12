@@ -1147,18 +1147,7 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
             call_sites_for_import(function, compiled.import_ids["molt_frame_record_enter"]);
         assert_eq!(enter_calls.len(), 1, "{}", function.display());
         let (enter_block, enter_call) = enter_calls[0];
-        let guard = function
-            .layout
-            .last_inst(enter_block)
-            .expect("leading frame entry exception guard");
-        let InstructionData::Brif { blocks, .. } = &function.dfg.insts[guard] else {
-            panic!(
-                "leading frame entry must consume the adjacent exception edge before literals:\n{}",
-                function.display()
-            );
-        };
-        let failure = blocks[0].block(&function.dfg.value_lists);
-        let success = blocks[1].block(&function.dfg.value_lists);
+        let (failure, success) = exception_guard_edges(function, enter_block);
 
         let initialized_anchors = function
             .layout
@@ -1292,18 +1281,7 @@ fn nonleading_module_frame_keeps_literal_materialization_before_entry_and_rollba
         call_sites_for_import(function, compiled.import_ids["molt_frame_record_enter"]);
     assert_eq!(enter_calls.len(), 1, "{}", function.display());
     let (enter_block, enter_call) = enter_calls[0];
-    let guard = function
-        .layout
-        .last_inst(enter_block)
-        .expect("module frame entry exception guard");
-    let InstructionData::Brif { blocks, .. } = &function.dfg.insts[guard] else {
-        panic!(
-            "module entry must retain its IR exception edge:\n{}",
-            function.display()
-        );
-    };
-    let failure = blocks[0].block(&function.dfg.value_lists);
-    let success = blocks[1].block(&function.dfg.value_lists);
+    let (failure, success) = exception_guard_edges(function, enter_block);
 
     let constructors =
         call_sites_for_import(function, compiled.import_ids["molt_string_from_bytes"]);

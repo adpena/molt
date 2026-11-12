@@ -684,6 +684,45 @@ fn value_originates_only_from(function: &Function, value: Value, source: Value) 
     canonical_value_sources(function, value) == BTreeSet::from([source])
 }
 
+/// The (failure, success) targets of the exception check that ends `block`.
+/// A check that holds the thread record tests its pending byte inline and
+/// branches to a confirm block that calls the runtime reader and jumps to a
+/// join; the join's branch is the semantic exception edge (invariant J1).
+fn exception_guard_edges(
+    function: &Function,
+    block: cranelift_codegen::ir::Block,
+) -> (cranelift_codegen::ir::Block, cranelift_codegen::ir::Block) {
+    let targets = |block: cranelift_codegen::ir::Block| {
+        let last = function.layout.last_inst(block)?;
+        match &function.dfg.insts[last] {
+            cranelift_codegen::ir::InstructionData::Brif { blocks, .. } => Some((
+                blocks[0].block(&function.dfg.value_lists),
+                blocks[1].block(&function.dfg.value_lists),
+            )),
+            _ => None,
+        }
+    };
+    let (taken, not_taken) = targets(block).unwrap_or_else(|| {
+        panic!(
+            "{block} must end in an exception branch:\n{}",
+            function.display()
+        )
+    });
+    let confirm_joins = function.layout.last_inst(taken).is_some_and(|last| {
+        matches!(
+            &function.dfg.insts[last],
+            cranelift_codegen::ir::InstructionData::Jump { destination, .. }
+                if destination.block(&function.dfg.value_lists) == not_taken
+        )
+    });
+    if confirm_joins {
+        targets(not_taken)
+            .unwrap_or_else(|| panic!("the confirm join must branch:\n{}", function.display()))
+    } else {
+        (taken, not_taken)
+    }
+}
+
 fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {
     compile_function_to_clif(functions, target_name)
         .display()
