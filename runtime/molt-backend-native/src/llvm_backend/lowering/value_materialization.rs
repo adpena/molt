@@ -1839,16 +1839,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         require_llvm_function_type(name, func, physical_ty)
     }
 
-    /// The execution lease keeps both pointers alive for this invocation.
-    /// Materialize them in the actual LLVM entry, including a CFG trampoline.
-    pub(super) fn async_poll_context(
-        &mut self,
-    ) -> (
-        inkwell::values::PointerValue<'ctx>,
-        inkwell::values::PointerValue<'ctx>,
-    ) {
-        if let Some(context) = self.poll_context {
-            return context;
+    /// This invocation's thread record (invariant J1, `call_anatomy.md` 4.1):
+    /// one load from the execution context every compiled function takes,
+    /// in the actual LLVM entry, including a CFG trampoline. The execution
+    /// lease keeps the record alive for the invocation.
+    pub(super) fn thread_record(&mut self) -> inkwell::values::PointerValue<'ctx> {
+        if let Some(record) = self.thread_record {
+            return record;
         }
         let builder = self.entry_block_builder(&self.backend.builder);
         let context = self.backend.context;
@@ -1875,6 +1872,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let record = builder
             .build_int_to_ptr(bits, ptr_ty, "thread_record_ptr")
             .unwrap();
+        self.thread_record = Some(record);
+        record
+    }
+
+    /// The pending-work word the thread record lends, loaded once in the
+    /// entry right after the record (the entry builder inserts before the
+    /// block's first instruction, which may precede the record).
+    pub(super) fn pending_work_ptr(&mut self) -> inkwell::values::PointerValue<'ctx> {
+        if let Some(word) = self.pending_work_ptr {
+            return word;
+        }
+        let record = self.thread_record();
+        let context = self.backend.context;
+        let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
+        let builder = context.create_builder();
+        let defined = record
+            .as_instruction()
+            .expect("the thread record is an entry-block instruction");
+        match defined.get_next_instruction() {
+            Some(next) => builder.position_before(&next),
+            None => builder
+                .position_at_end(defined.get_parent().expect("the thread record has a block")),
+        }
         let field = unsafe {
             builder
                 .build_gep(
@@ -1895,15 +1915,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let word = builder
             .build_int_to_ptr(word, ptr_ty, "pending_work_ptr")
             .unwrap();
-        self.poll_context = Some((record, word));
-        (record, word)
+        self.pending_work_ptr = Some(word);
+        word
     }
 
     /// Read the thread's pending-work word and test it: an i1 that is true
     /// when work waits for a poll. The load is volatile and atomic, so no
     /// LLVM pass merges two reads or hoists one out of a loop.
     pub(super) fn emit_async_work_pending(&mut self) -> inkwell::values::IntValue<'ctx> {
-        let (_, word_ptr) = self.async_poll_context();
+        let word_ptr = self.pending_work_ptr();
         let context = self.backend.context;
         let builder = &self.backend.builder;
         let word = builder
@@ -1930,7 +1950,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         cold_location: Option<i64>,
     ) -> BasicValueEnum<'ctx> {
         let has_work = self.emit_async_work_pending();
-        let (record, _) = self.async_poll_context();
+        let record = self.thread_record();
         let context = self.backend.context;
         let builder = &self.backend.builder;
         let cold = context.append_basic_block(self.llvm_fn, "async_poll_cold");
@@ -2041,30 +2061,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         result.as_basic_value()
     }
 
-    /// `molt_exception_pending()` as an i64 0 or 1. A function that polls
-    /// for async work already holds the thread record, so it tests the
-    /// record's pending byte inline and calls the runtime reader only when the
-    /// byte is set. The reader answers 0 at once for a clear byte, and for a
-    /// set byte it confirms it, repairing a stale task slot; the inline test
-    /// therefore returns exactly what the call returned. A function without
-    /// the record keeps the call: acquiring the record costs more than one
-    /// check.
+    /// `molt_exception_pending()` as an i64 0 or 1 (invariant J1). It tests
+    /// the thread record's pending byte inline and calls the runtime reader
+    /// only when the byte is set. The reader answers 0 at once for a clear
+    /// byte, and for a set byte it confirms it, repairing a stale task slot;
+    /// the inline test therefore returns exactly what the call returned. The
+    /// record costs one entry-block load in any function, less than one call.
     pub(super) fn emit_exception_pending_word(
         &mut self,
         name: &str,
     ) -> inkwell::values::IntValue<'ctx> {
         let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
-        if !self.polls_async_work {
-            return self
-                .backend
-                .builder
-                .build_execution_call(pending_fn, &[], name)
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-                .into_int_value();
-        }
-        let (record, _) = self.async_poll_context();
+        let record = self.thread_record();
         let context = self.backend.context;
         let byte_ptr = unsafe {
             self.backend

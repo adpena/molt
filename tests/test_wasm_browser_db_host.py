@@ -200,7 +200,7 @@ const {{instance: nonIntRuntime}} = createAttachedRuntimeFixture({{
       if (value !== 0n) throw new Error('unexpected list index');
       return 0x7ff9000000000000n;
     }},
-    molt_exception_pending_fast: () => 0n,
+    molt_exception_pending: () => 0n,
     molt_exception_pending_detached: () => 0n,
     molt_len: () => 0x7ff9000000000001n,
     molt_index: () => 0x1234n,

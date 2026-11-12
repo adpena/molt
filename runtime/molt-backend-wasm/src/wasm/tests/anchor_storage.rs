@@ -258,7 +258,6 @@ for (const test of config.cases) {
         view().setBigInt64(out,owner,true); return 0;
       },
       exception_pending: () => current().pending ? 1n : 0n,
-      exception_pending_fast: () => current().pending ? 1n : 0n,
       frame_record_enter(slot) {
         assert.equal(slot,0n); const ctx=current(); assert.equal(ctx.pending,false);
         ctx.entered++; frameDepth++; return 1024n;
@@ -304,6 +303,7 @@ for (const test of config.cases) {
       if (entry.kind!=='function') {assert.ok(entry.name in imports[entry.module]);continue;}
       imports[entry.module][entry.name]=hooks[runtimeImportName(entry.name)] ?? (()=>{throw new Error('unexpected call '+entry.name);});
     }
+    initializeConfirmingRecord(imports.env.memory);
     app=new WebAssembly.Instance(module, attachedImports(imports)).exports;
     invoke(mode);
     // Repeated calls use the same instance after failure, including EH cleanup.

@@ -182,6 +182,8 @@ for (const test of config.cases) {
     });
   }
   initializeExecutionRecord(imports.env.memory, record);
+  // A set pending byte routes each inline check to exception_pending below.
+  new DataView(imports.env.memory.buffer).setUint8(record, 1);
   const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
   const table = imports.env.__indirect_function_table;
   let target = -1;

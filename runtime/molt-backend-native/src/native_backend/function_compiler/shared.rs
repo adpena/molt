@@ -498,14 +498,12 @@ impl<'op> NativeOperandTransaction<'op> {
         import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
     ) {
-        let pending = import_func_ref(
+        let pending = import_runtime_func_ref(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_exception_pending_fast",
-            &[],
-            &[types::I64],
+            molt_ir::runtime_fn_generated::RuntimeFn::ExceptionPending,
         );
         let failed = emit_exception_pending_condition(
             builder,

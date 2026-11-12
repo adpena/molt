@@ -162,17 +162,20 @@ impl WasmFunctionFrame {
         {
             crate::wasm::pending_work::emit_thread_record(func);
             func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::LocalTee(record));
-            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                offset: molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64,
-                align: 3,
-                memory_index: 0,
-            }));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::LocalSet(
-                self.locals
-                    .synthetic(WasmFrameSyntheticLocal::PendingWorkPtr),
-            ));
+            func.instruction(&Instruction::LocalSet(record));
+            if let Some(word) = self
+                .locals
+                .optional_synthetic(WasmFrameSyntheticLocal::PendingWorkPtr)
+            {
+                func.instruction(&Instruction::LocalGet(record));
+                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                func.instruction(&Instruction::I32WrapI64);
+                func.instruction(&Instruction::LocalSet(word));
+            }
         }
     }
 

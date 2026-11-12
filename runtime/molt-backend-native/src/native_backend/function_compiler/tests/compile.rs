@@ -286,7 +286,7 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
                 "{name}"
             );
             assert_eq!(
-                import_calls(function, &ids, "molt_exception_pending_fast").len(),
+                import_calls(function, &ids, "molt_exception_pending").len(),
                 2,
                 "{name}"
             );

@@ -6,7 +6,7 @@ pub(super) struct RuntimeExports {
     pub(super) stream_close: RuntimeFunction,
     stream_drop: RuntimeFunction,
     int_from_i64: RuntimeFunction,
-    exception_pending_fast: RuntimeFunction,
+    exception_pending: RuntimeFunction,
     scratch_alloc: RuntimeFunction,
     scratch_free: RuntimeFunction,
     pub(super) dec_ref_obj: RuntimeFunction,
@@ -24,7 +24,7 @@ pub(super) fn runtime_exports(caller: &mut Caller<HostState>) -> Result<RuntimeE
         stream_close: required(caller, "molt_stream_close")?,
         stream_drop: required(caller, "molt_stream_drop")?,
         int_from_i64: required(caller, "molt_int_from_i64")?,
-        exception_pending_fast: required(caller, "molt_exception_pending_fast")?,
+        exception_pending: required(caller, "molt_exception_pending")?,
         scratch_alloc: required(caller, "molt_scratch_alloc")?,
         scratch_free: required(caller, "molt_scratch_free")?,
         dec_ref_obj: required(caller, "molt_dec_ref_obj")?,
@@ -50,17 +50,17 @@ pub(super) fn new_stream(
     exports: &RuntimeExports,
     capacity: i64,
 ) -> Result<u64> {
-    if call_i64(&exports.exception_pending_fast, caller, &[])? != 0 {
+    if call_i64(&exports.exception_pending, caller, &[])? != 0 {
         bail!("pending runtime exception before stream capacity allocation");
     }
     let capacity_bits = call_i64(&exports.int_from_i64, caller, &[Val::I64(capacity)])?;
     let mut stream = None;
     let result: Result<u64> = (|| {
-        if call_i64(&exports.exception_pending_fast, caller, &[])? != 0 {
+        if call_i64(&exports.exception_pending, caller, &[])? != 0 {
             bail!("stream capacity allocation failed");
         }
         let bits = call_i64(&exports.stream_new, caller, &[Val::I64(capacity_bits)])?;
-        if call_i64(&exports.exception_pending_fast, caller, &[])? != 0 {
+        if call_i64(&exports.exception_pending, caller, &[])? != 0 {
             bail!("stream allocation failed");
         }
         stream = Some(bits);
@@ -244,7 +244,7 @@ mod tests {
                 (global $boxes (mut i32) (i32.const 0))
                 (global $streams (mut i32) (i32.const 0))
                 (global $dropped (mut i32) (i32.const 0))
-                (func (export "molt_exception_pending_fast@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+                (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
  global.get $pending)
                 (func (export "molt_int_from_i64@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
@@ -361,7 +361,7 @@ mod tests {
             (global $sent_len (mut i64) (i64.const -1))
             (global $freed_ptr (mut i64) (i64.const -1))
             (global $freed_size (mut i64) (i64.const -1))
-            (func (export "molt_exception_pending_fast@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
  i64.const 0)
             (func (export "molt_int_from_i64@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)

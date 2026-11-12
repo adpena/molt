@@ -83,13 +83,13 @@
   const boxRuntimeInt = (instance, value) => {
     const integer = exactHostInt(value);
     const exports = requireExports(instance,
-      ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']);
-    if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
+      ['molt_int_from_i64', 'molt_exception_pending', 'molt_dec_ref_obj']);
+    if (Number(runtimeExport(instance, 'molt_exception_pending')()) !== 0) {
       throw new Error('pending runtime exception before integer allocation');
     }
     const result = runtimeExport(instance, 'molt_int_from_i64')(integer);
     try {
-      if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
+      if (Number(runtimeExport(instance, 'molt_exception_pending')()) !== 0) {
         throw new Error('integer allocation failed');
       }
     } catch (error) {
@@ -149,14 +149,14 @@
   // stream handle with explicit drop custody, not a generic object owner.
   const createRuntimeStream = (instance, capacity) => {
     const exports = requireExports(instance, ['molt_stream_new', 'molt_stream_drop',
-      'molt_exception_pending_fast']);
+      'molt_exception_pending']);
     let stream;
     let created = false;
     try {
       return withRuntimeOwnedValues(instance, [capacity],
         value => boxRuntimeInt(instance, value), ([capacityBits]) => {
           stream = runtimeExport(instance, 'molt_stream_new')(capacityBits);
-          if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
+          if (Number(runtimeExport(instance, 'molt_exception_pending')()) !== 0) {
             throw new Error('stream allocation failed');
           }
           created = true;
@@ -175,7 +175,7 @@
   const makeRuntimeIntList = (instance, values) => {
     if (!Array.isArray(values)) throw new TypeError('integer list requires an array');
     const exports = requireExports(instance, ['molt_list_builder_new', 'molt_list_builder_append',
-      'molt_list_builder_finish', 'molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']);
+      'molt_list_builder_finish', 'molt_int_from_i64', 'molt_exception_pending', 'molt_dec_ref_obj']);
     const integers = Array.from(values, exactHostInt);
     let builder;
     let created = false;
@@ -187,14 +187,14 @@
       withRuntimeOwnedValues(instance, [integers.length], value => boxRuntimeInt(instance, value), ([capacity]) => {
         builder = runtimeExport(instance, 'molt_list_builder_new')(capacity);
         created = true;
-        if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
+        if (Number(runtimeExport(instance, 'molt_exception_pending')()) !== 0) {
           throw new Error('list builder allocation failed');
         }
       });
       for (const value of integers) {
         withRuntimeOwnedValues(instance, [value], item => boxRuntimeInt(instance, item), ([item]) => {
           if (Number(runtimeExport(instance, 'molt_list_builder_append')(builder, item)) !== 0 ||
-              Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
+              Number(runtimeExport(instance, 'molt_exception_pending')()) !== 0) {
             throw new Error('list builder append failed');
           }
         });
@@ -202,7 +202,7 @@
       consumed = true;
       result = runtimeExport(instance, 'molt_list_builder_finish')(builder);
       finished = true;
-      if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
+      if (Number(runtimeExport(instance, 'molt_exception_pending')()) !== 0) {
         throw new Error('list builder finish failed');
       }
     } catch (error) { errors.push(error); }

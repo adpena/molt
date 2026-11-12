@@ -1428,7 +1428,6 @@ macro_rules! attached_symbol {
     ("molt_exception_new_builtin_one") => { "molt_exception_new_builtin_one__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_new_from_class") => { "molt_exception_new_from_class__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_pending") => { "molt_exception_pending__molt_context_a8c6010e2cbb56a1" };
-    ("molt_exception_pending_fast") => { "molt_exception_pending_fast__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_pop") => { "molt_exception_pop__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_prepare_raise") => { "molt_exception_prepare_raise__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_push") => { "molt_exception_push__molt_context_a8c6010e2cbb56a1" };

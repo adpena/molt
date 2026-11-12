@@ -19,7 +19,7 @@ use molt_codegen_abi::word::WordBuilder;
 impl<'ctx> FunctionLowering<'ctx, '_> {
     /// The thread record as a word, for the frame helpers' address arithmetic.
     fn thread_record_word(&mut self) -> IntValue<'ctx> {
-        let (record, _) = self.async_poll_context();
+        let record = self.thread_record();
         self.backend
             .builder
             .build_ptr_to_int(

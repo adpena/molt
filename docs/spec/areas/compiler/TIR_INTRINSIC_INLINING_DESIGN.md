@@ -318,7 +318,7 @@ All 369 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
-| `molt_exception_pending_fast` | 1 | **Yes** | Checked after every fallible op |
+| `molt_exception_pending` | 1 | No | Confirms a set hint only; every check is an inline byte load from the thread record (J1) |
 | `molt_exception_push` | 1 | Moderate | |
 | `molt_exception_pop` | 1 | Moderate | |
 | `molt_exception_stack_clear` | 1 | Low | |
@@ -514,7 +514,7 @@ These are the functions called in tight loops, inside `fast_int` paths, or per-i
 | 2 | `molt_inc_ref_obj` | RC | 2-5 | Every ownership transfer, function arg pass |
 | 3 | `molt_is_truthy` | Type check | 1-2 | Every `if`/`while`/`and`/`or` condition |
 | 4 | `molt_iter_next` | Iterator | 1 | Every `for` loop iteration |
-| 5 | `molt_exception_pending_fast` | Exception | 1-3 | After every fallible op in try blocks |
+| 5 | `molt_exception_pending` | Exception | 1-3 | Done 2026-11-11: an inline thread-record byte test on all backends; the call confirms a set hint |
 | 6 | `molt_add` | Arithmetic | 0-1 | Slow path of accumulator patterns |
 | 7 | `molt_index` | Container | 0-1 | Every `list[i]`, `dict[k]` |
 | 8 | `molt_store_index` | Container | 0-1 | Every `list[i] = v`, `dict[k] = v` |

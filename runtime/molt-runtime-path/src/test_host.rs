@@ -561,12 +561,6 @@ pub extern "C" fn molt_exception_pending(context: u64) -> u64 {
     0
 }
 
-#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_pending_fast"))]
-pub extern "C" fn molt_exception_pending_fast(context: u64) -> u64 {
-    assert_fixture_context(context);
-    0
-}
-
 #[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_active"))]
 pub extern "C" fn molt_exception_active(context: u64) -> u64 {
     assert_fixture_context(context);

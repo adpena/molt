@@ -406,7 +406,7 @@ mod tests {
         let absent = NativeCodegenEnvironment::from_lookup(|_| Ok(None)).unwrap();
         for (key, value) in [
             (BackendEnv::MOLT_DISABLE_RC_COALESCE, ""),
-            (BackendEnv::MOLT_BACKEND_INLINE_EXC_DISABLED, "1"),
+            (BackendEnv::MOLT_BACKEND_ENABLE_VERIFIER, "1"),
         ] {
             let changed = NativeCodegenEnvironment::from_lookup(|probe| {
                 Ok((probe == key).then(|| value.to_string()))

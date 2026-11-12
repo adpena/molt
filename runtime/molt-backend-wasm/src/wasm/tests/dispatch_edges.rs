@@ -568,6 +568,7 @@ for (const test of config.cases) {
     imports[entry.module] ??= {};
     imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {throw Error('unexpected import '+entry.name);});
   }
+  initializeConfirmingRecord(imports.env.memory);
   const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
   // A checked statement prints after its check passes: a failing statement
   // prints nothing, and its handler prints next.
@@ -581,6 +582,8 @@ for (const test of config.cases) {
     // This forward-only body has no operation map to corrupt. Arbitrary
     // lookup-data bytes cannot invent an entry alternative or skip observers.
     new Uint8Array(imports.env.memory.buffer).fill(255);
+    // Guest lookup data is corrupt; the runtime-owned record is not.
+    initializeConfirmingRecord(imports.env.memory);
     lines=[]; polls=0; failAt=0;
     assert.equal(app[compiledSymbol('molt_main')](executionContext, yes), yes);
     assert.deepEqual(lines, Array.from({length:64}, (_,i)=>i+1));
@@ -592,6 +595,8 @@ for (const test of config.cases) {
     // Dynamic lookup remains a checked boundary: corrupt ordinals trap before
     // any callback, rather than selecting an unplanned body or loop backedge.
     new Uint8Array(imports.env.memory.buffer).fill(255);
+    // Guest lookup data is corrupt; the runtime-owned record is not.
+    initializeConfirmingRecord(imports.env.memory);
     lines=[]; polls=0;
     assert.throws(()=>app[compiledSymbol('molt_main')](executionContext), WebAssembly.RuntimeError);
     assert.deepEqual(lines, []); assert.equal(polls,0);

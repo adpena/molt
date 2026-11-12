@@ -67,7 +67,7 @@ for (const failure of ['none', 'integer', 'stream', 'cleanup', 'stream-cleanup']
   const integers = new Map(), streams = new Set(), events = [];
   let pending = false;
   const {instance} = createAttachedRuntimeFixture({
-    molt_exception_pending_fast: () => pending ? 1n : 0n,
+    molt_exception_pending: () => pending ? 1n : 0n,
     molt_int_from_i64(value) {
       assert.equal(value, 0n);
       integers.set(123n, value);
@@ -207,7 +207,7 @@ function runtime(failure, cleanupFails = false) {
       if (failure === 'box2' && ++integerCount === 3) pending = true;
       return bits;
     },
-    molt_exception_pending_fast() { return pending ? 1n : 0n; },
+    molt_exception_pending() { return pending ? 1n : 0n; },
     molt_list_builder_new(capacity) {
       assert.equal(live.get(capacity).value, 2n);
       events.push(['new']);
@@ -301,7 +301,7 @@ for (const failure of [null, 'new', 'append', 'box2', 'finish']) {
     error => error instanceof AggregateError && error.errors.length === 2);
   assert.equal(live.size, 0, 'unpublished result survived failed argument cleanup');
 }
-for (const missing of ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']) {
+for (const missing of ['molt_int_from_i64', 'molt_exception_pending', 'molt_dec_ref_obj']) {
   const {instance, events} = runtime();
   delete instance.exports[fixturePhysicalRuntimeSymbol(missing)];
   assert.throws(() => boxRuntimeInt(instance, 1n), /missing ownership export/);
@@ -310,7 +310,7 @@ for (const missing of ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt
 }
 {
   const {instance, events} = runtime();
-  instance.exports[fixturePhysicalRuntimeSymbol("molt_exception_pending_fast")] = () => 1n;
+  instance.exports[fixturePhysicalRuntimeSymbol("molt_exception_pending")] = () => 1n;
   assert.throws(() => boxRuntimeInt(instance, 1n), /before integer allocation/);
   assert.equal(events.length, 0);
 }
@@ -412,7 +412,7 @@ const {boxRuntimeInt} = require(lifecyclePath);
 const seen = [];
 const {instance: runtime} = createAttachedRuntimeFixture({
   molt_int_from_i64(value) { seen.push(value); return 1000n; },
-  molt_exception_pending_fast() { return 0n; },
+  molt_exception_pending() { return 0n; },
   molt_dec_ref_obj() {},
 });
 const context = {runtimeExport: fixtureRuntimeExport, boxRuntimeInt, runtimeInstance: runtime,

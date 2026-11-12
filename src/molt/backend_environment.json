@@ -37,7 +37,6 @@
         "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2",
         "MOLT_BACKEND_LIBCALL_CALL_CONV",
         "MOLT_BACKEND_ENABLE_VERIFIER",
-        "MOLT_BACKEND_INLINE_EXC_DISABLED",
         "MOLT_PORTABLE"
       ],
       "request_reuse_only": false

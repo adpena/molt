@@ -207,8 +207,8 @@ pub extern "C" fn molt_runtime_exit(code: u64) -> u64 {{
 pub extern "C" fn molt_dec_ref(actual: u64, _bits: u64) {{ assert_context(actual); }}
 #[unsafe(export_name = "molt_inc_ref_obj{suffix}")]
 pub extern "C" fn molt_inc_ref_obj(actual: u64, _bits: u64) {{ assert_context(actual); }}
-#[unsafe(export_name = "molt_exception_pending_fast{suffix}")]
-pub extern "C" fn molt_exception_pending_fast(actual: u64) -> u64 {{
+#[unsafe(export_name = "molt_exception_pending{suffix}")]
+pub extern "C" fn molt_exception_pending(actual: u64) -> u64 {{
     assert_context(actual);
     0
 }}
