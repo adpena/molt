@@ -1188,7 +1188,7 @@ fn both_c_headers_use_native_gc_allocation_and_the_runtime_collector() {
             dec_ref_bits(py, bits);
             let enabled = memory::PyGC_IsEnabled();
             assert!(collect() >= 1);
-            assert!(!crate::object::gc::gc_is_tracked(ptr));
+            assert!(!crate::object::gc::gc_membership_names(py, ptr));
             assert_eq!(memory::PyGC_IsEnabled(), enabled);
         }
         assert!(!crate::exception_pending(py));

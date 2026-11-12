@@ -83,7 +83,7 @@ fn native_subtype_constructor_family_tracks_cycles_and_retires_membership() {
             dec_ref_bits(py, object);
             let _ = unsafe { crate::object::gc::collect_cycles(py) };
             // Registry lookup treats the old pointer as an opaque key.
-            assert!(!unsafe { crate::object::gc::gc_is_tracked(ptr) });
+            assert!(!crate::object::gc::gc_membership_names(py, ptr));
             dec_ref_bits(py, input);
             dec_ref_bits(py, class);
         }
@@ -371,7 +371,7 @@ fn native_io_subtype_slots_preserve_payload_dictionary_and_cycle_retirement() {
                 dec_ref_bits(py, bits);
             }
             let _ = unsafe { crate::object::gc::collect_cycles(py) };
-            assert!(!unsafe { crate::object::gc::gc_is_tracked(ptr) });
+            assert!(!crate::object::gc::gc_membership_names(py, ptr));
             assert!(state.upgrade().is_none());
             dec_ref_bits(py, input);
             dec_ref_bits(py, subclass);
@@ -469,7 +469,7 @@ fn native_declared_slots_share_allocation_projection_and_retirement() {
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, cycle);
                 let _ = unsafe { crate::object::gc::collect_cycles(py) };
-                assert!(!unsafe { crate::object::gc::gc_is_tracked(cycle_ptr) });
+                assert!(!crate::object::gc::gc_membership_names(py, cycle_ptr));
                 dec_ref_bits(py, input);
             }
             for bits in [field, name, class] {
@@ -605,8 +605,8 @@ fn code_replacement_metadata_subclasses_form_collectible_cycles() {
             }
             let _ = unsafe { crate::object::gc::collect_cycles(py) };
             // Registry lookups treat retired pointers only as opaque keys.
-            assert!(!unsafe { crate::object::gc::gc_is_tracked(replaced_ptr) });
-            assert!(!unsafe { crate::object::gc::gc_is_tracked(text_ptr) });
+            assert!(!crate::object::gc::gc_membership_names(py, replaced_ptr));
+            assert!(!crate::object::gc::gc_membership_names(py, text_ptr));
             assert!(!exception_pending(py));
         }
         for bits in [names, input, text_class] {
@@ -662,7 +662,7 @@ fn code_metadata_publication_keeps_earlier_container_owners_collectible() {
         }
         let _ = unsafe { crate::object::gc::collect_cycles(py) };
         for retired in [code, owner, text_ptr] {
-            assert!(!unsafe { crate::object::gc::gc_is_tracked(retired) });
+            assert!(!crate::object::gc::gc_membership_names(py, retired));
         }
         for bits in [input, names, text_class] {
             dec_ref_bits(py, bits);
@@ -767,7 +767,7 @@ fn code_sealing_preserves_atomic_container_fast_paths() {
         }
         let _ = unsafe { crate::object::gc::collect_cycles(py) };
         assert!(!unsafe { crate::object::gc::gc_is_tracked(mutable_code) });
-        assert!(!unsafe { crate::object::gc::gc_is_tracked(text_ptr) });
+        assert!(!crate::object::gc::gc_membership_names(py, text_ptr));
         assert!(!exception_pending(py));
     });
 }

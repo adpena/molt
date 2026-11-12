@@ -824,7 +824,7 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
         "fn alloc_object_zeroed_with_aux_policy", 1
     )[1].split("pub(crate) fn alloc_object(", 1)[0]
     assert unpublished_allocator.index(
-        "initialize_flags_gc_unpublished(header, 0)"
+        "initialize_flags_gc_unpublished(header, head_flag)"
     ) < unpublished_allocator.index("gc_track_if_cyclic")
     assert "gc_mark_unpublished" not in allocator
     arena_alloc = _rust_function(arena, "molt_arena_alloc_object_attached_body")
@@ -832,7 +832,7 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert "initialize_flags_gc_unpublished" not in arena_alloc
     scoped_allocator = _rust_function(allocator, "alloc_scoped_boxed_object")
     size_check = scoped_allocator.index("boxed_object_total_size(py, payload_bits)")
-    plan_check = scoped_allocator.index("object_allocation_plan(total_size)")
+    plan_check = scoped_allocator.index("object_allocation_plan(total_size,")
     allocation = scoped_allocator.index("allocate(plan.alloc_size)")
     assert size_check < plan_check < allocation
     plan_refusal = scoped_allocator[plan_check:allocation]
@@ -845,8 +845,8 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert "gc_publish_initialized" not in scoped_allocator
     assert "gc_mark_unpublished" not in scoped_allocator
     assert "gc_mark_unpublished" not in arena
-    assert cranelift.count('"molt_object_publish_initialized"') >= 2
-    assert 'get_execution_function("molt_object_publish_initialized")' in llvm
+    assert cranelift.count("RuntimeFn::ObjectPublishInitialized") >= 2
+    assert "ensure_runtime_import(RuntimeFn::ObjectPublishInitialized)" in llvm
     assert "WasmRuntimeImport::ObjectPublishInitialized" in wasm
     assert "molt_ir::OpKind::Alloc | molt_ir::OpKind::AllocClass => {}" in wasm
     assert "molt_ir::OpKind::StackAlloc => panic!(" in wasm

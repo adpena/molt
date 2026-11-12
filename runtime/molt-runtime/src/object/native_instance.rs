@@ -278,7 +278,12 @@ pub(crate) unsafe fn alloc_unpublished(
         } else {
             super::ObjectAuxPreselection::ClassInline
         };
-        super::alloc_object_zeroed_unpublished_with_aux(py, total, kind.type_id(), aux)
+        if subtype {
+            // Class fields make the instance trackable whatever its kind.
+            super::alloc_native_subtype_unpublished_with_aux(py, total, kind.type_id(), aux)
+        } else {
+            super::alloc_object_zeroed_unpublished_with_aux(py, total, kind.type_id(), aux)
+        }
     }
 }
 

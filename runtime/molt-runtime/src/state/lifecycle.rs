@@ -421,7 +421,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         trace_shutdown("reset_ptr_registry");
         reset_ptr_registry();
         trace_shutdown("reset_gc_registry");
-        crate::object::gc::gc_reset_registry(state);
+        crate::object::gc::gc_reset_membership(_py, state);
         trace_shutdown("reset_gc_workspace");
         crate::object::gc::gc_reset_workspace();
         trace_shutdown("reset_gc_control_state");

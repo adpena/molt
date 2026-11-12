@@ -505,7 +505,7 @@ fn run_isolate_thread(
     handle.mark_started(thread_id, thread_id);
     let state = Box::new(RuntimeState::new_isolate(&lifetime));
     let state_ptr = Box::into_raw(state);
-    let gc_owner = crate::object::gc::IsolateGcOwner::new(unsafe { &*state_ptr }, &lifetime);
+    let gc_owner = crate::object::gc::IsolateGcOwner::new(unsafe { &*state_ptr });
     set_thread_runtime_state(state_ptr);
     touch_tls_guard();
     let setup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -546,7 +546,7 @@ fn run_isolate_thread(
         let gil = GilGuard::new();
         let py = gil.token();
         runtime_teardown_isolate(py, unsafe { &*state_ptr });
-        gc_owner.retire();
+        gc_owner.retire(py, unsafe { &*state_ptr });
     });
     if teardown.is_err() {
         #[cfg(test)]
@@ -1617,7 +1617,7 @@ mod bootstrap_failure_tests {
             primary.gc.set_enabled(false);
             install_gc_callback(py, count_primary_gc_phase);
             let frozen = unreachable_list_cycle(py);
-            gc::freeze_tracked_registry(py);
+            gc::freeze_tracked_members(py);
             let permanent_before = gc::permanent_generation_count(py);
             let ordinary = unreachable_list_cycle(py);
             let native = unsafe {
@@ -1684,7 +1684,7 @@ mod bootstrap_failure_tests {
                                 .bits();
                                 assert!(values.contains(&own_bits));
                                 dec_ref_bits(py, MoltObject::from_ptr(visible).bits());
-                                gc::freeze_tracked_registry(py);
+                                gc::freeze_tracked_members(py);
                                 let isolated_permanent = gc::permanent_generation_count(py);
                                 assert!(isolated_permanent > 0);
                                 // A second live isolate must not mutate this
@@ -1705,18 +1705,17 @@ mod bootstrap_failure_tests {
                                                 crate::with_gil_entry_nopanic!(py, {
                                                     runtime_state(py).gc.set_enabled(false);
                                                     let sibling = unreachable_list_cycle(py);
-                                                    gc::unfreeze_tracked_registry(py);
+                                                    gc::unfreeze_tracked_members(py);
                                                     assert_eq!(
                                                         unsafe { gc::collect_cycles(py) }.status,
                                                         gc::GcCollectStatus::Completed
                                                     );
-                                                    assert!(!unsafe {
-                                                        gc::gc_is_tracked(
-                                                            std::ptr::with_exposed_provenance_mut(
-                                                                sibling,
-                                                            ),
-                                                        )
-                                                    });
+                                                    assert!(!gc::gc_membership_names(
+                                                        py,
+                                                        std::ptr::with_exposed_provenance_mut(
+                                                            sibling
+                                                        ),
+                                                    ));
                                                     assert!(unsafe {
                                                         gc::gc_is_tracked(
                                                             std::ptr::with_exposed_provenance_mut(
@@ -1735,13 +1734,14 @@ mod bootstrap_failure_tests {
                                 }
                                 assert!(sibling_verified.load(AtomicOrdering::Acquire));
                                 assert_eq!(gc::permanent_generation_count(py), isolated_permanent);
-                                gc::unfreeze_tracked_registry(py);
+                                gc::unfreeze_tracked_members(py);
                                 assert_eq!(gc::permanent_generation_count(py), 0);
                                 let collected = unsafe { gc::collect_cycles(py) };
                                 assert_eq!(collected.status, gc::GcCollectStatus::Completed);
-                                assert!(!unsafe {
-                                    gc::gc_is_tracked(std::ptr::with_exposed_provenance_mut(own))
-                                });
+                                assert!(!gc::gc_membership_names(
+                                    py,
+                                    std::ptr::with_exposed_provenance_mut(own)
+                                ));
                                 assert_eq!(ISOLATE_GC_PHASES.load(AtomicOrdering::Relaxed), 2);
                                 assert_eq!(PRIMARY_GC_PHASES.load(AtomicOrdering::Relaxed), 0);
                                 worker_verified.store(true, AtomicOrdering::Release);
@@ -1780,13 +1780,14 @@ mod bootstrap_failure_tests {
                     gc::gc_is_tracked(std::ptr::with_exposed_provenance_mut(address))
                 });
             }
-            gc::unfreeze_tracked_registry(py);
+            gc::unfreeze_tracked_members(py);
             let collected = unsafe { gc::collect_cycles(py) };
             assert_eq!(collected.status, gc::GcCollectStatus::Completed);
             for address in [frozen, ordinary] {
-                assert!(!unsafe {
-                    gc::gc_is_tracked(std::ptr::with_exposed_provenance_mut(address))
-                });
+                assert!(!gc::gc_membership_names(
+                    py,
+                    std::ptr::with_exposed_provenance_mut(address)
+                ));
             }
             assert_eq!(PRIMARY_GC_PHASES.load(AtomicOrdering::Relaxed), 2);
             drop(native);

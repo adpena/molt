@@ -7113,7 +7113,7 @@ mod tests {
             assert!(unsafe { crate::object::gc::gc_is_tracked(exception) });
             unsafe { crate::object::gc::collect_cycles(py) };
             // Registry membership queries treat the retired address as opaque.
-            assert!(!unsafe { crate::object::gc::gc_is_tracked(exception) });
+            assert!(!crate::object::gc::gc_membership_names(py, exception));
             assert!(!crate::exception_pending(py));
         });
     }

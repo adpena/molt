@@ -36,8 +36,13 @@ the benchmark's source and a self-time breakdown by module):
   copies the whole registry to filter by generation (`snapshot_registry`: most of `gc_pressure`,
   0.03x). HF-816 (b5e597ede) now keeps each generation's exact member list beside the registry,
   as CPython keeps one list per generation: `bench_gc_pressure` 12.8-13.6 s to 3.5-4.1 s
-  (interleaved A/B, user time); the rest is the collection itself (HF-671). The per-allocation
-  shard lock and hash remain.
+  (interleaved A/B, user time); the rest is the collection itself (HF-671). HF-816 phase 2 then
+  replaced the registry with an intrusive GC head per container and per-runtime member lists
+  (`generational_gc_authority.md`, "Membership representation"): track and untrack take no lock
+  and no hash. Instructions retired, main ec4f533d1 to the lane, LLVM: `fannkuch_redux.py 9`
+  -9.3%, `bench_struct` -6.0%, `bench_gc_pressure` -10.5% (user 4.34 s to 3.09 s); tracking
+  frames fell from 12.2% to 4.0% of `fannkuch_redux` self samples. `bench_struct`'s remaining
+  mutex samples come from `ClassLookupCache::lookup` and `runtime_callable_target_ptr`, not GC.
 - `weakref_native` (0.05x) is not a registry cost: its symbolized profile spends 19% of self
   samples in native-call binding (`call::bind`) plus descriptor binding, thread-local reads and an
   allocation per call; the global weak-reference registry is under 4%. It belongs to stages 3 and 4.
@@ -413,7 +418,8 @@ dead int costs `dec_ref_ptr_terminal` 33.7% because a leaf int runs the generic 
 - **Constructor (p5, the perf-gate `struct` row):** `call_type_with_arguments` 51.6%:
   `construct_regular_class` looks up `__init__` through the MRO (`class_namespace_lookup_mro`
   12.3%), allocates a bound method per construction (`molt_bound_method_new` 10.4%), allocates
-  the instance with GC admission (`gc_admit_membership` 5.2%, a registry shard mutex). Freeing
+  the instance with GC admission (`gc_admit_membership` 5.2%, then a registry shard mutex; HF-816
+  phase 2 removed the mutex and the hash). Freeing
   the instance costs 31.3% (`dec_ref_ptr_terminal`, field visits through pinned tuples). The
   `__init__` body is 11.7%.
 - **`struct.pack` (p6):** `struct.pack` is a compiled Python wrapper (`struct__pack`) around the

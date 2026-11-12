@@ -974,6 +974,7 @@ impl RuntimeLifetimeLease {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn identity(&self) -> usize {
         self.runtime_owner
     }
@@ -1930,7 +1931,6 @@ fn runtime_init_impl(#[cfg(test)] fixture_vfs: Option<Option<Arc<crate::vfs::Vfs
         // deliberately leaves this allocation alive instead of dangling them.
         let state_ptr = Box::into_raw(Box::new(RuntimeState::new()));
         let state = unsafe { &*state_ptr };
-        crate::object::gc::gc_bind_registry(state);
         set_thread_runtime_state(state_ptr);
         #[cfg(test)]
         RUNTIME_INIT_TEST_PANIC.with(|pending| {
@@ -3300,13 +3300,7 @@ mod tests {
                 *runtime_lifecycle().phase.lock().unwrap(),
                 RuntimeLifecyclePhase::Ready { ptr } if ptr == ready as usize
             ));
-            assert_eq!(
-                crate::object::gc::gc_registry_owner_identity(),
-                ready.expose_provenance(),
-                "racing initializers must converge on the one registry-owning runtime"
-            );
             assert_eq!(molt_runtime_shutdown(), 1);
-            assert_eq!(crate::object::gc::gc_registry_owner_identity(), 0);
         });
     }
 }

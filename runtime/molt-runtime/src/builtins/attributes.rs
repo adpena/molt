@@ -3003,7 +3003,7 @@ mod tests {
             );
             assert!(crate::DEALLOC_COUNT.load(Ordering::Relaxed) >= before + 3);
             for pointer in [alias, cache_pointer, parameter] {
-                assert!(!unsafe { crate::object::gc::gc_is_tracked(pointer) });
+                assert!(!crate::object::gc::gc_membership_names(py, pointer));
             }
             for bits in [name, empty, class] {
                 dec_ref_bits(py, bits);
