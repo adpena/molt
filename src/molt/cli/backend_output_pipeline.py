@@ -16,9 +16,7 @@ from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
 from molt.cli.build_diagnostics import (
-    _build_midend_coverage_payload,
     _emit_build_diagnostics_for_result,
-    _emit_midend_coverage,
 )
 from molt.cli.build_results import (
     _emit_native_link_result,
@@ -109,15 +107,6 @@ def _emit_backend_pipeline_outputs(
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
     wasm_table_base = prepared_backend_compile.wasm_table_base
-
-    # Coverage is a property of every lowered program, even when detailed
-    # timing diagnostics are disabled. Both views project the same outcomes.
-    if not prepared_build_preamble.diagnostics_enabled:
-        _emit_midend_coverage(
-            _build_midend_coverage_payload(
-                prepared_build_preamble.midend_policy_outcomes_by_function
-            )
-        )
 
     def snapshot_build_diagnostics() -> tuple[dict[str, Any] | None, Path | None]:
         if not prepared_build_preamble.diagnostics_enabled:

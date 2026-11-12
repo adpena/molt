@@ -14,97 +14,97 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
-## Primitive instruction axis
+## Instruction signal on main
 
-The same scoreboard owns the primitive instruction axis (HF-459):
+`tools/perf_instructions.py` measures main's head in instructions retired
+(HF-222, HF-616): wall time measures host load, and the per-process count does
+not move under parallel load (0.0024%). It is a watch, not a landing gate: no
+landing waits for, reads or is slowed by it (LNT's land, watch, revert).
+
+**The instruction driver.** The integrator issues it from the clean main
+checkout `/Users/adpena/Molt/molt-src` after a fetch, with `--commit` its HEAD:
 
 ```text
-python tools/perf_scoreboard.py primitives --cpython 3.12.16 --out-dir <new-evidence-directory>
+uv run --no-project python tools/venv_exec.py python tools/trunk_loop.py run \
+  --host molt-gate --commit HEAD --cell performance.instructions --if-idle
 ```
 
-Methodology v28 records the HF-198 primitive ratio/noise recalibration and v27
-the HF-657 one; each changes diagnostic verdicts without changing workloads or
-release acceptance.
-Methodology v26 makes each program's own directory its project
-(`MOLT_PROJECT_ROOT`), so an `--out-dir` inside a checkout no longer compiles
-the primitives against that checkout's sources and environment; v25 publishes
-the shared non-citable diagnostic provenance; v24
-rejects nonfinite or invalid perf running percentages;
-v23 strengthened the identity witness's observable checksum, and v22 introduced
-this diagnostic axis and its ratio ratchet. This mode does not
-change the cold/warm release acceptance scope above. Table count columns are
-medians of each runtime's observations; the ratio is the median of paired
-Molt/CPython ratios, so it need not equal the quotient of those two medians.
+Hourly; `--cell performance.instructions-nightly` once a day. It is the blocking
+`trunk_loop run`: it stages, waits, collects and retires. `--if-idle` reads the
+host's `trunk-worker.lock` with the disk-maintenance probe before it retires or
+stages anything; a held lock skips the slot ("not measured", exit 0). Automating
+the trigger is follow-up F1 under HF-222.
 
-This mode builds each declared program once with logical `release`, observed
-native `release-output` runtime and release compiler, matching the integrator's
-original primitive experiment. It measures five paired process observations at
-N=0 and N=K for each runtime. Instructions per operation are `(I(K)-I(0))/ops`;
-N=0 startup is a separate axis for every program, including an empty witness.
-Loop/control work stays in the slope. The `reduce_ex` and `new_and_update`
-programs execute K/10 operations; recursion executes K/100 depth-100 traversals.
-Other copy primitives use K=1,000,000; construction uses K=100,000. Programs
-retain the original loop bodies. The `id` witness compares the full loop checksum
-with an independently calculated cycle checksum and verifies 64 distinct live
-identities, so process-specific addresses are not compared across runtimes.
-Its bounded reference calculation stays outside the measured loop. CPython `-I -S` is probed as
-exactly 3.12.16, independently of the slot's frontend interpreter. Guest stdout,
-stderr and completion must agree before a pair can enter the table.
+**One run.** The cell (`[[scheduled_family]] instruction_signal`, executor
+`farm`) runs `perf_scoreboard.py instructions run --tier hourly|nightly`. The
+registry `workloads()` holds the empty witness and the 16 primitives hourly
+(33 axes) and the 62 core benchmarks nightly. An hourly run must fit 10
+minutes through trunk_loop's real path; on molt-gate the path costs 287 s and
+a compiler change rebuilds the runtime crates in 229 s, so the full 79-program
+set took 875 s cold and only the primitives fit (measured 2026-11-10, recorded
+in the tool's tier comment). Each workload builds once
+(release, native `release-output`), at most `compile_max_slots` at once
+(`resource_pressure`, 8 slots of 2 GB), longest first by the base record's
+seconds (`shard_partition.lpt_shards`), and runs 5 times per axis: primitives at
+N=0 (startup) and N=K (per-op slope `(I(K)-I(0))/ops`), benchmarks whole.
+Loop/control work stays in the slope; `reduce_ex` and `new_and_update` execute
+K/10 operations and recursion K/100 depth-100 traversals. CPython 3.12.16
+(`-I`) runs each workload once for output only; `compat.comparison.
+compare_outputs` (exact stdout, stderr and exit) decides `OUTPUT_DIFFERS`. The
+measured program's exit, signal or timeout is rerun once and then
+`RUN_FAILED`. A compile error or compiler crash is `BUILD_FAILED`; a build the
+host stops (capacity refusal, timeout, memory limit, guard failure) and any
+counter or toolchain failure stop the run, so a host fault is never RED.
 
-`tools/perf_scoreboard_primitives.py` is the scoreboard's single declaration of
-programs and normalization. `bench/primitive_ratchet.json` contains measured
-ratios and calibration, not a second workload registry. A new evidence directory
-retains the program bytes, raw counters, guest streams, observed build products,
-per-pair data and the JSON/Markdown table. A failed child stops the batch and
-cannot become a cheap operation. This diagnostic axis does not publish release
-qualification or replace the native+LLVM cold/warm release authority above.
-The ratchet and tables carry the existing `non_canonical_provenance` record,
-so a diagnostic limit can never masquerade as current E2 release evidence.
+**Records and the store.** The farm store is the one authority:
+`storage_path(<checkout>, "benchmark-evidence") / "instructions"` on `molt-gate`.
+`records/<commit>.<identity>.json` is written once. The run identity is the
+SHA-256 of the instrument (`perf_instructions.INSTRUMENT`: this tool and the
+`tools/` modules it imports to measure), the native target triple, the counter,
+the selected profiles and the tier; an axis compares only under one admitted
+workload identity (`bench_evidence`, `molt.benchmark-workload/2`). A second run
+for the same (commit, identity) answers from the stored record.
 
-`--update-ratchet` calibrates from a complete run. Each axis's bound is twice its
-largest paired-ratio deviation from its median, rounded upward to 0.001;
-the record states the repeat count and largest bound for display. A deterministic
-model can have an exact zero bound. Startup noise cannot loosen a per-operation
-bound. Default checking rejects increased ratios
-outside that bound, excessive within-run spread, identity mismatches and missing
-axes. Improvements outside the bound fail with `UPDATE_REQUIRED`: review the
-evidence and update the ratchet in the same change. The v1 target remains at
-most 1.0 Molt/CPython per operation and 1.5 for startup; retaining a current high
-ratio does not qualify that target.
+**Verdict.** The base is the nearest first-parent ancestor with a record of the
+same identity, within 500 commits. Per axis, on Molt's median count, RED needs
+a change beyond max(3 x the calibrated bound, 2 x the head's spread, 1%); the
+bound comes from the first record that measured the axis (2 x its largest
+deviation from the median, rounded up to 0.001). An axis the base measured and
+the head could not (`BUILD_FAILED`, `RUN_FAILED`, `OUTPUT_DIFFERS`) is LOST, which
+is RED. `verdict.json` (`molt.perf-verdict.v1`) is `green`, `red` or `unarmed`
+(no base); a RED verdict names `suspects` and `revert_commands` as postsubmit
+does. It also compares with the record nearest 7 days earlier (creep, reported,
+not a status). The cell exits 0 whenever it wrote a verdict, so trunk_loop's
+`FAILURE` means an infrastructure stop, never RED.
 
-The `primitive_instructions` executable proof family runs on main pushes through
-`primitive-instructions.yml`. It uses the existing out-of-admission family
-catalog (`scheduled` is its execution tier, not its workflow trigger). The sole
-presubmit activation flag is the repository variable
-`MOLT_PRIMITIVE_PRESUBMIT=true`, owned by the integrator. Once enabled, selected
-PR and merge-queue runs execute the same failing ratchet. Making that check required in branch
-protection remains an integrator operation. No workflow uses `--update-ratchet`.
-Hosted-runner calibration and successful postsubmit execution require actual
-receipts; a local Mac table establishes neither.
+**Reader.** `perf_scoreboard.py instructions status` lists recent first-parent
+commits of main with their collected verdict, `INCONCLUSIVE` (a collected run
+without one) or `NOT_MEASURED` (no run). trunk_loop carries each command's
+declared evidence in the cell's stage archive, so `collect` brings the record
+and verdict to `<artifact root>/evidence/trunk-loop/<commit>/molt-gate/`.
+
+**Lane A/B.** `instructions measure --out-dir DIR [--programs ...]` counts
+without a store or a verdict. `run --store DIR --programs ...` writes a partial
+record to a scratch store only.
 
 On macOS the counter is `/usr/bin/time -l`'s `ri_instructions`, including user
 and kernel work ([Apple source](https://github.com/apple-oss-distributions/shell_cmds/blob/main/time/time.c)).
 Linux uses `perf stat`'s `instructions:u`, backed by `perf_event_open`, when a
 PMU and unprivileged access are declared by the host. Otherwise auto-selection
 requires Callgrind and explicitly labels its `Ir` instruction-read model.
-Counter kind is part of ratchet identity; hardware and model counts cannot be
-mixed. See [Linux perf access controls](https://www.kernel.org/doc/html/latest/admin-guide/perf-security.html)
+The counter is part of the run identity; hardware and model counts never mix.
+See [Linux perf access controls](https://www.kernel.org/doc/html/latest/admin-guide/perf-security.html)
 and [Callgrind's event format](https://valgrind.org/docs/manual/cl-format.html).
 An unavailable selected counter refuses before compilation; measurement failure
-never retries using another counter. Linux/model cells remain unverified until
-their actual guest receipts exist. `--counter` makes selection explicit.
-
-`--profile-costs` optionally runs `opt_explorer`'s existing sampler and cost
-buckets on the same symbolized release binary. These samples are diagnostic,
-include startup, and do not alter instruction ratios or ratchet decisions.
+never retries using another counter. `--counter` makes selection explicit.
 
 ## Scoreboard methodology
 
-Methodology v27 records HF-205's complete primitive-ratchet calibration. Updated
-ratios and per-axis measured noise limits can change verdicts, so they start a
-new comparison class. The paired worker observations retain their v26 scope;
-their workloads, counter and normalization did not change. This calibration
-does not qualify the release performance authority.
+Methodology v36 moves the instruction axis to `tools/perf_instructions.py`
+(farm records against the nearest measured ancestor, CPython for output only,
+no committed ratchet) and retires the board-vs-history chain (`perf_history`,
+`perf_board`, `perf_regression`, the plane gate), which never armed (HF-222).
+Methodology v22 to v35 recorded the primitive ratchet's history.
 
 Methodology v17 classifies failed executions from their actual semantic guest
 stderr instead of host diagnostics. Failed raw captures retain bounded diagnostic
@@ -173,8 +173,8 @@ not prove loaded compiler/runtime bytes, and these records remain noncanonical.
 The legacy `bench/harness.py` retains raw timings and status checks but does not
 capture a build observation. It explicitly refuses baseline timing comparisons;
 its request label cannot supply missing physical selection evidence.
-The regular baseline gate, `perf_regression.py` (including trends), Molt metrics
-in `bench_diff.py`, and `bench_dashboard.py` reuse the shared observation policy.
+Molt metrics in `bench_diff.py` and `bench_dashboard.py` reuse the shared
+observation policy.
 Standalone producers without a retained observation remain unbound, including
 historical and current `bench_wasm.py` records. Their raw measurements remain
 readable, but cannot authorize cross-run Molt timing comparisons. External-only
@@ -1104,7 +1104,7 @@ runtime profile is inferred from a metric name or target.
 
 The current methodology governs the shared comparison policy and each comparison
 verdict owner (`bench_reporting`, `bench_diff`, `bench_dashboard`,
-`perf_regression` and the legacy harness), including the target-admission
+`perf_instructions` and the legacy harness), including the target-admission
 dependencies. They are not unlocked report-formatting mechanics. The canonical
 bump must run after final formatting, and historical versions remain separate.
 

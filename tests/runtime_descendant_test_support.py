@@ -49,6 +49,22 @@ ABI_MISSING_TEXT = (
 TRACE_CALLARGS = "trace_callargs_emits_builder_lifecycle_logs"
 TRACE_BIND_IC = "trace_call_bind_ic_emits_hit_log"
 TRACE_BIND_META = "trace_function_bind_meta_emits_summary"
+IO_CUSTODY = (
+    "async_rt::channels::stream::stream_tests::"
+    "io_hooks_validate_return_custody_before_boxing_and_owner_cleanup"
+)
+IO_CHILD = "async_rt::channels::stream::stream_tests::io_hook_return_custody_child"
+FOREIGN_CUSTODY = (
+    "cpython_abi_hooks::gil_scope_tests::"
+    "foreign_return_rejects_missing_restore_before_packed_operand_cleanup"
+)
+ROOT_CUSTODY = (
+    "cpython_abi_hooks::gil_scope_tests::"
+    "root_foreign_callouts_reject_missing_restore_before_return_cleanup"
+)
+EXIT_CUSTODY = (
+    "state::runtime_state::tests::process_exit_retains_compiled_callback_custody"
+)
 # std::process::abort as each host reports it: SIGABRT, or Windows fast-fail.
 ABORT = {
     "posix": {"kind": "signal", "signal": 6},
@@ -327,6 +343,73 @@ CONTRACT[(THREAD_ADMISSION, "process-service-timeout")] = {
     "stderr": "molt runtime lifecycle failed: runtime teardown refused: process workers remain live or failed; origin retained\n",
     "exit_code": 0,
     "completes": True,
+}
+# Independent outcomes from the Rust adversaries: restored IO must finish its
+# cleanup, detached foreign returns must abort, and process exit must run its
+# compiled callback without returning to libtest.
+for _transport in ("stream", "websocket"):
+    for _operation in ("send", "recv"):
+        for _custody in ("restore", "detached"):
+            _restored = _custody == "restore"
+            CONTRACT[(IO_CUSTODY, f"{_transport}:{_operation}:{_custody}")] = {
+                "role": "io-hook-return-custody",
+                "child": IO_CHILD,
+                "args": ["--exact", IO_CHILD, *SERIAL],
+                "stdout": (
+                    f"\nrunning 1 test\ntest {IO_CHILD} ... "
+                    + (
+                        "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+                        "0 measured; 0 filtered out; finished in 0.00s\n"
+                        if _restored
+                        else ""
+                    )
+                ),
+                "stderr": "native IO callback suspended\n"
+                + (
+                    "native IO callback restored\nnative IO callback public return reached\n"
+                    "native IO callback owners retired\n"
+                    if _restored
+                    else "foreign callback returned with invalid execution custody\n"
+                ),
+                "exit_code": 0 if _restored else None,
+                "completes": _restored,
+            }
+for _owner, _role, _modes, _marker in (
+    (FOREIGN_CUSTODY, "foreign-execution-custody", ("missing-restore",), ""),
+    (
+        ROOT_CUSTODY,
+        "root-foreign-callout-custody",
+        (
+            "pyinit",
+            "module-traverse",
+            "module-clear",
+            "module-free",
+            "heap-export",
+            "heap-release",
+            "heap-invalid-view-release",
+        ),
+        "root foreign callout executed\n",
+    ),
+):
+    for _mode in _modes:
+        CONTRACT[(_owner, _mode)] = {
+            "role": _role,
+            "child": _owner,
+            "args": ["--exact", _owner, *SERIAL],
+            "stdout": f"\nrunning 1 test\ntest {_owner} ... ",
+            "stderr": _marker
+            + "foreign callback returned with invalid execution custody\n",
+            "exit_code": None,
+            "completes": False,
+        }
+CONTRACT[(EXIT_CUSTODY, "compiled-callback")] = {
+    "role": "process-exit",
+    "child": EXIT_CUSTODY,
+    "args": ["--exact", EXIT_CUSTODY, *SERIAL],
+    "stdout": f"\nrunning 1 test\ntest {EXIT_CUSTODY} ... process-exit compiled callback completed\n",
+    "stderr": "",
+    "exit_code": 0,
+    "completes": False,
 }
 MODES: dict[str, list[str]] = {}
 for _owner, _mode in CONTRACT:

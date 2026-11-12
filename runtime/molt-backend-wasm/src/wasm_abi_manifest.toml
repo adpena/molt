@@ -124,7 +124,7 @@ reserved_runtime_callables = [
   "molt_types_prepare_class",
   "molt_types_resolve_bases",
   "molt_types_new_class",
-  "molt_cpython_abi_cext_call_trampoline",
+  "molt_cpython_abi_cext_call_trampoline_admitted",
   "molt_importlib_import_transaction",
   "molt_importlib_module_spec_init",
 ]
@@ -263,8 +263,8 @@ callable_arity = 2
 
 [[reserved_runtime_callable]]
 index = 22
-runtime_name = "molt_cpython_abi_cext_call_trampoline"
-import_name = "cpython_abi_cext_call_trampoline"
+runtime_name = "molt_cpython_abi_cext_call_trampoline_admitted"
+import_name = "cpython_abi_cext_call_trampoline_admitted"
 callable_arity = 3
 trampoline_abi = "call_frame"
 
@@ -716,17 +716,24 @@ type = 0
 runtime_name = "molt_frame_locals_begin"
 callable_arity = 0
 
-# Backend-only frame binding storage. The homes lender takes a raw slot count
-# and returns a raw linear-memory address, never an object: 0 when the frame
-# entry failed or the frame has too few homes, with an exception pending. A
-# home read takes one home's raw address and returns the binding borrowed from
-# the home; a home take moves the binding out and returns it owned. `locals()`
-# returns an owned dict.
+# Backend-only frame records and binding storage. The record entry takes a
+# raw code slot id and returns the linked record's raw base address, never an
+# object: 0 when nothing was linked, with an exception pending. The record
+# exit takes that base. Compiled code calls them only off its inline push and
+# pop. A home read takes one home's raw address and returns the binding
+# borrowed from the home; a home take moves the binding out and returns it
+# owned. `locals()` returns an owned dict.
 [[import]]
-name = "frame_homes"
-runtime_name = "molt_frame_homes"
+name = "frame_record_enter"
+runtime_name = "molt_frame_record_enter"
 type = 2
 return_contract = "raw_bits"
+
+[[import]]
+name = "frame_record_exit"
+runtime_name = "molt_frame_record_exit"
+type = 2
+return_contract = "borrowed_object"
 
 [[import]]
 name = "frame_home_load"
@@ -1087,6 +1094,7 @@ type = 10
 
 [[import]]
 name = "function_closure_bits"
+effects = "nothrow_read"
 return_contract = "borrowed_object"
 type = 2
 
@@ -1207,9 +1215,9 @@ callable_arity = 3
 
 [[import]]
 name = "class_frame_exit"
-type = 0
+type = 2
 runtime_name = "molt_class_frame_exit"
-callable_arity = 0
+callable_arity = 1
 
 [[import]]
 name = "frame_class_locals_set"
@@ -1323,6 +1331,7 @@ type = 2
 
 [[import]]
 name = "function_direct_call_eligible"
+effects = "nothrow_read"
 return_contract = "raw_bits"
 type = 4
 
@@ -1855,9 +1864,9 @@ name = "frame_locals_set"
 return_contract = "owned_object"
 type = 2
 
-# The thread record's address: direct calls write its invocation handoff.
+# The attached context is captured once by a real host execution boundary.
 [[import]]
-name = "thread_record"
+name = "attached_context"
 type = 0
 return_contract = "raw_bits"
 
@@ -1866,20 +1875,6 @@ return_contract = "raw_bits"
 name = "refcount_admission"
 type = 0
 return_contract = "raw_bits"
-
-[[import]]
-name = "trace_enter_slot"
-type = 2
-runtime_name = "molt_trace_enter_slot"
-callable_arity = 1
-return_contract = "borrowed_object"
-
-[[import]]
-name = "trace_exit"
-type = 0
-runtime_name = "molt_trace_exit"
-callable_arity = 0
-return_contract = "borrowed_object"
 
 [[import]]
 name = "trace_set_line"
@@ -2030,11 +2025,13 @@ type = 4
 
 [[import]]
 name = "recursion_enter_fast"
+effects = "nothrow_write"
 return_contract = "raw_bits"
 type = 0
 
 [[import]]
 name = "recursion_exit_fast"
+effects = "nothrow_write"
 type = 7
 
 [[import]]
@@ -6917,6 +6914,11 @@ internal_output_export_prefixes = [
 ]
 
 essential_exports = [
+  "molt_attached_context",
+  "molt_compiled_execution_enter",
+  "molt_compiled_execution_leave",
+  "molt_attached_context_abi_fingerprint",
+  "molt_exception_pending_detached",
   "molt_alloc",
   "molt_bytes_as_ptr",
   "molt_bytes_from_bytes",
@@ -6962,6 +6964,11 @@ essential_exports = [
 
 [runtime_export_policy]
 host_exports = [
+  "molt_attached_context",
+  "molt_compiled_execution_enter",
+  "molt_compiled_execution_leave",
+  "molt_attached_context_abi_fingerprint",
+  "molt_exception_pending_detached",
   "molt_alloc",
   "molt_bool_from_i32",
   "molt_buffer_acquire",
@@ -9026,3 +9033,192 @@ version = 4
 # Always emitted by ResolvedRuntimePolicy.to_env_vars; hosts transport these
 # values without reimplementing capability or resource policy resolution.
 launch_environment_required_names = ["MOLT_CAPABILITIES", "MOLT_CAPABILITY_TIER", "MOLT_CAPABILITY_POLICY_DIGEST"]
+
+# One calling-convention authority for compiled entries and runtime calls.
+[execution_context_abi]
+version = 1
+carrier = "i64"
+position = 0
+thread_record_offset = 0
+section = "molt.attached-context-abi.v1"
+compiled_entries = ["molt_main", "molt_host_init", "molt_isolate_import", "molt_isolate_bootstrap"]
+boundary_entries = [
+  # Allocator-only close and native C-error completion retain their raw protocols.
+  "__molt_bridge_free_u8",
+  "__molt_bridge_free_u64",
+  "__molt_native_reference_complete",
+  "molt_c_heap_type_canonicalize",
+  "molt_c_heap_register_buffer_exporter",
+  "molt_c_heap_register_buffer_releaser",
+  "molt_set_intrinsic_manifest",
+  "molt_c_heap_register",
+  "molt_c_heap_unregister",
+  "molt_cpython_abi_wasm_export_anchor_count",
+  "molt_handle_resolve",
+  "molt_scratch_alloc",
+  "molt_scratch_free",
+  "molt_object_type_id",
+  "molt_itertools_object_class_bits",
+  "molt_seq_read_len",
+  "molt_seq_read_item_gil_borrowed",
+
+  "molt_c_heap_contains",
+  "molt_vfs_inject_entry",
+  "molt_vfs_inject_finish",
+  "molt_cpython_abi_cext_call_trampoline",
+  "__molt_asyncio_to_i64",
+  "__molt_collections_object_type_id",
+  "__molt_collections_string_obj_to_owned",
+  "__molt_collections_to_i64",
+  "__molt_crypto_fill_os_random",
+  "__molt_crypto_list_len",
+  "__molt_crypto_object_type_id",
+  "__molt_crypto_release_ptr",
+  "__molt_crypto_string_obj_to_owned",
+  "__molt_crypto_to_i64",
+  "__molt_graphlib_object_type_id",
+  "__molt_graphlib_string_obj_to_owned",
+  "__molt_graphlib_to_i64",
+  "__molt_http_bytes_like_slice",
+  "__molt_http_gil_release_drop",
+  "__molt_http_gil_release_new",
+  "__molt_http_maybe_ptr_from_bits",
+  "__molt_http_object_type_id",
+  "__molt_http_string_obj_to_owned",
+  "__molt_http_to_f64",
+  "__molt_http_to_i64",
+  "__molt_http_type_id_dict",
+  "__molt_http_type_id_list",
+  "__molt_http_type_id_module",
+  "__molt_http_type_id_tuple",
+  "__molt_ipaddr_release_ptr",
+  "__molt_ipaddr_string_obj_to_owned",
+  "__molt_ipaddr_to_bigint",
+  "__molt_ipaddr_to_i64",
+  "__molt_logging_string_obj_to_owned",
+  "__molt_logging_to_i64",
+  "__molt_math_as_float_extended",
+  "__molt_math_bigint_from_f64_trunc",
+  "__molt_math_bigint_ptr_from_bits",
+  "__molt_math_bigint_ref",
+  "__molt_math_bytes_like_slice",
+  "__molt_math_class_name_for_error",
+  "__molt_math_fill_os_random",
+  "__molt_math_list_len",
+  "__molt_math_maybe_ptr_from_bits",
+  "__molt_math_object_type_id",
+  "__molt_math_py_numeric_hash",
+  "__molt_math_release_ptr",
+  "__molt_math_string_bytes",
+  "__molt_math_string_len",
+  "__molt_math_string_obj_to_owned",
+  "__molt_math_to_bigint",
+  "__molt_math_to_f64",
+  "__molt_math_to_i64",
+  "__molt_path_bytes_like_slice",
+  "__molt_path_object_type_id",
+  "__molt_path_string_obj_to_owned",
+  "__molt_path_to_f64",
+  "__molt_path_to_i64",
+  "__molt_regex_bytes_view",
+  "__molt_regex_object_type_id",
+  "__molt_regex_to_i64",
+  "__molt_serial_get_vtable",
+  "__molt_stringprep_string_obj_to_owned",
+  "__molt_text_string_obj_to_owned",
+  "__molt_text_to_i64",
+  "__molt_xml_string_obj_to_owned",
+  "__molt_xml_to_i64",
+  "__molt_zoneinfo_object_type_id",
+  "__molt_zoneinfo_string_obj_to_owned",
+  "__molt_zoneinfo_to_i64",
+  "molt_attached_context",
+  "molt_attached_context_abi_fingerprint",
+  "molt_bool_from_i32",
+  "molt_bridge_free_string",
+  "molt_bytes_richcompare",
+  "molt_c_api_version",
+  "molt_capi_err_format_unraisable",
+  "molt_capi_type_fully_qualified_name",
+  "molt_capi_unicode_data",
+  "molt_capi_unicode_kind",
+  "molt_capi_unicode_maxchar",
+  "molt_capi_unicode_precision_drops_incomplete",
+  "molt_cext_discovery_init",
+  "molt_cext_discovery_load",
+  "molt_compiled_execution_enter",
+  "molt_compiled_execution_leave",
+  "molt_complex_richcompare",
+  "molt_cpython_abi_date_from_date",
+  "molt_cpython_abi_date_from_timestamp",
+  "molt_cpython_abi_datetime_from_date_and_time",
+  "molt_cpython_abi_datetime_from_date_and_time_and_fold",
+  "molt_cpython_abi_datetime_from_timestamp",
+  "molt_cpython_abi_delta_from_delta",
+  "molt_cpython_abi_register_hooks",
+  "molt_cpython_abi_time_from_time",
+  "molt_cpython_abi_time_from_time_and_fold",
+  "molt_cpython_abi_timezone_from_timezone",
+  "molt_cpython_abi_type_canonicalize",
+  "molt_datetime_dealloc",
+  "molt_dict_richcompare",
+  "molt_exception_pending_detached",
+  "molt_float_from_f64",
+  "molt_float_richcompare",
+  "molt_generic_hash",
+  "molt_gil_acquire",
+  "molt_gil_is_held",
+  "molt_gil_reacquire_guard",
+  "molt_gil_release",
+  "molt_gil_release_guard",
+  "molt_gpu_prim_binary",
+  "molt_gpu_prim_cast",
+  "molt_gpu_prim_create_tensor",
+  "molt_gpu_prim_create_tensor_raw",
+  "molt_gpu_prim_device",
+  "molt_gpu_prim_expand",
+  "molt_gpu_prim_flip",
+  "molt_gpu_prim_pad",
+  "molt_gpu_prim_permute",
+  "molt_gpu_prim_read_data",
+  "molt_gpu_prim_read_data_raw",
+  "molt_gpu_prim_reduce",
+  "molt_gpu_prim_reduce_all",
+  "molt_gpu_prim_reshape",
+  "molt_gpu_prim_shape",
+  "molt_gpu_prim_shrink",
+  "molt_gpu_prim_tensor_count",
+  "molt_gpu_prim_ternary",
+  "molt_gpu_prim_unary",
+  "molt_gpu_prim_zeros",
+  "molt_gpu_prim_zeros_dtype",
+  "molt_init",
+  "molt_is_immortal",
+  "molt_list_richcompare",
+  "molt_long_richcompare",
+  "molt_main_exit_status",
+  "molt_module_registry_install",
+  "molt_native_repr",
+  "molt_native_str",
+  "molt_none",
+  "molt_pyarg_format_out_count",
+  "molt_pyarg_parse_tuple_inner",
+  "molt_pyarg_parse_tuple_keywords_inner",
+  "molt_register_compiled_sources",
+  "molt_runtime_ensure_gil",
+  "molt_runtime_execution_enter",
+  "molt_runtime_execution_leave",
+  "molt_runtime_exit",
+  "molt_runtime_init",
+  "molt_runtime_shutdown",
+  "molt_set_app_callable_resolver",
+  "molt_set_argv",
+  "molt_set_wasm_table_base",
+  "molt_shutdown",
+  "molt_str_richcompare",
+  "molt_tuple_richcompare",
+  "molt_type_clear",
+  "molt_type_identity_hash",
+  "molt_type_is_gc",
+  "molt_type_traverse",
+]

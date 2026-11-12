@@ -31,9 +31,12 @@ pub(crate) unsafe fn dispatch_init_subclass_hooks(
         if super_ptr.is_null() {
             return false;
         }
-        let _super_owner = PtrDropGuard::new(super_ptr);
-        let init_bits =
-            crate::molt_get_attr_name(MoltObject::from_ptr(super_ptr).bits(), init_name_bits);
+        let _super_owner = PtrDropGuard::new(_py, super_ptr);
+        let init_bits = crate::molt_get_attr_name_attached_body(
+            _py,
+            MoltObject::from_ptr(super_ptr).bits(),
+            init_name_bits,
+        );
         if exception_pending(_py) {
             dec_ref_bits(_py, init_bits);
             return false;
@@ -156,7 +159,8 @@ pub(super) unsafe fn call_type_with_arguments(
             // the OLD code path's lifetime contract: never dec-ref the
             // looked-up function bits.
             let new_class_bits = if new_is_default {
-                molt_type_new(
+                molt_type_new_attached_body(
+                    _py,
                     class_bits,
                     pos_args[0],
                     pos_args[1],
@@ -535,7 +539,8 @@ unsafe fn build_class_from_args(
                 return error;
             }
         };
-        let result = molt_type_new(
+        let result = molt_type_new_attached_body(
+            _py,
             metaclass_bits,
             name_bits,
             bases_tuple_bits,

@@ -231,8 +231,13 @@ receiver behavior.
    `PythonSourceParameters`). The classes read typed call facts (callee identity
    masks, source reach) after the base fixpoint; the solver keeps each original
    argument tuple and re-maps it when a rescan changes a class. Literal `getattr`/`hasattr`/`delattr` select real member
-   sources; unknown selectors retain protocol and escape effects. Class allocation
-   and method folding additionally require unexposed definition/method identities.
+   sources; unknown selectors retain protocol and escape effects. Class allocation,
+   method folding and unguarded field access additionally require unexposed
+   definition/method identities (`class_namespace_closed`). Exposure is not a layout
+   fact: an exposed class keeps its inferred field offsets, because a mutation of the
+   class or of any base advances its layout version (as CPython's `PyType_Modified`
+   does) and the per-site field cache keys on the global type version; an exposed
+   base still makes its subclasses dynamic (HF-812).
    A declined constructor proof calls the actual class protocol.
 
    Inventory scans collect deferred writes without asserting they ran before another
@@ -603,9 +608,10 @@ which refuses a malformed payload.
 
 ### Acceptance and evidence rules
 
-The five-pair primitive A/B (`tools/perf_scoreboard.py primitives`, exact
-CPython 3.12.16) passes when no axis ratio rises beyond its ratchet noise bound
-and the `isinstance` per-op ratio falls beyond its bound. The prototype
+The primitive A/B (`tools/perf_scoreboard.py instructions measure` on base and
+head, five runs per axis) passes when no Molt count rises beyond the instruction
+signal's threshold (`tools/PERF_AUTHORITY.md`) and the `isinstance` per-op count
+falls beyond it. The prototype
 evidence before review was deterministic: the `isinstance` loop has no guard
 and no lookup (182 to 82 IR ops in `run`), 29 admitted modules, and a binary of
 35,161,472 bytes against 35,707,440. One unpaired instruction sample
@@ -671,7 +677,8 @@ sibling of this mechanism.
 Measured 2026-11-05 on macOS arm64 against origin/main f1d450c4f1, release
 builds with symbols kept, CPython 3.12.16 as oracle and denominator.
 
-- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, five pairs per
+- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, retired 2026-11-10 for
+  `instructions measure`; five pairs per
   leg, base and head legs run separately; frontend lowering cache disabled in
   both legs because main fails to persist a dataclass record, see "Open
   siblings"). `isinstance` per operation: 5,976.4 to 5,187.8 Molt
@@ -1127,7 +1134,8 @@ changed-function table (round 1 asked for it), and a standalone IR bound
 Measured 2026-11-05 on macOS arm64 against origin/main 6cbf288f59, with
 CPython 3.12.16 as oracle and denominator.
 
-- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, five pairs per
+- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, retired 2026-11-10 for
+  `instructions measure`; five pairs per
   leg, legs run separately, frontend lowering cache disabled in both). No
   axis rises beyond its noise bound. The largest rise is 0.93%
   (`tuple_unpack` startup, bound 20.3%); the largest per-operation rise is

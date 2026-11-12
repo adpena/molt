@@ -405,8 +405,6 @@ def test_build_diagnostics_emits_final_binary_image_closure(
         allocation_diagnostics_enabled=False,
         frontend_parallel_details={},
         profile="dev",
-        midend_policy_outcomes_by_function={},
-        midend_pass_stats_by_function={},
         backend_daemon_health=None,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,

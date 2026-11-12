@@ -12,6 +12,7 @@ fn dynbox_add_falls_back_to_call() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -49,6 +50,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -61,7 +63,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
     };
 
     let annotated = lower_tir_to_wasm(&func).test_view();
-    assert_eq!(annotated.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(annotated.param_types, vec![ValType::I64; 3]);
     assert!(annotated.runtime_calls.contains(&"add"));
     assert!(
         !annotated
@@ -78,6 +80,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
         0,
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
@@ -87,7 +90,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
         },
     );
     let output = lower_tir_to_wasm(&func).test_view();
-    assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
+    assert_eq!(output.param_types, vec![ValType::I64; 3]);
     assert_eq!(output.result_types, vec![ValType::I64]);
 
     assert!(
@@ -143,6 +146,7 @@ fn dynbox_identity_comparisons_stay_lir_fast_runtime_calls() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0), ValueId(1)],

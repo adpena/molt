@@ -29,7 +29,8 @@ fn marked(kind: molt_ir::OpKind, value: i64) -> OpIR {
     }
 }
 
-fn emit(function: FunctionIR) -> Vec<u8> {
+fn emit(mut function: FunctionIR) -> Vec<u8> {
+    function.ops = print_after_each_line(function.ops);
     wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         SimpleIR {
             functions: vec![function],
@@ -149,14 +150,30 @@ fn count_ops(wasm: &[u8], matches: impl Fn(&Operator<'_>) -> bool) -> usize {
     count
 }
 
+/// The guest's loops: the module's own generated bodies (the frame record
+/// push and pop) loop over a frame's homes in every module.
 fn loop_count(wasm: &[u8]) -> usize {
-    count_ops(wasm, |op| matches!(op, Operator::Loop { .. }))
+    let loops = |wasm: &[u8]| count_ops(wasm, |op| matches!(op, Operator::Loop { .. }));
+    static MODULE_BODIES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let module_bodies = *MODULE_BODIES.get_or_init(|| {
+        let ops = vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])];
+        loops(&emit(wasm_test_function("molt_main", vec![], None, ops)))
+    });
+    loops(wasm) - module_bodies
 }
 
 /// A forward-only flat function has no selector; the tree selects with
 /// `br_table`.
 fn uses_scope_tree(wasm: &[u8]) -> bool {
     count_ops(wasm, |op| matches!(op, Operator::BrTable { .. })) > 0
+}
+
+/// A pad consumes the exception that reached it, as a frontend handler does,
+/// before its own statements can raise. Without it the pad's print would run
+/// with the transferred exception still pending, which the exception-region
+/// verifier rejects as an ambiguous event source.
+fn pad_entry() -> OpIR {
+    wasm_test_op(molt_ir::OpKind::ExceptionClear, None, vec![])
 }
 
 /// The HF-546 shape: each statement check leaves for its own cleanup pad, and
@@ -166,6 +183,7 @@ fn statements(first_line: i64, count: i64, body: &mut Vec<OpIR>, pads: &mut Vec<
         body.push(marked(molt_ir::OpKind::Line, line));
         body.push(marked(molt_ir::OpKind::CheckException, PAD_LINE + line));
         pads.push(marked(molt_ir::OpKind::Label, PAD_LINE + line));
+        pads.push(pad_entry());
         pads.push(marked(molt_ir::OpKind::Line, PAD_LINE + line));
         pads.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
     }
@@ -210,6 +228,7 @@ fn shared_pad_guest(count: i64) -> Vec<u8> {
     ops.extend([
         wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         marked(molt_ir::OpKind::Label, PAD_LINE),
+        pad_entry(),
         marked(molt_ir::OpKind::Line, PAD_LINE),
         wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
     ]);
@@ -326,6 +345,7 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
             "cases":entries,
             "none":molt_codegen_abi::box_none_bits().to_string(),
             "forward":FORWARD, "head":HEAD, "tail":TAIL, "state":STATE, "pad":PAD_LINE,
+            "int_base":executed_line_int_base(),
         }))
         .unwrap(),
     )
@@ -336,6 +356,7 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none);
+const intBase = BigInt(config.int_base);
 const range = (first, last) => Array.from({length: last - first + 1}, (_, i) => first + i);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
@@ -343,9 +364,10 @@ for (const test of config.cases) {
   const hooks = {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
-    trace_set_line(line) { lines.push(Number(line)); return none; },
+    print_obj(value) { lines.push(Number(value - intBase)); },
     exception_frame_origin(homes) { assert.equal(homes,0n); assert.equal(polls,failAt); return none; },
     exception_pending() { return ++polls === failAt ? 1n : 0n; },
+    exception_clear() { return none; },
     obj_get_state(task) { assert.equal(task, 64n); return savedState; },
     obj_set_state() { throw Error('no state publication in this guest'); },
   };
@@ -354,23 +376,24 @@ for (const test of config.cases) {
   for (const entry of WebAssembly.Module.imports(module)) {
     if (entry.kind !== 'function') { assert.ok(entry.name in imports.env); continue; }
     imports[entry.module] ??= {};
-    imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {throw Error('unexpected import '+entry.name);});
+    imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {throw Error('unexpected import '+entry.name);});
   }
-  const app = new WebAssembly.Instance(module, imports).exports;
+  const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
   const mode = test.name.split('-')[0];
   const total = mode === 'dispatch' ? config.head + config.tail : config.forward;
   const run = (failure, ...args) => {
     lines = []; polls = 0; failAt = failure;
-    assert.equal(app.molt_main(...args), none);
+    assert.equal(app[compiledSymbol('molt_main')](executionContext, ...args), none);
   };
   // Statement s ends physical block s, so failures at radix boundaries of
   // both fan-outs leave from the first and last block of a node and must
-  // reach exactly their own pad.
+  // reach exactly their own pad. A statement prints after its check passes,
+  // so the failing statement prints nothing and its pad prints.
   const failures = [1, 2, 3, 4, 5, 15, 16, 17, 63, 64, 65, 127, 128, 129, 255, 256, 257,
     1023, 1024, 1025, config.head, config.head + 1, total].filter((failure) => failure <= total);
   for (const failure of failures) {
     if (mode === 'stateful') run(failure, 64n); else run(failure);
-    assert.deepEqual(lines, [...range(1, failure), config.pad + failure], `${test.name} fail@${failure}`);
+    assert.deepEqual(lines, [...range(1, failure - 1), config.pad + failure], `${test.name} fail@${failure}`);
     assert.equal(polls, failure);
   }
   if (mode === 'stateful') {
@@ -382,7 +405,7 @@ for (const test of config.cases) {
     // An unplanned saved state traps before any observer runs.
     savedState = BigInt(config.state + 1);
     lines = []; polls = 0; failAt = 0;
-    assert.throws(() => app.molt_main(64n), WebAssembly.RuntimeError);
+    assert.throws(() => app[compiledSymbol('molt_main')](executionContext, 64n), WebAssembly.RuntimeError);
     assert.deepEqual(lines, []);
   } else {
     run(0);

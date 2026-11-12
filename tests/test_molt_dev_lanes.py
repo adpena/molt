@@ -2262,7 +2262,7 @@ def _commit_candidate_controller_source(worktree: Path) -> str:
 
     for relative in controller_source.CONTROLLER_PATHS:
         path = worktree / relative
-        if relative in {"tools", "src/molt", "config"}:
+        if relative in {"tools", "src/molt", "config", "tests/findings"}:
             path /= "candidate-source.txt"
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -2681,7 +2681,7 @@ def test_lane_dispatch_plan_reads_checkout_without_recording(
     )
     assert args.func(args) == EXIT_OK
     payload = json.loads(capsys.readouterr().out)
-    assert "unavailable" in payload["north_star"]
+    assert set(payload) == {"rows"}
     plan = payload["rows"]
     assert [(row["row"], row["waits"]) for row in plan] == [
         ("HF-1", []),
@@ -2691,25 +2691,6 @@ def test_lane_dispatch_plan_reads_checkout_without_recording(
         ("HF-7", ["HF-2"]),
     ]
     assert _git(main, "status", "--porcelain").stdout == before
-    assert records() == before_records
-    ratchet = main / "bench/primitive_ratchet.json"
-    ratchet.parent.mkdir()
-    ratchet.write_text(
-        json.dumps(
-            {
-                "schema": "molt-primitive-instructions-v1",
-                "axes": {"loop/per_op": {"ratio": 9}, "empty/startup": {"ratio": 1}},
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert args.func(args) == EXIT_OK
-    payload = json.loads(capsys.readouterr().out)
-    assert "3.00x CPython over 2 axes" in payload["north_star"]
-    assert records() == before_records
-    ratchet.write_text("null", encoding="utf-8")
-    with pytest.raises(ValueError, match="ratchet must be an object"):
-        args.func(args)
     assert records() == before_records
 
 
@@ -2781,31 +2762,3 @@ def test_lane_dispatch_serializes_claims_and_retirement(
         _release_file_lock(handle)
     assert lanes.cmd_lane_dispatch(args) == EXIT_OK
     assert _record(family, "older")["dispatch"]["family"] == "A"
-
-
-def test_lane_list_binds_ratchet_to_selected_upstream(family: Path, capsys) -> None:
-    main = family / "molt-src"
-    ratchet = {
-        "schema": "molt-primitive-instructions-v1",
-        "axes": {"loop/per_op": {"ratio": 9}, "empty/startup": {"ratio": 1}},
-    }
-    _commit_file(
-        main,
-        "bench/primitive_ratchet.json",
-        json.dumps(ratchet),
-        "record primitive ratios",
-    )
-    _git(main, "push", "-q", "origin", "main")
-    # A different uncommitted ratio must not leak into the upstream view.
-    ratchet["axes"]["loop/per_op"]["ratio"] = 81
-    (main / "bench/primitive_ratchet.json").write_text(
-        json.dumps(ratchet), encoding="utf-8"
-    )
-    assert lanes.cmd_lane_list(_args(family, json=True, no_fetch=True)) == EXIT_OK
-    order = json.loads(capsys.readouterr().out)["work_order"]
-    assert "3.00x CPython over 2 axes" in order["north_star"]
-    assert order["primitive_ratchet"]["axes"]["loop/per_op"]["ratio"] == 9
-    _commit_file(main, "bench/primitive_ratchet.json", "null", "invalid primitive data")
-    _git(main, "push", "-q", "origin", "main")
-    with pytest.raises(ValueError, match="ratchet must be an object"):
-        lanes.cmd_lane_list(_args(family, json=True, no_fetch=True))

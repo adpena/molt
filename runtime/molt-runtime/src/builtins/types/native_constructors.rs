@@ -71,8 +71,10 @@ fn pointer_bits(ptr: *mut u8) -> u64 {
     }
 }
 
-pub(crate) extern "C" fn function_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn function_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "function.__new__", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -126,8 +128,10 @@ fn codec_arguments(py: &PyToken<'_>, label: &str, bound: &[Option<u64>; 3]) -> b
     true
 }
 
-pub(crate) extern "C" fn list_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -138,8 +142,10 @@ pub(crate) extern "C" fn list_new(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn dict_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn dict_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -147,15 +153,17 @@ pub(crate) extern "C" fn dict_new(args: u64, kwargs: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if bits == builtin_classes(py).dict {
-            molt_dict_new(0)
+            molt_dict_new_attached_body(py, 0)
         } else {
             unsafe { crate::call::class_init::alloc_instance_for_class(py, class) }
         }
     })
 }
 
-pub(crate) extern "C" fn set_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn set_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -168,8 +176,10 @@ pub(crate) extern "C" fn set_new(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn bytearray_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn bytearray_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -180,8 +190,10 @@ pub(crate) extern "C" fn bytearray_new(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn tuple_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn tuple_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -198,12 +210,14 @@ pub(crate) extern "C" fn tuple_new(args: u64, kwargs: u64) -> u64 {
         let Some(value) = call.positional_only(py, "tuple", allow_keywords) else {
             return MoltObject::none().bits();
         };
-        crate::molt_tuple_new_bound(class, value)
+        crate::molt_tuple_new_bound_attached_body(py, class, value)
     })
 }
 
-pub(crate) extern "C" fn frozenset_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn frozenset_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -222,7 +236,7 @@ pub(crate) extern "C" fn frozenset_new(args: u64, kwargs: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let result = if value == missing_bits(py) {
-            molt_frozenset_new(0)
+            molt_frozenset_new_attached_body(py, 0)
         } else {
             unsafe { frozenset_from_iter_bits(py, value) }
                 .unwrap_or_else(|| MoltObject::none().bits())
@@ -250,8 +264,10 @@ pub(crate) extern "C" fn frozenset_new(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn int_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -269,7 +285,8 @@ pub(crate) extern "C" fn int_new(args: u64, kwargs: u64) -> u64 {
                 "int() missing string argument",
             );
         }
-        molt_int_new(
+        molt_int_new_attached_body(
+            py,
             class,
             value.unwrap_or_else(|| MoltObject::from_int(0).bits()),
             base.unwrap_or_else(|| missing_bits(py)),
@@ -277,8 +294,10 @@ pub(crate) extern "C" fn int_new(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn float_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn float_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -292,7 +311,8 @@ pub(crate) extern "C" fn float_new(args: u64, kwargs: u64) -> u64 {
         let Some(value) = call.positional_only(py, "float", allow_keywords) else {
             return MoltObject::none().bits();
         };
-        molt_float_new(
+        molt_float_new_attached_body(
+            py,
             class,
             if value == missing_bits(py) {
                 MoltObject::from_float(0.0).bits()
@@ -303,8 +323,10 @@ pub(crate) extern "C" fn float_new(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn memoryview_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn memoryview_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -315,12 +337,14 @@ pub(crate) extern "C" fn memoryview_new(args: u64, kwargs: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let [value] = *bound;
-        crate::molt_memoryview_new(value.expect("required constructor argument"))
+        crate::molt_memoryview_new_attached_body(py, value.expect("required constructor argument"))
     })
 }
 
-pub(crate) extern "C" fn complex_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn complex_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -334,7 +358,8 @@ pub(crate) extern "C" fn complex_new(args: u64, kwargs: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let [real, imag] = *bound;
-        let result = molt_complex_from_obj(
+        let result = molt_complex_from_obj_attached_body(
+            py,
             real.unwrap_or_else(|| MoltObject::from_int(0).bits()),
             imag.unwrap_or_else(|| MoltObject::from_int(0).bits()),
             MoltObject::from_int(i64::from(imag.is_some())).bits(),
@@ -366,8 +391,10 @@ pub(crate) extern "C" fn complex_new(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn str_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn str_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -385,15 +412,19 @@ pub(crate) extern "C" fn str_new(args: u64, kwargs: u64) -> u64 {
         }
         let result = match bound[0] {
             None => pointer_bits(alloc_string(py, b"")),
-            Some(value) if bound[1].is_none() && bound[2].is_none() => molt_str_from_obj(value),
+            Some(value) if bound[1].is_none() && bound[2].is_none() => {
+                molt_str_from_obj_attached_body(py, value)
+            }
             Some(value) => decode_string(py, value, bound[1], bound[2]),
         };
         native_text_result(py, class, NativePayload::String, result)
     })
 }
 
-pub(crate) extern "C" fn bytes_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn bytes_new(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -417,10 +448,13 @@ pub(crate) extern "C" fn bytes_new(args: u64, kwargs: u64) -> u64 {
 fn bytes_value(py: &PyToken<'_>, bound: [Option<u64>; 3]) -> u64 {
     match bound {
         [None, None, None] => pointer_bits(alloc_bytes(py, &[])),
-        [Some(value), None, None] => molt_bytes_from_obj(value),
-        [Some(value), Some(encoding), errors] => {
-            molt_bytes_from_str(value, encoding, errors.unwrap_or_else(|| missing_bits(py)))
-        }
+        [Some(value), None, None] => molt_bytes_from_obj_attached_body(py, value),
+        [Some(value), Some(encoding), errors] => molt_bytes_from_str_attached_body(
+            py,
+            value,
+            encoding,
+            errors.unwrap_or_else(|| missing_bits(py)),
+        ),
         [source, encoding, _] => {
             let message = if encoding.is_some() {
                 "encoding without a string argument"
@@ -514,7 +548,8 @@ fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Op
     }
     // The decoder applies its own defaults only to an absent argument.
     let missing = missing_bits(py);
-    let out = molt_bytes_decode(
+    let out = molt_bytes_decode_attached_body(
+        py,
         copied,
         encoding.unwrap_or(missing),
         errors.unwrap_or(missing),
@@ -523,8 +558,10 @@ fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Op
     out
 }
 
-pub(crate) extern "C" fn list_init(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_init(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -537,12 +574,14 @@ pub(crate) extern "C" fn list_init(args: u64, kwargs: u64) -> u64 {
         let Some(value) = call.positional_only(py, "list", false) else {
             return MoltObject::none().bits();
         };
-        molt_list_init_method(receiver, value)
+        molt_list_init_method_attached_body(py, receiver, value)
     })
 }
 
-pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn dict_init(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -564,7 +603,7 @@ pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
             return MoltObject::none().bits();
         };
         inc_ref_bits(py, storage);
-        let _storage = PtrDropGuard::new(obj_from_bits(storage).as_ptr().unwrap());
+        let _storage = PtrDropGuard::new(py, obj_from_bits(storage).as_ptr().unwrap());
         if source != missing_bits(py)
             && !unsafe { dict_update_apply(py, storage, dict_update_set_in_place, source) }
         {
@@ -579,8 +618,10 @@ pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn set_init(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn set_init(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -600,16 +641,18 @@ pub(crate) extern "C" fn set_init(args: u64, kwargs: u64) -> u64 {
         let Some(value) = call.positional_only(py, "set", false) else {
             return MoltObject::none().bits();
         };
-        molt_set_clear(receiver);
+        molt_set_clear_attached_body(py, receiver);
         if !exception_pending(py) && value != missing_bits(py) {
-            molt_set_update(receiver, value);
+            molt_set_update_attached_body(py, receiver, value);
         }
         MoltObject::none().bits()
     })
 }
 
-pub(crate) extern "C" fn bytearray_init(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn bytearray_init(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) = Arguments::read(py, "constructor", args, kwargs) else {
             return MoltObject::none().bits();
         };

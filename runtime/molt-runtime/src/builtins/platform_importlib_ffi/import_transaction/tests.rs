@@ -26,7 +26,8 @@ fn cached_dotted_leaf_does_not_observe_missing_or_none_parent() {
                 ImportlibTransactionReturn::Leaf,
             );
             let failure = if exception_pending(py) {
-                let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                let error =
+                    ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
                 let message = crate::format_obj_str(py, obj_from_bits(error.bits()));
                 clear_exception(py);
                 Some(message)

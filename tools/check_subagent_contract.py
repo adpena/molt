@@ -56,6 +56,7 @@ REQUIRED_CONSTANTS: tuple[str, ...] = (
     "TRIALITY_WIRING",
     "PREMISE_VERIFICATION",
     "DESIGN_REVIEW",
+    "TYPED_FACTS",
     "HANDOFF_PRECHECK",
     "WHOLE_CRATE_TESTS",
 )
@@ -76,6 +77,7 @@ REQUIRED_KEY_PHRASES: dict[str, str] = {
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
     "DESIGN_REVIEW": "Elephant Goldfish",
+    "TYPED_FACTS": "closed type generated from its one authority",
     "HANDOFF_PRECHECK": "--precheck-only",
     "WHOLE_CRATE_TESTS": "--lib --no-fail-fast",
 }

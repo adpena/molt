@@ -4,13 +4,12 @@ use crate::builtins::exceptions::raise_exception;
 use crate::builtins::numbers::{index_bigint_from_obj, index_i64_integral_bits};
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
-    FRAME_STACK, MoltHeader, TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TYPE_ID_CODE,
-    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FRAME_BINDINGS, TYPE_ID_MODULE,
-    TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_class,
-    alloc_object, builtin_classes, code_filename_bits, code_firstlineno, code_name_bits,
-    dec_ref_bits, dict_get_in_place, exception_pending, inc_ref_bits, instance_set_dict_bits,
-    module_dict_bits, obj_from_bits, object_mark_has_ptrs, object_type_id, profile_enabled,
-    string_obj_to_owned, to_i64,
+    MoltHeader, TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TYPE_ID_CODE, TYPE_ID_DICT,
+    TYPE_ID_EXCEPTION, TYPE_ID_FRAME_BINDINGS, TYPE_ID_MODULE, TYPE_ID_TRACEBACK_PAYLOAD,
+    TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_class, alloc_object, builtin_classes,
+    code_filename_bits, code_firstlineno, code_name_bits, dec_ref_bits, dict_get_in_place,
+    exception_pending, inc_ref_bits, instance_set_dict_bits, module_dict_bits, obj_from_bits,
+    object_mark_has_ptrs, object_type_id, profile_enabled, string_obj_to_owned, to_i64,
 };
 use locations::LocationId;
 use molt_obj_model::MoltObject;
@@ -26,17 +25,17 @@ pub(crate) mod locations;
 mod namespace;
 #[cfg(test)]
 mod namespace_tests;
+pub(crate) mod records;
 pub(crate) use activation::{
     ActivationFrameScope, activation_detach_frame_bindings, activation_exit_bindings,
     activation_locals_bits, empty_locals_bits,
 };
 #[cfg(test)]
-pub(crate) use activation::{molt_frame_cell_publish, molt_frame_locals_begin};
-#[cfg(test)]
-pub(crate) use bindings::molt_frame_homes;
+pub(crate) use activation::{
+    molt_frame_cell_publish_attached_body, molt_frame_locals_begin_attached_body,
+};
 pub(crate) use bindings::{
     FramePlan, FrameRelease, frame_argument_zero, frame_bindings_detach, frame_bindings_visit,
-    touch_frame_home_tls_lifetime,
 };
 pub(crate) use locals_proxy::{
     frame_locals_proxy_detach, frame_locals_proxy_visit, frame_object_detach, frame_object_visit,
@@ -54,6 +53,7 @@ pub(crate) use namespace::{
     compiled_slot_for_code, globals_namespace_storage_bits, globals_namespace_storage_ptr,
     take_invocation_namespace,
 };
+pub(crate) use records::{clear_frame_home_tls_storage, touch_frame_home_tls_lifetime};
 
 /// The executing Python argument-zero slot, independent of ABI-only parameters.
 #[derive(Clone, Copy, Default)]
@@ -123,15 +123,10 @@ impl Drop for PythonFrameContextSnapshot<'_, '_> {
 pub(crate) fn frame_python_context_snapshot<'a, 'py>(
     py: &'a PyToken<'py>,
 ) -> PythonFrameContextSnapshot<'a, 'py> {
-    let context = FRAME_STACK.with(|stack| {
-        let context = stack
-            .borrow()
-            .last()
-            .map(|entry| entry.python_context)
-            .unwrap_or_default();
-        context.retain(py);
-        context
-    });
+    let context = records::top()
+        .map(records::FrameRecord::python_context)
+        .unwrap_or_default();
+    context.retain(py);
     PythonFrameContextSnapshot { py, context }
 }
 
@@ -141,10 +136,10 @@ pub(crate) fn frame_stack_set_python_context(
 ) -> bool {
     // Retain before publication. A replaced value can run finalizers on release.
     context.retain(py);
-    let previous = FRAME_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let entry = stack.last_mut()?;
-        Some(std::mem::replace(&mut entry.python_context, context))
+    // Only a frame the runtime linked carries a published context: a
+    // synchronous frame's is read from its code and homes.
+    let previous = records::top().and_then(|record| {
+        record.update_owned(|entry| std::mem::replace(&mut entry.python_context, context))
     });
     if let Some(previous) = previous {
         previous.release(py);
@@ -159,13 +154,13 @@ fn frame_context_cell_is_valid(bits: u64) -> bool {
     crate::object::cells::cell_ptr_from_bits(bits).is_some()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_context_set(
+pub(crate) fn molt_frame_context_set_attached_body(
+    _py: &crate::PyToken<'_>,
     argument_zero_bits: u64,
     argument_kind_bits: u64,
     class_cell_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let argument_zero = match to_i64(obj_from_bits(argument_kind_bits)) {
             Some(0) => PythonArgumentZero::NoArgument,
             Some(1) => PythonArgumentZero::Value(argument_zero_bits),
@@ -380,7 +375,16 @@ pub(crate) fn frame_effective_builtins_bits(
     Ok(0)
 }
 
-/// Transfer an explicitly owned code/namespace triple to the sole Python frame.
+/// The executing frame's facts, borrowed from its record.
+pub(crate) fn frame_stack_top_entry() -> Option<FrameEntry> {
+    records::top().map(records::FrameRecord::entry)
+}
+
+/// Transfer an explicitly owned code/namespace triple to the sole Python
+/// frame: link its record as the executing frame, with no binding homes (a
+/// runtime namespace context). A thread whose frame arena cannot hold one
+/// more record cannot run Python at all, as a thread that cannot grow
+/// CPython's data stack cannot.
 pub(crate) fn frame_stack_push_owned(
     _py: &PyToken<'_>,
     code_bits: u64,
@@ -389,31 +393,46 @@ pub(crate) fn frame_stack_push_owned(
     activation_bits: u64,
 ) {
     crate::gil_assert();
-    FRAME_STACK.with(|stack| {
-        stack.borrow_mut().push(FrameEntry {
-            code_bits,
-            location_snapshot: None,
-            locals_bits: 0,
-            globals_bits,
-            builtins_bits,
-            activation_bits,
-            python_context: PythonFrameContext::default(),
-            bindings: bindings::FrameBindings::default(),
-        });
-    });
+    records::push(0, |base| FrameEntry {
+        code_bits,
+        location_snapshot: None,
+        locals_bits: 0,
+        globals_bits,
+        builtins_bits,
+        activation_bits,
+        python_context: PythonFrameContext::default(),
+        bindings: bindings::FrameBindings::over(FramePlan::default(), base),
+    })
+    .expect("frame arena cannot hold a frame record");
 }
 
-/// Give the entry just pushed for a synchronous activation the homes its code
-/// slot's `plan` calls for. `false`: the arena could not grow; the entry keeps
-/// no homes and its exit still pops it.
-pub(crate) fn frame_stack_enter_homes(py: &PyToken<'_>, plan: FramePlan) -> bool {
-    let Some(mut bindings) = bindings::FrameBindings::enter(plan) else {
-        return false;
+/// Link the frame of an activation with the homes its `plan` calls for, in
+/// one arena transaction; the edges transfer as in
+/// [`frame_stack_push_owned`]. `false`: the arena could not hold the homes.
+/// The frame is linked without them, so a `MemoryError` traceback keeps it,
+/// and its exit still pops it.
+pub(crate) fn frame_stack_enter(
+    py: &PyToken<'_>,
+    code_bits: u64,
+    globals_bits: u64,
+    builtins_bits: u64,
+    activation_bits: u64,
+    plan: FramePlan,
+) -> bool {
+    crate::gil_assert();
+    let entry = |bindings| FrameEntry {
+        code_bits,
+        location_snapshot: None,
+        locals_bits: 0,
+        globals_bits,
+        builtins_bits,
+        activation_bits,
+        python_context: PythonFrameContext::default(),
+        bindings,
     };
-    FRAME_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let entry = stack.last_mut().expect("frame entry was just pushed");
-        if let Some(task) = obj_from_bits(entry.activation_bits).as_ptr() {
+    let linked = records::push(plan.homes as usize, |base| {
+        let mut bindings = bindings::FrameBindings::over(plan, base);
+        if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
             bindings.set_location(LocationId::from_word(
                 crate::object::aux_header::object_frame_location(task),
             ));
@@ -424,9 +443,13 @@ pub(crate) fn frame_stack_enter_homes(py: &PyToken<'_>, plan: FramePlan) -> bool
                 bindings::lend_location(ptr, bindings.location_address());
             }
         }
-        entry.bindings = bindings;
+        entry(bindings)
     });
-    true
+    if linked.is_some() {
+        return true;
+    }
+    frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, activation_bits);
+    false
 }
 
 /// A synchronous Python body implemented by a runtime plan. It has the same
@@ -443,7 +466,7 @@ pub(crate) struct PythonFunctionFrame<'a, 'py> {
     homes: *mut u64,
     body_state: RuntimeBodyState,
     code: u64,
-    depth: usize,
+    record: Option<records::FrameRecord>,
 }
 
 impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
@@ -469,24 +492,21 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
         for bits in context {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, code, globals, builtins, 0);
-        let depth = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
+        let entered = frame_stack_enter(py, code, globals, builtins, 0, plan);
+        let record = records::top();
         let mut frame = Self {
             py,
             homes: std::ptr::null_mut(),
             body_state: RuntimeBodyState::Binding,
             code,
-            depth,
+            record,
         };
-        if !frame_stack_enter_homes(py, plan) {
+        if !entered {
             crate::record_memory_error_without_allocation(py);
             return Err(());
         }
-        let homes = bindings::molt_frame_homes(plan.homes as u64);
-        if exception_pending(py) {
-            return Err(());
-        }
-        frame.homes = crate::provenance::abi::mut_ptr::<u64>(homes).unwrap();
+        let record = record.expect("an entered frame is linked");
+        frame.homes = record.base() as *mut u64;
         // No fallible work or callbacks remain before the argument transfer.
         for (slot, &value) in arguments.iter().enumerate() {
             unsafe {
@@ -508,27 +528,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
                 frame.homes.add(slot * FRAME_HOME_WORDS + 1).write(cell);
             }
         }
-        // The new entry has no displaced context and therefore no release.
-        FRAME_STACK.with(|stack| {
-            stack
-                .borrow_mut()
-                .last_mut()
-                .unwrap()
-                .python_context
-                .argument_zero = if arguments.is_empty() {
-                PythonArgumentZero::NoArgument
-            } else {
-                PythonArgumentZero::Home
-            };
-        });
-        FRAME_STACK.with(|stack| {
-            stack
-                .borrow()
-                .last()
-                .unwrap()
-                .bindings
-                .set_location(LocationId::from_word(0))
-        });
+        record.bindings().set_location(LocationId::from_word(0));
         frame.body_state = RuntimeBodyState::Executing;
         Ok(frame)
     }
@@ -536,7 +536,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
     /// A fresh owned read observes PEP 667 writes made by an earlier callback.
     pub(crate) fn argument(&self, slot: usize) -> Result<u64, ()> {
         let home = unsafe { self.homes.add(slot * molt_codegen_abi::FRAME_HOME_WORDS) };
-        let value = bindings::molt_frame_home_load(home as usize as u64);
+        let value = bindings::molt_frame_home_load_attached_body(self.py, home as usize as u64);
         if exception_pending(self.py) {
             return Err(());
         }
@@ -567,15 +567,51 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
 
 impl Drop for PythonFunctionFrame<'_, '_> {
     fn drop(&mut self) {
-        assert_eq!(
-            FRAME_STACK.with(|stack| stack.borrow().len()),
-            self.depth + 1,
+        assert!(
+            records::top() == self.record,
             "runtime Python frame custody is not LIFO"
         );
         if self.body_state == RuntimeBodyState::Executing && exception_pending(self.py) {
-            crate::builtins::exceptions::molt_exception_frame_origin(self.homes as u64);
+            crate::builtins::exceptions::molt_exception_frame_origin_attached_body(
+                self.py,
+                self.homes as u64,
+            );
         }
         frame_stack_pop(self.py);
+    }
+}
+
+/// What a compiled function keeps across its body: the base its frame entry
+/// returned, which its exit passes back. Runtime tests that stand in for
+/// compiled code keep those bases here.
+#[cfg(test)]
+pub(crate) mod compiled_entry {
+    use crate::{MoltObject, PyToken};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BASES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Enter the frame of code slot `slot`, as a compiled entry does.
+    pub(crate) fn enter(py: &PyToken<'_>, slot: u64) -> u64 {
+        let base = crate::molt_frame_record_enter_attached_body(py, slot);
+        BASES.with(|bases| bases.borrow_mut().push(base));
+        MoltObject::none().bits()
+    }
+
+    /// Leave the frame of the matching [`enter`], if it linked one.
+    pub(crate) fn exit(py: &PyToken<'_>) -> u64 {
+        let base = BASES.with(|bases| bases.borrow_mut().pop()).unwrap_or(0);
+        if base != 0 {
+            crate::molt_frame_record_exit_attached_body(py, base);
+        }
+        MoltObject::none().bits()
+    }
+
+    /// The executing frame's homes base, as compiled code holds it.
+    pub(crate) fn homes() -> u64 {
+        super::records::top().map_or(0, |record| record.base() as u64)
     }
 }
 
@@ -589,33 +625,22 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
 }
 
 pub(crate) fn frame_stack_active_activation_bits() -> u64 {
-    FRAME_STACK.with(|stack| {
-        stack
-            .borrow()
-            .last()
-            .map_or(0, |entry| entry.activation_bits)
-    })
+    records::top().map_or(0, records::FrameRecord::activation_bits)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn frame_stack_active_code_bits() -> u64 {
-    FRAME_STACK.with(|stack| stack.borrow().last().map_or(0, |entry| entry.code_bits))
+    frame_stack_top_entry().map_or(0, |entry| entry.code_bits)
 }
 
 pub(crate) fn frame_stack_active_globals_bits() -> u64 {
-    FRAME_STACK.with(|stack| {
-        stack
-            .borrow()
-            .last()
-            .map(|entry| entry.globals_bits)
-            .unwrap_or(0)
-    })
+    records::top().map_or(0, |record| record.namespaces().0)
 }
 
 /// A present frame owns its captured namespace, including unavailable (zero)
 /// bootstrap state. Only absence of a frame permits interpreter defaults.
 pub(crate) fn frame_stack_active_builtins() -> Option<u64> {
-    FRAME_STACK.with(|stack| stack.borrow().last().map(|entry| entry.builtins_bits))
+    records::top().map(|record| record.namespaces().1)
 }
 
 pub(crate) fn frame_stack_active_builtins_bits() -> u64 {
@@ -625,23 +650,20 @@ pub(crate) fn frame_stack_active_builtins_bits() -> u64 {
 /// The active frame's globals and builtins, the pair `molt_module_get_global`
 /// consults, read in one frame-stack access. `None` without a frame.
 pub(crate) fn frame_stack_active_namespaces() -> Option<(u64, u64)> {
-    FRAME_STACK.with(|stack| {
-        stack
-            .borrow()
-            .last()
-            .map(|entry| (entry.globals_bits, entry.builtins_bits))
-    })
+    records::top().map(records::FrameRecord::namespaces)
 }
 
 impl FrameEntry {
     pub(crate) fn is_class_body(self) -> bool {
-        obj_from_bits(self.code_bits)
-            .as_ptr()
-            .is_some_and(|ptr| unsafe {
-                object_type_id(ptr) == TYPE_ID_CODE
-                    && crate::object::layout::code_scope_kind(ptr)
-                        == crate::object::layout::CodeScopeKind::ClassBody
-            })
+        Self::code_is_class_body(self.code_bits)
+    }
+
+    fn code_is_class_body(code_bits: u64) -> bool {
+        obj_from_bits(code_bits).as_ptr().is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_CODE
+                && crate::object::layout::code_scope_kind(ptr)
+                    == crate::object::layout::CodeScopeKind::ClassBody
+        })
     }
     pub(crate) fn source_position(self) -> Option<locations::CodeLocation> {
         let code = obj_from_bits(self.code_bits).as_ptr()?;
@@ -706,7 +728,6 @@ impl FrameEntry {
         } else {
             bindings::frame_bindings_exit(py, &self.bindings);
         }
-        self.bindings.exit();
         self.release(py);
     }
 }
@@ -725,31 +746,26 @@ impl<'a, 'py> FrameStackSnapshot<'a, 'py> {
         Self { py, entries }
     }
 
-    /// Snapshot the stack entries in the range `select` picks from the stack
-    /// length, each optimized frame's bindings payload attached first, so every
-    /// frame object or traceback built from the snapshot shares its
-    /// activation's bindings instead of copying them. Attaching allocates and
-    /// can run finalizers; those run above the selected entries and cannot pop
-    /// one. `Err`: a payload could not be attached and nothing was captured.
+    /// Snapshot `records` (outermost first), each optimized frame's bindings
+    /// payload attached first, so every frame object or traceback built from
+    /// the snapshot shares its activation's bindings instead of copying them.
+    /// Attaching allocates and can run finalizers; those run above the
+    /// selected records and cannot pop one. `Err`: a payload could not be
+    /// attached and nothing was captured.
     fn capture(
         py: &'a PyToken<'py>,
-        select: impl FnOnce(usize) -> std::ops::Range<usize>,
+        records: &[records::FrameRecord],
     ) -> Result<Self, bindings::ObserveError> {
-        let range = select(FRAME_STACK.with(|stack| stack.borrow().len()));
-        let mut payloads = Vec::with_capacity(range.len());
-        for index in range.clone() {
-            payloads.push(bindings::frame_bindings_observe(py, index)?);
+        let mut payloads = Vec::with_capacity(records.len());
+        for &record in records {
+            payloads.push(bindings::frame_record_observe(py, record)?);
         }
-        let entries = FRAME_STACK.with(|stack| stack.borrow().get(range).map(<[_]>::to_vec));
-        let Some(mut entries) = entries else {
-            return Err(bindings::ObserveError::Layout(
-                "frame stack shrank below an observed frame",
-            ));
-        };
-        for (entry, payload) in entries.iter_mut().zip(payloads) {
+        let entries = records
+            .iter()
+            .zip(payloads)
             // A copy never owns homes: it shares the payload it retains.
-            entry.bindings = bindings::FrameBindings::captured(payload);
-        }
+            .map(|(record, payload)| record.entry_with(bindings::FrameBindings::captured(payload)))
+            .collect();
         Ok(Self::retained(py, entries))
     }
 }
@@ -765,18 +781,17 @@ impl Drop for FrameStackSnapshot<'_, '_> {
 /// Unlink the executing frame, then run its exit ([`FrameEntry::exit`]).
 pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
     crate::gil_assert();
-    let entry = FRAME_STACK.with(|stack| stack.borrow_mut().pop());
-    if let Some(entry) = entry {
-        entry.exit(_py);
+    if let Some(unlinked) = records::unlink() {
+        // The record's storage stays reserved until the exit's releases end.
+        unlinked.exit(_py);
     }
 }
 
 /// Return (filename, lineno, function_name, col_offset, end_col_offset) from
 /// the top frame, if available.  col_offset/end_col_offset are -1 when unknown.
 pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, String, i64, i64)> {
-    FRAME_STACK.with(|stack| {
-        let stack = stack.borrow();
-        let entry = stack.last()?;
+    {
+        let entry = frame_stack_top_entry()?;
         if entry.code_bits == 0 {
             return None;
         }
@@ -799,7 +814,7 @@ pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, St
                 entry.source_position().map_or(-1, |site| site.end_column),
             ))
         }
-    })
+    }
 }
 
 /// One executing Python frame as a location query reads it: the code object,
@@ -815,43 +830,42 @@ pub(crate) struct PythonFrameSite {
 /// caller, who releases both. `choose` sees the Python-visible frames newest
 /// first; runtime namespace contexts without a code object are not Python
 /// calls and are skipped, as [`frame_at_depth`] skips them. No frame object is
-/// materialized. `choose` runs under the frame-stack borrow: it may read
-/// objects, but it must not allocate Python objects or run Python code.
+/// materialized. `choose` walks the live record chain: it may read objects,
+/// but it must not allocate Python objects or run Python code.
 pub(crate) fn python_frame_site(
     py: &PyToken<'_>,
     choose: impl FnOnce(&mut dyn Iterator<Item = PythonFrameSite>) -> Option<PythonFrameSite>,
 ) -> Option<PythonFrameSite> {
     crate::gil_assert();
-    FRAME_STACK.with(|stack| {
-        let stack = stack.borrow();
-        let mut frames = stack.iter().rev().filter_map(|entry| {
-            let line = unsafe { frame_line_from_entry(*entry) }?;
-            Some(PythonFrameSite {
-                code_bits: entry.code_bits,
-                globals_bits: entry.globals_bits,
-                line,
-            })
-        });
-        let site = choose(&mut frames)?;
-        inc_ref_bits(py, site.code_bits);
-        inc_ref_bits(py, site.globals_bits);
-        Some(site)
-    })
+    let mut frames = records::innermost_first().filter_map(|record| {
+        let entry = record.entry();
+        let line = unsafe { frame_line_from_entry(entry) }?;
+        Some(PythonFrameSite {
+            code_bits: entry.code_bits,
+            globals_bits: entry.globals_bits,
+            line,
+        })
+    });
+    let site = choose(&mut frames)?;
+    inc_ref_bits(py, site.code_bits);
+    inc_ref_bits(py, site.globals_bits);
+    Some(site)
 }
 
 pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
     crate::gil_assert();
-    let prev = FRAME_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let entry = stack.last_mut()?;
-        // Replace and manage refcounts. 0 means "unset".
-        let prev = entry.locals_bits;
-        entry.locals_bits = 0;
-        if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
-            inc_ref_bits(_py, dict_bits);
-            entry.locals_bits = dict_bits;
-        }
-        Some(prev)
+    // Only a module or class body, which the runtime links, binds a namespace.
+    let prev = records::top().and_then(|record| {
+        record.update_owned(|entry| {
+            // Replace and manage refcounts. 0 means "unset".
+            let prev = entry.locals_bits;
+            entry.locals_bits = 0;
+            if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+                inc_ref_bits(_py, dict_bits);
+                entry.locals_bits = dict_bits;
+            }
+            prev
+        })
     });
     if let Some(prev) = prev
         && prev != 0
@@ -861,9 +875,8 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_frame_locals_set_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // This operation publishes an executable module's namespace, not an
         // optimized function's locals. CPython prepares __builtins__ once at
         // execution entry; neither global reads nor FunctionType may fill it.
@@ -903,7 +916,7 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
                             "module execution has no captured builtins namespace",
                         );
                     }
-                    // No FRAME_STACK borrow survives dictionary equality or
+                    // No frame-record access spans dictionary equality or
                     // allocation, which may enter Python before publication.
                     inc_ref_bits(_py, builtins_bits);
                     let inserted =
@@ -918,15 +931,10 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
         }
         let debug = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_LOCALS);
         if debug {
-            let (depth, top_locals, top_code) = FRAME_STACK.with(|stack| {
-                let stack = stack.borrow();
-                let depth = stack.len();
-                let (locals, code) = stack
-                    .last()
-                    .map(|e| (e.locals_bits, e.code_bits))
-                    .unwrap_or((0, 0));
-                (depth, locals, code)
-            });
+            let depth = records::depth();
+            let (top_locals, top_code) = frame_stack_top_entry()
+                .map(|e| (e.locals_bits, e.code_bits))
+                .unwrap_or((0, 0));
             eprintln!(
                 "molt debug locals frame_locals_set depth={} prev_locals=0x{:016x} code=0x{:016x} new=0x{:016x}",
                 depth, top_locals, top_code, dict_bits
@@ -939,15 +947,13 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
 
 /// The class namespace is already prepared. Preserve its identity, including
 /// custom mappings; module __builtins__ initialization has no place here.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_class_locals_set(mapping_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let class_frame = FRAME_STACK.with(|stack| {
-            stack
-                .borrow()
-                .last()
-                .is_some_and(|entry| entry.is_class_body() && !entry.bindings.has_python_bindings())
-        });
+pub(crate) fn molt_frame_class_locals_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    mapping_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let class_frame = frame_stack_top_entry()
+            .is_some_and(|entry| entry.is_class_body() && !entry.bindings.has_python_bindings());
         if !class_frame || obj_from_bits(mapping_bits).as_ptr().is_none() {
             return raise_exception::<_>(
                 py,
@@ -960,9 +966,11 @@ pub extern "C" fn molt_frame_class_locals_set(mapping_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_body_builtins(globals_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_class_body_builtins_attached_body(
+    _py: &crate::PyToken<'_>,
+    globals_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         match frame_effective_builtins_bits(py, globals_bits) {
             Ok(bits) => {
                 inc_ref_bits(py, bits);
@@ -973,9 +981,11 @@ pub extern "C" fn molt_class_body_builtins(globals_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_code_set_class_body(code_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_code_set_class_body_attached_body(
+    _py: &crate::PyToken<'_>,
+    code_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = obj_from_bits(code_bits).as_ptr().filter(|ptr| unsafe {
             object_type_id(*ptr) == TYPE_ID_CODE
                 && crate::object::layout::code_frame_slot_id(*ptr).is_none()
@@ -1000,9 +1010,11 @@ pub extern "C" fn molt_code_set_class_body(code_bits: u64) -> u64 {
 
 /// Inline class regions retain the enclosing function's homes. Their source
 /// sites belong to the class frame, never the enclosing homes' location word.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_frame_set_location(index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_class_frame_set_location_attached_body(
+    _py: &crate::PyToken<'_>,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(index) =
             to_i64(obj_from_bits(index_bits)).and_then(|value| u64::try_from(value).ok())
         else {
@@ -1012,14 +1024,10 @@ pub extern "C" fn molt_class_frame_set_location(index_bits: u64) -> u64 {
                 "invalid class location index",
             );
         };
-        FRAME_STACK.with(|stack| {
-            stack
-                .borrow_mut()
-                .last_mut()
-                .expect("executing class frame")
-                .bindings
-                .set_location(LocationId::from_word(index));
-        });
+        frame_stack_top_entry()
+            .expect("executing class frame")
+            .bindings
+            .set_location(LocationId::from_word(index));
         MoltObject::none().bits()
     })
 }
@@ -1344,20 +1352,24 @@ unsafe fn build_frame_chain(
 pub(crate) fn frame_at_depth(_py: &PyToken<'_>, depth: usize) -> Result<Option<u64>, ()> {
     // Select first, so only the selected frame and its `f_back` chain attach
     // bindings payloads; frames above it stay unobserved.
-    let selected = FRAME_STACK.with(|stack| {
-        stack
-            .borrow()
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|(_, entry)| unsafe { frame_line_from_entry(**entry) }.is_some())
-            .nth(depth)
-            .map(|(index, _)| index)
-    });
-    let Some(index) = selected else {
+    let mut chain: Vec<records::FrameRecord> = records::innermost_first()
+        .skip_while({
+            let mut visible = 0;
+            move |record| {
+                if unsafe { frame_line_from_entry(record.entry()) }.is_none() {
+                    return true;
+                }
+                visible += 1;
+                visible <= depth
+            }
+        })
+        .collect();
+    if chain.is_empty() {
         return Ok(None);
-    };
-    let snapshot = match FrameStackSnapshot::capture(_py, |len| 0..(index + 1).min(len)) {
+    }
+    // Outermost first, the selected frame last.
+    chain.reverse();
+    let snapshot = match FrameStackSnapshot::capture(_py, &chain) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             error.raise(_py);
@@ -1408,7 +1420,8 @@ pub(crate) fn frame_stack_trace_payload_prepend_bits(
     // capture exactly as a failed traceback allocation does: the raise keeps
     // its own exception and any traceback it already owns, and no second error
     // is recorded through this path. Observers of such a frame diagnose it.
-    let snapshot = FrameStackSnapshot::capture(_py, |len| len.saturating_sub(1)..len).ok()?;
+    // The executing frame alone: an Origin capture never walks the chain.
+    let snapshot = FrameStackSnapshot::capture(_py, records::top().as_slice()).ok()?;
     let active = &snapshot.entries;
     if active.is_empty() {
         return None;
@@ -1553,9 +1566,8 @@ pub(crate) fn exception_materialize_traceback_bits(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_getframe_attached_body(_py: &crate::PyToken<'_>, depth_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let depth = if let Some(value) = index_i64_integral_bits(depth_bits) {
             value.to_i32()
         } else {
@@ -1596,24 +1608,19 @@ fn empty_dict_bits(_py: &PyToken<'_>) -> u64 {
 
 fn top_user_frame_entry() -> Option<FrameEntry> {
     // Runtime builtins no longer manufacture Python frames at dispatch.
-    FRAME_STACK.with(|stack| stack.borrow().last().copied())
+    frame_stack_top_entry()
 }
 
 /// `locals()` of the executing frame, owned. An optimized activation,
 /// synchronous or stateful, answers through its bindings payload: before
 /// PEP 667 the activation's one refreshed dict, afterwards an independent
 /// snapshot. A module body's locals are its namespace mapping.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_locals_builtin() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if let Some(index) = FRAME_STACK.with(|stack| {
-            let stack = stack.borrow();
-            stack
-                .last()
-                .filter(|entry| entry.bindings.has_python_bindings() || entry.activation_bits != 0)
-                .map(|_| stack.len() - 1)
+pub(crate) fn molt_locals_builtin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        if let Some(record) = records::top().filter(|record| {
+            record.activation_bits() != 0 || record.bindings().has_python_bindings()
         }) {
-            match bindings::frame_bindings_observe(_py, index) {
+            match bindings::frame_record_observe(_py, record) {
                 Ok(0) => {}
                 Ok(payload) => {
                     return bindings::frame_bindings_locals(_py, payload)
@@ -1654,9 +1661,8 @@ pub extern "C" fn molt_locals_builtin() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_globals_builtin() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_globals_builtin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let entry = top_user_frame_entry();
         let Some(entry) = entry else {
             return empty_dict_bits(_py);
@@ -1671,6 +1677,8 @@ pub extern "C" fn molt_globals_builtin() -> u64 {
         empty_dict_bits(_py)
     })
 }
+
+include!("../attached_exports_generated/builtins/frames.rs");
 
 #[cfg(test)]
 mod tests {
@@ -1783,14 +1791,19 @@ mod tests {
             let none = MoltObject::none().bits();
             let _ =
                 crate::raise_exception::<u64>(py, crate::BuiltinExc::ValueError, "frame unwind");
-            let before = crate::builtins::exceptions::molt_exception_last_pending();
+            let before = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::exception_pending(py));
-            let result = super::molt_frame_context_set(none, MoltObject::from_int(1).bits(), none);
+            let result = super::molt_frame_context_set_attached_body(
+                py,
+                none,
+                MoltObject::from_int(1).bits(),
+                none,
+            );
             assert!(crate::obj_from_bits(result).is_none());
             assert!(crate::exception_pending(py));
-            let after = crate::builtins::exceptions::molt_exception_last_pending();
+            let after = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(before, after);
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             frame_stack_pop(py);
             dec_ref_bits(py, before);
             dec_ref_bits(py, after);

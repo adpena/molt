@@ -95,6 +95,7 @@ STRUCTURAL_AUDIT_METRICS = frozenset(
         "rust_backend_rejection_applicability_total",
         "rust_stub_surfaces_total",
         "scratch_authority_bypasses",
+        "spelled_runtime_entries",
         "stdlib_raw_intrinsic_bindings",
         "undecomposed_god_files",
     }

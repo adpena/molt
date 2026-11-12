@@ -36,7 +36,6 @@
     "bench/corpus/registry.toml",
     "src/molt/cli/source_package_seal.py",
     "tools/bench_reporting.py",
-    "tools/perf_regression.py",
     "src/molt/binaryen_identity.py",
     "src/molt/binaryen_toolchain.py",
     "src/molt/llvm_wasi_tools.py",
@@ -171,18 +170,15 @@
     "tools/bench_suites.py",
     "tools/check_perf_gate_wiring.py",
     "tools/perf_authority.py",
-    "tools/perf_board.py",
     "tools/perf_causality.py",
-    "tools/perf_history.py",
     "tools/perf_methodology.py",
     "config/perf_methodology.toml",
     "tools/compat/comparison.py",
     "tools/perf_calibration.py",
     "tools/perf_schema.py",
     "tools/perf_scoreboard.py",
-    "tools/perf_scoreboard_primitives.py",
-    "bench/primitive_ratchet.json",
-    ".github/workflows/primitive-instructions.yml",
+    "tools/perf_instructions.py",
+    "tools/perf_primitives.py",
     "tools/perf_scoreboard_build_profiles.py",
     "tools/perf_scoreboard_cli.py",
     "tools/perf_scoreboard_measure.py",
@@ -543,6 +539,7 @@
         "tests/tools/test_gen_cpython_coverage.py/**",
         "tests/tools/test_gen_cpython_type_slots.py/**",
         "tests/tools/test_perf_authority.py/**",
+        "tests/tools/test_perf_instructions.py/**",
         "tests/tools/test_perf_methodology.py/**",
         "tests/tools/test_perf_profile_selection.py/**",
         "tests/tools/test_perf_scoreboard.py/**",
@@ -635,8 +632,6 @@
         "tests/tools/test_parity_gate.py/**",
         "tests/tools/test_parity_microscope.py/**",
         "tests/tools/test_pass_delta_dashboard.py/**",
-        "tests/tools/test_perf_board.py/**",
-        "tests/tools/test_perf_history.py/**",
         "tests/tools/test_perf_causality.py/**",
         "tests/tools/test_pin_freshness.py/**",
         "tests/tools/test_powerplay_acceptance.py/**",
@@ -684,7 +679,6 @@
         "tests/tools/test_named_lanes.py/**",
         "tests/test_browser_asset_closure.py/**",
         "tests/test_l7_numeric_attestation_runner.py/**",
-        "tests/test_perf_regression.py/**",
         "tests/test_profile_tool.py/**",
         "tests/test_regrtest_adapter.py/**",
         "tests/test_version_compat.py/**",
@@ -722,6 +716,7 @@
         "tests/tools/test_signed_ratio.py/**",
         "tests/tools/test_test_dependency_graph.py/**",
         "tests/tools/test_consumer_gate.py/**",
+        "tests/tools/test_check_typed_facts.py/**",
         "tests/tools/test_gate_yield.py/**",
         "tests/test_agent_coordination.py/**",
         "tests/tools/test_release_outcomes.py/**",
@@ -3279,30 +3274,6 @@
         "uv",
         "run",
         "python3",
-        "tools/check_perf_plane_gate.py"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.perf-plane-gate",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 120,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
         "tools/check_test_ownership.py",
         "--check"
       ],
@@ -3630,6 +3601,7 @@
         "tests/tools/test_gen_cpython_coverage.py",
         "tests/tools/test_gen_cpython_type_slots.py",
         "tests/tools/test_perf_authority.py",
+        "tests/tools/test_perf_instructions.py",
         "tests/tools/test_perf_methodology.py",
         "tests/tools/test_perf_profile_selection.py",
         "tests/tools/test_perf_scoreboard.py",
@@ -3757,8 +3729,6 @@
         "tests/tools/test_parity_gate.py",
         "tests/tools/test_parity_microscope.py",
         "tests/tools/test_pass_delta_dashboard.py",
-        "tests/tools/test_perf_board.py",
-        "tests/tools/test_perf_history.py",
         "tests/tools/test_perf_causality.py",
         "tests/tools/test_pin_freshness.py",
         "tests/tools/test_powerplay_acceptance.py",
@@ -3808,7 +3778,6 @@
         "tests/tools/test_named_lanes.py",
         "tests/test_browser_asset_closure.py",
         "tests/test_l7_numeric_attestation_runner.py",
-        "tests/test_perf_regression.py",
         "tests/test_profile_tool.py",
         "tests/test_regrtest_adapter.py",
         "tests/test_version_compat.py",
@@ -3847,6 +3816,7 @@
         "tests/tools/test_signed_ratio.py",
         "tests/tools/test_test_dependency_graph.py",
         "tests/tools/test_consumer_gate.py",
+        "tests/tools/test_check_typed_facts.py",
         "tests/tools/test_gate_yield.py"
       ],
       "pytest_worker_memory_gb": 0.75,
@@ -4508,8 +4478,7 @@
       "pytest": [
         "tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission",
         "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication",
-        "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths",
-        "tests/test_wasm_link_validation.py::test_existing_alias_binding_controls_actual_llvm_resolution"
+        "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths"
       ],
       "resource_class": "python-tests",
       "tiers": [
@@ -5588,6 +5557,7 @@
         "tests/test_frontend_diagnostics.py",
         "tests/test_frontend_exact_class_authority.py",
         "tests/test_frontend_frame_home_exception_edges.py",
+        "tests/test_frontend_lowering_contracts.py",
         "tests/test_frontend_guard_availability.py",
         "tests/test_frontend_literal_exception_edges.py",
         "tests/test_frontend_literal_identity.py",
@@ -5599,7 +5569,6 @@
         "tests/test_frontend_split_dispatch.py",
         "tests/test_function_annotation_lowering.py",
         "tests/test_python_binding_mutation_frontier.py",
-        "tests/test_frontend_midend_passes.py",
         "tests/test_frontend_inline_frame_legality.py",
         "tests/test_python_binding_join_frontier.py",
         "tests/test_class_annotation_namespace_lowering.py",
@@ -5654,6 +5623,7 @@
         "tests/test_frontend_diagnostics.py",
         "tests/test_frontend_exact_class_authority.py",
         "tests/test_frontend_frame_home_exception_edges.py",
+        "tests/test_frontend_lowering_contracts.py",
         "tests/test_frontend_guard_availability.py",
         "tests/test_frontend_literal_exception_edges.py",
         "tests/test_frontend_literal_identity.py",
@@ -5665,7 +5635,6 @@
         "tests/test_frontend_split_dispatch.py",
         "tests/test_function_annotation_lowering.py",
         "tests/test_python_binding_mutation_frontier.py",
-        "tests/test_frontend_midend_passes.py",
         "tests/test_frontend_inline_frame_legality.py",
         "tests/test_python_binding_join_frontier.py",
         "tests/test_class_annotation_namespace_lowering.py",
@@ -6328,10 +6297,8 @@
         "tests/test_tokenize_public_module_surface.py",
         "tests/test_tool_releases.py",
         "tests/test_toolchain_facts.py",
-        "tests/test_translation_validation_e2e.py",
         "tests/test_translation_validator_unit.py",
         "tests/test_true_async.py",
-        "tests/test_tv_hooks.py",
         "tests/test_types_private_module_surface.py",
         "tests/test_typing_private_module_surface.py",
         "tests/test_uuid_private_module_surface.py",
@@ -6669,10 +6636,8 @@
         "tests/test_tokenize_public_module_surface.py",
         "tests/test_tool_releases.py",
         "tests/test_toolchain_facts.py",
-        "tests/test_translation_validation_e2e.py",
         "tests/test_translation_validator_unit.py",
         "tests/test_true_async.py",
-        "tests/test_tv_hooks.py",
         "tests/test_types_private_module_surface.py",
         "tests/test_typing_private_module_surface.py",
         "tests/test_uuid_private_module_surface.py",
@@ -8932,11 +8897,12 @@
       "argv": [
         "python",
         "tools/perf_scoreboard.py",
-        "primitives",
-        "--cpython",
-        "3.12.16",
+        "instructions",
+        "run",
+        "--tier",
+        "hourly",
         "--out-dir",
-        "proof-receipts/evidence/primitive-instructions"
+        "proof-receipts/evidence/instructions"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_native_units": {
@@ -8945,19 +8911,58 @@
           "c++"
         ]
       },
-      "cell": "macos-arm64-py312-native-release-output",
+      "cell": "linux-x86_64-py312-native-release-output",
       "dependencies": [],
       "evidence_outputs": [
-        "proof-receipts/evidence/primitive-instructions"
+        "proof-receipts/evidence/instructions"
       ],
-      "family": "primitive_instructions",
-      "id": "performance.primitive-instructions",
+      "family": "instruction_signal",
+      "id": "performance.instructions",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "scheduled"
       ],
-      "timeout_budget": "shipping",
-      "timeout_seconds": 9000,
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang"
+      ]
+    },
+    {
+      "argv": [
+        "python",
+        "tools/perf_scoreboard.py",
+        "instructions",
+        "run",
+        "--tier",
+        "nightly",
+        "--out-dir",
+        "proof-receipts/evidence/instructions-nightly"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-native-release-output",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/instructions-nightly"
+      ],
+      "family": "instruction_signal",
+      "id": "performance.instructions-nightly",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_budget": "suite",
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -9268,12 +9273,12 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1800,
-        "headroom_seconds": 600,
+        "headroom_seconds": 660,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2880,
-        "required_job_seconds": 3000,
+        "projected_makespan_seconds": 2820,
+        "required_job_seconds": 2940,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2745
+          "repository-policy": 2715
         }
       },
       "rust": {
@@ -9456,6 +9461,17 @@
       }
     ],
     "scheduled_job_timeout_envelopes": {
+      "instruction_signal": {
+        "budget_seconds": 3000,
+        "critical_path_seconds": 1800,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 0,
+        "projected_makespan_seconds": 3000,
+        "required_job_seconds": 3000,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 3000
+        }
+      },
       "nightly_conformance": {
         "budget_seconds": 900,
         "critical_path_seconds": 600,
@@ -9535,17 +9551,6 @@
           "scheduled-suite": 2850
         }
       },
-      "primitive_instructions": {
-        "budget_seconds": 9600,
-        "critical_path_seconds": 9000,
-        "headroom_seconds": 0,
-        "job_reserve_seconds": 600,
-        "projected_makespan_seconds": 9000,
-        "required_job_seconds": 9600,
-        "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 9000
-        }
-      },
       "runtime_candidate_costs": {
         "budget_seconds": 10800,
         "critical_path_seconds": 9000,
@@ -9565,6 +9570,7 @@
       "python -m ruff format --check .",
       "python tools/check_rust_toolchain.py",
       "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
+      "python tools/check_typed_facts.py --changed --base {integration_upstream_commit}",
       "python tools/generators.py check",
       "python tools/check_environment_registry.py --check",
       "python tools/check_test_ownership.py --check",
@@ -9585,7 +9591,6 @@
       "python tools/check_perf_gate_wiring.py",
       "python tools/check_ratio_direction.py",
       "python tools/check_subagent_contract.py",
-      "python tools/check_perf_plane_gate.py",
       "python tools/check_public_source_boundary.py"
     ],
     "always_command_ids": [
@@ -9773,6 +9778,7 @@
       "local.tinygrad-op-contract.pytest": "none",
       "local.tir-midend.0": "shared",
       "local.tir-midend.1": "shared",
+      "local.typed-facts-gate.pytest": "none",
       "local.wasm-facts-host-tool.0": "shared",
       "local.wasm-facts-host-tool.1": "shared",
       "local.wasm-host.0": "shared",
@@ -9782,30 +9788,30 @@
     "commands": {
       "local.always.0": "python -m ruff check .",
       "local.always.1": "python -m ruff format --check .",
-      "local.always.10": "python tools/check_subprocess_guard_coverage.py",
-      "local.always.11": "python tools/encoding_gate.py --check",
-      "local.always.12": "python tools/finding_coverage.py --check",
-      "local.always.13": "python tools/check_cargo_test_truth.py",
-      "local.always.14": "python tools/check_github_actions.py",
-      "local.always.15": "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
-      "local.always.16": "python tools/public_contract_gate.py --check",
-      "local.always.17": "python tools/check_stdlib_intrinsic_surface.py --check",
-      "local.always.18": "python tools/build_graph_audit.py --check",
-      "local.always.19": "python tools/check_runtime_symbol_owners.py",
+      "local.always.10": "python tools/canonicalization_contract.py --check",
+      "local.always.11": "python tools/check_subprocess_guard_coverage.py",
+      "local.always.12": "python tools/encoding_gate.py --check",
+      "local.always.13": "python tools/finding_coverage.py --check",
+      "local.always.14": "python tools/check_cargo_test_truth.py",
+      "local.always.15": "python tools/check_github_actions.py",
+      "local.always.16": "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
+      "local.always.17": "python tools/public_contract_gate.py --check",
+      "local.always.18": "python tools/check_stdlib_intrinsic_surface.py --check",
+      "local.always.19": "python tools/build_graph_audit.py --check",
       "local.always.2": "python tools/check_rust_toolchain.py",
-      "local.always.20": "python tools/check_runtime_serial_bridge_imports.py",
-      "local.always.21": "python tools/check_perf_gate_wiring.py",
-      "local.always.22": "python tools/check_ratio_direction.py",
-      "local.always.23": "python tools/check_subagent_contract.py",
-      "local.always.24": "python tools/check_perf_plane_gate.py",
+      "local.always.20": "python tools/check_runtime_symbol_owners.py",
+      "local.always.21": "python tools/check_runtime_serial_bridge_imports.py",
+      "local.always.22": "python tools/check_perf_gate_wiring.py",
+      "local.always.23": "python tools/check_ratio_direction.py",
+      "local.always.24": "python tools/check_subagent_contract.py",
       "local.always.25": "python tools/check_public_source_boundary.py",
       "local.always.3": "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
-      "local.always.4": "python tools/generators.py check",
-      "local.always.5": "python tools/check_environment_registry.py --check",
-      "local.always.6": "python tools/check_test_ownership.py --check",
-      "local.always.7": "python tools/check_generator_manifest.py --check",
-      "local.always.8": "python tools/structural_audit.py --check",
-      "local.always.9": "python tools/canonicalization_contract.py --check",
+      "local.always.4": "python tools/check_typed_facts.py --changed --base {integration_upstream_commit}",
+      "local.always.5": "python tools/generators.py check",
+      "local.always.6": "python tools/check_environment_registry.py --check",
+      "local.always.7": "python tools/check_test_ownership.py --check",
+      "local.always.8": "python tools/check_generator_manifest.py --check",
+      "local.always.9": "python tools/structural_audit.py --check",
       "local.apparatus-a11.0": "python tools/claims_status.py --check",
       "local.apparatus-a11.1": "python tools/check_sister_landed.py --check",
       "local.apparatus-a11.2": "python tools/commit_serializer.py --check",
@@ -9883,7 +9889,7 @@
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
       "local.pending-call-source-authority.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --test pending_call_authority",
       "local.performance-measurement.0": "python tools/perf_methodology.py --check",
-      "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_bench_evidence.py tests/test_bench_suites.py tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
+      "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_bench_evidence.py tests/test_bench_suites.py tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_authority.py tests/tools/test_perf_instructions.py",
       "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
       "local.phase-exit-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
       "local.process-environment-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_standalone_benchmark_memory_guard.py",
@@ -9936,6 +9942,7 @@
       "local.tinygrad-op-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_gpu_op_contract.py",
       "local.tir-midend.0": "cargo clippy --config 'build.warnings=\"deny\"' --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
+      "local.typed-facts-gate.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_check_typed_facts.py",
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
@@ -11886,6 +11893,24 @@
       },
       {
         "command_ids": [
+          "local.typed-facts-gate.pytest"
+        ],
+        "description": "The added-lines typed-facts gate: unannotated parameters and returns, Any in signatures and bare type: ignore block a landing.",
+        "gates": [],
+        "globs": [
+          "tools/check_typed_facts.py",
+          "tests/tools/test_check_typed_facts.py"
+        ],
+        "name": "typed-facts-gate",
+        "pytest": [
+          "tests/tools/test_check_typed_facts.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.apparatus-hooks.0",
           "local.apparatus-hooks.1",
           "local.apparatus-hooks.pytest"
@@ -11979,12 +12004,8 @@
           "src/molt/node_runtime.py",
           "tests/test_node_runtime.py",
           "tools/perf_schema.py",
-          "tools/perf_history.py",
-          "tools/perf_board.py",
           "tools/perf_authority.py",
           "tests/tools/test_perf_schema.py",
-          "tests/tools/test_perf_history.py",
-          "tests/tools/test_perf_board.py",
           "tests/tools/test_perf_authority.py",
           "tests/tools/test_direct_run_process_custody.py",
           "tests/tools/test_cold_start_decompose.py",
@@ -11992,9 +12013,9 @@
           "tests/tools/test_perf_release_integrity.py",
           "tests/tools/test_perf_scoreboard.py",
           "tests/tools/test_perf_methodology.py",
-          "tools/perf_scoreboard_primitives.py",
-          "bench/primitive_ratchet.json",
-          ".github/workflows/primitive-instructions.yml"
+          "tools/perf_instructions.py",
+          "tools/perf_primitives.py",
+          "tests/tools/test_perf_instructions.py"
         ],
         "name": "performance-measurement",
         "pytest_select": [
@@ -12015,9 +12036,8 @@
               "tests/tools/test_perf_scoreboard.py",
               "tests/tools/test_perf_methodology.py",
               "tests/tools/test_perf_schema.py",
-              "tests/tools/test_perf_history.py",
-              "tests/tools/test_perf_board.py",
-              "tests/tools/test_perf_authority.py"
+              "tests/tools/test_perf_authority.py",
+              "tests/tools/test_perf_instructions.py"
             ]
           }
         ],
@@ -13868,6 +13888,9 @@
         "node",
         "wasm-ld"
       ],
+      "local.typed-facts-gate.pytest": [
+        "python"
+      ],
       "local.wasm-facts-host-tool.0": [
         "python",
         "rustc",
@@ -14152,14 +14175,13 @@
       "target": "host"
     },
     {
-      "arch": "aarch64",
+      "arch": "x86_64",
       "backend": "native",
-      "id": "macos-arm64-py312-native-release-output",
-      "os": "macos",
+      "id": "linux-x86_64-py312-native-release-output",
+      "os": "linux",
       "profile": "release-output",
       "python": "3.12",
-      "runner": "macos-14",
-      "target": "native"
+      "target": "x86_64-unknown-linux-gnu"
     },
     {
       "arch": "x86_64",
@@ -14184,6 +14206,7 @@
   "scheduled_families": [
     {
       "description": "One immutable native runtime, pinned CPython source, and digest-bound Nightly shard plan.",
+      "executor": "github-workflow",
       "job": "nightly-prepare",
       "job_reserve_seconds": 300,
       "name": "nightly_shard_prepare",
@@ -14196,6 +14219,7 @@
     },
     {
       "description": "Full Molt conformance corpus aggregated from eight exact digest-bound shards.",
+      "executor": "github-workflow",
       "job": "conformance-aggregate",
       "job_reserve_seconds": 300,
       "name": "nightly_conformance",
@@ -14212,6 +14236,7 @@
     },
     {
       "description": "Full basic and stdlib differential corpus aggregated from sixteen exact digest-bound shards.",
+      "executor": "github-workflow",
       "item_timeout_seconds": 300,
       "job": "differential-aggregate",
       "job_reserve_seconds": 300,
@@ -14229,6 +14254,7 @@
     },
     {
       "description": "Pinned CPython regrtest closure aggregated from four exact digest-bound shards.",
+      "executor": "github-workflow",
       "item_timeout_seconds": 600,
       "job": "regrtest-aggregate",
       "job_reserve_seconds": 300,
@@ -14246,6 +14272,7 @@
     },
     {
       "description": "Fit one compact digest-bound cost model from complete measured Nightly item telemetry.",
+      "executor": "github-workflow",
       "job": "shard-profile-feedback",
       "job_reserve_seconds": 300,
       "name": "nightly_shard_profile_feedback",
@@ -14264,6 +14291,7 @@
     },
     {
       "description": "Runtime determinism and typed IR verification after one runtime build.",
+      "executor": "github-workflow",
       "job": "determinism-sweep",
       "job_reserve_seconds": 300,
       "name": "nightly_determinism",
@@ -14276,6 +14304,7 @@
     },
     {
       "description": "Heavy Tier 3 reproducibility, fuzzing, mutation, translation, and model proof.",
+      "executor": "github-workflow",
       "job": "verification-gate-t3",
       "job_reserve_seconds": 600,
       "name": "nightly_verification_t3",
@@ -14287,19 +14316,18 @@
       "workflow": ".github/workflows/nightly.yml"
     },
     {
-      "description": "Postsubmit CPython 3.12.16 primitive instruction slopes and startup ratchet.",
-      "job": "primitive-instructions",
-      "job_reserve_seconds": 600,
-      "name": "primitive_instructions",
+      "description": "Molt instruction counts on main's head against the nearest measured ancestor; RED names the suspect landings.",
+      "executor": "farm",
+      "name": "instruction_signal",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "scheduled"
       ],
-      "timeout_minutes": 160,
-      "workflow": ".github/workflows/primitive-instructions.yml"
+      "timeout_minutes": 50
     },
     {
       "description": "Controlled candidate-only numeric/list/shared-storage measurements; no comparative or release PASS.",
+      "executor": "github-workflow",
       "job": "candidate-runtime-costs",
       "job_reserve_seconds": 1800,
       "name": "runtime_candidate_costs",

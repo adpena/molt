@@ -466,12 +466,13 @@ def test_wasm_app_callable_table_reserves_no_runtime_region(
     assert all(elements[index] == 1 for index in reserved.intersection(elements))
 
 
-# (module (import "host" "hit" (func (param i64) (result i64)))
-#         (func (export "f") (param i64) (result i64) local.get 0 call 0))
+# (module (import "host" "hit" (func (param i64 i64) (result i64)))
+#         (func (export "f") (param i64 i64) (result i64)
+#           local.get 0 local.get 1 call 0))
 _RECORDER_WASM = (
-    b"\x00asm\x01\x00\x00\x00\x01\x06\x01\x60\x01\x7e\x01\x7e"
+    b"\x00asm\x01\x00\x00\x00\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e"
     b"\x02\x0c\x01\x04host\x03hit\x00\x00\x03\x02\x01\x00"
-    b"\x07\x05\x01\x01f\x00\x01\x0a\x08\x01\x06\x00\x20\x00\x10\x00\x0b"
+    b"\x07\x05\x01\x01f\x00\x01\x0a\x0a\x01\x08\x00\x20\x00\x20\x01\x10\x00\x0b"
 )
 
 # Instantiates one built module with inert imports, installs a recorder at
@@ -482,9 +483,14 @@ const fs = require('fs');
 const spec = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const wasmModule = new WebAssembly.Module(fs.readFileSync(spec.module));
 let hits = 0;
+const context = 0x100000042n;
 const recorder = new WebAssembly.Instance(
   new WebAssembly.Module(Uint8Array.from(spec.recorder)),
-  {host: {hit: () => { hits += 1; return 7n; }}},
+  {host: {hit: (attached, payload) => {
+    if (attached !== context || payload !== 5n) throw new Error('poll ABI mismatch');
+    hits += 1;
+    return 7n;
+  }}},
 ).exports.f;
 const imports = {};
 let table = null;
@@ -512,17 +518,17 @@ for (const entry of spec.imports) {
 }
 const instance = new WebAssembly.Instance(wasmModule, imports);
 table ??= instance.exports.molt_table ?? instance.exports.__indirect_function_table;
-const callIndirect = instance.exports.molt_call_indirect1;
+const callIndirect = instance.exports[spec.callIndirect];
 if (typeof callIndirect !== 'function') throw new Error('molt_call_indirect1 export missing');
 const key = BigInt(spec.key);
 const slot = Number(key & 0xffffffffn);
 if (table.length <= slot) table.grow(slot + 1 - table.length);
 table.set(slot, recorder);
-const control = callIndirect(BigInt(slot), 5n);
+const control = callIndirect(context, BigInt(slot), 5n);
 const controlHits = hits;
 let error = null;
 try {
-  callIndirect(key, 5n);
+  callIndirect(context, key, 5n);
 } catch (caught) {
   error = caught;
 }
@@ -559,7 +565,10 @@ def test_wasm_call_indirect_rejects_runtime_keys(
     """HF-699 K2: every exported ``molt_call_indirectN`` traps on an index
     above ``u32::MAX``. ``i32.wrap_i64`` kept a key's low 32 bits, so a key
     called whatever function sat at that slot."""
-    from molt._wasm_abi_generated import WASM_CALL_INDIRECT_IMPORTS
+    from molt._wasm_abi_generated import (
+        WASM_CALL_INDIRECT_IMPORTS,
+        compiled_execution_symbol,
+    )
 
     assert "molt_call_indirect1" in WASM_CALL_INDIRECT_IMPORTS
     root = Path(__file__).resolve().parents[1]
@@ -594,6 +603,7 @@ def test_wasm_call_indirect_rejects_runtime_keys(
                 "recorder": list(_RECORDER_WASM),
                 "imports": imports,
                 "key": str(key),
+                "callIndirect": compiled_execution_symbol("molt_call_indirect1"),
             }
         ),
         encoding="utf-8",

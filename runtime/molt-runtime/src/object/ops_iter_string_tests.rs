@@ -1,4 +1,7 @@
-use super::{molt_iter, molt_iter_next, molt_iter_next_unboxed, molt_reversed_builtin};
+use super::{
+    molt_iter_attached_body, molt_iter_next_attached_body, molt_iter_next_unboxed_attached_body,
+    molt_reversed_builtin_attached_body,
+};
 use crate::{MoltObject, PyToken, alloc_string, dec_ref_bits, inc_ref_bits};
 
 // CPython chr/encode('utf-8', 'surrogatepass') observations: adjacent high
@@ -22,11 +25,12 @@ unsafe fn next_owned(py: &PyToken<'_>, iter: u64, unboxed: bool) -> (bool, u64) 
     unsafe {
         if unboxed {
             let mut value = MoltObject::none().bits();
-            let done = molt_iter_next_unboxed(iter, (&raw mut value) as usize as u64);
+            let done =
+                molt_iter_next_unboxed_attached_body(py, iter, (&raw mut value) as usize as u64);
             assert!(!crate::exception_pending(py));
             return (MoltObject::from_bits(done).as_bool().unwrap(), value);
         }
-        let pair = molt_iter_next(iter);
+        let pair = molt_iter_next_attached_body(py, iter);
         assert!(!crate::exception_pending(py));
         let ptr = MoltObject::from_bits(pair)
             .as_ptr()
@@ -68,9 +72,9 @@ fn string_iterators_preserve_codepoint_spans_and_exhaustion_in_both_directions()
                 for reverse in [false, true] {
                     for unboxed in [false, true] {
                         let iter = if reverse {
-                            molt_reversed_builtin(source)
+                            molt_reversed_builtin_attached_body(py, source)
                         } else {
-                            molt_iter(source)
+                            molt_iter_attached_body(py, source)
                         };
                         assert!(!crate::exception_pending(py));
                         let ptr = MoltObject::from_bits(iter).as_ptr().expect("iterator");
@@ -140,9 +144,9 @@ fn string_iteration_allocation_failure_matches_cpython_directional_transitions()
             for reverse in [false, true] {
                 for unboxed in [false, true] {
                     let iter = if reverse {
-                        molt_reversed_builtin(source)
+                        molt_reversed_builtin_attached_body(py, source)
                     } else {
-                        molt_iter(source)
+                        molt_iter_attached_body(py, source)
                     };
                     assert!(!crate::exception_pending(py));
                     assert_eq!(refcount(source), source_owners + 1);
@@ -154,10 +158,14 @@ fn string_iteration_allocation_failure_matches_cpython_directional_transitions()
                     })));
                     let failed = if unboxed {
                         let mut value = MoltObject::none().bits();
-                        molt_iter_next_unboxed(iter, (&raw mut value) as usize as u64);
+                        molt_iter_next_unboxed_attached_body(
+                            py,
+                            iter,
+                            (&raw mut value) as usize as u64,
+                        );
                         value
                     } else {
-                        molt_iter_next(iter)
+                        molt_iter_next_attached_body(py, iter)
                     };
                     assert!(MoltObject::from_bits(failed).is_none());
                     crate::test_support::assert_and_clear_emergency_memory_error(py);

@@ -6,6 +6,9 @@ use crate::app_resolver_abi::{
     APP_RESOLVER_TABLE_SYMBOL, dump_app_callable_manifest,
 };
 #[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+use crate::passes::{AppCallableKind, AppCallableManifest};
+#[cfg(feature = "llvm")]
 use inkwell::{
     AddressSpace, IntPredicate,
     builder::Builder,
@@ -14,8 +17,6 @@ use inkwell::{
     values::{FunctionValue, IntValue, StructValue},
 };
 #[cfg(feature = "llvm")]
-use std::collections::BTreeSet;
-
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
     /// Emit the per-app callable resolver `molt_app_resolve_callable` into the
@@ -46,8 +47,8 @@ impl<'ctx> LlvmBackend<'ctx> {
     ///   over the sorted table, returning the callable function pointer as a
     ///   `u64`, or 0 when the name is not in the manifest.
     #[cfg(feature = "llvm")]
-    pub fn emit_app_resolver_function(&self, manifest_names: &BTreeSet<String>) {
-        dump_app_callable_manifest(manifest_names);
+    pub fn emit_app_resolver_function(&self, manifest: &AppCallableManifest) {
+        dump_app_callable_manifest(manifest);
 
         let ctx = self.context;
         let module = &self.module;
@@ -62,11 +63,12 @@ impl<'ctx> LlvmBackend<'ctx> {
         let record_ty = ctx.struct_type(&[i32_ty.into(), i32_ty.into(), ptr_ty.into()], false);
 
         // Build the concatenated names blob and the record initializers. The
-        // manifest is a `BTreeSet`, so iteration is already unsigned-byte
+        // manifest's entries are a `BTreeMap`, so iteration is already unsigned-byte
         // lexicographic — exactly the order the binary search requires.
         let mut names_blob: Vec<u8> = Vec::new();
-        let mut record_values: Vec<StructValue> = Vec::with_capacity(manifest_names.len());
-        for name in manifest_names {
+        let callables = manifest.entries();
+        let mut record_values: Vec<StructValue> = Vec::with_capacity(callables.len());
+        for (name, kind) in callables {
             let off = names_blob.len();
             let bytes = name.as_bytes();
             assert!(
@@ -78,10 +80,34 @@ impl<'ctx> LlvmBackend<'ctx> {
             // Address-take the callable. Declare it `External` if a prior
             // runtime-import declaration did not already create it; with opaque
             // pointers the declared signature is irrelevant for address use.
-            let callable_fn = module.get_function(name).unwrap_or_else(|| {
-                let placeholder_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-                module.add_function(name, placeholder_ty, Some(Linkage::External))
-            });
+            let callable_fn = match kind {
+                AppCallableKind::RuntimeCallable => {
+                    module.get_execution_function(name).unwrap_or_else(|| {
+                        assert!(
+                            molt_ir::runtime_callable_abi_generated::runtime_execution_abi(name)
+                                .is_some(),
+                            "LLVM resolver runtime callable `{name}` has no execution ABI"
+                        );
+                        let placeholder_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+                        module.add_function(
+                            &crate::llvm_backend::execution_abi::execution_symbol(name),
+                            crate::llvm_backend::execution_abi::runtime_execution_type(
+                                name,
+                                placeholder_ty,
+                            ),
+                            Some(Linkage::External),
+                        )
+                    })
+                }
+                AppCallableKind::CompiledBody => module
+                    .get_function(
+                        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(name),
+                    )
+                    .unwrap_or_else(|| {
+                        let placeholder_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+                        module.add_compiled_function(name, placeholder_ty, Some(Linkage::External))
+                    }),
+            };
             let func_addr = callable_fn.as_global_value().as_pointer_value();
 
             let record = record_ty.const_named_struct(&[
@@ -398,7 +424,13 @@ mod tests {
     fn app_resolver_emits_symbol_and_data_tables() {
         let ctx = Context::create();
         let backend = LlvmBackend::new(&ctx, "app_resolver_smoke");
-        let manifest = BTreeSet::from(["molt_len".to_string(), "molt_print_obj".to_string()]);
+        let manifest = AppCallableManifest {
+            runtime_callables: std::collections::BTreeSet::from([
+                "molt_len".to_string(),
+                "molt_print_obj".to_string(),
+            ]),
+            compiled_bodies: Default::default(),
+        };
 
         backend.emit_app_resolver_function(&manifest);
         let ir = backend.dump_ir();

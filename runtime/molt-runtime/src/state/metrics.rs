@@ -141,8 +141,7 @@ pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
     profile_enabled_unchecked()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_enabled() -> u64 {
+pub(crate) fn molt_profile_enabled_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     if profile_enabled_unchecked() { 1 } else { 0 }
 }
 
@@ -180,25 +179,22 @@ pub(crate) use rss::process_memory_snapshot;
 
 /// Extern entry point: sample RSS and update peak. Can be called from
 /// compiled code or periodically from the runtime.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_snapshot() {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_profile_snapshot_attached_body(_py: &crate::PyToken<'_>) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if profile_enabled(_py) {
             let _ = process_memory_snapshot();
         }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_struct_field_store() {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_profile_struct_field_store_attached_body(_py: &crate::PyToken<'_>) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_handle_resolve() {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_profile_handle_resolve_attached_body(_py: &crate::PyToken<'_>) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         profile_hit(_py, &HANDLE_RESOLVE_COUNT);
     })
 }
@@ -331,3 +327,5 @@ mod rss {
         }
     }
 }
+
+include!("../attached_exports_generated/state/metrics.rs");

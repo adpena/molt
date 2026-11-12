@@ -65,15 +65,6 @@ def test_median_or_unknown_cannot_establish_release_win(field, value):
     assert release_cell_problems(cell)
 
 
-def test_authoritative_projection_uses_same_required_cell_rule():
-    from tools.perf_board import _gate_cpython
-
-    cell = winning_cell()
-    assert _gate_cpython(cell, board_authoritative=True).verdict == "PASS"
-    cell["repeat_ci_lo"] = 0.98
-    assert _gate_cpython(cell, board_authoritative=True).verdict == "FAIL"
-
-
 def _merge_source(backend, benchmark):
     import runpy
 
@@ -460,20 +451,6 @@ def test_documented_default_cli_gate_rejects_unadmitted_toolchain(forged_verifie
             }
     assert ps._gate_exit_code(doc, no_gate=False) == 1
     assert ps._gate_exit_code(doc, no_gate=True) == 0
-
-
-def test_exploratory_board_marks_statistical_scope_and_unadmitted_e2():
-    from tools.perf_board import project_all
-
-    doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
-    boards = project_all(doc)
-    for board in boards.values():
-        assert board["status_scope"] == "statistical-comparison"
-        assert board["e2_eligibility"]["eligible"] is False
-        assert any(
-            "observation is missing" in reason
-            for reason in board["e2_eligibility"]["problems"]
-        )
 
 
 def _revision_problems(doc) -> list[str]:

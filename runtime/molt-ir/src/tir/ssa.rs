@@ -496,6 +496,7 @@ impl<'a> SsaContext<'a> {
                 insert_at,
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],

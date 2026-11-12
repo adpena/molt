@@ -9,7 +9,7 @@ use super::*;
 use crate::BuiltinExc;
 use crate::object::layout::function_mutation_version;
 use crate::runtime_flags::{self, RuntimeFlag};
-use crate::{dynamic_attr_name_bits, molt_super_new};
+use crate::{dynamic_attr_name_bits, molt_super_new_attached_body};
 fn trace_call_bind_ic_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_BIND_IC)
 }
@@ -355,14 +355,8 @@ impl RefOwningIcTls {
     }
 }
 
-impl Drop for RefOwningIcTls {
-    fn drop(&mut self) {
-        // Never touch another LocalKey here: Rust does not specify cross-key
-        // destructor order. Worker wrappers and runtime teardown explicitly
-        // drain owned refs under a live PyToken; at process death integer
-        // carriers may be abandoned with the dying address space.
-    }
-}
+// Fixed storage has no destructor. The exact-origin thread-state drain owns
+// every managed edge, including callbacks from later native TLS destructors.
 
 thread_local! {
     static REF_OWNING_IC_TLS: std::cell::RefCell<RefOwningIcTls> =
@@ -805,7 +799,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             }
             let self_bits = bound_method_self_bits(call_ptr);
             let arg0 = positional[0];
-            return Some(molt_list_append(self_bits, arg0));
+            return Some(molt_list_append_attached_body(_py, self_bits, arg0));
         }
 
         if entry.kind == CALL_BIND_IC_KIND_DIRECT_FUNC {
@@ -1027,23 +1021,36 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             let init_result = if closure_bits != 0 {
                 match positional.len() {
                     0 => {
-                        let f: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
-                        f(closure_bits, inst_bits) as u64
-                    }
-                    1 => {
                         let f: extern "C" fn(u64, u64, u64) -> i64 =
                             std::mem::transmute(call_target);
-                        f(closure_bits, inst_bits, positional[0]) as u64
+                        f(_py.attached_context(), closure_bits, inst_bits) as u64
                     }
-                    2 => {
+                    1 => {
                         let f: extern "C" fn(u64, u64, u64, u64) -> i64 =
                             std::mem::transmute(call_target);
-                        f(closure_bits, inst_bits, positional[0], positional[1]) as u64
+                        f(
+                            _py.attached_context(),
+                            closure_bits,
+                            inst_bits,
+                            positional[0],
+                        ) as u64
                     }
-                    3 => {
+                    2 => {
                         let f: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
                             std::mem::transmute(call_target);
                         f(
+                            _py.attached_context(),
+                            closure_bits,
+                            inst_bits,
+                            positional[0],
+                            positional[1],
+                        ) as u64
+                    }
+                    3 => {
+                        let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
+                            std::mem::transmute(call_target);
+                        f(
+                            _py.attached_context(),
                             closure_bits,
                             inst_bits,
                             positional[0],
@@ -1067,22 +1074,34 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             } else {
                 match positional.len() {
                     0 => {
-                        let f: extern "C" fn(u64) -> i64 = std::mem::transmute(call_target);
-                        f(inst_bits) as u64
+                        let f: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
+                        f(_py.attached_context(), inst_bits) as u64
                     }
                     1 => {
-                        let f: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
-                        f(inst_bits, positional[0]) as u64
-                    }
-                    2 => {
                         let f: extern "C" fn(u64, u64, u64) -> i64 =
                             std::mem::transmute(call_target);
-                        f(inst_bits, positional[0], positional[1]) as u64
+                        f(_py.attached_context(), inst_bits, positional[0]) as u64
                     }
-                    3 => {
+                    2 => {
                         let f: extern "C" fn(u64, u64, u64, u64) -> i64 =
                             std::mem::transmute(call_target);
-                        f(inst_bits, positional[0], positional[1], positional[2]) as u64
+                        f(
+                            _py.attached_context(),
+                            inst_bits,
+                            positional[0],
+                            positional[1],
+                        ) as u64
+                    }
+                    3 => {
+                        let f: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+                            std::mem::transmute(call_target);
+                        f(
+                            _py.attached_context(),
+                            inst_bits,
+                            positional[0],
+                            positional[1],
+                            positional[2],
+                        ) as u64
                     }
                     _ => {
                         let mut argv = [0u64; 5];
@@ -1115,12 +1134,16 @@ pub(super) unsafe fn try_call_bind_ic_fast(
     }
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must provide a call-site id in `site_bits` and a valid callargs builder in
 /// `builder_bits`.
-pub extern "C" fn molt_call_bind_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_call_bind_ic_attached_body(
+    _py: &crate::PyToken<'_>,
+    site_bits: u64,
+    call_bits: u64,
+    builder_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
 }
@@ -1134,16 +1157,16 @@ pub extern "C" fn molt_call_bind_ic(site_bits: u64, call_bits: u64, builder_bits
 /// # Safety
 /// Caller must provide a call-site id in `site_bits` and a live CallArgs
 /// builder in `builder_bits`; this call consumes both references.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_bind_ic_owned(
+pub(crate) fn molt_call_bind_ic_owned_attached_body(
+    _py: &crate::PyToken<'_>,
     site_bits: u64,
     call_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let builder_ptr = ptr_from_bits(builder_bits);
-            let builder_guard = PtrDropGuard::new(builder_ptr);
+            let builder_guard = PtrDropGuard::new(_py, builder_ptr);
             // A pending error means argument preparation failed: the builder
             // ends as that call's value stack, then its callable.
             if exception_pending(_py) {
@@ -1513,7 +1536,7 @@ unsafe fn load_super_method(
 
         // Any other attribute: a super object and its attribute, as CPython's
         // unspecialized LOAD_SUPER_ATTR does.
-        let super_bits = molt_super_new(start_class_bits, first_arg_bits);
+        let super_bits = molt_super_new_attached_body(py, start_class_bits, first_arg_bits);
         if super_bits == 0 || exception_pending(py) {
             if super_bits != 0 {
                 dec_ref_bits(py, super_bits);
@@ -1523,7 +1546,8 @@ unsafe fn load_super_method(
         let super_ptr = obj_from_bits(super_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut());
-        let attribute = crate::molt_get_attr_generic(super_ptr, name_ptr, name_len_bits);
+        let attribute =
+            crate::molt_get_attr_generic_attached_body(py, super_ptr, name_ptr, name_len_bits);
         dec_ref_bits(py, super_bits);
         if exception_pending(py) {
             dec_ref_bits(py, attribute);
@@ -1571,15 +1595,15 @@ fn publish_loaded_method(
 /// # Safety
 /// `name_ptr`/`name_len_bits` describe a valid UTF-8 name; `self_out_bits`
 /// encodes writable storage for one `u64`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_load_method(
+pub(crate) fn molt_load_method_attached_body(
+    _py: &crate::PyToken<'_>,
     site_bits: u64,
     recv_bits: u64,
     name_ptr: *const u8,
     name_len_bits: u64,
     self_out_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         publish_loaded_method(_py, self_out_bits, || unsafe {
             load_method(_py, site_bits, recv_bits, name_ptr, name_len_bits)
         })
@@ -1595,8 +1619,8 @@ pub extern "C" fn molt_load_method(
 /// # Safety
 /// `name_ptr`/`name_len_bits` describe a valid UTF-8 name; `self_out_bits`
 /// encodes writable storage for one `u64`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_load_super_method(
+pub(crate) fn molt_load_super_method_attached_body(
+    _py: &crate::PyToken<'_>,
     site_bits: u64,
     class_cell_bits: u64,
     first_arg_bits: u64,
@@ -1604,7 +1628,7 @@ pub extern "C" fn molt_load_super_method(
     name_len_bits: u64,
     self_out_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         publish_loaded_method(_py, self_out_bits, || unsafe {
             load_super_method(
                 _py,
@@ -1651,51 +1675,58 @@ unsafe fn call_loaded_method(
 }
 
 /// C-ABI entry for a loaded method call with no positional arguments.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_loaded_method0(callable_bits: u64, self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_call_loaded_method0_attached_body(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { call_loaded_method(_py, callable_bits, self_bits, &[]) }
     })
 }
 
 /// C-ABI entry for a loaded method call with one positional argument.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_loaded_method1(callable_bits: u64, self_bits: u64, a0: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_call_loaded_method1_attached_body(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+    self_bits: u64,
+    a0: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { call_loaded_method(_py, callable_bits, self_bits, &[a0]) }
     })
 }
 
 /// C-ABI entry for a loaded method call with two positional arguments.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_loaded_method2(
+pub(crate) fn molt_call_loaded_method2_attached_body(
+    _py: &crate::PyToken<'_>,
     callable_bits: u64,
     self_bits: u64,
     a0: u64,
     a1: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { call_loaded_method(_py, callable_bits, self_bits, &[a0, a1]) }
     })
 }
 
 /// C-ABI entry for a loaded method call with three positional arguments.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_loaded_method3(
+pub(crate) fn molt_call_loaded_method3_attached_body(
+    _py: &crate::PyToken<'_>,
     callable_bits: u64,
     self_bits: u64,
     a0: u64,
     a1: u64,
     a2: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { call_loaded_method(_py, callable_bits, self_bits, &[a0, a1, a2]) }
     })
 }
 
 /// C-ABI entry for a loaded method call with four positional arguments.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_loaded_method4(
+pub(crate) fn molt_call_loaded_method4_attached_body(
+    _py: &crate::PyToken<'_>,
     callable_bits: u64,
     self_bits: u64,
     a0: u64,
@@ -1703,7 +1734,7 @@ pub extern "C" fn molt_call_loaded_method4(
     a2: u64,
     a3: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { call_loaded_method(_py, callable_bits, self_bits, &[a0, a1, a2, a3]) }
     })
 }
@@ -1711,14 +1742,14 @@ pub extern "C" fn molt_call_loaded_method4(
 /// C-ABI entry for a loaded method call of any arity: the adopted positional
 /// arguments are spilled at `args_ptr_bits[..nargs]`. The entry copies them
 /// before any Python code can reuse the spill region.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_loaded_method_spilled(
+pub(crate) fn molt_call_loaded_method_spilled_attached_body(
+    _py: &crate::PyToken<'_>,
     callable_bits: u64,
     self_bits: u64,
     args_ptr_bits: u64,
     nargs: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(args) = (unsafe { EntryArguments::copy(args_ptr_bits, nargs) }) else {
             // The arguments are unreachable; the loaded pair still ends here.
             dec_ref_bits(_py, self_bits);
@@ -1741,7 +1772,7 @@ unsafe fn call_bind_ic_dispatch(
 ) -> u64 {
     unsafe {
         let builder_ptr = ptr_from_bits(builder_bits);
-        let builder_guard = PtrDropGuard::new(builder_ptr);
+        let builder_guard = PtrDropGuard::new(_py, builder_ptr);
         // A pending error means argument preparation failed: the builder is
         // still that call's value stack and releases as one.
         if exception_pending(_py) {
@@ -1840,18 +1871,18 @@ fn bool_flag_from_bits(bits: u64) -> bool {
     false
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must provide a call-site id in `site_bits` and a valid callargs builder in
 /// `builder_bits`. When `require_bridge_cap_bits` is truthy, runtime enforces
 /// `python.bridge` capability in non-trusted mode.
-pub extern "C" fn molt_invoke_ffi_ic(
+pub(crate) fn molt_invoke_ffi_ic_attached_body(
+    _py: &crate::PyToken<'_>,
     site_bits: u64,
     call_bits: u64,
     builder_bits: u64,
     require_bridge_cap_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if bool_flag_from_bits(require_bridge_cap_bits) && !is_trusted(_py) {
             let bridge_allowed = has_capability(_py, "python.bridge");
             audit_capability_decision(
@@ -1884,19 +1915,36 @@ mod super_cache_tests {
     static SHADOW_HASH: AtomicU64 = AtomicU64::new(0);
     static SHADOW_CALLS: AtomicU64 = AtomicU64::new(0);
 
-    extern "C" fn colliding_shadow_hash(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn colliding_shadow_hash(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let bits = SHADOW_HASH.load(Ordering::SeqCst);
             inc_ref_bits(py, bits);
             bits
-        })
+        }
     }
 
-    extern "C" fn colliding_shadow_eq(_self: u64, _other: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn colliding_shadow_eq(__context: u64, _self: u64, _other: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             if SHADOW_ARMED.swap(false, Ordering::SeqCst) {
                 SHADOW_CALLS.fetch_add(1, Ordering::SeqCst);
-                let result = crate::molt_del_attr_name(
+                let result = crate::molt_del_attr_name_attached_body(
+                    py,
                     SHADOW_CLASS.load(Ordering::SeqCst),
                     SHADOW_NAME.load(Ordering::SeqCst),
                 );
@@ -1904,14 +1952,22 @@ mod super_cache_tests {
                 detach_callable_ic_caches().release(py);
             }
             MoltObject::from_bool(false).bits()
-        })
+        }
     }
 
-    extern "C" fn return_second(_self: u64, value: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn return_second(__context: u64, _self: u64, value: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, value);
             value
-        })
+        }
     }
 
     /// `receiver.name(*args)` as compiled code runs it: a method load at
@@ -2038,7 +2094,7 @@ mod super_cache_tests {
                         let target = signature_function(py, "positional");
                         let source = signature_function(py, shape);
                         let method_name = dynamic_attr_name_bits(py, b"value").unwrap();
-                        crate::molt_set_attr_name(base, method_name, target);
+                        crate::molt_set_attr_name_attached_body(py, base, method_name, target);
                         let default = MoltObject::from_int(41).bits();
                         let defaults =
                             MoltObject::from_ptr(crate::alloc_tuple(py, &[default])).bits();
@@ -2053,7 +2109,7 @@ mod super_cache_tests {
                             (b"__kwdefaults__", kwdefaults),
                         ] {
                             let name_bits = dynamic_attr_name_bits(py, name).unwrap();
-                            crate::molt_set_attr_name(target, name_bits, value);
+                            crate::molt_set_attr_name_attached_body(py, target, name_bits, value);
                             dec_ref_bits(py, name_bits);
                         }
                         let site = MoltObject::from_int(821).bits();
@@ -2072,20 +2128,20 @@ mod super_cache_tests {
                             obj_from_bits(source).as_ptr().unwrap(),
                         );
                         let code_name = dynamic_attr_name_bits(py, b"__code__").unwrap();
-                        crate::molt_set_attr_name(target, code_name, code);
+                        crate::molt_set_attr_name_attached_body(py, target, code_name, code);
                         assert!(!exception_pending(py));
                         for _ in 0..2 {
                             for args in [&[][..], &[arg][..]] {
                                 let result = call(args);
                                 if shape == "kwonly" && !args.is_empty() {
                                     let error =
-                                        crate::builtins::exceptions::molt_exception_last_pending();
+                                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                                     assert!(crate::builtins::exceptions::exception_matches_kind(
                                         py,
                                         error,
                                         crate::BuiltinExc::TypeError
                                     ));
-                                    crate::molt_exception_clear();
+                                    crate::molt_exception_clear_attached_body(py);
                                     dec_ref_bits(py, error);
                                 } else if shape == "vararg" {
                                     assert!(!exception_pending(py));
@@ -2166,7 +2222,12 @@ mod super_cache_tests {
                         );
                         assert!(!function.is_null());
                         let function_bits = MoltObject::from_ptr(function).bits();
-                        crate::molt_set_attr_name(key_class, name_bits, function_bits);
+                        crate::molt_set_attr_name_attached_body(
+                            py,
+                            key_class,
+                            name_bits,
+                            function_bits,
+                        );
                         dec_ref_bits(py, name_bits);
                         dec_ref_bits(py, function_bits);
                     }
@@ -2175,14 +2236,15 @@ mod super_cache_tests {
                         obj_from_bits(key_class).as_ptr().unwrap(),
                     );
                     let name = dynamic_attr_name_bits(py, b"value").unwrap();
-                    let hash = crate::molt_hash_builtin(name);
+                    let hash = crate::molt_hash_builtin_attached_body(py, name);
                     SHADOW_HASH.store(hash, Ordering::SeqCst);
                     SHADOW_CLASS.store(class, Ordering::SeqCst);
                     SHADOW_NAME.store(name, Ordering::SeqCst);
                     SHADOW_CALLS.store(0, Ordering::SeqCst);
                     SHADOW_ARMED.store(false, Ordering::SeqCst);
                     let dict_name = dynamic_attr_name_bits(py, b"__dict__").unwrap();
-                    let dictionary = crate::molt_get_attr_name(receiver, dict_name);
+                    let dictionary =
+                        crate::molt_get_attr_name_attached_body(py, receiver, dict_name);
                     let dict_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
                     assert_eq!(object_type_id(dict_ptr), TYPE_ID_DICT);
                     assert!(crate::dict_set_in_place(
@@ -2216,13 +2278,14 @@ mod super_cache_tests {
                     assert!(method_ic_lookup(py, 822).is_none());
                     // Only the following operation sees the deleted method.
                     let result = call();
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
                         crate::BuiltinExc::AttributeError
                     ));
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     dec_ref_bits(py, error);
                     dec_ref_bits(py, result);
                     assert!(method_ic_lookup(py, 822).is_none());
@@ -2303,11 +2366,11 @@ mod super_cache_tests {
                 let defaults = crate::alloc_tuple(py, &[MoltObject::from_int(5).bits()]);
                 assert!(!defaults.is_null());
                 let defaults = MoltObject::from_ptr(defaults).bits();
-                crate::molt_set_attr_name(function, name, defaults);
+                crate::molt_set_attr_name_attached_body(py, function, name, defaults);
                 dec_ref_bits(py, defaults);
                 assert!(!exception_pending(py));
                 assert!(try_call_bind_ic_fast(py, entry, function, &mut args).is_none());
-                crate::molt_del_attr_name(function, name);
+                crate::molt_del_attr_name_attached_body(py, function, name);
                 assert!(!exception_pending(py));
                 assert!(try_call_bind_ic_fast(py, entry, function, &mut args).is_none());
                 let refreshed = call_bind_ic_entry_for_call(py, function).unwrap();
@@ -2417,7 +2480,7 @@ mod super_cache_tests {
             let defaults_ptr = crate::alloc_tuple(py, &[MoltObject::from_int(99).bits()]);
             assert!(!defaults_ptr.is_null());
             let defaults = MoltObject::from_ptr(defaults_ptr).bits();
-            crate::molt_set_attr_name(cached.func_bits, defaults_name, defaults);
+            crate::molt_set_attr_name_attached_body(py, cached.func_bits, defaults_name, defaults);
             assert!(!exception_pending(py));
             let version = unsafe {
                 function_mutation_version(obj_from_bits(cached.func_bits).as_ptr().unwrap())
@@ -2450,11 +2513,25 @@ mod super_cache_tests {
         });
     }
 
-    extern "C" fn base_value(_self_bits: u64) -> u64 {
+    extern "C" fn base_value(__context: u64, _self_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::from_int(1).bits()
     }
 
-    extern "C" fn mid_value(_self_bits: u64) -> u64 {
+    extern "C" fn mid_value(__context: u64, _self_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::from_int(2).bits()
     }
 
@@ -2480,7 +2557,8 @@ mod super_cache_tests {
             dec_ref_bits(py, method_name);
             dec_ref_bits(py, function_bits);
         }
-        let result = crate::molt_type_new(
+        let result = crate::molt_type_new_attached_body(
+            py,
             builtin_classes(py).type_obj,
             name,
             bases_bits,
@@ -2535,13 +2613,13 @@ mod super_cache_tests {
                 )
             };
             assert!(obj_from_bits(result).is_none());
-            let error = crate::builtins::exceptions::molt_exception_last_pending();
+            let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
                 crate::BuiltinExc::TypeError
             ));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             dec_ref_bits(py, error);
             dec_ref_bits(py, result);
             clear_super_ic_cache(py);
@@ -2616,7 +2694,7 @@ mod super_cache_tests {
             };
             assert!(obj_from_bits(loaded.callable).is_none());
             assert_eq!(loaded.self_or_null, LoadedMethod::NULL);
-            let error = crate::builtins::exceptions::molt_exception_last_pending();
+            let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
@@ -2628,7 +2706,7 @@ mod super_cache_tests {
                  value in enclosing scope"
             );
             assert!(super_ic_entry(823).is_none());
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             dec_ref_bits(py, error);
             dec_ref_bits(py, class_cell_bits);
             dec_ref_bits(py, receiver_bits);
@@ -2636,12 +2714,16 @@ mod super_cache_tests {
     }
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must provide a call-site id in `site_bits` and a valid callargs builder in
 /// `builder_bits`.
-pub extern "C" fn molt_call_indirect_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_call_indirect_ic_attached_body(
+    _py: &crate::PyToken<'_>,
+    site_bits: u64,
+    call_bits: u64,
+    builder_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
 }
@@ -2649,3 +2731,5 @@ pub extern "C" fn molt_call_indirect_ic(site_bits: u64, call_bits: u64, builder_
 #[cfg(test)]
 #[path = "inline_cache_binding_tests.rs"]
 mod binding_tests;
+
+include!("../../attached_exports_generated/call/bind/inline_cache.rs");

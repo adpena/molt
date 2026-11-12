@@ -14,33 +14,45 @@ use num_bigint::{BigInt, Sign};
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_raise_exception"))]
 pub extern "C" fn __molt_http_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_exception_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_exception_pending"))]
+pub extern "C" fn __molt_http_exception_pending(__molt_context: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        if exception_pending(_py) { 1 } else { 0 }
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_clear_exception() {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_clear_exception"))]
+pub extern "C" fn __molt_http_clear_exception(__molt_context: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         clear_exception(_py);
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_pending_exception_matches_builtin(kind_code: u16) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_pending_exception_matches_builtin"))]
+pub extern "C" fn __molt_http_pending_exception_matches_builtin(
+    __molt_context: u64,
+    kind_code: u16,
+) -> i32 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if !exception_pending(py) {
             return 0;
         }
@@ -51,31 +63,35 @@ pub extern "C" fn __molt_http_pending_exception_matches_builtin(kind_code: u16) 
         // consume the pending error. HTTP dispatch always inspects raised state.
         let pending = crate::builtins::exceptions::ExceptionValue::adopt(
             py,
-            crate::builtins::exceptions::molt_exception_last_pending(),
+            crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py),
         );
         i32::from(crate::builtins::exceptions::exception_matches_kind(
             py,
             pending.bits(),
             kind,
         ))
-    })
+    }
 }
 
 /// Synchronous projection of the canonical raised transaction and handler
 /// stack. The leaf owns only its stack-local closure, never exception storage.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_with_exception_scope"))]
 pub unsafe extern "C" fn __molt_http_with_exception_scope(
+    __molt_context: u64,
     restore_on_success: i32,
     callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
     context: *mut std::ffi::c_void,
 ) {
-    crate::with_gil_entry_nopanic!(py, {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         use crate::builtins::exceptions::{
             ExceptionStackScope, ExceptionValue, exception_context_set,
-            molt_exception_last_pending, with_saved_raised_exception,
+            molt_exception_last_pending_attached_body, with_saved_raised_exception,
         };
 
-        let pending = ExceptionValue::adopt(py, molt_exception_last_pending());
+        let pending = ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(_py));
         with_saved_raised_exception(py, || {
             let handler = if obj_from_bits(pending.bits()).is_none() {
                 None
@@ -93,69 +109,97 @@ pub unsafe extern "C" fn __molt_http_with_exception_scope(
             molt_cpython_abi::api::errors::with_preserved_error(|| drop(handler));
             status < 0 || (status > 0 && restore_on_success != 0)
         });
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
-    let _ = crate::builtins::exceptions::molt_exception_init(self_bits, args_bits);
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_exception_init"))]
+pub extern "C" fn __molt_http_molt_exception_init(
+    __molt_context: u64,
+    self_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    let _ =
+        crate::builtins::exceptions::molt_exception_init_attached_body(_py, self_bits, args_bits);
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_raise(exc_bits: u64) -> u64 {
-    crate::molt_raise(exc_bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_raise"))]
+pub extern "C" fn __molt_http_molt_raise(__molt_context: u64, exc_bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::molt_raise_attached_body(_py, exc_bits)
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_alloc_tuple"))]
+pub extern "C" fn __molt_http_alloc_tuple(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_alloc_list_with_capacity"))]
 pub extern "C" fn __molt_http_alloc_list_with_capacity(
+    __molt_context: u64,
     elems_ptr: *const u64,
     elems_len: usize,
     cap: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list_with_capacity(_py, elems, cap)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_alloc_string"))]
+pub extern "C" fn __molt_http_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_alloc_bytes"))]
+pub extern "C" fn __molt_http_alloc_bytes(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_alloc_dict_with_pairs"))]
 pub extern "C" fn __molt_http_alloc_dict_with_pairs(
+    __molt_context: u64,
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -183,12 +227,13 @@ pub extern "C" fn __molt_http_string_obj_to_owned(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_is_truthy"))]
+pub extern "C" fn __molt_http_is_truthy(__molt_context: u64, bits: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -200,18 +245,20 @@ pub extern "C" fn __molt_http_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
 // Reference counting
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_dec_ref_bits"))]
+pub extern "C" fn __molt_http_dec_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         dec_ref_bits(_py, bits);
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_inc_ref_bits"))]
+pub extern "C" fn __molt_http_inc_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         inc_ref_bits(_py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +293,9 @@ pub extern "C" fn __molt_http_to_f64(bits: u64, out: *mut f64) -> i32 {
     }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_index_bigint_from_obj"))]
 pub extern "C" fn __molt_http_index_bigint_from_obj(
+    __molt_context: u64,
     obj_bits: u64,
     err_ptr: *const u8,
     err_len: usize,
@@ -255,7 +303,8 @@ pub extern "C" fn __molt_http_index_bigint_from_obj(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         match crate::builtins::numbers::index_bigint_from_obj(_py, obj_bits, err) {
@@ -280,16 +329,18 @@ pub extern "C" fn __molt_http_index_bigint_from_obj(
             }
             None => 0,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_int_bits_from_bigint"))]
 pub extern "C" fn __molt_http_int_bits_from_bigint(
+    __molt_context: u64,
     sign: i32,
     data_ptr: *const u8,
     data_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let sign = match sign {
             -1 => Sign::Minus,
             0 => Sign::NoSign,
@@ -302,48 +353,61 @@ pub extern "C" fn __molt_http_int_bits_from_bigint(
         };
         let value = BigInt::from_bytes_be(sign, bytes);
         crate::builtins::numbers::int_bits_from_bigint(_py, value)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __molt_http_float_from_object_value(val_bits: u64, out: *mut f64) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
-        let result = crate::molt_float_from_obj(val_bits);
-        let _owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_float_from_object_value"))]
+pub unsafe extern "C" fn __molt_http_float_from_object_value(
+    __molt_context: u64,
+    val_bits: u64,
+    out: *mut f64,
+) -> i32 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        let result = crate::molt_float_from_obj_attached_body(_py, val_bits);
+        let _owner = obj_from_bits(result)
+            .as_ptr()
+            .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         if exception_pending(py) {
             return 0;
         }
-        let value = crate::c_api::molt_float_as_f64(result);
+        let value = crate::c_api::molt_float_as_f64_attached_body(py, result);
         if exception_pending(py) {
             return 0;
         }
         unsafe { *out = value };
         1
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Container helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_seq_snapshot"))]
 pub extern "C" fn __molt_http_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_dict_get_in_place"))]
 pub extern "C" fn __molt_http_dict_get_in_place(
+    __molt_context: u64,
     dict_ptr: *mut u8,
     key_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Ok(Some(bits)) => {
                 unsafe {
@@ -354,121 +418,168 @@ pub extern "C" fn __molt_http_dict_get_in_place(
             Ok(None) => 0,
             Err(()) => -1,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_list_insert"))]
 pub extern "C" fn __molt_http_molt_list_insert(
+    __molt_context: u64,
     list_bits: u64,
     index_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::object::ops_list::molt_list_insert(list_bits, index_bits, value_bits)
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops_list::molt_list_insert_attached_body(_py, list_bits, index_bits, value_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_dict_new(initial_capacity: usize) -> u64 {
-    crate::molt_dict_new(initial_capacity as u64)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_dict_new"))]
+pub extern "C" fn __molt_http_molt_dict_new(__molt_context: u64, initial_capacity: usize) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::molt_dict_new_attached_body(_py, initial_capacity as u64)
 }
 
 // ---------------------------------------------------------------------------
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_iter(bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter(bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_iter"))]
+pub extern "C" fn __molt_http_molt_iter(__molt_context: u64, bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops_iter::molt_iter_attached_body(_py, bits)
 }
 
 // ---------------------------------------------------------------------------
 // Attribute / callable helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_attr_name_bits_from_bytes(key_ptr: *const u8, key_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_attr_name_bits_from_bytes"))]
+pub extern "C" fn __molt_http_attr_name_bits_from_bytes(
+    __molt_context: u64,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         crate::builtins::attr::dynamic_attr_name_bits(_py, key).unwrap_or_default()
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_call_callable0(call_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_call_callable0"))]
+pub extern "C" fn __molt_http_call_callable0(__molt_context: u64, call_bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::call::dispatch::call_callable0(_py, call_bits) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_call_callable1(call_bits: u64, arg0: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_call_callable1"))]
+pub extern "C" fn __molt_http_call_callable1(
+    __molt_context: u64,
+    call_bits: u64,
+    arg0: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::call::dispatch::call_callable1(_py, call_bits, arg0) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_call_callable2"))]
+pub extern "C" fn __molt_http_call_callable2(
+    __molt_context: u64,
+    call_bits: u64,
+    arg0: u64,
+    arg1: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::call::dispatch::call_callable2(_py, call_bits, arg0, arg1) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_call_class_init_with_args"))]
 pub extern "C" fn __molt_http_call_class_init_with_args(
+    __molt_context: u64,
     class_bits: u64,
     args_ptr: *const u64,
     args_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let args = unsafe { std::slice::from_raw_parts(args_ptr, args_len) };
         let class_ptr = obj_from_bits(class_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut());
         unsafe { call_class_init_with_args(_py, class_ptr, args) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_missing_bits() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { missing_bits(_py) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_missing_bits"))]
+pub extern "C" fn __molt_http_missing_bits(__molt_context: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        missing_bits(_py)
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_getattr_builtin"))]
 pub extern "C" fn __molt_http_molt_getattr_builtin(
+    __molt_context: u64,
     obj_bits: u64,
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
-    molt_getattr_builtin(obj_bits, name_bits, default_bits)
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    molt_getattr_builtin_attached_body(_py, obj_bits, name_bits, default_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_lookup_attribute(object: u64, name: u64) -> AttributeLookup {
-    crate::with_gil_entry_nopanic!(py, { lookup_attribute(py, object, name) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_lookup_attribute"))]
+pub extern "C" fn __molt_http_lookup_attribute(
+    __molt_context: u64,
+    object: u64,
+    name: u64,
+) -> AttributeLookup {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        lookup_attribute(py, object, name)
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_is_callable(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if is_truthy(_py, obj_from_bits(molt_is_callable(bits))) {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_is_callable"))]
+pub extern "C" fn __molt_http_molt_is_callable(__molt_context: u64, bits: u64) -> i32 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        if is_truthy(
+            _py,
+            obj_from_bits(molt_is_callable_attached_body(_py, bits)),
+        ) {
             1
         } else {
             0
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // String formatting / representation helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_format_obj_str"))]
 pub extern "C" fn __molt_http_format_obj_str(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let bytes = match crate::object::ops_format::format_obj_str_output(_py, obj)
             .into_bytes_result(_py)
@@ -480,21 +591,30 @@ pub extern "C" fn __molt_http_format_obj_str(
             }
         };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Module / object attribute helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_module_import(name_bits: u64) -> u64 {
-    crate::molt_module_import(name_bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_module_import"))]
+pub extern "C" fn __molt_http_molt_module_import(__molt_context: u64, name_bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::molt_module_import_attached_body(_py, name_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_set_attr_name(obj_bits: u64, name_bits: u64, value_bits: u64) {
-    let _ = crate::molt_set_attr_name(obj_bits, name_bits, value_bits);
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_set_attr_name"))]
+pub extern "C" fn __molt_http_molt_set_attr_name(
+    __molt_context: u64,
+    obj_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    let _ = crate::molt_set_attr_name_attached_body(_py, obj_bits, name_bits, value_bits);
 }
 
 // ---------------------------------------------------------------------------
@@ -527,13 +647,15 @@ pub extern "C" fn __molt_http_bytes_like_slice(
 // Capability / environment helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_require_operation"))]
 pub extern "C" fn __molt_http_require_operation(
+    __molt_context: u64,
     name_ptr: *const u8,
     name_len: usize,
     environment: i32,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         // The extracted caller passes the generated OperationId's static name.
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
@@ -556,12 +678,17 @@ pub extern "C" fn __molt_http_require_operation(
             )
             .is_ok(),
         )
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_has_capability"))]
+pub extern "C" fn __molt_http_has_capability(
+    __molt_context: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
@@ -583,16 +710,21 @@ pub extern "C" fn __molt_http_has_capability(name_ptr: *const u8, name_len: usiz
             ));
         }
         if allowed { 1 } else { 0 }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Class / type resolution
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_builtin_classes(name_ptr: *const u8, name_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_builtin_classes"))]
+pub extern "C" fn __molt_http_builtin_classes(
+    __molt_context: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
@@ -601,18 +733,20 @@ pub extern "C" fn __molt_http_builtin_classes(name_ptr: *const u8, name_len: usi
             "list" => classes.list,
             _ => MoltObject::none().bits(),
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_resolve_global_bits"))]
 pub extern "C" fn __molt_http_resolve_global_bits(
+    __molt_context: u64,
     module_ptr: *const u8,
     module_len: usize,
     name_ptr: *const u8,
     name_len: usize,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let module = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(module_ptr, module_len))
         };
@@ -633,7 +767,7 @@ pub extern "C" fn __molt_http_resolve_global_bits(
                 -1
             }
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -702,24 +836,28 @@ mod scalar_conversion_tests {
                 );
                 (*native.as_ptr().cast::<PyFloatObject>()).ob_fval = 4.25;
                 let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
-                let _owner = crate::PtrDropGuard::preserving(ptr_from_bits(bits));
+                let _owner = crate::PtrDropGuard::preserving(py, ptr_from_bits(bits));
                 assert_eq!(
                     crate::object::object_type_id(ptr_from_bits(bits)),
                     crate::TYPE_ID_FOREIGN
                 );
                 let refs = (*native.as_ptr()).ob_refcnt;
                 let mut value = -99.0;
-                assert_eq!(__molt_http_float_from_object_value(bits, &mut value), 1);
+                assert_eq!(
+                    __molt_http_float_from_object_value(py.attached_context(), bits, &mut value),
+                    1
+                );
                 assert_eq!(value, 4.25);
                 assert!(!exception_pending(py));
                 assert_eq!((*native.as_ptr()).ob_refcnt, refs);
                 for (text, expected) in [(b"2.5".as_slice(), Some(2.5)), (b"bad".as_slice(), None)]
                 {
                     let ptr = alloc_string(py, text);
-                    let _text_owner = crate::PtrDropGuard::preserving(ptr);
+                    let _text_owner = crate::PtrDropGuard::preserving(py, ptr);
                     assert!(!ptr.is_null());
                     value = -99.0;
                     let ok = __molt_http_float_from_object_value(
+                        py.attached_context(),
                         MoltObject::from_ptr(ptr).bits(),
                         &mut value,
                     );
@@ -801,7 +939,10 @@ mod request_serialization_tests {
                 for invalid in [b"a\nb".as_slice(), b"a\rb", b"a\r\nInjected: yes", b"a\n"] {
                     let value = bytes(invalid);
                     assert_eq!(
-                        molt_http_client_validate_header_value(value.bits()),
+                        molt_http_client_validate_header_value_attached_body(
+                            py.core_token(),
+                            value.bits()
+                        ),
                         MoltObject::none().bits()
                     );
                     let raised =
@@ -813,16 +954,17 @@ mod request_serialization_tests {
                     clear_exception(py);
                 }
                 let name = bytes(b"\x0bX");
-                molt_http_client_validate_header_name(name.bits());
+                molt_http_client_validate_header_name_attached_body(py.core_token(), name.bits());
                 assert!(exception_pending(py));
                 clear_exception(py);
                 let value = bytes(b"\xff\r\n\tvalue");
-                molt_http_client_validate_header_value(value.bits());
+                molt_http_client_validate_header_value_attached_body(py.core_token(), value.bits());
                 assert!(!exception_pending(py));
                 let host = string("127.0.0.1");
                 let method = string("GET");
                 let path = string("/");
-                let handle = molt_http_client_connection_new(
+                let handle = molt_http_client_connection_new_attached_body(
+                    py.core_token(),
                     host.bits(),
                     MoltObject::from_int(i64::from(port)).bits(),
                     MoltObject::from_float(5.0).bits(),
@@ -830,7 +972,12 @@ mod request_serialization_tests {
                 assert!(!exception_pending(py));
                 let line = ExceptionValue::adopt(
                     py,
-                    molt_http_client_connection_putrequest(handle, method.bits(), path.bits()),
+                    molt_http_client_connection_putrequest_attached_body(
+                        py.core_token(),
+                        handle,
+                        method.bits(),
+                        path.bits(),
+                    ),
                 );
                 assert!(!exception_pending(py));
                 assert_eq!(
@@ -843,12 +990,17 @@ mod request_serialization_tests {
                     b"GET / HTTP/1.1"
                 );
                 let wire = bytes(b"GET / HTTP/1.1\r\nX-Test: \xff\r\n\tvalue\r\n\r\n");
-                molt_http_client_connection_send(handle, wire.bits());
+                molt_http_client_connection_send_attached_body(
+                    py.core_token(),
+                    handle,
+                    wire.bits(),
+                );
                 assert!(!exception_pending(py));
-                let response = molt_http_client_connection_getresponse(handle);
+                let response =
+                    molt_http_client_connection_getresponse_attached_body(py.core_token(), handle);
                 assert!(!exception_pending(py));
-                molt_http_client_response_drop(response);
-                molt_http_client_connection_drop(handle);
+                molt_http_client_response_drop_attached_body(py.core_token(), response);
+                molt_http_client_connection_drop_attached_body(py.core_token(), handle);
             },
         );
         assert_eq!(
@@ -860,9 +1012,10 @@ mod request_serialization_tests {
     static LOCAL_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     static METHOD_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    extern "C" fn request_get_method(self_bits: u64) -> u64 {
+    extern "C" fn request_get_method(context: u64, self_bits: u64) -> u64 {
         METHOD_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = unsafe { crate::PyToken::from_attached_context(context) };
             let name_ptr = alloc_string(py, b"method");
             if name_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -870,8 +1023,8 @@ mod request_serialization_tests {
             let name = ExceptionValue::adopt(py, MoltObject::from_ptr(name_ptr).bits());
             // These Requests select an explicit method. Read the initialized
             // receiver through a real bound method, as a Request override does.
-            molt_getattr_builtin(self_bits, name.bits(), missing_bits(py))
-        })
+            molt_getattr_builtin_attached_body(py, self_bits, name.bits(), missing_bits(py))
+        }
     }
 
     fn request_fixture<'a, 'py>(py: &'a PyToken<'py>, name_bits: u64) -> ExceptionValue<'a, 'py> {
@@ -896,7 +1049,8 @@ mod request_serialization_tests {
         let bases = ExceptionValue::adopt(py, MoltObject::from_ptr(bases_ptr).bits());
         let class = ExceptionValue::adopt(
             py,
-            crate::builtins::types::molt_type_new(
+            crate::builtins::types::molt_type_new_attached_body(
+                py,
                 builtin_classes(py).type_obj,
                 name_bits,
                 bases.bits(),
@@ -910,11 +1064,12 @@ mod request_serialization_tests {
         request
     }
 
-    extern "C" fn forbidden_local_lookup(_host: u64, _port: u64) -> u64 {
+    extern "C" fn forbidden_local_lookup(context: u64, _host: u64, _port: u64) -> u64 {
         LOCAL_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = unsafe { crate::PyToken::from_attached_context(context) };
             raise_exception::<u64>(py, BuiltinExc::ValueError, "local lookup reached")
-        })
+        }
     }
 
     #[test]
@@ -963,7 +1118,10 @@ mod request_serialization_tests {
                             ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
                         };
                         let module_name = string("socketserver");
-                        let module = ExceptionValue::adopt(py, molt_module_new(module_name.bits()));
+                        let module = ExceptionValue::adopt(
+                            py,
+                            molt_module_new_attached_body(py, module_name.bits()),
+                        );
                         assert!(!exception_pending(py));
                         let callback_ptr = crate::alloc_function_obj(
                             py,
@@ -995,7 +1153,7 @@ mod request_serialization_tests {
                                 callback.bits(),
                             )
                         });
-                        molt_module_cache_set(module_name.bits(), module.bits());
+                        molt_module_cache_set_attached_body(py, module_name.bits(), module.bits());
                         assert!(!exception_pending(py));
                         LOCAL_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
                         METHOD_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
@@ -1003,13 +1161,15 @@ mod request_serialization_tests {
                         let method = string("GET");
                         let path = string("/");
                         let handle = if tls {
-                            molt_http_client_connection_new_https(
+                            molt_http_client_connection_new_https_attached_body(
+                                py.core_token(),
                                 host.bits(),
                                 MoltObject::from_int(i64::from(port)).bits(),
                                 MoltObject::from_float(0.01).bits(),
                             )
                         } else {
-                            molt_http_client_connection_new(
+                            molt_http_client_connection_new_attached_body(
+                                py.core_token(),
                                 host.bits(),
                                 MoltObject::from_int(i64::from(port)).bits(),
                                 MoltObject::from_float(0.01).bits(),
@@ -1017,7 +1177,8 @@ mod request_serialization_tests {
                         };
                         let line = ExceptionValue::adopt(
                             py,
-                            molt_http_client_connection_putrequest(
+                            molt_http_client_connection_putrequest_attached_body(
+                                py.core_token(),
                                 handle,
                                 method.bits(),
                                 path.bits(),
@@ -1027,7 +1188,11 @@ mod request_serialization_tests {
                         let ptr = alloc_bytes(py, b"GET / HTTP/1.1\r\n\r\n");
                         assert!(!ptr.is_null());
                         let wire = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
-                        molt_http_client_connection_send(handle, wire.bits());
+                        molt_http_client_connection_send_attached_body(
+                            py.core_token(),
+                            handle,
+                            wire.bits(),
+                        );
                         assert!(!exception_pending(py));
                         let operation = if tls { "https.request" } else { "http.request" };
                         let expected = if missing.is_empty() {
@@ -1040,13 +1205,19 @@ mod request_serialization_tests {
                         };
                         let check_error = || {
                             assert!(exception_pending(py));
-                            let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                            let error = ExceptionValue::adopt(
+                                py,
+                                molt_exception_last_pending_attached_body(py),
+                            );
                             // Rendering is an ordinary Python operation; retain the error before
                             // clearing its raised state, then inspect the owned exception.
                             clear_exception(py);
                             let message = ExceptionValue::adopt(
                                 py,
-                                crate::builtins::exceptions::molt_exception_message(error.bits()),
+                                crate::builtins::exceptions::molt_exception_message_attached_body(
+                                    py,
+                                    error.bits(),
+                                ),
                             );
                             assert!(
                                 !exception_pending(py),
@@ -1061,15 +1232,21 @@ mod request_serialization_tests {
                                 expected.1
                             );
                         };
-                        molt_http_client_connection_getresponse(handle);
+                        molt_http_client_connection_getresponse_attached_body(
+                            py.core_token(),
+                            handle,
+                        );
                         check_error();
-                        molt_http_client_connection_drop(handle);
+                        molt_http_client_connection_drop_attached_body(py.core_token(), handle);
                         drop(line);
                         // The real urllib intrinsic consumes the same shared boundary.
                         let request_name = string("http_admission_request");
                         let opener_name = string("http_admission_opener");
                         let request = request_fixture(py, request_name.bits());
-                        let opener = ExceptionValue::adopt(py, molt_module_new(opener_name.bits()));
+                        let opener = ExceptionValue::adopt(
+                            py,
+                            molt_module_new_attached_body(py, opener_name.bits()),
+                        );
                         let url = string(&format!(
                             "{}://127.0.0.1:{port}/",
                             if tls { "https" } else { "http" }
@@ -1078,17 +1255,22 @@ mod request_serialization_tests {
                         assert!(!headers_ptr.is_null());
                         let headers =
                             ExceptionValue::adopt(py, MoltObject::from_ptr(headers_ptr).bits());
-                        molt_urllib_request_request_init(
+                        molt_urllib_request_request_init_attached_body(
+                            py.core_token(),
                             request.bits(),
                             url.bits(),
                             MoltObject::none().bits(),
                             headers.bits(),
                             method.bits(),
                         );
-                        molt_urllib_request_opener_init(opener.bits());
+                        molt_urllib_request_opener_init_attached_body(
+                            py.core_token(),
+                            opener.bits(),
+                        );
                         assert!(!exception_pending(py));
                         let scheme = string(if tls { "https" } else { "http" });
-                        molt_urllib_request_open(
+                        molt_urllib_request_open_attached_body(
+                            py.core_token(),
                             opener.bits(),
                             request.bits(),
                             scheme.bits(),
@@ -1114,22 +1296,24 @@ mod request_serialization_tests {
         }
     }
 
-    extern "C" fn redirect_lookup(_host: u64, _port: u64) -> u64 {
+    extern "C" fn redirect_lookup(context: u64, _host: u64, _port: u64) -> u64 {
         LOCAL_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = unsafe { crate::PyToken::from_attached_context(context) };
             let name = ExceptionValue::adopt(
                 py,
                 MoltObject::from_ptr(alloc_string(py, b"http_redirect_server")).bits(),
             );
-            molt_module_cache_get(name.bits())
-        })
+            molt_module_cache_get_attached_body(py, name.bits())
+        }
     }
 
-    extern "C" fn redirect_dispatch(_request: u64, _timeout: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn redirect_dispatch(context: u64, _request: u64, _timeout: u64) -> u64 {
+        {
+            let py = unsafe { crate::PyToken::from_attached_context(context) };
             MoltObject::from_ptr(alloc_bytes(py,
                 b"HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:1/next\r\nContent-Length: 0\r\n\r\n")).bits()
-        })
+        }
     }
 
     #[test]
@@ -1155,7 +1339,8 @@ mod request_serialization_tests {
                     ),
                 ] {
                     let name = string(name);
-                    let module = ExceptionValue::adopt(py, molt_module_new(name.bits()));
+                    let module =
+                        ExceptionValue::adopt(py, molt_module_new_attached_body(py, name.bits()));
                     let function = crate::alloc_function_obj(
                         py,
                         crate::provenance::abi::expose_function_address(address),
@@ -1180,7 +1365,7 @@ mod request_serialization_tests {
                             function.bits(),
                         )
                     });
-                    molt_module_cache_set(name.bits(), module.bits());
+                    molt_module_cache_set_attached_body(py, name.bits(), module.bits());
                     assert!(!exception_pending(py));
                 }
                 LOCAL_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
@@ -1188,37 +1373,46 @@ mod request_serialization_tests {
                 let request_name = string("http_redirect_request");
                 let opener_name = string("http_redirect_opener");
                 let request = request_fixture(py, request_name.bits());
-                let opener = ExceptionValue::adopt(py, molt_module_new(opener_name.bits()));
+                let opener = ExceptionValue::adopt(
+                    py,
+                    molt_module_new_attached_body(py, opener_name.bits()),
+                );
                 let url = string("http://127.0.0.1:1/start");
                 let method = string("GET");
                 let headers = ExceptionValue::adopt(
                     py,
                     MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits(),
                 );
-                molt_urllib_request_request_init(
+                molt_urllib_request_request_init_attached_body(
+                    py.core_token(),
                     request.bits(),
                     url.bits(),
                     MoltObject::none().bits(),
                     headers.bits(),
                     method.bits(),
                 );
-                molt_urllib_request_opener_init(opener.bits());
+                molt_urllib_request_opener_init_attached_body(py.core_token(), opener.bits());
                 assert!(!exception_pending(py));
                 let scheme = string("http");
-                molt_urllib_request_open(
+                molt_urllib_request_open_attached_body(
+                    py.core_token(),
                     opener.bits(),
                     request.bits(),
                     scheme.bits(),
                     MoltObject::none().bits(),
                 );
                 assert!(exception_pending(py));
-                let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                let error =
+                    ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
                 // Rendering is an ordinary Python operation; retain the error before
                 // clearing its raised state, then inspect the owned exception.
                 clear_exception(py);
                 let message = ExceptionValue::adopt(
                     py,
-                    crate::builtins::exceptions::molt_exception_message(error.bits()),
+                    crate::builtins::exceptions::molt_exception_message_attached_body(
+                        py,
+                        error.bits(),
+                    ),
                 );
                 assert!(
                     !exception_pending(py),

@@ -7,12 +7,18 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
-const { createRuntimeLifetime, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError } = require('./runtime_lifecycle.js');
+const { createRuntimeLifetime, runtimeLifetimeExportNames, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, runtimeExport, combinedError, formatTraceError } = require('./runtime_lifecycle.js');
 const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
 const {
   requireMoltDeploymentManifest,
+  requireAttachedExecutionAbi,
+  requireAppExecutionAbi,
+  compiledExecutionSymbol,
+  requireCallIndirectImportName,
+  requireSharedExecutionMemory,
+  requireSharedExecutionMemoryImport,
   deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callIsolateImportExport,
@@ -34,7 +40,8 @@ const {
 } = require('./loader_bridge.js');
 const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};
 const externalNativeLinkImports = wasmAbiGenerated.external_native_link_imports || {};
-let runtimeImportExportNames = runtimeExportByImport;
+const defaultRuntimeImportExportNames = {...runtimeExportByImport, ...runtimeLifetimeExportNames()};
+let runtimeImportExportNames = defaultRuntimeImportExportNames;
 let UndiciWebSocket = null;
 try {
   ({ WebSocket: UndiciWebSocket } = require('undici'));
@@ -116,7 +123,7 @@ const runtimeLifetime = (runtimeInst) => {
         throw new Error(pendingRuntimeExceptionMessage(runtimeInst) ||
           'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
       }
-    });
+    }, wasmAbiGenerated);
     runtimeLifetimes.set(runtimeInst, lifetime);
   }
   return lifetime;
@@ -255,10 +262,10 @@ const initWasmAssets = (manifestPath) => {
   const manifestRuntimeImportExportNames = manifestRuntimeImports.export_names || null;
   runtimeImportExportNames = manifestRuntimeImportExportNames
     ? {
-        ...runtimeExportByImport,
+        ...defaultRuntimeImportExportNames,
         ...manifestRuntimeImportExportNames,
       }
-    : runtimeExportByImport;
+    : defaultRuntimeImportExportNames;
   linkedPath = resolved.linkedPath;
   linkedBuffer = resolved.linkedBuffer;
   callableTableAttestation = readCallableTableAttestation({
@@ -435,10 +442,10 @@ const runMainWithWasiExit = (fn) => {
 // code (`wasiExitCode`).
 const mainExitStatus = (runtimeExports) => {
   if (wasiExitCode !== null) return 0;
-  if (typeof runtimeExports.molt_main_exit_status !== 'function') {
+  if (typeof runtimeExport(runtimeExports, 'molt_main_exit_status') !== 'function') {
     throw new Error('runtime missing molt_main_exit_status export');
   }
-  return Number(runtimeExports.molt_main_exit_status());
+  return Number(runtimeExport(runtimeExports, 'molt_main_exit_status')());
 };
 
 const setWasmMemory = (mem) => {
@@ -568,11 +575,11 @@ const allocTempBytes = (bytes) => {
   if (!runtimeInstance) {
     throw new Error('molt_runtime not initialized');
   }
-  if (typeof runtimeInstance.exports.molt_scratch_alloc !== 'function') {
+  if (typeof runtimeExport(runtimeInstance, 'molt_scratch_alloc') !== 'function') {
     throw new Error('runtime is missing required export: molt_scratch_alloc');
   }
   const size = bytes.length;
-  const ptr = BigInt(runtimeInstance.exports.molt_scratch_alloc(BigInt(size)));
+  const ptr = BigInt(runtimeExport(runtimeInstance, 'molt_scratch_alloc')(BigInt(size)));
   if (!ptr || ptr === 0n) {
     throw new Error('molt_scratch_alloc failed');
   }
@@ -584,7 +591,7 @@ const allocTempBytes = (bytes) => {
 const freeTempBytes = (temp) => {
   if (
     !runtimeInstance ||
-    typeof runtimeInstance.exports?.molt_scratch_free !== 'function' ||
+    typeof runtimeExport(runtimeInstance, 'molt_scratch_free') !== 'function' ||
     !temp ||
     temp.allocPtr === null ||
     temp.allocPtr === undefined ||
@@ -593,7 +600,7 @@ const freeTempBytes = (temp) => {
   ) {
     return;
   }
-  runtimeInstance.exports.molt_scratch_free(temp.allocPtr, BigInt(temp.size ?? 0));
+  runtimeExport(runtimeInstance, 'molt_scratch_free')(temp.allocPtr, BigInt(temp.size ?? 0));
 };
 
 const readU64 = (addr) => {
@@ -629,8 +636,8 @@ const readRuntimeStringBits = (instance, stringBits) => {
     !exports ||
     !stringBits ||
     stringBits === 0n ||
-    typeof exports.molt_string_as_ptr !== 'function' ||
-    typeof exports.molt_dec_ref_obj !== 'function'
+    typeof runtimeExport(exports, 'molt_string_as_ptr') !== 'function' ||
+    typeof runtimeExport(exports, 'molt_dec_ref_obj') !== 'function'
   ) {
     return null;
   }
@@ -638,7 +645,7 @@ const readRuntimeStringBits = (instance, stringBits) => {
   try {
     let ptr;
     try {
-      ptr = exports.molt_string_as_ptr(stringBits, Number(temp.payloadPtr));
+      ptr = runtimeExport(exports, 'molt_string_as_ptr')(stringBits, Number(temp.payloadPtr));
     } catch {
       return null;
     }
@@ -655,7 +662,7 @@ const traceIsolateImportCall = (phase, args, result = null, error = null) => {
   if (!traceIsolateImport) {
     return;
   }
-  const moduleId = args && args.length ? args[0] : null;
+  const moduleId = args && args.length > 1 ? args[1] : null;
   const detail =
     error && typeof error.message === 'string'
       ? ` error=${JSON.stringify(error.message)}`
@@ -676,19 +683,19 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
   if (!runtimeExceptionPending(instance)) return null;
   // Diagnostics observe the raised owner. Optional C API exports must not
   // change pending state or the ownership of the acquired diagnostic reference.
-  const excBits = typeof exports.molt_exception_last_pending === 'function'
-    ? exports.molt_exception_last_pending() : 0n;
+  const excBits = typeof runtimeExport(exports, 'molt_exception_last_pending') === 'function'
+    ? runtimeExport(exports, 'molt_exception_last_pending')() : 0n;
   try {
     if (!excBits || excBits === 0n) {
       return 'Unhandled Molt exception (diagnostic object unavailable)';
     }
     if (
-      typeof exports.molt_traceback_format_exc === 'function' &&
-      typeof exports.molt_dec_ref_obj === 'function'
+      typeof runtimeExport(exports, 'molt_traceback_format_exc') === 'function' &&
+      typeof runtimeExport(exports, 'molt_dec_ref_obj') === 'function'
     ) {
       let tbBits = 0n;
       try {
-        tbBits = exports.molt_traceback_format_exc(0n);
+        tbBits = runtimeExport(exports, 'molt_traceback_format_exc')(0n);
         if (tbBits && tbBits !== 0n) {
           try {
             const formatted = readRuntimeStringBits(instance, tbBits);
@@ -699,7 +706,7 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
               }
             }
           } finally {
-            exports.molt_dec_ref_obj(tbBits);
+            runtimeExport(exports, 'molt_dec_ref_obj')(tbBits);
           }
         }
       } catch (err) {
@@ -711,13 +718,13 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
       }
     }
     if (
-      typeof exports.molt_exception_kind === 'function' &&
-      typeof exports.molt_exception_message === 'function'
+      typeof runtimeExport(exports, 'molt_exception_kind') === 'function' &&
+      typeof runtimeExport(exports, 'molt_exception_message') === 'function'
     ) {
-      const kindBits = exports.molt_exception_kind(excBits);
+      const kindBits = runtimeExport(exports, 'molt_exception_kind')(excBits);
       let messageBits = 0n;
       try {
-        messageBits = exports.molt_exception_message(excBits);
+        messageBits = runtimeExport(exports, 'molt_exception_message')(excBits);
         const kind = kindBits ? readRuntimeStringBits(instance, kindBits) : null;
         const message = messageBits ? readRuntimeStringBits(instance, messageBits) : null;
         if (kind && message) {
@@ -727,23 +734,23 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
           return `Unhandled Molt exception: ${kind}`;
         }
       } finally {
-        if (kindBits && kindBits !== 0n && typeof exports.molt_dec_ref_obj === 'function') {
-          exports.molt_dec_ref_obj(kindBits);
+        if (kindBits && kindBits !== 0n && typeof runtimeExport(exports, 'molt_dec_ref_obj') === 'function') {
+          runtimeExport(exports, 'molt_dec_ref_obj')(kindBits);
         }
         if (
           messageBits &&
           messageBits !== 0n &&
-          typeof exports.molt_dec_ref_obj === 'function'
+          typeof runtimeExport(exports, 'molt_dec_ref_obj') === 'function'
         ) {
-          exports.molt_dec_ref_obj(messageBits);
+          runtimeExport(exports, 'molt_dec_ref_obj')(messageBits);
         }
       }
     }
     if (
-      typeof exports.molt_object_repr === 'function' &&
-      typeof exports.molt_dec_ref_obj === 'function'
+      typeof runtimeExport(exports, 'molt_object_repr') === 'function' &&
+      typeof runtimeExport(exports, 'molt_dec_ref_obj') === 'function'
     ) {
-      const reprBits = exports.molt_object_repr(excBits);
+      const reprBits = runtimeExport(exports, 'molt_object_repr')(excBits);
       if (reprBits && reprBits !== 0n) {
         try {
           const repr = readRuntimeStringBits(instance, reprBits);
@@ -754,7 +761,7 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
             return `Unhandled Molt exception: ${repr}`;
           }
         } finally {
-          exports.molt_dec_ref_obj(reprBits);
+          runtimeExport(exports, 'molt_dec_ref_obj')(reprBits);
         }
       }
     }
@@ -763,9 +770,9 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
     if (
       excBits &&
       excBits !== 0n &&
-      typeof exports.molt_dec_ref_obj === 'function'
+      typeof runtimeExport(exports, 'molt_dec_ref_obj') === 'function'
     ) {
-      exports.molt_dec_ref_obj(excBits);
+      runtimeExport(exports, 'molt_dec_ref_obj')(excBits);
     }
   }
 };
@@ -811,9 +818,9 @@ const decRefMaybe = (bits) => {
   if (
     runtimeInstance &&
     runtimeInstance.exports &&
-    typeof runtimeInstance.exports.molt_dec_ref_obj === 'function'
+    typeof runtimeExport(runtimeInstance, 'molt_dec_ref_obj') === 'function'
   ) {
-    runtimeInstance.exports.molt_dec_ref_obj(bits);
+    runtimeExport(runtimeInstance, 'molt_dec_ref_obj')(bits);
   }
 };
 
@@ -825,7 +832,7 @@ const makeBytesObject = (bytes) => {
   const tempBytes = allocTempBytes(payload);
   const tempOut = allocTempBytes(new Uint8Array(8));
   try {
-    const status = runtimeInstance.exports.molt_bytes_from_bytes(
+    const status = runtimeExport(runtimeInstance, 'molt_bytes_from_bytes')(
       Number(tempBytes.payloadPtr),
       BigInt(payload.length),
       Number(tempOut.payloadPtr),
@@ -850,11 +857,11 @@ const makeBytesObject = (bytes) => {
     }
     if (
       traceRun &&
-      typeof runtimeInstance.exports.molt_bytes_as_ptr === 'function'
+      typeof runtimeExport(runtimeInstance, 'molt_bytes_as_ptr') === 'function'
     ) {
       const outLen = allocTempBytes(Buffer.alloc(8));
       try {
-        const ptr = runtimeInstance.exports.molt_bytes_as_ptr(bits, Number(outLen.payloadPtr));
+        const ptr = runtimeExport(runtimeInstance, 'molt_bytes_as_ptr')(bits, Number(outLen.payloadPtr));
         const len = Number(readU64At(outLen.payloadPtr));
         const preview = Array.from(readBytes(ptr, Math.min(len, 16)));
         console.error(
@@ -879,7 +886,7 @@ const makeStringObject = (text) => {
   const tempBytes = allocTempBytes(payload);
   const tempOut = allocTempBytes(new Uint8Array(8));
   try {
-    const status = runtimeInstance.exports.molt_string_from_bytes(
+    const status = runtimeExport(runtimeInstance, 'molt_string_from_bytes')(
       Number(tempBytes.payloadPtr),
       BigInt(payload.length),
       Number(tempOut.payloadPtr),
@@ -900,10 +907,10 @@ const reprObjectBits = (bits) => {
   if (!runtimeInstance || !runtimeInstance.exports) {
     return null;
   }
-  if (typeof runtimeInstance.exports.molt_object_repr !== 'function') {
+  if (typeof runtimeExport(runtimeInstance, 'molt_object_repr') !== 'function') {
     return null;
   }
-  const reprBits = runtimeInstance.exports.molt_object_repr(bits);
+  const reprBits = runtimeExport(runtimeInstance, 'molt_object_repr')(bits);
   const reprPending = pendingRuntimeExceptionMessage(runtimeInstance);
   if (traceRun) {
     console.error(
@@ -931,7 +938,7 @@ const maybeDumpRuntimeProfile = () => {
   if (!process.env.MOLT_PROFILE || !runtimeInstance || !runtimeInstance.exports) {
     return;
   }
-  const dump = runtimeInstance.exports.molt_profile_dump;
+  const dump = runtimeExport(runtimeInstance, 'molt_profile_dump');
   if (typeof dump === 'function') {
     withRuntimeExecution(runtimeInstance, () => dump());
   }
@@ -977,12 +984,14 @@ const runHostExportCalls = () => {
       if (!call || typeof call !== 'object' || typeof call.export !== 'string') {
         throw new Error('each host export call must provide an export name');
       }
-      const fn = appInstanceForHostCalls.exports[call.export];
+      const physicalExport = call.export.endsWith(wasmAbiGenerated.execution_context_abi.suffix)
+        ? call.export : compiledExecutionSymbol(call.export);
+      const fn = appInstanceForHostCalls.exports[physicalExport];
       if (typeof fn !== 'function') {
         throw new Error(`app export missing: ${call.export}`);
       }
       let started = 0;
-      const invoke = (...argBits) => {
+      const invoke = (context, ...argBits) => {
         if (traceRun) {
           const argReprs = argBits.map((bits) => {
             try {
@@ -996,7 +1005,7 @@ const runHostExportCalls = () => {
           );
         }
         started = Date.now();
-        return fn(...argBits);
+        return fn(context, ...argBits);
       };
       // The export adopts its arguments, so this transaction owns only the
       // result. Decode and result-release failures remain primary/cleanup peers.
@@ -1028,7 +1037,7 @@ const sendStreamFrame = (streamHandle, bytes) => {
   if (!runtimeInstance || !wasmMemory) return false;
   const payload = bytes || Buffer.alloc(0);
   if (payload.length === 0) {
-    const res = runtimeInstance.exports.molt_stream_send(
+    const res = runtimeExport(runtimeInstance, 'molt_stream_send')(
       streamHandle,
       0n,
       0n,
@@ -1037,7 +1046,7 @@ const sendStreamFrame = (streamHandle, bytes) => {
   }
   const temp = allocTempBytes(payload);
   try {
-    const res = runtimeInstance.exports.molt_stream_send(
+    const res = runtimeExport(runtimeInstance, 'molt_stream_send')(
       streamHandle,
       temp.payloadPtr,
       BigInt(payload.length),
@@ -1238,7 +1247,7 @@ const sendStreamError = (streamHandle, message) => {
     error: message,
   };
   sendStreamHeader(streamHandle, header);
-  runtimeInstance.exports.molt_stream_close(streamHandle);
+  runtimeExport(runtimeInstance, 'molt_stream_close')(streamHandle);
 };
 
 const mapWorkerStatus = (status) => {
@@ -1842,7 +1851,7 @@ class DbWorkerClient {
   }
 
   _pollCancels() {
-    if (!runtimeInstance || !runtimeInstance.exports.molt_cancel_token_is_cancelled) {
+    if (!runtimeInstance || !runtimeExport(runtimeInstance, 'molt_cancel_token_is_cancelled')) {
       return;
     }
     const now = Date.now();
@@ -1858,7 +1867,7 @@ class DbWorkerClient {
       try {
         const result = withRuntimeOwnedValues(runtimeInstance, [pending.tokenId],
           value => boxRuntimeInt(runtimeInstance, value), ([tokenBits]) =>
-            runtimeInstance.exports.molt_cancel_token_is_cancelled(tokenBits));
+            runtimeExport(runtimeInstance, 'molt_cancel_token_is_cancelled')(tokenBits));
         if (typeof result === 'bigint' && isBoolBits(result) && unboxBool(result)) {
           cancelled = true;
         }
@@ -1892,7 +1901,7 @@ class DbWorkerClient {
     if (status !== 'ok') {
       header.error = response.error || response.status || 'internal error';
       sendStreamHeader(streamHandle, header);
-      runtimeInstance.exports.molt_stream_close(streamHandle);
+      runtimeExport(runtimeInstance, 'molt_stream_close')(streamHandle);
       return;
     }
     if (header.codec === 'arrow_ipc') {
@@ -1904,7 +1913,7 @@ class DbWorkerClient {
       header.payload = response.payload || Buffer.alloc(0);
       sendStreamHeader(streamHandle, header);
     }
-    runtimeInstance.exports.molt_stream_close(streamHandle);
+    runtimeExport(runtimeInstance, 'molt_stream_close')(streamHandle);
   }
 
   _failAll(message) {
@@ -4750,7 +4759,7 @@ const flushProcessQueue = (entry, which) => {
 const closeProcessStream = (streamBits) => {
   if (!runtimeInstance || !streamBits) return;
   try {
-    runtimeInstance.exports.molt_stream_close(streamBits);
+    runtimeExport(runtimeInstance, 'molt_stream_close')(streamBits);
   } catch {
     // ignore
   }
@@ -4758,7 +4767,7 @@ const closeProcessStream = (streamBits) => {
 
 const notifyProcessExit = (entry, exitCode) => {
   if (!runtimeInstance) return;
-  const notify = runtimeInstance.exports.molt_process_host_notify;
+  const notify = runtimeExport(runtimeInstance, 'molt_process_host_notify');
   if (typeof notify === 'function') {
     try {
       notify(BigInt(entry.handle), exitCode | 0);
@@ -5068,9 +5077,7 @@ const runtimeExportNameForImport = (importName) => {
   if (typeof exportName === 'string' && exportName.length > 0) {
     return exportName;
   }
-  return Object.prototype.hasOwnProperty.call(runtimeExportSignatures, importName)
-    ? importName
-    : null;
+  return null;
 };
 
 const makeRuntimeImportAdapter = (
@@ -5116,9 +5123,9 @@ const makeRuntimeImportAdapter = (
       result = fn(...converted);
     }
     if (traceStrings && (name === 'string_from_bytes' || name === 'molt_string_from_bytes')) {
-      const ptr = Number(converted[0] ?? 0);
-      const len = Number(converted[1] ?? 0);
-      const outPtr = Number(converted[2] ?? 0);
+      const ptr = Number(converted[1] ?? 0);
+      const len = Number(converted[2] ?? 0);
+      const outPtr = Number(converted[3] ?? 0);
       const raw =
         bridgeMemory && bridgeMemory !== wasmMemory
           ? Buffer.from(readBytesFromMemoryObject(bridgeMemory, ptr, Math.min(len, 64)))
@@ -5313,13 +5320,13 @@ const runDirectLink = async () => {
   const env = {
     memory,
     __indirect_function_table: table,
-    molt_isolate_import: (...args) => {
-      if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
+    [compiledExecutionSymbol('molt_isolate_import')]: (...args) => {
+      if (!outputInstance || typeof outputInstance.exports[compiledExecutionSymbol('molt_isolate_import')] !== 'function') {
         throw new Error('molt_isolate_import used before output instantiation');
       }
       traceIsolateImportCall('enter', args);
       try {
-        const result = callIsolateImportExport(outputInstance.exports.molt_isolate_import, args);
+        const result = callIsolateImportExport(outputInstance.exports[compiledExecutionSymbol('molt_isolate_import')], args);
         traceIsolateImportCall('exit', args, result);
         return result;
       } catch (err) {
@@ -5381,7 +5388,7 @@ const runDirectLink = async () => {
   };
   for (const name of runtimeCallIndirectNames) {
     env[name] = (...args) => {
-      const rawIdx = args[0];
+      const rawIdx = args[1];
       const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
       // Runtime callables are keys the runtime resolves itself, so every
       // index here is a slot of the shared table (HF-699 K1, K3).
@@ -5400,7 +5407,7 @@ const runDirectLink = async () => {
         callableTableSignature(outputCallableTable, dispatchIdx) ||
         callableTableSignature(runtimeCallableTable, dispatchIdx);
       if (typeof fn === 'function' && directSignature) {
-        return callWithWasmSignature(fn, directSignature, args.slice(1));
+        return callWithWasmSignature(fn, directSignature, [args[0], ...args.slice(2)]);
       }
       if (typeof fn !== 'function') {
         throw new Error(`${name} missing table entry at ${dispatchIdx}`);
@@ -5459,7 +5466,10 @@ const runDirectLink = async () => {
     externalNativeLinkImports,
   );
   traceMark('direct:app_instantiate:enter');
-  const outputModule = await WebAssembly.instantiate(wasmBuffer, outputImportObject);
+  const outputCompiledModule = await WebAssembly.compile(wasmBuffer);
+  requireAttachedExecutionAbi(outputCompiledModule, runtimeInst, wasmAbiGenerated);
+  requireSharedExecutionMemoryImport(outputCompiledModule);
+  const outputModule = { instance: await WebAssembly.instantiate(outputCompiledModule, outputImportObject) };
   traceMark('direct:app_instantiate:completed');
   outputInstance = outputModule.instance;
   appInstanceForHostCalls = outputInstance;
@@ -5470,9 +5480,12 @@ const runDirectLink = async () => {
   traceTableRange(table, 'after-output-instantiate');
   traceI32At('after-output-instantiate', table);
 
-  const { molt_main, molt_memory, molt_table } = outputInstance.exports;
+  const { molt_memory, molt_table } = outputInstance.exports;
+  const molt_main = outputInstance.exports[compiledExecutionSymbol('molt_main')];
+  if (typeof molt_main !== 'function') throw new Error('application missing physical molt_main export');
   const outputMemory = molt_memory || outputInstance.exports.memory || memory;
   const outputTable = molt_table || table;
+  requireSharedExecutionMemory(runtimeInst.exports.molt_memory || runtimeInst.exports.memory || memory, outputMemory);
   appWasmMemory = outputMemory;
   verifyCallableTableEntries(outputCallableTable, table, 'output wasm');
   if (!outputMemory || !outputTable) {
@@ -5485,12 +5498,12 @@ const runDirectLink = async () => {
   });
   traceMark('direct:bootstrap:completed');
   traceMark('direct:execution:enter');
-  const exitStatus = withRuntimeExecution(runtimeInst, () => {
+  const exitStatus = withRuntimeExecution(runtimeInst, (context) => {
     if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
-      if (typeof outputInstance.exports.molt_call_indirect2 !== 'function') {
+      if (typeof outputInstance.exports[compiledExecutionSymbol('molt_call_indirect2')] !== 'function') {
         throw new Error('molt_call_indirect2 export missing for smoke test');
       }
-      const res = outputInstance.exports.molt_call_indirect2(298n, 0n, 0n);
+      const res = outputInstance.exports[compiledExecutionSymbol('molt_call_indirect2')](context, 298n, 0n, 0n);
       console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
     }
     // The generated molt_main wrapper is the sole normal-startup authority.
@@ -5499,7 +5512,7 @@ const runDirectLink = async () => {
     }
     runMainWithWasiExit(() => {
       traceMark('direct:guest:enter');
-      molt_main();
+      molt_main(context);
     });
     traceMark('direct:guest:completed');
     return mainExitStatus(runtimeInst.exports);
@@ -5608,17 +5621,17 @@ const runLinked = async () => {
   // (see the `molt_isolate_import` env entry there).  The import is only invoked
   // at runtime (from molt_main), long after instantiation assigns linkedModule,
   // so the forward reference is always resolved before first call.
-  importObject.env.molt_isolate_import = (...args) => {
+  importObject.env[compiledExecutionSymbol('molt_isolate_import')] = (...args) => {
     if (
       !linkedModule ||
-      typeof linkedModule.instance.exports.molt_isolate_import !== 'function'
+      typeof linkedModule.instance.exports[compiledExecutionSymbol('molt_isolate_import')] !== 'function'
     ) {
       throw new Error('molt_isolate_import used before linked instantiation');
     }
     traceIsolateImportCall('enter', args);
     try {
       const result = callIsolateImportExport(
-        linkedModule.instance.exports.molt_isolate_import,
+        linkedModule.instance.exports[compiledExecutionSymbol('molt_isolate_import')],
         args,
       );
       traceIsolateImportCall('exit', args, result);
@@ -5636,11 +5649,14 @@ const runLinked = async () => {
   );
 
   traceMark('linked:instantiate:enter');
-  const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
+  const linkedCompiledModule = await WebAssembly.compile(linkedBuffer);
+  requireAppExecutionAbi(linkedCompiledModule, wasmAbiGenerated);
+  const linkedModule = { instance: await WebAssembly.instantiate(linkedCompiledModule, importObject) };
+  requireAttachedExecutionAbi(linkedCompiledModule, linkedModule.instance, wasmAbiGenerated);
   traceMark('linked:instantiate:completed');
   runtimeInstance = linkedModule.instance;
   runtimeLifetime(runtimeInstance).admit();
-  const { molt_main } = linkedModule.instance.exports;
+  const molt_main = linkedModule.instance.exports[compiledExecutionSymbol('molt_main')];
   if (typeof molt_main !== 'function') {
     throw new Error('linked wasm missing molt_main export');
   }
@@ -5663,11 +5679,11 @@ const runLinked = async () => {
   });
   traceMark('linked:bootstrap:completed');
   traceMark('linked:execution:enter');
-  const exitStatus = withRuntimeExecution(linkedModule.instance, () => {
+  const exitStatus = withRuntimeExecution(linkedModule.instance, (context) => {
     // The generated molt_main wrapper is the sole normal-startup authority.
     runMainWithWasiExit(() => {
       traceMark('linked:guest:enter');
-      molt_main();
+      molt_main(context);
     });
     traceMark('linked:guest:completed');
     return mainExitStatus(linkedModule.instance.exports);
@@ -5723,7 +5739,7 @@ const runMain = async () => {
       runtimeExportSignatures = runtimeMetadata.exportFunctionSignatures;
       runtimeCallIndirectNames = runtimeImportsDesc.funcImports
         .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
-        .map((entry) => entry.name);
+        .map((entry) => requireCallIndirectImportName(entry.name));
       canDirectLink = outputImports.table && runtimeImportsDesc.table && runtimeImportsDesc.memory;
       if (!canDirectLink) {
         throw new Error(

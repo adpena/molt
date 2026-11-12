@@ -15,9 +15,9 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
             return raise_exception::<_>(py, BuiltinExc::TypeError, "module import expects module");
         }
         inc_ref_bits(py, source);
-        let _src_owner = PtrDropGuard::new(src);
+        let _src_owner = PtrDropGuard::new(py, src);
         inc_ref_bits(py, destination);
-        let _dst_owner = PtrDropGuard::new(dst);
+        let _dst_owner = PtrDropGuard::new(py, dst);
         let source_dict = module_dict_bits(src);
         let destination_dict = module_dict_bits(dst);
         let Some(src_dict) = obj_from_bits(source_dict)
@@ -33,9 +33,9 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
             return raise_exception::<_>(py, BuiltinExc::TypeError, "module dict missing");
         };
         inc_ref_bits(py, source_dict);
-        let _src_dict_owner = PtrDropGuard::new(src_dict);
+        let _src_dict_owner = PtrDropGuard::new(py, src_dict);
         inc_ref_bits(py, destination_dict);
-        let _dst_dict_owner = PtrDropGuard::new(dst_dict);
+        let _dst_dict_owner = PtrDropGuard::new(py, dst_dict);
         let all_name = crate::NameId::DunderAll.bits(py);
         if all_name == 0 {
             return none;
@@ -69,16 +69,20 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
             }
             MoltObject::from_ptr(ptr).bits()
         };
-        let _names_owner = obj_from_bits(names).as_ptr().map(PtrDropGuard::new);
+        let _names_owner = obj_from_bits(names)
+            .as_ptr()
+            .map(|__ptr| PtrDropGuard::new(py, __ptr));
         let mut index = 0i64;
         loop {
             // Exhaustion is an implicit handler. Keep any caller's handled
             // exception context alive while consuming our own IndexError.
             let read_scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
             let name = crate::object::sequence_index::sequence_item_at_index(py, names, index);
-            let _name_owner = obj_from_bits(name).as_ptr().map(PtrDropGuard::new);
+            let _name_owner = obj_from_bits(name)
+                .as_ptr()
+                .map(|__ptr| PtrDropGuard::new(py, __ptr));
             if exception_pending(py) {
-                let error = molt_exception_last_pending();
+                let error = molt_exception_last_pending_attached_body(py);
                 let exhausted = crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -97,11 +101,13 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
                 let Some(name_key) = crate::NameId::DunderName.owned_bits(py) else {
                     return none;
                 };
-                let _name_key_owner = obj_from_bits(name_key).as_ptr().map(PtrDropGuard::new);
-                let module_name_bits = molt_get_attr_name(source, name_key);
+                let _name_key_owner = obj_from_bits(name_key)
+                    .as_ptr()
+                    .map(|__ptr| PtrDropGuard::new(py, __ptr));
+                let module_name_bits = molt_get_attr_name_attached_body(py, source, name_key);
                 let _module_name_owner = obj_from_bits(module_name_bits)
                     .as_ptr()
-                    .map(PtrDropGuard::new);
+                    .map(|__ptr| PtrDropGuard::new(py, __ptr));
                 if exception_pending(py) {
                     return none;
                 }
@@ -123,8 +129,10 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
                 );
             };
             if !(skip_private && text.starts_with('_')) {
-                let value = molt_get_attr_name(source, name);
-                let _value_owner = obj_from_bits(value).as_ptr().map(PtrDropGuard::new);
+                let value = molt_get_attr_name_attached_body(py, source, name);
+                let _value_owner = obj_from_bits(value)
+                    .as_ptr()
+                    .map(|__ptr| PtrDropGuard::new(py, __ptr));
                 if exception_pending(py) {
                     return none;
                 }
@@ -151,7 +159,7 @@ mod tests {
 
     fn assert_error(py: &PyToken<'_>, expected: crate::BuiltinExc) {
         assert!(exception_pending(py));
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py, error, expected
         ));
@@ -159,8 +167,16 @@ mod tests {
         dec_ref_bits(py, error);
     }
 
-    extern "C" fn dynamic_module_attribute(name: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn dynamic_module_attribute(__context: u64, name: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             match string_obj_to_owned(obj_from_bits(name)).as_deref() {
                 Some("__all__") => {
                     let dynamic = MoltObject::from_ptr(alloc_string(py, b"dynamic")).bits();
@@ -177,7 +193,7 @@ mod tests {
                     "dynamic attribute missing",
                 ),
             }
-        })
+        }
     }
 
     #[test]
@@ -188,8 +204,8 @@ mod tests {
                 let module_name = MoltObject::from_ptr(alloc_string(py, b"star_dynamic")).bits();
                 let src = alloc_module_obj(py, module_name);
                 let dst = alloc_module_obj(py, module_name);
-                let _src_owner = PtrDropGuard::new(src);
-                let _dst_owner = PtrDropGuard::new(dst);
+                let _src_owner = PtrDropGuard::new(py, src);
+                let _dst_owner = PtrDropGuard::new(py, dst);
                 let callback = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
                     crate::builtins::functions::runtime_fn_addr(
@@ -245,8 +261,16 @@ mod tests {
 
     static INDEX_MODE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-    extern "C" fn indexed_name(_self: u64, index: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn indexed_name(__context: u64, _self: u64, index: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let mode = INDEX_MODE.load(std::sync::atomic::Ordering::SeqCst);
             if mode == 2 {
                 return raise_exception::<_>(
@@ -264,17 +288,25 @@ mod tests {
                 crate::BuiltinExc::IndexError
             };
             raise_exception::<_>(py, kind, "after first")
-        })
+        }
     }
 
-    extern "C" fn forbidden_iterator(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn forbidden_iterator(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             raise_exception::<_>(
                 py,
                 BuiltinExc::RuntimeError,
                 "IMPORT_STAR must not call __iter__",
             )
-        })
+        }
     }
 
     fn indexed_names(py: &PyToken<'_>) -> u64 {
@@ -308,7 +340,8 @@ mod tests {
         .bits();
         let classes = crate::builtins::classes::builtin_classes(py);
         let bases = MoltObject::from_ptr(alloc_tuple(py, &[classes.object])).bits();
-        let class = crate::builtins::types::molt_type_new(
+        let class = crate::builtins::types::molt_type_new_attached_body(
+            py,
             classes.type_obj,
             class_name,
             bases,
@@ -349,11 +382,13 @@ mod tests {
                         MoltObject::from_ptr(alloc_string(py, b"star_indexed")).bits();
                     let src = alloc_module_obj(py, module_name);
                     let dst = alloc_module_obj(py, module_name);
-                    let _src_owner = PtrDropGuard::new(src);
-                    let _dst_owner = PtrDropGuard::new(dst);
+                    let _src_owner = PtrDropGuard::new(py, src);
+                    let _dst_owner = PtrDropGuard::new(py, dst);
                     let key = MoltObject::from_ptr(alloc_string(py, b"visible")).bits();
                     let names = indexed_names(py);
-                    let _names_owner = obj_from_bits(names).as_ptr().map(PtrDropGuard::new);
+                    let _names_owner = obj_from_bits(names)
+                        .as_ptr()
+                        .map(|__ptr| PtrDropGuard::new(py, __ptr));
                     let all_key = crate::NameId::DunderAll.bits(py);
                     let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                     let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
@@ -412,11 +447,11 @@ mod tests {
                     MoltObject::from_ptr(alloc_string(py, b"star_destination")).bits();
                 let src = alloc_module_obj(py, source_name);
                 let dst = alloc_module_obj(py, destination_name);
-                let _src_owner = PtrDropGuard::new(src);
-                let _dst_owner = PtrDropGuard::new(dst);
+                let _src_owner = PtrDropGuard::new(py, src);
+                let _dst_owner = PtrDropGuard::new(py, dst);
                 let key = MoltObject::from_ptr(alloc_string(py, b"visible")).bits();
                 let names = alloc_list(py, &[key, MoltObject::from_int(3).bits()]);
-                let _names_owner = PtrDropGuard::new(names);
+                let _names_owner = PtrDropGuard::new(py, names);
                 let all_key = crate::NameId::DunderAll.bits(py);
                 let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                 let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
@@ -456,7 +491,7 @@ mod tests {
             let zero = MoltObject::from_int(0).bits();
             let value = MoltObject::from_int(17).bits();
             let mapping = alloc_dict_with_pairs(py, &[zero, value]);
-            let _mapping_owner = PtrDropGuard::new(mapping);
+            let _mapping_owner = PtrDropGuard::new(py, mapping);
             let _ = crate::object::sequence_index::sequence_item_at_index(
                 py,
                 MoltObject::from_ptr(mapping).bits(),
@@ -464,12 +499,12 @@ mod tests {
             );
             assert_error(py, crate::BuiltinExc::TypeError);
             let mapping_bits = MoltObject::from_ptr(mapping).bits();
-            let _ = crate::c_api::molt_sequence_getitem(mapping_bits, zero);
+            let _ = crate::c_api::molt_sequence_getitem_attached_body(py, mapping_bits, zero);
             assert_error(py, crate::BuiltinExc::TypeError);
             assert_eq!(crate::c_api::PySequence_GetItem(mapping_bits, 0), 0);
             assert_error(py, crate::BuiltinExc::TypeError);
             let list = alloc_list(py, &[zero, value]);
-            let _list_owner = PtrDropGuard::new(list);
+            let _list_owner = PtrDropGuard::new(py, list);
             let read = crate::object::sequence_index::sequence_item_at_index(
                 py,
                 MoltObject::from_ptr(list).bits(),
@@ -479,8 +514,11 @@ mod tests {
             assert_eq!(read, value);
             dec_ref_bits(py, read);
             let list_bits = MoltObject::from_ptr(list).bits();
-            let api_read =
-                crate::c_api::molt_sequence_getitem(list_bits, MoltObject::from_int(-1).bits());
+            let api_read = crate::c_api::molt_sequence_getitem_attached_body(
+                py,
+                list_bits,
+                MoltObject::from_int(-1).bits(),
+            );
             assert!(!exception_pending(py));
             assert_eq!(api_read, value);
             dec_ref_bits(py, api_read);

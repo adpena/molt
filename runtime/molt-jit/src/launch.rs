@@ -125,8 +125,11 @@ pub(crate) unsafe fn run_program(
         (api.molt_runtime_init)();
         (api.molt_runtime_ensure_gil)();
         (api.molt_set_argv)(argc, argument_pointers.as_ptr());
-        let main: unsafe extern "C" fn() = std::mem::transmute(entry.main);
-        main();
+        let context = (api.molt_attached_context)();
+        let scope = (api.molt_compiled_execution_enter)(context);
+        let main: unsafe extern "C" fn(u64) = std::mem::transmute(entry.main);
+        main(context);
+        (api.molt_compiled_execution_leave)(context, scope);
         finish(api)
     }
 }

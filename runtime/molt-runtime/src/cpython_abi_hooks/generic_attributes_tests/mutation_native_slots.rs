@@ -17,12 +17,29 @@ thread_local! {
     static COLLISION_WATCHES: Cell<usize> = const { Cell::new(0) };
 }
 
-extern "C" fn collision_hash(_: u64) -> u64 {
+extern "C" fn collision_hash(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let hash = COLLISION_HASH.with(Cell::get);
-    with_gil(|py| inc_ref_bits(&py, hash));
+    {
+        let py = __py;
+        inc_ref_bits(py, hash)
+    };
     hash
 }
-extern "C" fn collision_equal(left: u64, right: u64) -> u64 {
+extern "C" fn collision_equal(__context: u64, left: u64, right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     if COLLISION_ARMED.with(|armed| armed.replace(false)) {
         COLLISION_CALLS.with(|calls| calls.set(calls.get() + 1));
         unsafe {
@@ -49,7 +66,14 @@ extern "C" fn collision_equal(left: u64, right: u64) -> u64 {
     )
     .bits()
 }
-extern "C" fn collision_fallback(_: u64, _: u64) -> u64 {
+extern "C" fn collision_fallback(__context: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(37).bits()
 }
 
@@ -57,9 +81,9 @@ extern "C" fn collision_fallback(_: u64, _: u64) -> u64 {
 unsafe fn collision_name(py: &crate::PyToken<'_>, spelling: u64) -> (u64, u64) {
     unsafe {
         let name = crate::dynamic_attr_name_bits(py, b"CollisionName").unwrap();
-        let name_class = crate::molt_class_new(name);
+        let name_class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
-        crate::molt_class_set_base(name_class, crate::builtin_classes(py).str);
+        crate::molt_class_set_base_attached_body(py, name_class, crate::builtin_classes(py).str);
         method(py, name_class, b"__hash__", collision_hash as *const (), 1);
         method(py, name_class, b"__eq__", collision_equal as *const (), 2);
         crate::object::class_finish_definition(py, obj_from_bits(name_class).as_ptr().unwrap())
@@ -96,7 +120,7 @@ fn native_slot_mutation_reads_aliases_after_reentrant_dictionary_equality() {
                 "{}",
                 native_error_description()
             );
-            let hash = crate::molt_hash_builtin(spelling);
+            let hash = crate::molt_hash_builtin_attached_body(py, spelling);
             COLLISION_HASH.with(|slot| slot.set(hash));
             let (name_class, subclass_key) = collision_name(py, spelling);
             let subclass_name =
@@ -144,14 +168,38 @@ thread_local! {
     static NATIVE_RELEASES: Cell<usize> = const { Cell::new(0) };
 }
 
-extern "C" fn length_seventeen(_: u64) -> u64 {
+extern "C" fn length_seventeen(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(17).bits()
 }
-extern "C" fn length_twenty_three(_: u64) -> u64 {
+extern "C" fn length_twenty_three(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(23).bits()
 }
-extern "C" fn binary_echo(_: u64, key: u64) -> u64 {
-    with_gil(|py| inc_ref_bits(&py, key));
+extern "C" fn binary_echo(__context: u64, _: u64, key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        inc_ref_bits(py, key)
+    };
     key
 }
 unsafe extern "C" fn length_three(_: *mut PyObject) -> isize {
@@ -422,7 +470,7 @@ fn exercise_watcher_alias_admission(preexisting_method: bool) {
             let twenty_three = function(py, length_twenty_three as *const (), 1);
             if preexisting_method {
                 let seventeen = function(py, length_seventeen as *const (), 1);
-                crate::molt_set_attr_name(base, key, seventeen);
+                crate::molt_set_attr_name_attached_body(py, base, key, seventeen);
                 dec_ref_bits(py, seventeen);
             }
             let canonical =
@@ -471,7 +519,7 @@ fn exercise_watcher_alias_admission(preexisting_method: bool) {
                 0
             );
 
-            crate::molt_set_attr_name(base, key, twenty_three);
+            crate::molt_set_attr_name_attached_body(py, base, key, twenty_three);
             assert!(!crate::exception_pending(py));
             assert_eq!(LATE_ALIAS_CALLS.with(Cell::get), 1);
             assert_eq!(LATE_ALIAS_BEFORE.with(Cell::get), [3, 3]);
@@ -526,13 +574,13 @@ fn managed_slot_mutation_preserves_root_rebound_during_slot_lookup() {
             let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let seventeen = function(py, length_seventeen as *const (), 1);
             let twenty_three = function(py, length_twenty_three as *const (), 1);
-            crate::molt_set_attr_name(replacement_class, key, seventeen);
+            crate::molt_set_attr_name_attached_body(py, replacement_class, key, seventeen);
             let original_view = OwnedPyObject::from_owned(
                 GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(original_class),
             );
             let method =
                 OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(seventeen));
-            let hash = crate::molt_hash_builtin(key);
+            let hash = crate::molt_hash_builtin_attached_body(py, key);
             COLLISION_HASH.with(|value| value.set(hash));
             let (name_class, subclass_key) = collision_name(py, key);
             let subclass_name =
@@ -571,7 +619,7 @@ fn managed_slot_mutation_preserves_root_rebound_during_slot_lookup() {
             assert_eq!(typeobj::PyType_Watch(watcher, alias_pointer.cast()), 0);
             assert_ne!(alias.tp_version_tag, 0);
 
-            crate::molt_set_attr_name(original_class, key, twenty_three);
+            crate::molt_set_attr_name_attached_body(py, original_class, key, twenty_three);
             assert!(!crate::exception_pending(py));
             assert_eq!(COLLISION_WATCHES.with(Cell::get), 1);
             assert_eq!(COLLISION_CALLS.with(Cell::get), 1);
@@ -605,7 +653,7 @@ fn managed_slot_mutation_preserves_root_rebound_during_slot_lookup() {
 
             // The admitted new identity participates in its own normal future
             // mutation; it is not merely abandoned by the old transaction.
-            crate::molt_set_attr_name(replacement_class, key, seventeen);
+            crate::molt_set_attr_name_attached_body(py, replacement_class, key, seventeen);
             assert!(!crate::exception_pending(py));
             assert_eq!(native_sequence_size(alias_pointer), 17);
             assert!(
@@ -635,29 +683,55 @@ fn managed_slot_mutation_preserves_root_rebound_during_slot_lookup() {
     });
 }
 
-extern "C" fn python_buffer(_: u64, _: u64) -> u64 {
+extern "C" fn python_buffer(__context: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let bits = BUFFER_VIEW.with(Cell::get);
-    with_gil(|py| inc_ref_bits(&py, bits));
+    {
+        let py = __py;
+        inc_ref_bits(py, bits)
+    };
     bits
 }
-extern "C" fn python_release(_: u64, view: u64) -> u64 {
+extern "C" fn python_release(__context: u64, _: u64, view: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     BUFFER_RELEASES.with(|state| {
         let (count, _) = state.get();
         state.set((count + 1, view == BUFFER_VIEW.with(Cell::get)));
     });
     MoltObject::none().bits()
 }
-extern "C" fn restricted_release(_: u64, view: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn restricted_release(__context: u64, _: u64, view: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         unsafe {
             let pointer = obj_from_bits(view).as_ptr().unwrap();
             let format = crate::dynamic_attr_name_bits(py, b"B").unwrap();
             let mut rejected = 0;
             for operation in 0..4 {
                 let result = match operation {
-                    0 => crate::molt_memoryview_new(view),
-                    1 => crate::molt_memoryview_toreadonly(view),
-                    2 => crate::molt_memoryview_cast(
+                    0 => crate::molt_memoryview_new_attached_body(py, view),
+                    1 => crate::molt_memoryview_toreadonly_attached_body(py, view),
+                    2 => crate::molt_memoryview_cast_attached_body(
+                        py,
                         view,
                         format,
                         MoltObject::none().bits(),
@@ -693,7 +767,7 @@ extern "C" fn restricted_release(_: u64, view: u64) -> u64 {
             });
             MoltObject::none().bits()
         }
-    })
+    }
 }
 static BUFFER_BYTES: [u8; 3] = [1, 2, 3];
 unsafe extern "C" fn native_buffer(
@@ -728,7 +802,7 @@ fn native_python_buffer_slots_preserve_view_identity_and_restrict_release_aliase
             set(class.as_ptr(), c"__release_buffer__", release.as_ptr());
             let instance = OwnedPyObject::from_owned(object::PyObject_CallNoArgs(class.as_ptr()));
             let bytes = MoltObject::from_ptr(crate::alloc_bytes(py, b"abc")).bits();
-            let view_bits = crate::molt_memoryview_new(bytes);
+            let view_bits = crate::molt_memoryview_new_attached_body(py, bytes);
             dec_ref_bits(py, bytes);
             BUFFER_VIEW.with(|value| value.set(view_bits));
             BUFFER_RELEASES.with(|value| value.set((0, false)));
@@ -798,7 +872,7 @@ fn private_abi_type_shells_retire_with_their_runtime() {
                     let instance =
                         OwnedPyObject::from_owned(object::PyObject_CallNoArgs(class.as_ptr()));
                     let bytes = MoltObject::from_ptr(crate::alloc_bytes(py, b"abc")).bits();
-                    let view_bits = crate::molt_memoryview_new(bytes);
+                    let view_bits = crate::molt_memoryview_new_attached_body(py, bytes);
                     dec_ref_bits(py, bytes);
                     BUFFER_VIEW.with(|value| value.set(view_bits));
                     BUFFER_RELEASES.with(|value| value.set((0, false)));
@@ -884,7 +958,7 @@ fn managed_base_mutation_publishes_native_descendants_before_retirement() {
             let shadow_length =
                 OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(twenty_three));
             set(shadow.as_ptr(), c"__len__", shadow_length.as_ptr());
-            crate::molt_set_attr_name(base, key, seventeen);
+            crate::molt_set_attr_name_attached_body(py, base, key, seventeen);
             assert!(!crate::exception_pending(py));
             for instance in [&first, &second] {
                 assert_eq!(
@@ -896,7 +970,7 @@ fn managed_base_mutation_publishes_native_descendants_before_retirement() {
                 molt_cpython_abi::api::abstract_sequence::PySequence_Size(third.as_ptr()),
                 23
             );
-            crate::molt_del_attr_name(base, key);
+            crate::molt_del_attr_name_attached_body(py, base, key);
             assert!(!crate::exception_pending(py));
             assert_eq!(
                 molt_cpython_abi::api::abstract_sequence::PySequence_Size(second.as_ptr()),
@@ -923,7 +997,7 @@ fn managed_base_mutation_publishes_native_descendants_before_retirement() {
             retired_type.tp_dealloc = Some(retiring_value);
             let retired = memory::_PyObject_New(&raw mut retired_type);
             let retired_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(retired).unwrap();
-            crate::molt_set_attr_name(base, key, retired_bits);
+            crate::molt_set_attr_name_attached_body(py, base, key, retired_bits);
             dec_ref_bits(py, retired_bits);
             refcount::Py_DECREF(retired);
             let target = grandchild.as_ptr().cast::<PyHeapTypeObject>();
@@ -932,7 +1006,7 @@ fn managed_base_mutation_publishes_native_descendants_before_retirement() {
             RETIRE_ROOT.with(|value| value.set(target.addr()));
             RETIRE_INSTANCE.with(|value| value.set(second.as_ptr().addr()));
             RETIRE_OBSERVATION.with(|value| value.set((-9, 9, 9)));
-            crate::molt_set_attr_name(base, key, twenty_three);
+            crate::molt_set_attr_name_attached_body(py, base, key, twenty_three);
             assert!(!crate::exception_pending(py));
             assert_eq!(RETIRE_OBSERVATION.with(Cell::get), (23, 0, 0));
             RETIRE_ROOT.with(|value| value.set(0));
@@ -949,25 +1023,58 @@ thread_local! {
     static OPTIONAL_UNRAISABLE: Cell<usize> = const { Cell::new(0) };
 }
 
-extern "C" fn optional_item(_: u64, index: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn optional_item(__context: u64, _: u64, index: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         if obj_from_bits(index).as_int() == Some(0) {
             MoltObject::from_int(31).bits()
         } else {
             crate::raise_exception::<_>(py, BuiltinExc::IndexError, "end of optional sequence")
         }
-    })
+    }
 }
-extern "C" fn optional_descriptor(receiver: u64, _: u64, _: u64) -> u64 {
-    with_gil(|py| inc_ref_bits(&py, receiver));
+extern "C" fn optional_descriptor(__context: u64, receiver: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        inc_ref_bits(py, receiver)
+    };
     receiver
 }
-extern "C" fn optional_lookup_failure(_: u64, _: u64, _: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn optional_lookup_failure(__context: u64, _: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         crate::raise_exception::<_>(py, BuiltinExc::RuntimeError, "optional lookup sentinel")
-    })
+    }
 }
-extern "C" fn optional_capture(_: u64) -> u64 {
+extern "C" fn optional_capture(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     OPTIONAL_UNRAISABLE.with(|count| count.set(count.get() + 1));
     MoltObject::none().bits()
 }
@@ -1143,11 +1250,11 @@ fn native_optional_slot_policies_preserve_missing_none_and_lookup_errors() {
             assert!(errors::PyErr_Occurred().is_null());
 
             let sys_name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
-            let sys = crate::builtins::modules::molt_module_new(sys_name);
+            let sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
             crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
             let hook_key = crate::dynamic_attr_name_bits(py, b"unraisablehook").unwrap();
             let hook = function(py, optional_capture as *const (), 1);
-            crate::builtins::modules::molt_module_set_attr(sys, hook_key, hook);
+            crate::builtins::modules::molt_module_set_attr_attached_body(py, sys, hook_key, hook);
             OPTIONAL_UNRAISABLE.with(|count| count.set(0));
             set(class.as_ptr(), c"__del__", unary.as_ptr());
             let finalize = (*tp).tp_finalize.unwrap();
@@ -1187,33 +1294,60 @@ mod physical_alias_hierarchy;
 thread_local! {
     static POWER_PROTOCOL_EVENTS: std::cell::RefCell<Vec<(&'static str, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
-extern "C" fn power_protocol_left(_: u64, _: u64, modulus: u64) -> u64 {
+extern "C" fn power_protocol_left(__context: u64, _: u64, _: u64, modulus: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     POWER_PROTOCOL_EVENTS.with(|events| events.borrow_mut().push(("left", modulus)));
-    with_gil(|py| crate::not_implemented_bits(&py))
+    {
+        let py = __py;
+        crate::not_implemented_bits(py)
+    }
 }
-extern "C" fn power_protocol_right(_: u64, _: u64, modulus: u64) -> u64 {
+extern "C" fn power_protocol_right(__context: u64, _: u64, _: u64, modulus: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     POWER_PROTOCOL_EVENTS.with(|events| events.borrow_mut().push(("right", modulus)));
     MoltObject::from_int(73).bits()
 }
-extern "C" fn power_protocol_inplace(_: u64, _: u64) -> u64 {
+extern "C" fn power_protocol_inplace(__context: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     POWER_PROTOCOL_EVENTS.with(|events| {
         events
             .borrow_mut()
             .push(("inplace", MoltObject::none().bits()))
     });
-    with_gil(|py| crate::not_implemented_bits(&py))
+    {
+        let py = __py;
+        crate::not_implemented_bits(py)
+    }
 }
 
 #[test]
 fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::dynamic_attr_name_bits(&py, b"NumericPowerProtocol").unwrap();
-        let left_class = crate::molt_class_new(name);
-        let right_class = crate::molt_class_new(name);
-        dec_ref_bits(&py, name);
-        crate::molt_class_set_base(left_class, crate::builtin_classes(&py).object);
-        crate::molt_class_set_base(right_class, left_class);
+        let name = crate::dynamic_attr_name_bits(py, b"NumericPowerProtocol").unwrap();
+        let left_class = crate::molt_class_new_attached_body(py, name);
+        let right_class = crate::molt_class_new_attached_body(py, name);
+        dec_ref_bits(py, name);
+        crate::molt_class_set_base_attached_body(py, left_class, crate::builtin_classes(py).object);
+        crate::molt_class_set_base_attached_body(py, right_class, left_class);
         for (class, name, target) in [
             (
                 left_class,
@@ -1226,28 +1360,28 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                 power_protocol_right as *const (),
             ),
         ] {
-            let callable = function(&py, target, 3);
+            let callable = function(py, target, 3);
             assert!(crate::builtins::methods::set_function_defaults(
-                &py,
+                py,
                 obj_from_bits(callable).as_ptr().unwrap(),
                 &[MoltObject::none().bits()]
             ));
-            member(&py, class, name, callable);
-            dec_ref_bits(&py, callable);
+            member(py, class, name, callable);
+            dec_ref_bits(py, callable);
         }
         method(
-            &py,
+            py,
             left_class,
             b"__ipow__",
             power_protocol_inplace as *const (),
             2,
         );
         for class in [left_class, right_class] {
-            crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
+            crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
         }
-        let left = crate::call_callable0(&py, left_class);
-        let right = crate::call_callable0(&py, right_class);
+        let left = crate::call_callable0(py, left_class);
+        let right = crate::call_callable0(py, right_class);
         let left_view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(left));
         let right_view =
             OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(right));
@@ -1255,9 +1389,9 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
         let modulus_view =
             OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(modulus));
         assert!(!left_view.as_ptr().is_null() && !right_view.as_ptr().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         for minor in [12, 13, 14] {
-            transaction.with_target_python_minor(&py, minor, || {
+            transaction.with_target_python_minor(py, minor, || {
                 for inplace in [false, true] {
                     for modulo in [MoltObject::none().bits(), modulus] {
                         let expected_tail = if modulo == modulus && minor < 14 {
@@ -1313,7 +1447,7 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                                     left, right, modulo, inplace,
                                 );
                                 if expected_tail == "left" {
-                                    assert!(crate::exception_pending(&py));
+                                    assert!(crate::exception_pending(py));
                                     assert_eq!(
                                         errors::PyErr_ExceptionMatches(
                                             (&raw mut PyExc_TypeError).cast()
@@ -1324,7 +1458,7 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                                 } else {
                                     assert_eq!(obj_from_bits(output).as_int(), Some(73));
                                 }
-                                dec_ref_bits(&py, output);
+                                dec_ref_bits(py, output);
                             }
                             assert_eq!(
                                 POWER_PROTOCOL_EVENTS.with(|events| events.borrow().clone()),
@@ -1338,27 +1472,43 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                                 before
                             );
                             assert!(errors::PyErr_Occurred().is_null());
-                            assert!(!crate::exception_pending(&py));
+                            assert!(!crate::exception_pending(py));
                         }
                     }
                 }
             });
         }
         for value in [left, right, left_class, right_class] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
     });
 }
 
-extern "C" fn numeric_normal_owned(_: u64, _: u64) -> u64 {
-    with_gil(|py| {
-        MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(23).bits()])).bits()
-    })
+extern "C" fn numeric_normal_owned(__context: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(23).bits()])).bits()
+    }
 }
-extern "C" fn numeric_inplace_owned(_: u64, _: u64) -> u64 {
-    with_gil(|py| {
-        MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(71).bits()])).bits()
-    })
+extern "C" fn numeric_inplace_owned(__context: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(71).bits()])).bits()
+    }
 }
 
 #[test]
@@ -1367,10 +1517,10 @@ fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() 
     type Operation = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::dynamic_attr_name_bits(&py, b"NumericModeOwner").unwrap();
-        let class = crate::molt_class_new(name);
-        dec_ref_bits(&py, name);
-        crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
+        let name = crate::dynamic_attr_name_bits(py, b"NumericModeOwner").unwrap();
+        let class = crate::molt_class_new_attached_body(py, name);
+        dec_ref_bits(py, name);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
         // Literal public API/name pairs, not an iteration of implementation enums.
         let operations: [(&[u8], &[u8], Operation, Operation); 12] = [
             (
@@ -1447,12 +1597,11 @@ fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() 
             ),
         ];
         for (normal, inplace, _, _) in operations {
-            method(&py, class, normal, numeric_normal_owned as *const (), 2);
-            method(&py, class, inplace, numeric_inplace_owned as *const (), 2);
+            method(py, class, normal, numeric_normal_owned as *const (), 2);
+            method(py, class, inplace, numeric_inplace_owned as *const (), 2);
         }
-        crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
-            .unwrap();
-        let instance = crate::call_callable0(&py, class);
+        crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()).unwrap();
+        let instance = crate::call_callable0(py, class);
         let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance));
         let rhs = OwnedPyObject::from_owned(numbers::PyLong_FromLong(3));
         assert!(!view.as_ptr().is_null() && !rhs.as_ptr().is_null());
@@ -1478,11 +1627,11 @@ fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() 
                     before
                 );
                 assert!(errors::PyErr_Occurred().is_null());
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
         }
-        dec_ref_bits(&py, instance);
-        dec_ref_bits(&py, class);
+        dec_ref_bits(py, instance);
+        dec_ref_bits(py, class);
     });
     drop(transaction);
 }

@@ -13,6 +13,7 @@ use std::ptr;
 /// Internal cross-crate runtime integration; not a C-API surface.
 #[doc(hidden)]
 pub struct CallbackOperands<const N: usize> {
+    custody: crate::hooks::ForeignExecutionGuard,
     roots: [*mut PyObject; N],
     inline: [*mut PyObject; 8],
     inline_len: usize,
@@ -24,6 +25,7 @@ impl<const N: usize> CallbackOperands<N> {
     /// allocation. Argument snapshots retain values even if a callback clears
     /// its kwargs dictionary or replaces a container entry during reentry.
     pub(crate) unsafe fn new(mut roots: [*mut PyObject; N]) -> Self {
+        let custody = crate::hooks::ForeignExecutionGuard::capture();
         for index in 0..N {
             if roots[..index].contains(&roots[index]) {
                 roots[index] = ptr::null_mut();
@@ -32,6 +34,7 @@ impl<const N: usize> CallbackOperands<N> {
             }
         }
         Self {
+            custody,
             roots,
             inline: [ptr::null_mut(); 8],
             inline_len: 0,
@@ -157,6 +160,7 @@ impl<const N: usize> CallbackOperands<N> {
     }
 
     fn synchronize(&self) -> bool {
+        self.custody.validate();
         let mut synchronized = true;
         // Keep the first error in its original channel and observe its presence
         // independently of C-view projection.
@@ -198,6 +202,7 @@ impl<const N: usize> CallbackOperands<N> {
     /// `result` is null or an owned Python reference returned by the callback.
     /// Completion consumes that reference on failure and lends it on success.
     pub unsafe fn complete_result(&self, result: *mut PyObject, operation: &str) -> *mut PyObject {
+        self.custody.validate();
         let result = unsafe { errors::check_native_result(result, operation) };
         unsafe { self.synchronize_result(result) }
     }
@@ -212,6 +217,7 @@ impl<const N: usize> CallbackOperands<N> {
         result: *mut PyObject,
         operation: &str,
     ) -> *mut PyObject {
+        self.custody.validate();
         let result = unsafe { errors::check_callable_result(result, operation) };
         unsafe { self.synchronize_result(result) }
     }
@@ -226,6 +232,7 @@ impl<const N: usize> CallbackOperands<N> {
     }
 
     pub(crate) unsafe fn complete_status(&self, status: c_int, operation: &str) -> c_int {
+        self.custody.validate();
         let status = unsafe { errors::check_native_status(status, operation) };
         if self.synchronize() { status } else { -1 }
     }
@@ -233,6 +240,7 @@ impl<const N: usize> CallbackOperands<N> {
 
 impl<const N: usize> Drop for CallbackOperands<N> {
     fn drop(&mut self) {
+        self.custody.validate();
         unsafe {
             for &object in &self.spill {
                 crate::api::refcount::Py_XDECREF(object);

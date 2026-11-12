@@ -17,7 +17,7 @@ import {
 import './synthetic_errno_generated.js';
 import './wasi_errno_generated.js';
 
-const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, runtimeExport, combinedError } = globalThis.MoltRuntimeLifecycle;
 // Molt env imports consume the generated synthetic POSIX domain.
 const { ENOSYS, EINVAL, ENOMEM, EBADF } = globalThis.MoltSyntheticErrno.errno;
 const TYPE_TAG_BYTES = 6;
@@ -27,6 +27,12 @@ const UTF8_ENCODER = new TextEncoder();
 
 const {
   requireMoltDeploymentManifest,
+  requireAttachedExecutionAbi,
+  requireAppExecutionAbi,
+  compiledExecutionSymbol,
+  requireCallIndirectImportName,
+  requireSharedExecutionMemory,
+  requireSharedExecutionMemoryImport,
   deploymentLaunchEnvironment,
   manifestModuleUrl,
   verifyManifestModuleBytes,
@@ -164,10 +170,7 @@ const browserAbiFromManifest = (manifest) => {
   }
   const callIndirectImports = new Set();
   for (const name of abi.call_indirect_imports) {
-    if (typeof name !== 'string' || !/^molt_call_indirect\d+$/.test(name)) {
-      throw new Error(`invalid manifest call_indirect import: ${String(name)}`);
-    }
-    callIndirectImports.add(name);
+    callIndirectImports.add(requireCallIndirectImportName(name));
   }
   return {
     callIndirectImports,
@@ -255,11 +258,11 @@ const allocRuntimeTempBytes = (runtime, memory, bytes) => {
   if (!runtime || !memory) {
     throw new Error('runtime not initialized');
   }
-  if (typeof runtime.exports?.molt_scratch_alloc !== 'function') {
+  if (typeof runtimeExport(runtime, 'molt_scratch_alloc') !== 'function') {
     throw new Error('runtime is missing required export: molt_scratch_alloc');
   }
   const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const ptr = runtime.exports.molt_scratch_alloc(BigInt(payload.length));
+  const ptr = runtimeExport(runtime, 'molt_scratch_alloc')(BigInt(payload.length));
   if (!ptr || ptr === 0n) {
     throw new Error('molt_scratch_alloc failed');
   }
@@ -271,25 +274,25 @@ const allocRuntimeTempBytes = (runtime, memory, bytes) => {
 const freeRuntimeTempBytes = (runtime, temp) => {
   if (
     !runtime ||
-    typeof runtime.exports?.molt_scratch_free !== 'function' ||
+    typeof runtimeExport(runtime, 'molt_scratch_free') !== 'function' ||
     !temp ||
     !temp.allocPtr
   ) {
     return;
   }
-  runtime.exports.molt_scratch_free(temp.allocPtr, BigInt(temp.size ?? 0));
+  runtimeExport(runtime, 'molt_scratch_free')(temp.allocPtr, BigInt(temp.size ?? 0));
 };
 
 const decRefMaybe = (runtime, bits) => {
   if (
     runtime &&
-    typeof runtime.exports?.molt_dec_ref_obj === 'function' &&
+    typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function' &&
     bits !== null &&
     bits !== undefined &&
     bits !== 0n &&
     bits !== 0
   ) {
-    runtime.exports.molt_dec_ref_obj(bits);
+    runtimeExport(runtime, 'molt_dec_ref_obj')(bits);
   }
 };
 
@@ -298,7 +301,7 @@ const makeBytesObject = (runtime, memory, bytes) => {
   const tempBytes = allocRuntimeTempBytes(runtime, memory, payload);
   const tempOut = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const status = runtime.exports.molt_bytes_from_bytes(
+    const status = runtimeExport(runtime, 'molt_bytes_from_bytes')(
       Number(tempBytes.payloadPtr),
       BigInt(payload.length),
       Number(tempOut.payloadPtr),
@@ -318,14 +321,14 @@ const readRuntimeStringBits = (runtime, memory, stringBits) => {
     return null;
   }
   if (
-    typeof runtime.exports?.molt_string_as_ptr !== 'function' ||
-    typeof runtime.exports?.molt_dec_ref_obj !== 'function'
+    typeof runtimeExport(runtime, 'molt_string_as_ptr') !== 'function' ||
+    typeof runtimeExport(runtime, 'molt_dec_ref_obj') !== 'function'
   ) {
     return null;
   }
   const temp = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const ptr = runtime.exports.molt_string_as_ptr(stringBits, Number(temp.payloadPtr));
+    const ptr = runtimeExport(runtime, 'molt_string_as_ptr')(stringBits, Number(temp.payloadPtr));
     if (!ptr || ptr === 0n) {
       return null;
     }
@@ -344,16 +347,16 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
   if (!runtimeExceptionPending(runtime)) return null;
   // Diagnostics observe the raised owner. Optional C API exports must not
   // change pending state or the ownership of the acquired diagnostic reference.
-  const excBits = typeof runtime.exports.molt_exception_last_pending === 'function'
-    ? runtime.exports.molt_exception_last_pending() : 0n;
+  const excBits = typeof runtimeExport(runtime, 'molt_exception_last_pending') === 'function'
+    ? runtimeExport(runtime, 'molt_exception_last_pending')() : 0n;
   try {
     if (
       excBits &&
       excBits !== 0n &&
-      typeof runtime.exports?.molt_object_repr === 'function' &&
-      typeof runtime.exports?.molt_dec_ref_obj === 'function'
+      typeof runtimeExport(runtime, 'molt_object_repr') === 'function' &&
+      typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function'
     ) {
-      const reprBits = runtime.exports.molt_object_repr(excBits);
+      const reprBits = runtimeExport(runtime, 'molt_object_repr')(excBits);
       if (reprBits && reprBits !== 0n) {
         try {
           const repr = readRuntimeStringBits(runtime, memory, reprBits);
@@ -361,7 +364,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
             return `Unhandled Molt exception: ${repr}`;
           }
         } finally {
-          runtime.exports.molt_dec_ref_obj(reprBits);
+          runtimeExport(runtime, 'molt_dec_ref_obj')(reprBits);
         }
       }
     }
@@ -377,16 +380,16 @@ const readBytesObject = (runtime, memory, bits) => {
   if (!runtime || !memory) {
     throw new Error('runtime not initialized');
   }
-  const tagFn = runtime.exports?.molt_type_tag_of_bits;
+  const tagFn = runtimeExport(runtime, 'molt_type_tag_of_bits');
   if (typeof tagFn === 'function' && Number(tagFn(bits)) !== TYPE_TAG_BYTES) {
     throw new Error('Molt kernel result is not bytes');
   }
-  if (typeof runtime.exports?.molt_bytes_as_ptr !== 'function') {
+  if (typeof runtimeExport(runtime, 'molt_bytes_as_ptr') !== 'function') {
     throw new Error('runtime is missing required export: molt_bytes_as_ptr');
   }
   const tempLen = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const ptr = runtime.exports.molt_bytes_as_ptr(
+    const ptr = runtimeExport(runtime, 'molt_bytes_as_ptr')(
       bits,
       memoryOffset32(tempLen.payloadPtr, 'molt_bytes_as_ptr out_len'),
     );
@@ -795,7 +798,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
   const gpuHost = createBrowserGpuHost(state, options);
   const appCallableTable = options.appCallableTable;
   const runtimeCallableTable = options.runtimeCallableTable;
-  const callIndirect = (name) => (fnIndex, ...args) => {
+  const callIndirect = (name) => (context, fnIndex, ...args) => {
     // Runtime callables are keys the runtime resolves itself, so every index
     // here is a slot of the shared table (HF-699 K1, K3).
     const dispatchIdx = Number(fnIndex);
@@ -805,7 +808,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
     const tableFn = state.table ? state.table.get(dispatchIdx) : null;
     if (typeof tableFn === 'function' && directSignature) {
       try {
-        return callWithSignature(tableFn, directSignature, args);
+        return callWithSignature(tableFn, directSignature, [context, ...args]);
       } catch (err) {
         const detail = err && typeof err.message === 'string' ? err.message : String(err);
         const fnName = tableFn.name || '<anon>';
@@ -886,8 +889,8 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
       const msg = UTF8_DECODER.decode(new Uint8Array(memory.buffer, Number(ptr), Number(len)));
       logFn(level, msg);
     },
-    molt_isolate_import: (...args) => {
-      const fn = state.appInstance?.exports?.molt_isolate_import;
+    [compiledExecutionSymbol('molt_isolate_import')]: (...args) => {
+      const fn = state.appInstance?.exports?.[compiledExecutionSymbol('molt_isolate_import')];
       if (typeof fn !== 'function') {
         throw new Error('molt_isolate_import called before app instantiation');
       }
@@ -915,12 +918,15 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
 };
 
 const resolveExportName = (exports, requested) => {
-  if (typeof exports[requested] === 'function') {
-    return requested;
+  const suffix = globalThis.MoltCallableTableAbiGenerated.execution_context_abi.suffix;
+  if (requested.endsWith(suffix) && typeof exports[requested] === 'function') return requested;
+  const physical = compiledExecutionSymbol(requested);
+  if (typeof exports[physical] === 'function') {
+    return physical;
   }
-  const suffix = `__${requested}`;
+  const qualifiedSuffix = compiledExecutionSymbol(`__${requested}`);
   const matches = Object.keys(exports).filter(
-    (name) => name.endsWith(suffix) && typeof exports[name] === 'function',
+    (name) => name.endsWith(qualifiedSuffix) && typeof exports[name] === 'function',
   );
   if (matches.length === 1) {
     return matches[0];
@@ -1058,10 +1064,12 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
         throw new Error(pendingRuntimeExceptionMessage(runtimeInstance, memory) ||
           'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
       }
-    });
+    }, manifest.abi.runtime_imports);
     lifetime.admit();
     verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
     const appModule = await WebAssembly.compile(appBytes);
+    requireAttachedExecutionAbi(appModule, runtimeInstance, manifest.abi.runtime_imports);
+    requireSharedExecutionMemoryImport(appModule);
     const moltNative = createMoltNativeCallableImports(appHostState, appImports, {
       ...options,
       manifest,
@@ -1081,6 +1089,7 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     const appInstance = await WebAssembly.instantiate(appModule, appImportObject);
     state.appInstance = appInstance;
     appHostState.memory = appInstance.exports.molt_memory || appInstance.exports.memory || memory;
+    requireSharedExecutionMemory(runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory || memory, appHostState.memory);
     verifyCallableTableEntries(appCallableTable, table, 'app wasm');
     return {
       // Low-level inspection handles only. Execute guest code through execute;
@@ -1107,11 +1116,11 @@ export const loadMoltBrowserKernel = async (options = {}) => {
     const resolvedExportName = resolveExportName(embed.appInstance.exports, exportName);
     const resultType = options.resultType || options.outputType || 'float32';
     let initialized = false;
-    const ensureInitialized = () => {
+    const ensureInitialized = (context) => {
       if (initialized) {
         return;
       }
-      const hostInit = embed.appInstance.exports.molt_host_init;
+      const hostInit = embed.appInstance.exports[compiledExecutionSymbol('molt_host_init')];
       if (typeof hostInit !== 'function') {
         throw new Error('molt_host_init export missing for host-export initialization');
       }
@@ -1119,15 +1128,15 @@ export const loadMoltBrowserKernel = async (options = {}) => {
         throw new Error(pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory) ||
           'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
       }
-      hostInit();
+      hostInit(context);
       const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
       if (pending) {
         throw new Error(pending);
       }
       initialized = true;
     };
-    const callBytes = (...args) => embed.execute(() => {
-      ensureInitialized();
+    const callBytes = (...args) => embed.execute((context) => {
+      ensureInitialized(context);
       const fn = embed.appInstance.exports[resolvedExportName];
       // The export adopts its arguments; this transaction owns its result.
       return withRuntimeOwnedValues(embed.runtimeInstance, [args],

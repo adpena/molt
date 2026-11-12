@@ -7,6 +7,7 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 #[cfg(feature = "native-backend")]
 define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::ExceptionPending,
+    OpKind::AsyncWorkPending,
     OpKind::FunctionDefaultsVersion,
     OpKind::Print,
     OpKind::WarnStderr,
@@ -33,6 +34,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     representation_plan: &ScalarRepresentationPlan,
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
+    work_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
@@ -72,6 +74,23 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 exc_flag_ptr_slot,
             );
             let raw_bool = builder.ins().uextend(types::I64, cond_bool);
+            if let Some(out__) = op.out.as_ref() {
+                def_raw_bool_value(
+                    &mut *builder,
+                    vars,
+                    representation_plan,
+                    out__,
+                    raw_bool,
+                    nbc,
+                );
+            }
+        }
+        OpKind::AsyncWorkPending => {
+            // Test the thread's pending-work word; service nothing. A
+            // promoted module loop branches on it to the unpromoted loop.
+            let slot = work_ptr_slot.expect("async_work_pending requires the pending-work word");
+            let pending = emit_async_work_pending(&mut *builder, slot);
+            let raw_bool = builder.ins().uextend(types::I64, pending);
             if let Some(out__) = op.out.as_ref() {
                 def_raw_bool_value(
                     &mut *builder,

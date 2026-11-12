@@ -6,6 +6,7 @@ import fnmatch
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -312,7 +313,15 @@ def test_manifest_is_complete_and_single_authority() -> None:
         family.data["admission_workflow"] == ".github/workflows/ci.yml"
         for family in PLAN.families
     )
-    assert all(cell.data["runner"] for cell in PLAN.matrix_cells)
+    farm_cells = {
+        command.data["cell"]
+        for command in PLAN.commands
+        if command.family in PLAN.farm_families()
+    }
+    assert farm_cells == {"linux-x86_64-py312-native-release-output"}
+    assert all(
+        cell.data["runner"] for cell in PLAN.matrix_cells if cell.id not in farm_cells
+    )
     assert len(PLAN.local_rules) >= 30
     assert not (proof_plan.ROOT / "tools" / "molt_dev_gates.toml").exists()
     assert not (proof_plan.ROOT / "tools" / "ci_changed_paths.py").exists()
@@ -420,7 +429,8 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         for family in families:
             envelope = PLAN.timeout_envelope(family.name)
             budget = int(family.data["timeout_minutes"]) * 60
-            reserve = int(family.data["job_reserve_seconds"])
+            # A farm family has no GitHub job and so no setup reserve.
+            reserve = int(family.data.get("job_reserve_seconds", 0))
             assert projected_envelopes[family.name] == {
                 "budget_seconds": budget,
                 "projected_makespan_seconds": envelope.projected_makespan_seconds,
@@ -2522,6 +2532,77 @@ def test_command_schedule_cannot_consume_the_job_reserve(
     assert at_deadline(deadline + 1).validate() == [expected_error]
 
 
+def test_a_farm_family_names_no_github_job_and_its_cell_no_runner() -> None:
+    family = next(f for f in PLAN.scheduled_families if f.name == "instruction_signal")
+    cell = next(
+        c
+        for c in PLAN.matrix_cells
+        if c.id == "linux-x86_64-py312-native-release-output"
+    )
+    assert family.data["executor"] == proof_plan.FARM_EXECUTOR
+    assert "runner" not in cell.data
+
+    def scheduled(name: str, **fields: object) -> proof_plan.ProofPlan:
+        return replace(
+            PLAN,
+            scheduled_families=tuple(
+                replace(f, data={**f.data, **fields}) if f.name == name else f
+                for f in PLAN.scheduled_families
+            ),
+        )
+
+    def cell_data(
+        cell_id: str, update: Callable[[dict[str, str]], dict[str, str]]
+    ) -> proof_plan.ProofPlan:
+        return replace(
+            PLAN,
+            matrix_cells=tuple(
+                replace(c, data=update(dict(c.data))) if c.id == cell_id else c
+                for c in PLAN.matrix_cells
+            ),
+        )
+
+    for field, value in (
+        ("workflow", ".github/workflows/nightly.yml"),
+        ("job", "nightly-prepare"),
+        ("job_reserve_seconds", 60),
+    ):
+        assert (
+            f"instruction_signal: a farm family has no GitHub {field}"
+            in scheduled("instruction_signal", **{field: value}).validate()
+        )
+    assert any(
+        "scheduled executor 'cloud'" in error
+        for error in scheduled("instruction_signal", executor="cloud").validate()
+    )
+    # A GitHub scheduled family still names its workflow job.
+    github = next(f for f in PLAN.scheduled_families if f.name == "nightly_determinism")
+    without_job = replace(
+        PLAN,
+        scheduled_families=tuple(
+            replace(f, data={k: v for k, v in f.data.items() if k != "job"})
+            if f is github
+            else f
+            for f in PLAN.scheduled_families
+        ),
+    )
+    assert "nightly_determinism: missing job" in without_job.validate()
+    # A farm-only cell names no runner; every other cell names one.
+    assert (
+        "linux-x86_64-py312-native-release-output: a farm-only matrix cell names no runner"
+        in cell_data(
+            cell.id, lambda data: {**data, "runner": "ubuntu-latest"}
+        ).validate()
+    )
+    assert (
+        "linux-x86_64-py312-repository-policy: matrix cell missing non-empty runner"
+        in cell_data(
+            "linux-x86_64-py312-repository-policy",
+            lambda data: {k: v for k, v in data.items() if k != "runner"},
+        ).validate()
+    )
+
+
 def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
     for family in PLAN.families:
         if family.data["executor"] != "github-job":
@@ -3246,7 +3327,6 @@ def test_actual_wasm_linker_fixtures_have_one_provisioned_lane() -> None:
         "test_primary_runtime_fixture_passes_actual_relocatable_admission",
         "test_run_wasm_ld_rejects_shared_primary_before_publication",
         "test_wasm_module_identity_survives_distinct_staging_paths",
-        "test_existing_alias_binding_controls_actual_llvm_resolution",
     }
     selectors = {f"tests/test_wasm_link_validation.py::{name}" for name in names}
     assert set(arg for arg in actual.argv if "::" in arg) == selectors
@@ -3600,7 +3680,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "nightly_shard_prepare",
         "nightly_verification_t3",
         "platform_portability",
-        "primitive_instructions",
+        "instruction_signal",
         "python_unit",
         "python_unit_collection",
         "repository_policy",
@@ -5106,7 +5186,7 @@ def test_scheduled_verdict_requires_every_command_and_evidence_output(
     scheduled_names = [
         family.name
         for family in PLAN.scheduled_families
-        if family.data["workflow"] == workflow
+        if family.data.get("workflow") == workflow
     ]
     scheduled_commands = [
         command for command in PLAN.commands if command.family in scheduled_names
@@ -5124,7 +5204,7 @@ def test_scheduled_verdict_requires_every_command_and_evidence_output(
         proof_plan.main(
             [
                 "--verify-scheduled",
-                ".github/workflows/primitive-instructions.yml",
+                ".github/workflows/perf-gate.yml",
                 "--receipt-dir",
                 str(tmp_path),
             ]
@@ -7319,7 +7399,7 @@ def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
     scheduled = {
         family.name: family
         for family in PLAN.scheduled_families
-        if family.data["workflow"] == ".github/workflows/nightly.yml"
+        if family.data.get("workflow") == ".github/workflows/nightly.yml"
     }
     assert set(scheduled) == {
         "nightly_conformance",
@@ -9575,7 +9655,8 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "native.integration.capability-manifest",
                 "native.integration.cli-smoke",
                 "native.integration.metamorphic",
-                "performance.primitive-instructions",
+                "performance.instructions",
+                "performance.instructions-nightly",
                 "nightly.determinism.checkout-independence",
                 "nightly.determinism.compiler-prewarm",
                 "nightly.determinism.runtime",

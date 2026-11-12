@@ -10,8 +10,16 @@ static LOOKUP_MODE: AtomicU64 = AtomicU64::new(LOOKUP_HIT);
 static LOOKUP_RESULT: AtomicU64 = AtomicU64::new(0);
 static LOOKUP_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn namespace_lookup_callback(_self: u64, _key: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn namespace_lookup_callback(__context: u64, _self: u64, _key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         LOOKUP_CALLS.fetch_add(1, Ordering::SeqCst);
         match LOOKUP_MODE.load(Ordering::SeqCst) {
             LOOKUP_KEY_ERROR => raise_exception::<u64>(_py, BuiltinExc::KeyError, "callback miss"),
@@ -25,7 +33,7 @@ extern "C" fn namespace_lookup_callback(_self: u64, _key: u64) -> u64 {
                 result
             }
         }
-    })
+    }
 }
 
 fn refcount(bits: u64) -> u32 {
@@ -51,7 +59,8 @@ fn callback_dict_subclass(_py: &PyToken<'_>) -> (u64, u64, u64) {
     assert!(!namespace.is_null() && !bases.is_null());
     let namespace = MoltObject::from_ptr(namespace).bits();
     let bases = MoltObject::from_ptr(bases).bits();
-    let class = crate::builtins::types::molt_type_new(
+    let class = crate::builtins::types::molt_type_new_attached_body(
+        _py,
         builtin_classes(_py).type_obj,
         name,
         bases,
@@ -86,7 +95,7 @@ fn callback_dict_subclass(_py: &PyToken<'_>) -> (u64, u64, u64) {
 
 fn assert_and_clear_exception(_py: &PyToken<'_>, expected: crate::BuiltinExc, message: &str) {
     assert!(exception_pending(_py));
-    let exception = molt_exception_last_pending();
+    let exception = molt_exception_last_pending_attached_body(_py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         _py, exception, expected
     ));
@@ -115,7 +124,8 @@ fn relative_import_reads_subclass_globals_backing_without_mapping_callbacks() {
         unsafe { assert!(dict_set_in_place(_py, storage, package_key, empty)) };
         LOOKUP_MODE.store(LOOKUP_VALUE_ERROR, Ordering::SeqCst);
         LOOKUP_CALLS.store(0, Ordering::SeqCst);
-        let result = crate::builtins::platform::molt_importlib_import_transaction(
+        let result = crate::builtins::platform::molt_importlib_import_transaction_attached_body(
+            _py,
             empty,
             globals,
             MoltObject::none().bits(),
@@ -177,7 +187,7 @@ fn namespace_get_dispatches_dict_subclass_getitem_and_preserves_owners() {
         LOOKUP_RESULT.store(value, Ordering::SeqCst);
         LOOKUP_CALLS.store(0, Ordering::SeqCst);
 
-        let found = molt_namespace_get(namespace, key, missing_bits(_py));
+        let found = molt_namespace_get_attached_body(_py, namespace, key, missing_bits(_py));
         assert_eq!(found, value);
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(refcount(value), value_before + 1);
@@ -202,7 +212,10 @@ fn framed_global_store_uses_dict_subclass_storage_without_replacing_identity() {
         let (globals, class, function) = callback_dict_subclass(_py);
         let globals_ptr = obj_from_bits(globals).as_ptr().unwrap();
 
-        assert_eq!(crate::molt_dict_set(globals, key, value), globals);
+        assert_eq!(
+            crate::molt_dict_set_attached_body(_py, globals, key, value),
+            globals
+        );
         assert!(!exception_pending(_py));
         assert_eq!(
             unsafe { object_type_id(globals_ptr) },
@@ -232,13 +245,13 @@ fn foreign_module_set_does_not_redirect_into_active_function_globals() {
         let key = dynamic_attr_name_bits(_py, b"foreign_value").unwrap();
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let module_name = dynamic_attr_name_bits(_py, b"foreign_namespace_target").unwrap();
-        let module = molt_module_new(module_name);
+        let module = molt_module_new_attached_body(_py, module_name);
         let (globals, class, function) = callback_dict_subclass(_py);
         assert!(!obj_from_bits(module).is_none());
 
         inc_ref_bits(_py, globals);
         crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, 0, 0);
-        let result = molt_module_set_attr(module, key, value);
+        let result = molt_module_set_attr_attached_body(_py, module, key, value);
         crate::builtins::frames::frame_stack_pop(_py);
         assert!(obj_from_bits(result).is_none());
         assert!(!exception_pending(_py));
@@ -252,7 +265,7 @@ fn foreign_module_set_does_not_redirect_into_active_function_globals() {
             },
             None
         );
-        let found = molt_module_get_attr(module, key);
+        let found = molt_module_get_attr_attached_body(_py, module, key);
         assert_eq!(found, value);
         dec_ref_bits(_py, found);
 

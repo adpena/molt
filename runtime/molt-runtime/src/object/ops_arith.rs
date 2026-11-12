@@ -123,9 +123,12 @@ fn complex_binary(
 /// Skips the 8-branch type dispatch in `molt_add`.
 /// Falls back to `molt_add` if either operand is not actually a string
 /// (defensive: the frontend may have mis-inferred the type hint).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_str_concat(lhs_bits: u64, rhs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_str_concat_attached_body(
+    _py: &crate::PyToken<'_>,
+    lhs_bits: u64,
+    rhs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let lhs = obj_from_bits(lhs_bits);
         let rhs = obj_from_bits(rhs_bits);
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -147,13 +150,12 @@ pub extern "C" fn molt_str_concat(lhs_bits: u64, rhs_bits: u64) -> u64 {
             }
         }
         // Fallback: type hint was wrong, delegate to full dispatch.
-        molt_add(lhs_bits, rhs_bits)
+        molt_add_attached_body(_py, lhs_bits, rhs_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { add_impl(_py, a, b, "+") })
+pub(crate) fn molt_add_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { add_impl(_py, a, b, "+") })
 }
 
 /// `err_op` selects the terminal TypeError symbol (`+` or `+=`).
@@ -172,6 +174,13 @@ fn add_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         err_op,
     ) {
         return result;
+    }
+    // A complex operand decides the operation: no int, float, sequence or
+    // big-int case below can apply to it, so answer before those probes.
+    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+        && let Some(bits) = complex_binary(_py, ComplexArith::Add, lhs, rhs)
+    {
+        return bits;
     }
     // BigInt fast path — hoisted above inline int/float checks because
     // BigInt operands fail every is_int/is_float/to_i64 check before
@@ -279,11 +288,6 @@ fn add_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
         return bigint_bits(_py, res);
     }
-    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
-        && let Some(bits) = complex_binary(_py, ComplexArith::Add, lhs, rhs)
-    {
-        return bits;
-    }
     unsafe {
         let add_name_bits = crate::NameId::DunderAdd.bits(_py);
         let radd_name_bits = crate::NameId::DunderRadd.bits(_py);
@@ -345,9 +349,8 @@ fn sequence_concat(py: &PyToken<'_>, left: u64, right: u64, inplace: bool) -> u6
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concat(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { sequence_concat(py, a, b, false) })
+pub(crate) fn molt_concat_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { sequence_concat(py, a, b, false) })
 }
 
 /// Heap/custom operands take one numeric phase, then the physical sequence
@@ -397,9 +400,8 @@ fn dynamic_inplace_sequence(py: &PyToken<'_>, left: u64, right: u64, repeat: boo
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_add_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(result) = dynamic_inplace_sequence(_py, a, b, false) {
             return result;
         }
@@ -410,7 +412,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                 if matches!(ltype, TYPE_ID_LIST | TYPE_ID_LIST_BOOL | TYPE_ID_LIST_INT)
                     && crate::object::iterable::builtin_receiver(_py, ptr)
                 {
-                    let _ = molt_list_extend(a, b);
+                    let _ = molt_list_extend_attached_body(_py, a, b);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -489,14 +491,12 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_concat(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { sequence_concat(py, a, b, true) })
+pub(crate) fn molt_inplace_concat_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { sequence_concat(py, a, b, true) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { sub_impl(_py, a, b, "-") })
+pub(crate) fn molt_sub_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { sub_impl(_py, a, b, "-") })
 }
 
 /// `err_op` selects the terminal TypeError symbol (`-` or `-=`).
@@ -512,6 +512,13 @@ fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         err_op,
     ) {
         return result;
+    }
+    // A complex operand decides the operation: no int, float, sequence or
+    // big-int case below can apply to it, so answer before those probes.
+    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+        && let Some(bits) = complex_binary(_py, ComplexArith::Sub, lhs, rhs)
+    {
+        return bits;
     }
     // BigInt fast path — hoisted above inline int/float checks to avoid
     // wasted branch mispredictions when both operands are heap BigInts.
@@ -553,11 +560,6 @@ fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
         return bigint_bits(_py, res);
     }
-    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
-        && let Some(bits) = complex_binary(_py, ComplexArith::Sub, lhs, rhs)
-    {
-        return bits;
-    }
     if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
         unsafe {
             let ltype = object_type_id(lp);
@@ -573,7 +575,7 @@ fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 && builtin_operand(_py, lhs)
                 && builtin_operand(_py, rhs)
             {
-                return native_slots::view_sub_slot(a, b);
+                return native_slots::view_sub_slot(_py.attached_context(), a, b);
             }
         }
     }
@@ -587,9 +589,8 @@ fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     binary_type_error(_py, lhs, rhs, err_op)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_sub_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
@@ -617,7 +618,7 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
                 if object_type_id(ptr) == TYPE_ID_SET
                     && crate::object::iterable::builtin_receiver(_py, ptr)
                 {
-                    let result = native_slots::set_isub_slot(a, b);
+                    let result = native_slots::set_isub_slot(_py.attached_context(), a, b);
                     if exception_pending(_py) || !is_not_implemented_bits(_py, result) {
                         return result;
                     }
@@ -695,7 +696,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
             }
             if type_id == TYPE_ID_LIST && crate::object::seq_access::len(ptr) == 1 {
                 let mut fill = 0;
-                if crate::object::seq_access::read_item_owned(ptr, 0, &mut fill) == 0 {
+                if crate::object::seq_access::read_item_owned(_py, ptr, 0, &mut fill) == 0 {
                     return None;
                 }
                 let inline = crate::object::layout::InlineListInt::from_bits(fill).is_some();
@@ -1083,9 +1084,8 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_mul_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(result) = dynamic_inplace_sequence(_py, a, b, true) {
             return result;
         }
@@ -1131,9 +1131,8 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { mul_impl(_py, a, b, "*") })
+pub(crate) fn molt_mul_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { mul_impl(_py, a, b, "*") })
 }
 
 /// `err_op` selects the terminal TypeError symbol (`*` or `*=`).
@@ -1149,6 +1148,13 @@ fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         err_op,
     ) {
         return result;
+    }
+    // A complex operand decides the operation: no int, float, sequence or
+    // big-int case below can apply to it, so answer before those probes.
+    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
+        && let Some(bits) = complex_binary(_py, ComplexArith::Mul, lhs, rhs)
+    {
+        return bits;
     }
     // BigInt fast path — hoisted to avoid wasted to_i64/is_float checks
     // when both operands are heap BigInts.
@@ -1211,11 +1217,6 @@ fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
         return bigint_bits(_py, res);
     }
-    if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
-        && let Some(bits) = complex_binary(_py, ComplexArith::Mul, lhs, rhs)
-    {
-        return bits;
-    }
     unsafe {
         let mul_name_bits = crate::NameId::DunderMul.bits(_py);
         let rmul_name_bits = crate::NameId::DunderRmul.bits(_py);
@@ -1226,9 +1227,8 @@ fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     binary_type_error(_py, lhs, rhs, err_op)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { div_impl(_py, a, b, "/") })
+pub(crate) fn molt_div_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { div_impl(_py, a, b, "/") })
 }
 
 /// True-division core. `err_op` is the operator symbol used for the terminal
@@ -1323,9 +1323,8 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_div_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let idiv_name_bits = crate::NameId::DunderItruediv.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, idiv_name_bits) {
@@ -1338,9 +1337,8 @@ pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { floordiv_impl(_py, a, b, "//") })
+pub(crate) fn molt_floordiv_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { floordiv_impl(_py, a, b, "//") })
 }
 
 /// Floor-division core. `err_op` selects the terminal TypeError symbol (`//`
@@ -1409,9 +1407,8 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_floordiv(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_floordiv_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let idiv_name_bits = crate::NameId::DunderIfloordiv.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, idiv_name_bits) {
@@ -1422,9 +1419,8 @@ pub extern "C" fn molt_inplace_floordiv(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { mod_impl(_py, a, b, "%") })
+pub(crate) fn molt_mod_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { mod_impl(_py, a, b, "%") })
 }
 
 /// Modulo / `%`-format core. `err_op` selects the terminal TypeError symbol
@@ -1462,7 +1458,7 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 if object_type_id(ptr) == TYPE_ID_STRING
                     && crate::object::iterable::builtin_receiver(_py, ptr)
                 {
-                    return native_slots::string_mod_slot(a, b);
+                    return native_slots::string_mod_slot(_py.attached_context(), a, b);
                 }
             }
         }
@@ -1505,9 +1501,8 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_mod(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_mod_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let imod_name_bits = crate::NameId::DunderImod.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, imod_name_bits) {
@@ -1888,8 +1883,7 @@ pub(crate) fn number_power(a: u64, b: u64, modulus: u64, inplace: bool) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
+pub(crate) fn molt_pow_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
     number_power(a, b, MoltObject::none().bits(), false)
 }
 
@@ -2010,13 +2004,11 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_pow(a: u64, b: u64) -> u64 {
+pub(crate) fn molt_inplace_pow_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
     number_power(a, b, MoltObject::none().bits(), true)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
+pub(crate) fn molt_pow_mod_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64, m: u64) -> u64 {
     number_power(a, b, m, false)
 }
 
@@ -2094,17 +2086,20 @@ fn modular_power_impl(_py: &PyToken<'_>, a: u64, b: u64, m: u64) -> u64 {
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_round_attached_body(
+    _py: &crate::PyToken<'_>,
+    val_bits: u64,
+    ndigits_bits: u64,
+    has_ndigits_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let supplied = to_i64(obj_from_bits(has_ndigits_bits)).unwrap_or(0) != 0;
         rounding::round(py, val_bits, ndigits_bits, supplied)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_trunc_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let val = obj_from_bits(val_bits);
         // A bare heap BigInt is already an exact int; return it unchanged
         // (retaining the owned alias) BEFORE the `to_i64` fast path so a
@@ -2292,9 +2287,8 @@ fn build_union_type(py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 {
     MoltObject::from_ptr(union_ptr).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { bit_or_impl(_py, a, b, "|") })
+pub(crate) fn molt_bit_or_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { bit_or_impl(_py, a, b, "|") })
 }
 
 /// `err_op` selects the terminal TypeError symbol (`|` or `|=`).
@@ -2353,7 +2347,7 @@ fn bit_or_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 && builtin_operand(_py, lhs)
                 && builtin_operand(_py, rhs)
             {
-                return native_slots::view_or_slot(a, b);
+                return native_slots::view_or_slot(_py.attached_context(), a, b);
             }
             if ltype == TYPE_ID_DICT && rtype == TYPE_ID_DICT {
                 let builtins = builtin_classes(_py);
@@ -2366,7 +2360,7 @@ fn bit_or_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                     // Skip the dict fast-path so __or__/__ror__ can run.
                     // (Exact dict stays on the optimized union path.)
                 } else {
-                    return native_slots::dict_or_slot(a, b);
+                    return native_slots::dict_or_slot(_py.attached_context(), a, b);
                 }
             }
         }
@@ -2381,16 +2375,15 @@ fn bit_or_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     binary_type_error(_py, lhs, rhs, err_op)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_bit_or_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET
                     && crate::object::iterable::builtin_receiver(_py, ptr)
                 {
-                    let result = native_slots::set_ior_slot(a, b);
+                    let result = native_slots::set_ior_slot(_py.attached_context(), a, b);
                     if exception_pending(_py) || !is_not_implemented_bits(_py, result) {
                         return result;
                     }
@@ -2406,7 +2399,7 @@ pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
                     let class_bits = object_class_bits(ptr);
                     let exact_dict = class_bits == 0 || class_bits == builtins.dict;
                     if exact_dict {
-                        return native_slots::dict_ior_slot(a, b);
+                        return native_slots::dict_ior_slot(_py.attached_context(), a, b);
                     }
                 }
             }
@@ -2421,9 +2414,8 @@ pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { bit_and_impl(_py, a, b, "&") })
+pub(crate) fn molt_bit_and_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { bit_and_impl(_py, a, b, "&") })
 }
 
 /// `err_op` selects the terminal TypeError symbol (`&` or `&=`).
@@ -2479,7 +2471,7 @@ fn bit_and_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 && builtin_operand(_py, lhs)
                 && builtin_operand(_py, rhs)
             {
-                return native_slots::view_and_slot(a, b);
+                return native_slots::view_and_slot(_py.attached_context(), a, b);
             }
         }
     }
@@ -2493,16 +2485,15 @@ fn bit_and_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     binary_type_error(_py, lhs, rhs, err_op)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_bit_and_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET
                     && crate::object::iterable::builtin_receiver(_py, ptr)
                 {
-                    let result = native_slots::set_iand_slot(a, b);
+                    let result = native_slots::set_iand_slot(_py.attached_context(), a, b);
                     if exception_pending(_py) || !is_not_implemented_bits(_py, result) {
                         return result;
                     }
@@ -2521,9 +2512,8 @@ pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { bit_xor_impl(_py, a, b, "^") })
+pub(crate) fn molt_bit_xor_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { bit_xor_impl(_py, a, b, "^") })
 }
 
 /// `err_op` selects the terminal TypeError symbol (`^` or `^=`).
@@ -2579,7 +2569,7 @@ fn bit_xor_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 && builtin_operand(_py, lhs)
                 && builtin_operand(_py, rhs)
             {
-                return native_slots::view_xor_slot(a, b);
+                return native_slots::view_xor_slot(_py.attached_context(), a, b);
             }
         }
     }
@@ -2593,9 +2583,8 @@ fn bit_xor_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     binary_type_error(_py, lhs, rhs, err_op)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_invert(val: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_invert_attached_body(_py: &crate::PyToken<'_>, val: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(val);
         if let Some(result) = unary_subtype_result(_py, obj, crate::NameId::DunderInvert) {
             return result;
@@ -2673,9 +2662,8 @@ pub(super) fn unary_subtype_result(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_neg(val: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_neg_attached_body(_py: &crate::PyToken<'_>, val: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(val);
         if let Some(result) = unary_subtype_result(_py, obj, crate::NameId::DunderNeg) {
             return result;
@@ -2700,9 +2688,8 @@ pub extern "C" fn molt_neg(val: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pos(val: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pos_attached_body(_py: &crate::PyToken<'_>, val: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(val);
         if let Some(result) = unary_subtype_result(_py, obj, crate::NameId::DunderPos) {
             return result;
@@ -2726,16 +2713,15 @@ pub extern "C" fn molt_pos(val: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_bit_xor_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let lhs = obj_from_bits(a);
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET
                     && crate::object::iterable::builtin_receiver(_py, ptr)
                 {
-                    let result = native_slots::set_ixor_slot(a, b);
+                    let result = native_slots::set_ixor_slot(_py.attached_context(), a, b);
                     if exception_pending(_py) || !is_not_implemented_bits(_py, result) {
                         return result;
                     }
@@ -2860,9 +2846,8 @@ fn right_shift_saturation_result(_py: &PyToken<'_>, value: &StrictInteger) -> u6
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { lshift_impl(_py, a, b, "<<") })
+pub(crate) fn molt_lshift_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { lshift_impl(_py, a, b, "<<") })
 }
 
 /// Left-shift core. `err_op` selects the terminal TypeError symbol (`<<` vs
@@ -2960,9 +2945,8 @@ fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_lshift_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let ilshift_name_bits = crate::NameId::DunderIlshift.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, ilshift_name_bits) {
@@ -2973,9 +2957,8 @@ pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { rshift_impl(_py, a, b, ">>") })
+pub(crate) fn molt_rshift_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { rshift_impl(_py, a, b, ">>") })
 }
 
 /// Right-shift core. `err_op` selects the terminal TypeError symbol (`>>` vs
@@ -3033,9 +3016,8 @@ fn rshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_rshift_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let irshift_name_bits = crate::NameId::DunderIrshift.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, irshift_name_bits) {
@@ -3055,7 +3037,7 @@ mod tests {
     use num_traits::Zero;
 
     fn repr_string(_py: &PyToken<'_>, bits: u64) -> String {
-        let repr_bits = crate::molt_repr_from_obj(bits);
+        let repr_bits = crate::molt_repr_from_obj_attached_body(_py, bits);
         let rendered =
             string_obj_to_owned(obj_from_bits(repr_bits)).expect("repr must be a string object");
         dec_ref_bits(_py, repr_bits);
@@ -3063,8 +3045,8 @@ mod tests {
     }
 
     fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> (String, String) {
-        let exc_bits = crate::molt_exception_last();
-        let kind_bits = crate::molt_exception_kind(exc_bits);
+        let exc_bits = crate::molt_exception_last_attached_body(_py);
+        let kind_bits = crate::molt_exception_kind_attached_body(_py, exc_bits);
         let msg = crate::builtins::exceptions::format_exception_message(
             _py,
             obj_from_bits(exc_bits).as_ptr().expect("pending exception"),
@@ -3073,15 +3055,15 @@ mod tests {
             string_obj_to_owned(obj_from_bits(kind_bits)).expect("exception kind must be string");
         dec_ref_bits(_py, kind_bits);
         dec_ref_bits(_py, exc_bits);
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
         (kind, msg)
     }
 
     #[test]
     fn integer_true_divide_uses_exact_ratio_for_heap_i64() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             for (num, den, expected) in [
                 ((1_i64 << 53) + 1, 3_i64, 0x4325_5555_5555_5556_u64),
                 ((1_i64 << 60) + 4, 3, 0x4395_5555_5555_5555),
@@ -3090,7 +3072,7 @@ mod tests {
             ] {
                 let a = int_bits_from_bigint(_py, BigInt::from(num));
                 let b = MoltObject::from_int(den).bits();
-                let result = molt_div(a, b);
+                let result = molt_div_attached_body(_py, a, b);
                 assert_eq!(
                     obj_from_bits(result).as_float().unwrap().to_bits(),
                     expected
@@ -3098,15 +3080,18 @@ mod tests {
                 dec_ref_bits(_py, result);
                 dec_ref_bits(_py, a);
             }
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
         });
     }
 
     #[test]
     fn numeric_zero_error_family_matches_three_cpython_minors() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let state = runtime_state(_py);
             let saved = state.sys_version_info.lock().unwrap().clone();
             let mut target = crate::object::ops_sys::runtime_target_python_info(state);
@@ -3121,7 +3106,7 @@ mod tests {
                     let float_zero = MoltObject::from_float(-0.0).bits();
                     for (operation, legacy_integer, legacy_float) in [
                         (
-                            molt_div as extern "C" fn(u64, u64) -> u64,
+                            molt_div as unsafe extern "C" fn(u64, u64, u64) -> u64,
                             "division by zero",
                             "float division by zero",
                         ),
@@ -3163,7 +3148,7 @@ mod tests {
                             (integer, zero, legacy_integer),
                             (float, float_zero, legacy_float),
                         ] {
-                            operation(lhs, rhs);
+                            unsafe { operation(_py.attached_context(), lhs, rhs) };
                             let (kind, message) = pending_exception_kind_and_message(_py);
                             assert_eq!(kind, "ZeroDivisionError");
                             assert_eq!(
@@ -3176,7 +3161,7 @@ mod tests {
                             );
                         }
                         let big = bigint_bits(_py, BigInt::from(10).pow(80));
-                        operation(big, zero);
+                        unsafe { operation(_py.attached_context(), big, zero) };
                         let (kind, message) = pending_exception_kind_and_message(_py);
                         assert_eq!(kind, "ZeroDivisionError");
                         assert_eq!(
@@ -3193,7 +3178,7 @@ mod tests {
                         (integer, zero, "integer division or modulo by zero"),
                         (float, float_zero, "float divmod()"),
                     ] {
-                        crate::molt_divmod_builtin(lhs, rhs);
+                        crate::molt_divmod_builtin_attached_body(_py, lhs, rhs);
                         assert_eq!(
                             pending_exception_kind_and_message(_py),
                             (
@@ -3209,7 +3194,7 @@ mod tests {
                     }
                     let complex = complex_bits(_py, 7.0, 1.0);
                     let complex_zero = complex_bits(_py, 0.0, -0.0);
-                    molt_div(complex, complex_zero);
+                    molt_div_attached_body(_py, complex, complex_zero);
                     assert_eq!(
                         pending_exception_kind_and_message(_py),
                         (
@@ -3223,9 +3208,11 @@ mod tests {
                         )
                     );
                     let negative = MoltObject::from_int(-1).bits();
-                    for operation in [molt_pow as extern "C" fn(u64, u64) -> u64, molt_inplace_pow]
-                    {
-                        operation(zero, negative);
+                    for operation in [
+                        molt_pow as unsafe extern "C" fn(u64, u64, u64) -> u64,
+                        molt_inplace_pow,
+                    ] {
+                        unsafe { operation(_py.attached_context(), zero, negative) };
                         assert_eq!(
                             pending_exception_kind_and_message(_py),
                             (
@@ -3240,7 +3227,7 @@ mod tests {
                         );
                     }
                     let complex_exponent = complex_bits(_py, -1.0, 1.0);
-                    molt_pow(complex_zero, complex_exponent);
+                    molt_pow_attached_body(_py, complex_zero, complex_exponent);
                     assert_eq!(
                         pending_exception_kind_and_message(_py),
                         (
@@ -3253,7 +3240,7 @@ mod tests {
                             .into(),
                         )
                     );
-                    super::molt_pow_mod(integer, negative, zero);
+                    super::molt_pow_mod_attached_body(_py, integer, negative, zero);
                     assert_eq!(
                         pending_exception_kind_and_message(_py),
                         ("ValueError".into(), "pow() 3rd argument cannot be 0".into(),)
@@ -3301,8 +3288,8 @@ mod tests {
     #[test]
     fn integer_power_identities_keep_wide_exponents_exact() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let huge = BigInt::from(10u32).pow(400);
             for exponent in [
                 BigInt::from(0),
@@ -3328,18 +3315,24 @@ mod tests {
                     } else {
                         1
                     };
-                    for operation in [molt_pow as extern "C" fn(u64, u64) -> u64, molt_inplace_pow]
-                    {
-                        let result = operation(base_bits, exponent_bits);
+                    for operation in [
+                        molt_pow as unsafe extern "C" fn(u64, u64, u64) -> u64,
+                        molt_inplace_pow,
+                    ] {
+                        let result =
+                            unsafe { operation(_py.attached_context(), base_bits, exponent_bits) };
                         assert_eq!(to_i64(obj_from_bits(result)), Some(expected));
-                        assert_eq!(crate::molt_exception_pending(), 0);
+                        assert_eq!(
+                            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                            0
+                        );
                         dec_ref_bits(_py, result);
                     }
                 }
                 dec_ref_bits(_py, exponent_bits);
             }
             let base = bigint_bits(_py, huge);
-            let result = molt_pow(base, MoltObject::from_int(0).bits());
+            let result = molt_pow_attached_body(_py, base, MoltObject::from_int(0).bits());
             assert_eq!(to_i64(obj_from_bits(result)), Some(1));
             dec_ref_bits(_py, base);
             dec_ref_bits(_py, result);
@@ -3349,15 +3342,15 @@ mod tests {
     #[test]
     fn bigint_float_conversion_overflow_precedes_arithmetic_zero_errors() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let huge = bigint_bits(_py, BigInt::from(10u32).pow(400));
             let negative_huge = bigint_bits(_py, -BigInt::from(10u32).pow(400));
             let one = MoltObject::from_float(1.0).bits();
             let zero = MoltObject::from_float(0.0).bits();
             let complex = complex_bits(_py, 1.0, 0.0);
             for operation in [
-                molt_add as extern "C" fn(u64, u64) -> u64,
+                molt_add as unsafe extern "C" fn(u64, u64, u64) -> u64,
                 molt_sub,
                 molt_mul,
                 molt_div,
@@ -3367,7 +3360,7 @@ mod tests {
                 molt_pow,
             ] {
                 for (lhs, rhs) in [(huge, one), (one, huge), (huge, zero)] {
-                    let _ = operation(lhs, rhs);
+                    let _ = unsafe { operation(_py.attached_context(), lhs, rhs) };
                     assert_eq!(
                         pending_exception_kind_and_message(_py),
                         (
@@ -3375,7 +3368,7 @@ mod tests {
                             "int too large to convert to float".to_string()
                         )
                     );
-                    let _ = crate::molt_exception_clear();
+                    let _ = crate::molt_exception_clear_attached_body(_py);
                 }
             }
             for (lhs, rhs) in [
@@ -3384,7 +3377,7 @@ mod tests {
                 (huge, MoltObject::from_int(-1).bits()),
                 (MoltObject::from_int(0).bits(), negative_huge),
             ] {
-                let _ = molt_pow(lhs, rhs);
+                let _ = molt_pow_attached_body(_py, lhs, rhs);
                 assert_eq!(
                     pending_exception_kind_and_message(_py),
                     (
@@ -3392,15 +3385,21 @@ mod tests {
                         "int too large to convert to float".to_string()
                     )
                 );
-                let _ = crate::molt_exception_clear();
+                let _ = crate::molt_exception_clear_attached_body(_py);
             }
             // Ratio and ordering avoid lossy conversion by design.
-            assert_eq!(obj_from_bits(molt_div(huge, huge)).as_float(), Some(1.0));
+            assert_eq!(
+                obj_from_bits(molt_div_attached_body(_py, huge, huge)).as_float(),
+                Some(1.0)
+            );
             assert_eq!(
                 compare_numbers(obj_from_bits(huge), MoltObject::from_float(f64::INFINITY)),
                 Some(std::cmp::Ordering::Less)
             );
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
             dec_ref_bits(_py, huge);
             dec_ref_bits(_py, negative_huge);
             dec_ref_bits(_py, complex);
@@ -3410,8 +3409,8 @@ mod tests {
     #[test]
     fn float_divrem_and_scaled_complex_dispatch_match_python_edges() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             for (lhs, rhs, quotient, remainder) in [
                 (1.0_f64, 0.1_f64, 9.0_f64, 0.09999999999999995_f64),
                 (7.0, -3.0, -3.0, -2.0),
@@ -3421,26 +3420,35 @@ mod tests {
                 let a = MoltObject::from_float(lhs).bits();
                 let b = MoltObject::from_float(rhs).bits();
                 for (operation, expected) in [
-                    (molt_floordiv as extern "C" fn(u64, u64) -> u64, quotient),
+                    (
+                        molt_floordiv as unsafe extern "C" fn(u64, u64, u64) -> u64,
+                        quotient,
+                    ),
                     (molt_mod, remainder),
                 ] {
-                    let output = operation(a, b);
+                    let output = unsafe { operation(_py.attached_context(), a, b) };
                     assert_eq!(
                         obj_from_bits(output).as_float().unwrap().to_bits(),
                         expected.to_bits()
                     );
-                    assert_eq!(crate::molt_exception_pending(), 0);
+                    assert_eq!(
+                        crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                        0
+                    );
                     dec_ref_bits(_py, output);
                 }
             }
             let divisor = complex_bits(_py, 1e-300, 0.0);
-            let output = molt_div(MoltObject::from_float(1.0).bits(), divisor);
+            let output = molt_div_attached_body(_py, MoltObject::from_float(1.0).bits(), divisor);
             let result = complex_from_obj_strict(_py, obj_from_bits(output))
                 .expect("finite complex quotient must coerce")
                 .expect("quotient must be a complex value");
             assert_eq!(result.re, 1.0 / 1e-300);
             assert_eq!(result.im.abs(), 0.0);
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
             dec_ref_bits(_py, output);
             dec_ref_bits(_py, divisor);
         });
@@ -3449,16 +3457,20 @@ mod tests {
     #[test]
     fn modular_power_minimum_signed_exponent_is_not_negated() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let exponent = int_bits_from_i64(_py, i64::MIN);
-            let output = super::molt_pow_mod(
+            let output = super::molt_pow_mod_attached_body(
+                _py,
                 MoltObject::from_int(3).bits(),
                 exponent,
                 MoltObject::from_int(7).bits(),
             );
             assert_eq!(to_i64(obj_from_bits(output)), Some(4));
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
             dec_ref_bits(_py, exponent);
             dec_ref_bits(_py, output);
         });
@@ -3467,8 +3479,8 @@ mod tests {
     #[test]
     fn signed_floor_mod_preserve_wide_integer_and_bool_results() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             for (a, b, quotient, remainder) in [
                 (7i128, -3i128, -3i128, -2i128),
                 (-7, -3, 2, -1),
@@ -3479,10 +3491,13 @@ mod tests {
                 let lhs = int_bits_from_i128(_py, a);
                 let rhs = int_bits_from_i128(_py, b);
                 for (operation, expected) in [
-                    (molt_floordiv as extern "C" fn(u64, u64) -> u64, quotient),
+                    (
+                        molt_floordiv as unsafe extern "C" fn(u64, u64, u64) -> u64,
+                        quotient,
+                    ),
                     (molt_mod, remainder),
                 ] {
-                    let output = operation(lhs, rhs);
+                    let output = unsafe { operation(_py.attached_context(), lhs, rhs) };
                     assert_eq!(
                         to_bigint(obj_from_bits(output)),
                         Some(BigInt::from(expected))
@@ -3492,7 +3507,8 @@ mod tests {
                 dec_ref_bits(_py, lhs);
                 dec_ref_bits(_py, rhs);
             }
-            let output = molt_mod(
+            let output = molt_mod_attached_body(
+                _py,
                 MoltObject::from_bool(true).bits(),
                 MoltObject::from_int(-3).bits(),
             );
@@ -3507,12 +3523,12 @@ mod tests {
         // Clear any pending exception leaked from prior tests so that
         // `molt_repr_from_obj`'s pending-exception fast path doesn't return
         // None and trip the assertion below.
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let lhs = int_bits_from_i128(_py, 283686952306183);
             let rhs = MoltObject::from_int(8).bits();
-            let out = molt_lshift(lhs, rhs);
-            let repr_bits = crate::molt_repr_from_obj(out);
+            let out = molt_lshift_attached_body(_py, lhs, rhs);
+            let repr_bits = crate::molt_repr_from_obj_attached_body(_py, out);
             let rendered = string_obj_to_owned(obj_from_bits(repr_bits))
                 .expect("repr must be a string object");
             dec_ref_bits(_py, repr_bits);
@@ -3524,39 +3540,53 @@ mod tests {
     #[test]
     fn molt_shift_counts_do_not_truncate_at_u32_width() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let huge_inline_count = int_bits_from_i128(_py, 1_i128 << 32);
             let one = MoltObject::from_int(1).bits();
             let minus_eight = MoltObject::from_int(-8).bits();
 
-            let pos_out = molt_rshift(one, huge_inline_count);
+            let pos_out = molt_rshift_attached_body(_py, one, huge_inline_count);
             assert_eq!(repr_string(_py, pos_out), "0");
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
 
-            let neg_out = molt_rshift(minus_eight, huge_inline_count);
+            let neg_out = molt_rshift_attached_body(_py, minus_eight, huge_inline_count);
             assert_eq!(repr_string(_py, neg_out), "-1");
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
         });
     }
 
     #[test]
     fn molt_shift_counts_accept_heap_bigint_sign_without_i64_narrowing() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let huge_count = int_bits_from_i128(_py, 1_i128 << 70);
             let huge_negative_count = int_bits_from_i128(_py, -(1_i128 << 70));
 
-            let zero_lshift = molt_lshift(MoltObject::from_int(0).bits(), huge_count);
+            let zero_lshift =
+                molt_lshift_attached_body(_py, MoltObject::from_int(0).bits(), huge_count);
             assert_eq!(repr_string(_py, zero_lshift), "0");
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
 
-            let right = molt_rshift(MoltObject::from_int(1).bits(), huge_count);
+            let right = molt_rshift_attached_body(_py, MoltObject::from_int(1).bits(), huge_count);
             assert_eq!(repr_string(_py, right), "0");
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
 
-            let invalid = molt_lshift(MoltObject::from_int(1).bits(), huge_negative_count);
+            let invalid =
+                molt_lshift_attached_body(_py, MoltObject::from_int(1).bits(), huge_negative_count);
             assert!(obj_from_bits(invalid).is_none());
             let (kind, msg) = pending_exception_kind_and_message(_py);
             assert_eq!(kind, "ValueError");
@@ -3567,17 +3597,21 @@ mod tests {
     #[test]
     fn molt_lshift_rejects_unallocatable_counts_before_bigint_shift() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let count = bigint_bits(_py, BigInt::from(10u32).pow(100));
-            let out = molt_lshift(MoltObject::from_int(1).bits(), count);
+            let out = molt_lshift_attached_body(_py, MoltObject::from_int(1).bits(), count);
             assert!(obj_from_bits(out).is_none());
             let (kind, msg) = pending_exception_kind_and_message(_py);
             assert_eq!(kind, "OverflowError");
             assert_eq!(msg, "too many digits in integer");
 
             let resource_limited_count = int_bits_from_i128(_py, 1_i128 << 32);
-            let out = molt_lshift(MoltObject::from_int(1).bits(), resource_limited_count);
+            let out = molt_lshift_attached_body(
+                _py,
+                MoltObject::from_int(1).bits(),
+                resource_limited_count,
+            );
             assert!(obj_from_bits(out).is_none());
             let (kind, msg) = pending_exception_kind_and_message(_py);
             assert_eq!(kind, "MemoryError");
@@ -3588,17 +3622,17 @@ mod tests {
     #[test]
     fn molt_shift_operands_reject_exact_floats_and_generic_index_objects() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let one = MoltObject::from_int(1).bits();
             let one_float = MoltObject::from_float(1.0).bits();
-            let out = molt_lshift(one, one_float);
+            let out = molt_lshift_attached_body(_py, one, one_float);
             assert!(obj_from_bits(out).is_none());
             let (kind, msg) = pending_exception_kind_and_message(_py);
             assert_eq!(kind, "TypeError");
             assert_eq!(msg, "unsupported operand type(s) for <<: 'int' and 'float'");
 
-            let out = molt_lshift(one_float, MoltObject::from_int(2).bits());
+            let out = molt_lshift_attached_body(_py, one_float, MoltObject::from_int(2).bits());
             assert!(obj_from_bits(out).is_none());
             let (kind, msg) = pending_exception_kind_and_message(_py);
             assert_eq!(kind, "TypeError");
@@ -3607,9 +3641,8 @@ mod tests {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_matmul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { matmul_impl(_py, a, b, "@") })
+pub(crate) fn molt_matmul_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { matmul_impl(_py, a, b, "@") })
 }
 
 /// Matrix-multiply core. `err_op` selects the terminal TypeError symbol (`@`
@@ -3623,7 +3656,7 @@ fn matmul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             unsafe {
                 if object_type_id(lp) == TYPE_ID_BUFFER2D && object_type_id(rp) == TYPE_ID_BUFFER2D
                 {
-                    return molt_buffer2d_matmul(a, b);
+                    return molt_buffer2d_matmul_attached_body(_py, a, b);
                 }
             }
         }
@@ -3640,9 +3673,8 @@ fn matmul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inplace_matmul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inplace_matmul_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let imatmul_name_bits = crate::NameId::DunderImatmul.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, imatmul_name_bits) {
@@ -3652,3 +3684,5 @@ pub extern "C" fn molt_inplace_matmul(a: u64, b: u64) -> u64 {
         matmul_impl(_py, a, b, "@=")
     })
 }
+
+include!("../attached_exports_generated/object/ops_arith.rs");

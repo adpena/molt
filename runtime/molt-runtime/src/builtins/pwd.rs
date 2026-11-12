@@ -15,9 +15,8 @@ fn raise_provider_absence(py: &PyToken<'_>) -> u64 {
     crate::builtins::exceptions::raise_module_not_found(py, b"No module named 'pwd'", name.bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pwd_module_init() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_pwd_module_init_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if !crate::async_rt::channels::operation_supported_here(py, OperationId::PwdGetpwuid) {
             return raise_provider_absence(py);
         }
@@ -53,7 +52,7 @@ mod native {
     }
 
     pub(super) fn entry(py: &PyToken<'_>, class: u64, value: Passwd) -> u64 {
-        let mut fields = Vec::new();
+        let mut fields = molt_runtime_core::RuntimeValueCollection::new(py.core_token());
         if fields.try_reserve_exact(7).is_err() {
             return raise_exception::<u64>(py, BuiltinExc::MemoryError, "");
         }
@@ -76,11 +75,7 @@ mod native {
         }
         // The shared factory validates the actual class declaration and owns
         // visible/hidden tuple allocation. No callback or mutable type-name test.
-        crate::builtins::structseq::from_values(
-            py,
-            class,
-            OwnedRuntimeValue::as_bits_slice(&fields),
-        )
+        crate::builtins::structseq::from_values(py, class, fields.as_bits_slice())
     }
 
     pub(super) fn uid(py: &PyToken<'_>, bits: u64) -> Option<libc::uid_t> {
@@ -213,7 +208,9 @@ mod native {
                     let mut output = FormatWriter::new(py);
                     output.append_bytes(b"getpwnam(): name not found: ")?;
                     output.append_output(
-                        FormatOutput::OwnedString(crate::molt_repr_from_obj(original)),
+                        FormatOutput::OwnedString(crate::molt_repr_from_obj_attached_body(
+                            py, original,
+                        )),
                         false,
                     )?;
                     output.finish().into_bytes_result(py)
@@ -240,7 +237,7 @@ mod native {
             Ok(entries) => entries,
             Err(_) => return raise_exception::<u64>(py, BuiltinExc::MemoryError, ""),
         };
-        let mut values = Vec::new();
+        let mut values = molt_runtime_core::RuntimeValueCollection::new(py.core_token());
         if values.try_reserve_exact(entries.len()).is_err() {
             return raise_exception::<u64>(py, BuiltinExc::MemoryError, "");
         }
@@ -252,7 +249,7 @@ mod native {
             }
             values.push(owner);
         }
-        let pointer = alloc_list(py, OwnedRuntimeValue::as_bits_slice(&values));
+        let pointer = alloc_list(py, values.as_bits_slice());
         if pointer.is_null() {
             MoltObject::none().bits()
         } else {
@@ -261,9 +258,12 @@ mod native {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pwd_getpwuid(uid: u64, class: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_pwd_getpwuid_attached_body(
+    _py: &crate::PyToken<'_>,
+    uid: u64,
+    class: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if require_operation::<u64>(py, OperationId::PwdGetpwuid, AuditArgs::None).is_err() {
             return MoltObject::none().bits();
         }
@@ -282,9 +282,12 @@ pub extern "C" fn molt_pwd_getpwuid(uid: u64, class: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pwd_getpwnam(name: u64, class: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_pwd_getpwnam_attached_body(
+    _py: &crate::PyToken<'_>,
+    name: u64,
+    class: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if require_operation::<u64>(py, OperationId::PwdGetpwnam, AuditArgs::None).is_err() {
             return MoltObject::none().bits();
         }
@@ -304,9 +307,8 @@ pub extern "C" fn molt_pwd_getpwnam(name: u64, class: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pwd_getpwall(class: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_pwd_getpwall_attached_body(_py: &crate::PyToken<'_>, class: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if require_operation::<u64>(py, OperationId::PwdGetpwall, AuditArgs::None).is_err() {
             return MoltObject::none().bits();
         }
@@ -322,11 +324,13 @@ pub extern "C" fn molt_pwd_getpwall(class: u64) -> u64 {
     })
 }
 
+include!("../attached_exports_generated/builtins/pwd.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::builtins::exceptions::{
-        ExceptionValue, exception_matches_kind, molt_exception_last_pending,
+        ExceptionValue, exception_matches_kind, molt_exception_last_pending_attached_body,
     };
 
     #[test]
@@ -341,7 +345,8 @@ mod tests {
             let references = unsafe { (*name_header).ref_count_snapshot() };
             assert_eq!(raise_provider_absence(py), MoltObject::none().bits());
             assert!(exception_pending(py));
-            let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
+            let exception =
+                ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
             assert!(exception_matches_kind(
                 py,
                 exception.bits(),
@@ -350,7 +355,10 @@ mod tests {
             clear_exception(py);
             let message = ExceptionValue::adopt(
                 py,
-                crate::builtins::exceptions::molt_exception_message(exception.bits()),
+                crate::builtins::exceptions::molt_exception_message_attached_body(
+                    py,
+                    exception.bits(),
+                ),
             );
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(message.bits())).as_deref(),
@@ -359,12 +367,22 @@ mod tests {
             let key = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"name").unwrap());
             let name = ExceptionValue::adopt(
                 py,
-                crate::molt_getattr_builtin(exception.bits(), key.bits(), missing_bits(py)),
+                crate::molt_getattr_builtin_attached_body(
+                    py,
+                    exception.bits(),
+                    key.bits(),
+                    missing_bits(py),
+                ),
             );
             let path_key = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"path").unwrap());
             let path = ExceptionValue::adopt(
                 py,
-                crate::molt_getattr_builtin(exception.bits(), path_key.bits(), missing_bits(py)),
+                crate::molt_getattr_builtin_attached_body(
+                    py,
+                    exception.bits(),
+                    path_key.bits(),
+                    missing_bits(py),
+                ),
             );
             assert_eq!(name.bits(), original_name.bits());
             assert!(obj_from_bits(path.bits()).is_none());

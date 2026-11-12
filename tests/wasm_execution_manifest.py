@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+from molt._wasm_abi_generated import (
+    WASM_EXECUTION_MANIFEST_VERSION,
+    compiled_execution_symbol,
+    RUNTIME_EXECUTION_ABIS,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+    ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+    ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
+    ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+)
 from molt.capability_manifest import (
     ResolvedRuntimePolicy,
     resolve_runtime_policy_from_env,
@@ -14,6 +22,21 @@ from pathlib import Path
 
 
 EMPTY_WASM_MODULE = b"\x00asm\x01\x00\x00\x00"
+
+
+def execution_abi_metadata() -> dict[str, object]:
+    return {
+        "execution_context_abi": {
+            "fingerprint": str(ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT),
+            "suffix": ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+            "section": ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
+            "thread_record_offset": ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+        },
+        "runtime_execution_abis": {
+            logical: {"context": abi.context, "physical_symbol": abi.physical_symbol}
+            for logical, abi in RUNTIME_EXECUTION_ABIS.items()
+        },
+    }
 
 
 def wasm_execution_launch(
@@ -37,8 +60,9 @@ def _manifest_payload(
         "modules": modules,
         "entry": {
             "module": "linked" if mode == "linked" else "app",
-            "function": "molt_main",
+            "function": compiled_execution_symbol("molt_main"),
         },
+        "abi": {"runtime_imports": execution_abi_metadata()},
     }
 
 

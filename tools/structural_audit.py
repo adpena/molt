@@ -3085,6 +3085,60 @@ def _binds_raw_intrinsic_name(node: ast.stmt) -> bool:
     )
 
 
+# Hand-written compiler crates, where a runtime entry must travel as the typed
+# `RuntimeFn` (or a manifest-generated table), never as its spelled symbol.
+_SPELLED_RUNTIME_ENTRY_ROOTS = (
+    "runtime/molt-ir/src",
+    "runtime/molt-tir/src",
+    "runtime/molt-passes/src",
+    "runtime/molt-backend-native/src",
+    "runtime/molt-backend-wasm/src",
+)
+_SPELLED_RUNTIME_ENTRY_RE = re.compile(r'"molt_[a-z0-9_]+"')
+_RUST_TEST_FILE_RE = re.compile(r"(?:^|/)(?:tests?|[a-z0-9_]+_tests?)\.rs$|/tests/")
+
+
+def probe_spelled_runtime_entries(root: Path) -> list[Finding]:
+    """Runtime entries named by string in hand-written compiler code.
+
+    A string match is a compile-time decision made again at run time, and a
+    spelled symbol is a second identity beside the typed `RuntimeFn`
+    (AGENTS.md, "Identity is typed, never spelled"). Generated tables and test
+    files are not counted. Reported per file, ratcheted in aggregate: the
+    count may only fall as lowerings move to `CallRuntime` in late TIR.
+    """
+    findings: list[Finding] = []
+    for path in _iter_source_files(root, (".rs",)):
+        rel = path.relative_to(root).as_posix()
+        if not rel.startswith(_SPELLED_RUNTIME_ENTRY_ROOTS):
+            continue
+        if _RUST_TEST_FILE_RE.search(rel) or _is_generated(path, root):
+            continue
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        hits = list(_SPELLED_RUNTIME_ENTRY_RE.finditer(text))
+        if not hits:
+            continue
+        findings.append(
+            Finding(
+                probe="spelled_runtime_entry",
+                severity="medium" if len(hits) >= 10 else "low",
+                title=f"{len(hits)} runtime entries named by string",
+                location=f"{rel}:{_line_of_offset(text, hits[0].start())}",
+                detail=", ".join(sorted({m.group(0) for m in hits})[:6]),
+                suggested_action=(
+                    "lower through CallRuntime with a typed RuntimeFn, in the late "
+                    "TIR stage where every backend shares it"
+                ),
+                class_retired="spelled-runtime-identity",
+                metric=float(len(hits)),
+            )
+        )
+    return findings
+
+
 def probe_stdlib_raw_intrinsic_names(root: Path) -> list[Finding]:
     """Stdlib modules that leave a raw ``molt_*`` intrinsic name bound.
 
@@ -3503,6 +3557,7 @@ PROBES = (
     probe_process_wide_test_patches,
     probe_build_failure_test_skips,
     probe_stdlib_raw_intrinsic_names,
+    probe_spelled_runtime_entries,
     probe_scratch_authority_bypasses,
 )
 
@@ -3590,6 +3645,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         f for f in findings if f.probe == "stdlib_raw_intrinsic_name"
     ]
     scratch_bypasses = [f for f in findings if f.probe == "scratch_authority_bypass"]
+    spelled_entries = [f for f in findings if f.probe == "spelled_runtime_entry"]
     kitchen_sink_files = float(len(kitchen_sink))
     max_kitchen_sink_structural_score = float(
         max((f.metric for f in kitchen_sink), default=0)
@@ -3645,6 +3701,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         "scratch_authority_bypasses": float(
             sum(int(f.metric) for f in scratch_bypasses)
         ),
+        "spelled_runtime_entries": float(sum(int(f.metric) for f in spelled_entries)),
     }
 
     if set(metrics) != release_receipt.STRUCTURAL_AUDIT_METRICS:

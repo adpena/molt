@@ -13,11 +13,15 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+use super::blocks::Terminator;
 use super::function::TirFunction;
-use super::op_kinds_generated::opcode_pass_delta_facts_table;
-use super::ops::TirOp;
+use super::op_kinds_generated::{
+    SccpConstantSeedRule, opcode_pass_delta_facts_table, opcode_sccp_constant_seed_rule_table,
+};
+use super::ops::{OpCode, TirOp};
 use super::pass_manager::Mutates;
 use super::passes::PassStats;
+use super::passes::value_identity::{canonical_predicate, copy_value_source, peel_truth_wrappers};
 use super::target_info::TargetInfo;
 use super::translation_validator::TranslationValidation;
 use super::types::TirType;
@@ -54,6 +58,195 @@ pub(crate) struct FactProfile {
     pub exception_events: usize,
     pub type_guard_ops: usize,
     pub heap_alloc_ops: usize,
+    pub branch_census: BranchCensus,
+}
+
+/// What the conditions of `CondBranch` terminators are made of (HF-773).
+///
+/// On the M6 programs a constant-only SCCP lattice decided no additional
+/// branch (80/80, 262/262): Python branches on truthiness, identity, types
+/// and comparisons of values that are not constants. This census names, per
+/// undecided branch, the predicate that produced its condition and the class
+/// of each predicate operand, so the next value-fact domain is chosen from
+/// measured branch shapes. `Switch` terminators are not counted.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub(crate) struct BranchCensus {
+    /// Branches whose condition is a constant (left for block removal).
+    pub constant: usize,
+    /// One row per distinct condition shape, in a stable order.
+    pub undecided: Vec<BranchConditionRow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct BranchConditionRow {
+    /// The canonical predicate under every truth wrapper (`Bool`, `Not`,
+    /// copies): `IsNot` counts as `Is` and `Ne` as `Eq`, negated.
+    pub source: ConditionSource,
+    /// The branch takes its then edge when the canonical predicate is false.
+    pub negated: bool,
+    /// The predicate's operands, constants last; for a block argument or an
+    /// unbound value, the condition itself.
+    pub operands: Vec<OperandFact>,
+    pub count: usize,
+}
+
+/// The producer of a branch condition, after value-identity copies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
+pub(crate) enum ConditionSource {
+    Op(OpCode),
+    BlockArg,
+    Unbound,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
+pub(crate) struct OperandFact {
+    pub class: ValueClass,
+    /// Produced by an op with an SCCP constant-seed rule.
+    pub constant: bool,
+}
+
+/// A closed projection of `TirType` for the census. A boxed value with a
+/// known inner type takes the inner type's class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
+pub(crate) enum ValueClass {
+    Int,
+    Float,
+    Bool,
+    NoneType,
+    Str,
+    Bytes,
+    List,
+    Dict,
+    Set,
+    Tuple,
+    Iterator,
+    UserClass,
+    Union,
+    Dynamic,
+    Other,
+}
+
+impl ValueClass {
+    fn of(ty: Option<&TirType>) -> Self {
+        match ty {
+            None | Some(TirType::DynBox) => Self::Dynamic,
+            Some(TirType::I64 | TirType::BigInt) => Self::Int,
+            Some(TirType::F64) => Self::Float,
+            Some(TirType::Bool) => Self::Bool,
+            Some(TirType::None) => Self::NoneType,
+            Some(TirType::Str) => Self::Str,
+            Some(TirType::Bytes) => Self::Bytes,
+            Some(TirType::List(_)) => Self::List,
+            Some(TirType::Dict(..)) => Self::Dict,
+            Some(TirType::Set(_)) => Self::Set,
+            Some(TirType::Tuple(_)) => Self::Tuple,
+            Some(TirType::Iterator(_)) => Self::Iterator,
+            Some(TirType::UserClass(_)) => Self::UserClass,
+            Some(TirType::Union(_)) => Self::Union,
+            Some(TirType::Box(inner)) => Self::of(Some(inner)),
+            Some(_) => Self::Other,
+        }
+    }
+}
+
+type ConditionShape = (ConditionSource, bool, Vec<OperandFact>);
+
+impl BranchCensus {
+    fn capture(func: &TirFunction) -> Self {
+        let mut producers: HashMap<ValueId, &TirOp> = HashMap::new();
+        let mut arg_types: HashMap<ValueId, &TirType> = HashMap::new();
+        for block in func.blocks.values() {
+            for arg in &block.args {
+                arg_types.insert(arg.id, &arg.ty);
+            }
+            for op in &block.ops {
+                for &result in &op.results {
+                    producers.insert(result, op);
+                }
+            }
+        }
+        // Follow value-identity copies to the value's real producer. SSA has
+        // no copy cycle; the bound keeps a malformed function finite.
+        let resolve = |mut value: ValueId| {
+            for _ in 0..=producers.len() {
+                match producers.get(&value).and_then(|op| copy_value_source(op)) {
+                    Some(source) => value = source,
+                    None => break,
+                }
+            }
+            value
+        };
+        let is_constant = |op: &TirOp| {
+            opcode_sccp_constant_seed_rule_table(op.opcode) != SccpConstantSeedRule::None
+        };
+        let fact = |value: ValueId| OperandFact {
+            class: ValueClass::of(
+                func.value_types
+                    .get(&value)
+                    .or_else(|| arg_types.get(&value).copied()),
+            ),
+            constant: producers.get(&value).is_some_and(|&op| is_constant(op)),
+        };
+
+        let mut census = BranchCensus::default();
+        let mut shapes: HashMap<ConditionShape, usize> = HashMap::new();
+        for block in func.blocks.values() {
+            let Terminator::CondBranch { cond, .. } = &block.terminator else {
+                continue;
+            };
+            let truth = peel_truth_wrappers(*cond, producers.len(), |value| {
+                producers.get(&value).copied()
+            });
+            let core = resolve(truth.core);
+            let shape = match producers.get(&core) {
+                Some(&op) if is_constant(op) => {
+                    census.constant += 1;
+                    continue;
+                }
+                Some(&op) => {
+                    let (opcode, flips) = canonical_predicate(op.opcode);
+                    let mut operands: Vec<OperandFact> = op
+                        .operands
+                        .iter()
+                        .map(|&value| fact(resolve(value)))
+                        .collect();
+                    // Stable: constants after the rest, order otherwise kept.
+                    operands.sort_by_key(|operand| operand.constant);
+                    (
+                        ConditionSource::Op(opcode),
+                        truth.negated != flips,
+                        operands,
+                    )
+                }
+                None => {
+                    let source = if arg_types.contains_key(&core) {
+                        ConditionSource::BlockArg
+                    } else {
+                        ConditionSource::Unbound
+                    };
+                    (source, truth.negated, vec![fact(core)])
+                }
+            };
+            *shapes.entry(shape).or_default() += 1;
+        }
+        census.undecided = shapes
+            .into_iter()
+            .map(|((source, negated, operands), count)| BranchConditionRow {
+                source,
+                negated,
+                operands,
+                count,
+            })
+            .collect();
+        census.undecided.sort_by(|left, right| {
+            (format!("{:?}", left.source), left.negated, &left.operands).cmp(&(
+                format!("{:?}", right.source),
+                right.negated,
+                &right.operands,
+            ))
+        });
+        census
+    }
 }
 
 impl FactProfile {
@@ -80,6 +273,7 @@ impl FactProfile {
             exception_events: 0,
             type_guard_ops: 0,
             heap_alloc_ops: 0,
+            branch_census: BranchCensus::capture(func),
         };
 
         let value_range = crate::representation_facts::value_range_for(func);
@@ -459,13 +653,14 @@ fn negative_counts(delta: &BTreeMap<String, isize>) -> BTreeMap<String, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::Terminator;
-    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode};
+    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect};
     use crate::tir::target_info::TargetInfo;
 
     fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -517,6 +712,7 @@ mod tests {
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops = vec![TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -542,6 +738,7 @@ mod tests {
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops = vec![TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -606,6 +803,218 @@ mod tests {
         assert_eq!(delta.lost_repr_values.get("MaybeBigInt"), Some(&1));
         assert_eq!(delta.gained_repr_values.get("DynBox"), Some(&1));
         assert_eq!(delta.op_delta.get("DecRef"), Some(&1));
+    }
+
+    /// `if p is None` (identity against a constant), a constant condition, and
+    /// `if not (p < p)` through a copy: three branch shapes with known answers.
+    fn branch_census_function() -> TirFunction {
+        let mut func = TirFunction::new(
+            "branch_census".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let param = ValueId(0);
+        let none = func.fresh_value();
+        let is_none = func.fresh_value();
+        let truth = func.fresh_value();
+        let less = func.fresh_value();
+        let negated = func.fresh_value();
+        let copied = func.fresh_value();
+        func.value_types.insert(none, TirType::None);
+        func.value_types.insert(is_none, TirType::Bool);
+        func.value_types.insert(truth, TirType::Bool);
+        func.value_types.insert(less, TirType::DynBox);
+        func.value_types.insert(negated, TirType::Bool);
+        func.value_types.insert(copied, TirType::Bool);
+        let constant_block = func.fresh_block();
+        let compare_block = func.fresh_block();
+        let exit = func.fresh_block();
+        let entry = func.entry_block;
+        let block = func.blocks.get_mut(&entry).expect("entry block exists");
+        block.ops = vec![
+            op(OpCode::ConstNone, vec![], vec![none]),
+            op(OpCode::Is, vec![param, none], vec![is_none]),
+        ];
+        block.terminator = Terminator::CondBranch {
+            cond: is_none,
+            then_block: constant_block,
+            then_args: vec![],
+            else_block: compare_block,
+            else_args: vec![],
+        };
+        let branch_to_exit = |cond| Terminator::CondBranch {
+            cond,
+            then_block: exit,
+            then_args: vec![],
+            else_block: exit,
+            else_args: vec![],
+        };
+        func.blocks.insert(
+            constant_block,
+            TirBlock {
+                id: constant_block,
+                args: vec![],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![truth])],
+                terminator: branch_to_exit(truth),
+            },
+        );
+        func.blocks.insert(
+            compare_block,
+            TirBlock {
+                id: compare_block,
+                args: vec![],
+                ops: vec![
+                    op(OpCode::Lt, vec![param, param], vec![less]),
+                    op(OpCode::Not, vec![less], vec![negated]),
+                    op(OpCode::Copy, vec![negated], vec![copied]),
+                ],
+                terminator: branch_to_exit(copied),
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![param],
+                },
+            },
+        );
+        func
+    }
+
+    #[test]
+    fn branch_census_names_each_undecided_predicate_and_its_operands() {
+        let census = FactProfile::capture(&branch_census_function()).branch_census;
+        let dynamic = OperandFact {
+            class: ValueClass::Dynamic,
+            constant: false,
+        };
+        let none_constant = OperandFact {
+            class: ValueClass::NoneType,
+            constant: true,
+        };
+
+        assert_eq!(census.constant, 1);
+        assert_eq!(
+            census.undecided,
+            vec![
+                BranchConditionRow {
+                    source: ConditionSource::Op(OpCode::Is),
+                    negated: false,
+                    operands: vec![dynamic, none_constant],
+                    count: 1,
+                },
+                BranchConditionRow {
+                    source: ConditionSource::Op(OpCode::Lt),
+                    negated: true,
+                    operands: vec![dynamic, dynamic],
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn branch_census_counts_each_spelling_of_a_none_test_once() {
+        // p is None; None is p; p is not None; not (p is None);
+        // bool(not (p is None)): one predicate, two polarities.
+        let mut func = TirFunction::new(
+            "none_spellings".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let param = ValueId(0);
+        let none = func.fresh_value();
+        func.value_types.insert(none, TirType::None);
+        let exit = func.fresh_block();
+        let spellings: [&[(OpCode, bool)]; 5] = [
+            &[(OpCode::Is, false)],
+            &[(OpCode::Is, true)],
+            &[(OpCode::IsNot, false)],
+            &[(OpCode::Is, false), (OpCode::Not, false)],
+            &[
+                (OpCode::Is, false),
+                (OpCode::Not, false),
+                (OpCode::Bool, false),
+            ],
+        ];
+        let mut blocks = Vec::new();
+        for chain in spellings {
+            let id = func.fresh_block();
+            let mut ops = Vec::new();
+            let mut cond = None;
+            for &(opcode, none_first) in chain {
+                let result = func.fresh_value();
+                func.value_types.insert(result, TirType::Bool);
+                let operands = match (opcode, cond) {
+                    (OpCode::Is | OpCode::IsNot, _) if none_first => vec![none, param],
+                    (OpCode::Is | OpCode::IsNot, _) => vec![param, none],
+                    (_, Some(previous)) => vec![previous],
+                    (_, None) => unreachable!("a wrapper follows its predicate"),
+                };
+                ops.push(op(opcode, operands, vec![result]));
+                cond = Some(result);
+            }
+            blocks.push((id, ops, cond.expect("every spelling has a predicate")));
+        }
+        let entry = func.entry_block;
+        let first = blocks[0].0;
+        let block = func.blocks.get_mut(&entry).expect("entry block exists");
+        block.ops = vec![op(OpCode::ConstNone, vec![], vec![none])];
+        block.terminator = Terminator::Branch {
+            target: first,
+            args: vec![],
+        };
+        for (index, (id, ops, cond)) in blocks.iter().cloned().enumerate() {
+            let next = blocks.get(index + 1).map_or(exit, |(next, _, _)| *next);
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![],
+                    ops,
+                    terminator: Terminator::CondBranch {
+                        cond,
+                        then_block: next,
+                        then_args: vec![],
+                        else_block: exit,
+                        else_args: vec![],
+                    },
+                },
+            );
+        }
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![param],
+                },
+            },
+        );
+        let census = FactProfile::capture(&func).branch_census;
+        let dynamic = OperandFact {
+            class: ValueClass::Dynamic,
+            constant: false,
+        };
+        let none_constant = OperandFact {
+            class: ValueClass::NoneType,
+            constant: true,
+        };
+        let row = |negated, count| BranchConditionRow {
+            source: ConditionSource::Op(OpCode::Is),
+            negated,
+            operands: vec![dynamic, none_constant],
+            count,
+        };
+        assert_eq!(census.undecided, vec![row(false, 2), row(true, 3)]);
     }
 
     #[test]

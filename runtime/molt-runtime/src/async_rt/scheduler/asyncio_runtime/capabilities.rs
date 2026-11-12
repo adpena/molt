@@ -12,14 +12,14 @@ fn asyncio_has_process_capability(_py: &PyToken<'_>) -> bool {
     crate::operation_allowed(_py, crate::OperationId::ProcessAsyncio, AuditArgs::None)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
+pub(crate) fn molt_asyncio_ssl_transport_orchestrate_attached_body(
+    _py: &crate::PyToken<'_>,
     operation_bits: u64,
     ssl_bits: u64,
     server_hostname_bits: u64,
     server_side_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(operation) = string_obj_to_owned(obj_from_bits(operation_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -193,9 +193,10 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_require_unix_socket_support_attached_body(
+    _py: &crate::PyToken<'_>,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !asyncio_has_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
@@ -234,9 +235,10 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_require_child_watcher_support_attached_body(
+    _py: &crate::PyToken<'_>,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !asyncio_has_process_capability(_py) {
             return raise_exception::<u64>(
                 _py,
@@ -266,3 +268,5 @@ pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
         }
     })
 }
+
+include!("../../../attached_exports_generated/async_rt/scheduler/asyncio_runtime/capabilities.rs");

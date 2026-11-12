@@ -163,9 +163,11 @@ fn return_bytes_val(_py: &PyToken<'_>, data: &[u8]) -> u64 {
 
 // ── SSLContext public intrinsics ──────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_create_default_context(purpose_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_create_default_context_attached_body(
+    _py: &crate::PyToken<'_>,
+    purpose_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let purpose = to_i64(obj_from_bits(purpose_bits)).unwrap_or(PURPOSE_SERVER_AUTH);
         let state = SslContextState::new_client(purpose);
         let id = next_id();
@@ -174,9 +176,11 @@ pub extern "C" fn molt_ssl_create_default_context(purpose_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_new(protocol_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    protocol_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let protocol = to_i64(obj_from_bits(protocol_bits)).unwrap_or(PROTOCOL_TLS_CLIENT);
         let state = SslContextState::new_with_protocol(protocol);
         let id = next_id();
@@ -185,13 +189,13 @@ pub extern "C" fn molt_ssl_context_new(protocol_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_load_cert_chain(
+pub(crate) fn molt_ssl_context_load_cert_chain_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     certfile_bits: u64,
     keyfile_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) = require_ssl_capability(
             _py,
             crate::OperationId::SslLoadCertChain,
@@ -234,14 +238,14 @@ pub extern "C" fn molt_ssl_context_load_cert_chain(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_load_verify_locations(
+pub(crate) fn molt_ssl_context_load_verify_locations_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     cafile_bits: u64,
     _capath_bits: u64,
     cadata_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) = require_ssl_capability(
             _py,
             crate::OperationId::SslLoadVerifyLocations,
@@ -303,9 +307,11 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_set_default_verify_paths(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_set_default_verify_paths_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Verify the handle is valid; rustls uses system roots by default anyway.
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
@@ -329,9 +335,12 @@ pub extern "C" fn molt_ssl_context_set_default_verify_paths(handle_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_set_ciphers(handle_bits: u64, cipherstring_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_set_ciphers_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    cipherstring_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -363,9 +372,11 @@ pub extern "C" fn molt_ssl_context_set_ciphers(handle_bits: u64, cipherstring_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_get_protocol(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_get_protocol_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -390,9 +401,11 @@ pub extern "C" fn molt_ssl_context_get_protocol(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_check_hostname_get(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_check_hostname_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -417,9 +430,12 @@ pub extern "C" fn molt_ssl_context_check_hostname_get(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_check_hostname_set(handle_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_check_hostname_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -458,9 +474,11 @@ pub extern "C" fn molt_ssl_context_check_hostname_set(handle_bits: u64, value_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_verify_mode_get(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_verify_mode_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -485,9 +503,12 @@ pub extern "C" fn molt_ssl_context_verify_mode_get(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_verify_mode_set(handle_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_verify_mode_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -527,9 +548,11 @@ pub extern "C" fn molt_ssl_context_verify_mode_set(handle_bits: u64, mode_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_context_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_context_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             CTX_REGISTRY.lock().unwrap().remove(&id);
         }
@@ -539,16 +562,16 @@ pub extern "C" fn molt_ssl_context_drop(handle_bits: u64) -> u64 {
 
 // ── SSLSocket wrapping ─────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
-pub extern "C" fn molt_ssl_wrap_socket(
+pub(crate) fn molt_ssl_wrap_socket_attached_body(
+    _py: &crate::PyToken<'_>,
     sock_handle_bits: u64,
     ctx_handle_bits: u64,
     server_hostname_bits: u64,
     server_side_bits: u64,
 ) -> u64 {
     use std::sync::Arc;
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let operation = if to_i64(obj_from_bits(server_side_bits)).unwrap_or(0) == 0 {
             crate::OperationId::SslWrapClient
         } else {
@@ -859,15 +882,15 @@ pub extern "C" fn molt_ssl_wrap_socket(
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_wasm_net)]
-pub extern "C" fn molt_ssl_wrap_socket(
+pub(crate) fn molt_ssl_wrap_socket_attached_body(
+    _py: &crate::PyToken<'_>,
     _sock_handle_bits: u64,
     _ctx_handle_bits: u64,
     _server_hostname_bits: u64,
     _server_side_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let operation = if to_i64(obj_from_bits(_server_side_bits)).unwrap_or(0) == 0 {
             crate::OperationId::SslWrapClient
         } else {
@@ -890,10 +913,12 @@ pub extern "C" fn molt_ssl_wrap_socket(
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
-pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_do_handshake_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -977,10 +1002,12 @@ pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_wasm_net)]
-pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_do_handshake_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) =
             require_ssl_capability(_py, crate::OperationId::SslHandshakeClient, AuditArgs::None)
         {
@@ -990,10 +1017,13 @@ pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
-pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_read_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    len_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslRead, AuditArgs::None)
         {
             return err;
@@ -1033,10 +1063,13 @@ pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_wasm_net)]
-pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_read_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+    _len_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslRead, AuditArgs::None)
         {
             return err;
@@ -1045,10 +1078,13 @@ pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
-pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_write_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslWrite, AuditArgs::None)
         {
             return err;
@@ -1093,10 +1129,13 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_wasm_net)]
-pub extern "C" fn molt_ssl_socket_write(_handle_bits: u64, _data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_write_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+    _data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) = require_ssl_capability(_py, crate::OperationId::SslWrite, AuditArgs::None)
         {
             return err;
@@ -1105,10 +1144,13 @@ pub extern "C" fn molt_ssl_socket_write(_handle_bits: u64, _data_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
-pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_getpeercert_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    binary_form_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1151,18 +1193,23 @@ pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_wasm_net)]
-pub extern "C" fn molt_ssl_socket_getpeercert(_handle_bits: u64, _binary_form_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_getpeercert_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+    _binary_form_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
-pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_cipher_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1208,18 +1255,22 @@ pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_wasm_net)]
-pub extern "C" fn molt_ssl_socket_cipher(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_cipher_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
-pub extern "C" fn molt_ssl_socket_version(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_version_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1242,20 +1293,24 @@ pub extern "C" fn molt_ssl_socket_version(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_wasm_net)]
-pub extern "C" fn molt_ssl_socket_version(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_version_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(molt_net)]
-pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
+pub(crate) fn molt_ssl_socket_unwrap_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     // Retire the TLS-owned duplicate; the Python facade retains the original
     // transport. Graceful TLS shutdown is a separate provider obligation.
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1296,9 +1351,11 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_socket_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_socket_close_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             #[cfg(molt_has_net_io)]
             SOCK_REGISTRY.lock().unwrap().remove(&id);
@@ -1309,46 +1366,41 @@ pub extern "C" fn molt_ssl_socket_close(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_socket_drop(handle_bits: u64) -> u64 {
-    molt_ssl_socket_close(handle_bits)
+pub(crate) fn molt_ssl_socket_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    molt_ssl_socket_close_attached_body(_py, handle_bits)
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_protocol_tls_client() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, PROTOCOL_TLS_CLIENT) })
+pub(crate) fn molt_ssl_protocol_tls_client_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, PROTOCOL_TLS_CLIENT) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_protocol_tls_server() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, PROTOCOL_TLS_SERVER) })
+pub(crate) fn molt_ssl_protocol_tls_server_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, PROTOCOL_TLS_SERVER) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_cert_none() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, CERT_NONE) })
+pub(crate) fn molt_ssl_cert_none_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, CERT_NONE) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_cert_optional() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, CERT_OPTIONAL) })
+pub(crate) fn molt_ssl_cert_optional_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, CERT_OPTIONAL) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_cert_required() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, CERT_REQUIRED) })
+pub(crate) fn molt_ssl_cert_required_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, CERT_REQUIRED) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_has_sni() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
+pub(crate) fn molt_ssl_has_sni_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::from_bool(true).bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ssl_openssl_version() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ssl_openssl_version_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Report rustls version string instead of OpenSSL.
         return_str(_py, "rustls/0.23 (Molt TLS backend)")
     })
@@ -1358,24 +1410,29 @@ pub extern "C" fn molt_ssl_openssl_version() -> u64 {
 mod tests {
     use super::*;
     use crate::builtins::exceptions::{
-        exception_matches_kind, molt_exception_clear, molt_exception_last_pending,
+        exception_matches_kind, molt_exception_clear_attached_body,
+        molt_exception_last_pending_attached_body,
     };
     use std::net::TcpListener;
     use std::os::fd::AsRawFd;
     use std::time::Duration;
 
     fn wrap_original(py: &PyToken<'_>, original: &TcpStream) -> (u64, i32) {
-        let context = molt_ssl_context_new(MoltObject::from_int(PROTOCOL_TLS_CLIENT).bits());
+        let context = molt_ssl_context_new_attached_body(
+            py,
+            MoltObject::from_int(PROTOCOL_TLS_CLIENT).bits(),
+        );
         assert!(!crate::exception_pending(py));
         let hostname = MoltObject::from_ptr(crate::alloc_string(py, b"localhost")).bits();
-        let handle = molt_ssl_wrap_socket(
+        let handle = molt_ssl_wrap_socket_attached_body(
+            py,
             MoltObject::from_int(i64::from(original.as_raw_fd())).bits(),
             context,
             hostname,
             MoltObject::from_bool(false).bits(),
         );
         crate::dec_ref_bits(py, hostname);
-        molt_ssl_context_drop(context);
+        molt_ssl_context_drop_attached_body(py, context);
         assert!(!crate::exception_pending(py));
         let id = to_i64(obj_from_bits(handle)).unwrap();
         let duplicate = match &SOCK_REGISTRY.lock().unwrap().get(&id).unwrap().inner {
@@ -1404,9 +1461,9 @@ mod tests {
 
     fn take_error(py: &PyToken<'_>, name: crate::BuiltinExc) {
         assert!(crate::exception_pending(py));
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(py);
         assert!(exception_matches_kind(py, error, name));
-        molt_exception_clear();
+        molt_exception_clear_attached_body(py);
         crate::dec_ref_bits(py, error);
     }
 
@@ -1416,17 +1473,17 @@ mod tests {
             crate::concurrency::gil::with_gil(|py| {
                 // This exercises descriptor custody, not graceful TLS shutdown:
                 // wrapping creates a connection but no handshake is performed.
-                let retirements: [extern "C" fn(u64) -> u64; 3] = [
+                let retirements: [unsafe extern "C" fn(u64, u64) -> u64; 3] = [
                     molt_ssl_socket_unwrap,
                     molt_ssl_socket_close,
                     molt_ssl_socket_drop,
                 ];
                 for retire in retirements {
                     let (mut original, mut peer) = socket_pair();
-                    let (handle, _duplicate) = wrap_original(&py, &original);
-                    let result = retire(handle);
+                    let (handle, _duplicate) = wrap_original(py, &original);
+                    let result = unsafe { retire(py.attached_context(), handle) };
                     assert_eq!(result, MoltObject::none().bits());
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     let id = to_i64(obj_from_bits(handle)).unwrap();
                     assert!(!SOCK_REGISTRY.lock().unwrap().contains_key(&id));
                     original.write_all(b"original transport survives").unwrap();
@@ -1438,8 +1495,11 @@ mod tests {
                     // by unrelated concurrent file opens.
                     drop(original);
                     assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
-                    assert_eq!(molt_ssl_socket_drop(handle), MoltObject::none().bits());
-                    assert!(!crate::exception_pending(&py));
+                    assert_eq!(
+                        molt_ssl_socket_drop_attached_body(py, handle),
+                        MoltObject::none().bits()
+                    );
+                    assert!(!crate::exception_pending(py));
                 }
             });
         });
@@ -1450,7 +1510,7 @@ mod tests {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::concurrency::gil::with_gil(|py| {
                 let (original, _peer) = socket_pair();
-                let (handle, duplicate) = wrap_original(&py, &original);
+                let (handle, duplicate) = wrap_original(py, &original);
                 let id = to_i64(obj_from_bits(handle)).unwrap();
                 for (invalid, error) in [
                     (MoltObject::none().bits(), crate::BuiltinExc::TypeError),
@@ -1459,15 +1519,18 @@ mod tests {
                         crate::BuiltinExc::ValueError,
                     ),
                 ] {
-                    molt_ssl_socket_unwrap(invalid);
-                    take_error(&py, error);
+                    molt_ssl_socket_unwrap_attached_body(py, invalid);
+                    take_error(py, error);
                     assert!(SOCK_REGISTRY.lock().unwrap().contains_key(&id));
                     assert_ne!(unsafe { libc::fcntl(duplicate, libc::F_GETFD) }, -1);
                 }
-                assert_eq!(molt_ssl_socket_unwrap(handle), MoltObject::none().bits());
-                assert!(!crate::exception_pending(&py));
-                molt_ssl_socket_unwrap(handle);
-                take_error(&py, crate::BuiltinExc::ValueError);
+                assert_eq!(
+                    molt_ssl_socket_unwrap_attached_body(py, handle),
+                    MoltObject::none().bits()
+                );
+                assert!(!crate::exception_pending(py));
+                molt_ssl_socket_unwrap_attached_body(py, handle);
+                take_error(py, crate::BuiltinExc::ValueError);
                 assert!(!SOCK_REGISTRY.lock().unwrap().contains_key(&id));
                 assert_ne!(
                     unsafe { libc::fcntl(original.as_raw_fd(), libc::F_GETFD) },
@@ -1477,3 +1540,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/ssl.rs");

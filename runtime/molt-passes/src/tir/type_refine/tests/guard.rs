@@ -5,6 +5,7 @@ fn make_type_guard_op(operand: ValueId, result: ValueId, expected_type: &str) ->
     attrs.insert("expected_type".into(), AttrValue::Str(expected_type.into()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],

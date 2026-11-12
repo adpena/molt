@@ -78,6 +78,7 @@ use crate::tir::values::TirValue;
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -1356,4 +1357,91 @@ fn masked_back_edge_narrows_with_derived_mask_and_vestigial_loopend() {
         "the derived-mask masked accumulator must reach the raw-i64 lane \
              end-to-end (shift result + phi both raw)"
     );
+}
+
+/// `for i in range(10): ...; if flag: break` with the increment after the
+/// test: the body ends in a conditional exit, then an unconditional latch.
+/// Returns the function, the block before the exit test, the latch and the IV.
+fn counted_loop_with_break(both_sides_stay: bool) -> (TirFunction, BlockId, BlockId, ValueId) {
+    let (mut func, body, _array, iv) = range_loop_vr(10, 10);
+    let header = func.blocks[&body].terminator.successors()[0];
+    let exit = match &func.blocks[&header].terminator {
+        Terminator::CondBranch { else_block, .. } => *else_block,
+        _ => unreachable!("the fixture's header tests the bound"),
+    };
+    let flag = func.fresh_value();
+    mark_bool_values(&mut func, [flag]);
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .push(TirOp {
+            attrs: [("value".to_string(), AttrValue::Bool(false))]
+                .into_iter()
+                .collect(),
+            ..op(OpCode::ConstBool, vec![], vec![flag])
+        });
+    let latch = func.fresh_block();
+    let other = func.fresh_block();
+    let body_block = func.blocks.get_mut(&body).unwrap();
+    for op in &mut body_block.ops {
+        op.attrs.remove("no_signed_wrap");
+    }
+    let back = std::mem::replace(
+        &mut body_block.terminator,
+        Terminator::CondBranch {
+            cond: flag,
+            then_block: if both_sides_stay { other } else { exit },
+            then_args: vec![],
+            else_block: latch,
+            else_args: vec![],
+        },
+    );
+    func.blocks.insert(
+        latch,
+        TirBlock {
+            id: latch,
+            args: vec![],
+            ops: vec![],
+            terminator: back,
+        },
+    );
+    // A second in-loop route to the latch: only reachable when both sides stay.
+    func.blocks.insert(
+        other,
+        TirBlock {
+            id: other,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: latch,
+                args: vec![],
+            },
+        },
+    );
+    (func, body, latch, iv)
+}
+
+#[test]
+fn a_conditional_exit_in_the_body_keeps_the_counted_recurrence() {
+    let (func, body, latch, iv) = counted_loop_with_break(false);
+    let scev = compute_scev(&func);
+    let vr = compute_value_range(&func, &scev);
+    assert!(
+        !scev.is_induction_var(iv),
+        "without nsw, the counted-loop recognizer must be the source"
+    );
+    // The break only shortens the run: the hull of the full trip count holds.
+    assert_eq!(vr.range_of(iv), IntRange::new(0, 10));
+    assert_eq!(vr.range_at(body, iv), IntRange::new(0, 9));
+    assert_eq!(vr.range_at(latch, iv), IntRange::new(0, 9));
+}
+
+#[test]
+fn a_branch_with_both_sides_in_the_loop_is_not_a_counted_body() {
+    let (func, body, _latch, iv) = counted_loop_with_break(true);
+    let scev = compute_scev(&func);
+    let vr = compute_value_range(&func, &scev);
+    // The guard still bounds the IV from above; no recurrence bounds it below.
+    assert_eq!(vr.range_at(body, iv).lo, i64::MIN);
 }

@@ -3,7 +3,7 @@ use super::super::super::super::result_sink::finish_owned_local_result;
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
-use wasm_encoder::Function;
+use crate::wasm_binary::Function;
 
 pub(super) fn emit_list_op(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<'_>) {
     let import_ids = ctx.import_ids;

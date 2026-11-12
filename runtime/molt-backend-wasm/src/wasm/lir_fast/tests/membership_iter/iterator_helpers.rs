@@ -19,6 +19,7 @@ fn dynbox_iterator_helpers_stay_lir_fast_runtime_calls() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0)],

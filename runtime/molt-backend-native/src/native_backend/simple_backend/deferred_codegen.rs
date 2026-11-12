@@ -147,7 +147,8 @@ impl SimpleBackend {
                 .unwrap_or_else(|err| {
                     panic!("define_function_bytes failed for `{}`: {err}", cf.name)
                 });
-            self.defined_func_names.insert(cf.name);
+            self.defined_func_names
+                .insert(compiled_execution_symbol(&cf.name));
         }
     }
 }

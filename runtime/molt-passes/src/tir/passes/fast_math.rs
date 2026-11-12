@@ -118,6 +118,7 @@ mod tests {
         attrs.insert("f_value".into(), AttrValue::Float(1.0));
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
@@ -132,6 +133,7 @@ mod tests {
         attrs.insert("value".into(), AttrValue::Int(1));
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -144,6 +146,7 @@ mod tests {
     fn make_binop(opcode: OpCode, result: u32, lhs: u32, rhs: u32) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(lhs), ValueId(rhs)],

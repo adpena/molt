@@ -3,20 +3,26 @@ use crate::BuiltinExc;
 use crate::object::seq_access::snapshot;
 
 mod field_runtime;
+#[cfg(test)]
+pub(crate) use field_runtime::molt_dataclasses_eq_attached_body;
 mod initializer;
 mod initializer_spec_generated;
 mod projection;
 
 pub(crate) use initializer::{clone_code_init_plan, drop_code_init_plan};
-pub use initializer::{
-    molt_dataclasses_init, molt_dataclasses_init_globals, molt_dataclasses_init_trampoline,
-    molt_dataclasses_set_init_template,
+pub use {
+    initializer::molt_dataclasses_init, initializer::molt_dataclasses_init_globals,
+    initializer::molt_dataclasses_init_trampoline, initializer::molt_dataclasses_set_init_template,
 };
 
-pub use field_runtime::{molt_dataclasses_eq, molt_dataclasses_hash_fn, molt_dataclasses_repr};
-pub use projection::{
-    molt_dataclasses_asdict, molt_dataclasses_astuple, molt_dataclasses_fields,
-    molt_dataclasses_is_dataclass, molt_dataclasses_replace,
+pub use {
+    field_runtime::molt_dataclasses_eq, field_runtime::molt_dataclasses_hash_fn,
+    field_runtime::molt_dataclasses_repr,
+};
+pub use {
+    projection::molt_dataclasses_asdict, projection::molt_dataclasses_astuple,
+    projection::molt_dataclasses_fields, projection::molt_dataclasses_is_dataclass,
+    projection::molt_dataclasses_replace,
 };
 
 fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Option<String> {
@@ -25,18 +31,18 @@ fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Opti
         return None;
     }
 
-    let name_str_bits = molt_str_from_obj(name_bits);
+    let name_str_bits = molt_str_from_obj_attached_body(_py, name_bits);
     if obj_from_bits(name_str_bits).is_none() {
         return None;
     }
 
-    let ident_bits = molt_string_isidentifier(name_str_bits);
+    let ident_bits = molt_string_isidentifier_attached_body(_py, name_str_bits);
     let is_ident = is_truthy(_py, obj_from_bits(ident_bits));
     if obj_from_bits(ident_bits).as_ptr().is_some() {
         dec_ref_bits(_py, ident_bits);
     }
     if !is_ident || keyword_contains(name_str_bits, HARD_KEYWORDS) {
-        let repr_bits = molt_repr_from_obj(name_str_bits);
+        let repr_bits = molt_repr_from_obj_attached_body(_py, name_str_bits);
         let repr = string_obj_to_owned(obj_from_bits(repr_bits)).unwrap_or_default();
         dec_ref_bits(_py, repr_bits);
         dec_ref_bits(_py, name_str_bits);
@@ -50,8 +56,8 @@ fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Opti
 }
 
 #[allow(clippy::too_many_arguments)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_make_dataclass(
+pub(crate) fn molt_dataclasses_make_dataclass_attached_body(
+    _py: &crate::PyToken<'_>,
     cls_name_bits: u64,
     fields_bits: u64,
     bases_bits: u64,
@@ -60,7 +66,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
     default_field_type_bits: u64,
     _field_class_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut result_bits = MoltObject::none().bits();
         let mut bases_tuple_bits = 0u64;
         let mut body_bits = 0u64;
@@ -106,7 +112,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 }
                 body_bits = MoltObject::from_ptr(dict_ptr).bits();
             } else {
-                body_bits = molt_dict_from_obj(namespace_bits);
+                body_bits = molt_dict_from_obj_attached_body(_py, namespace_bits);
                 if obj_from_bits(body_bits).is_none() {
                     result_bits = MoltObject::none().bits();
                     break 'compute;
@@ -156,7 +162,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                         break 'compute;
                     }
                 }
-                let copied_bits = molt_dict_from_obj(bits);
+                let copied_bits = molt_dict_from_obj_attached_body(_py, bits);
                 if obj_from_bits(copied_bits).is_none() {
                     result_bits = MoltObject::none().bits();
                     break 'compute;
@@ -200,7 +206,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 }
             }
 
-            let fields_iter_bits = molt_iter(fields_bits);
+            let fields_iter_bits = molt_iter_attached_body(_py, fields_bits);
             fields_iterator = Some(unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                     _py.core_token(),
@@ -283,7 +289,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 };
 
                 if seen.contains(field_name.as_str()) {
-                    let field_name_repr_bits = molt_repr_from_obj(raw_name_bits);
+                    let field_name_repr_bits = molt_repr_from_obj_attached_body(_py, raw_name_bits);
                     let field_name_repr = string_obj_to_owned(obj_from_bits(field_name_repr_bits))
                         .unwrap_or_default();
                     dec_ref_bits(_py, field_name_repr_bits);
@@ -379,9 +385,12 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
 /// Sets the `metadata` attribute on a Field object, wrapping the given dict
 /// in a `types.MappingProxyType` if it isn't already one.  If `metadata_dict`
 /// is None or empty, sets an empty MappingProxy.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_set_field_metadata(field_bits: u64, metadata_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dataclasses_set_field_metadata_attached_body(
+    _py: &crate::PyToken<'_>,
+    field_bits: u64,
+    metadata_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(meta_name_bits) = crate::NameId::Metadata.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
@@ -398,9 +407,11 @@ pub extern "C" fn molt_dataclasses_set_field_metadata(field_bits: u64, metadata_
             metadata_bits
         };
 
-        let _ = crate::molt_set_attr_name(field_bits, meta_name_bits, val_bits);
+        let _ = crate::molt_set_attr_name_attached_body(_py, field_bits, meta_name_bits, val_bits);
         dec_ref_bits(_py, meta_name_bits);
 
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/builtins/types/dataclasses.rs");

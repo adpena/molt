@@ -184,8 +184,8 @@ fn pending_namespace(callable: *mut u8) -> [u64; 4] {
 /// the invoker's callable, borrowed (the thread record's
 /// `THREAD_RECORD_PENDING_INVOCATION_OFFSET` word, which compiled direct calls
 /// write themselves).
-fn pending_invocation() -> Option<*mut u8> {
-    obj_from_bits(crate::state::execution_tls().pending_invocation.get()).as_ptr()
+fn pending_invocation(py: &PyToken<'_>) -> Option<*mut u8> {
+    obj_from_bits(py.execution_tls().pending_invocation.get()).as_ptr()
 }
 
 /// Retains the pending context for a task constructor that precedes frame entry.
@@ -194,7 +194,7 @@ pub(crate) fn acquire_pending_invocation_context(
     py: &PyToken<'_>,
     target: u64,
 ) -> Option<[u64; 3]> {
-    let [globals, builtins, code, _] = pending_namespace(pending_invocation()?);
+    let [globals, builtins, code, _] = pending_namespace(pending_invocation(py)?);
     if !code_targets_callable(code, target) {
         return None;
     }
@@ -210,19 +210,24 @@ pub(crate) fn acquire_pending_invocation_context(
 /// restores the outer handoff when the call returns. Every compiled invoker
 /// pairs a publication with a restore around one call: compiled code writes
 /// the same thread-record word around a direct call.
-pub(crate) struct FrameInvocationGuard {
+pub(crate) struct FrameInvocationGuard<'scope, 'py> {
+    py: &'scope PyToken<'py>,
+    scope: crate::concurrency::execution::CompiledScopeGuard<'scope, 'py>,
     previous: u64,
 }
 
-impl FrameInvocationGuard {
-    fn publish(callable_bits: u64) -> Self {
-        let pending = &crate::state::execution_tls().pending_invocation;
+impl<'scope, 'py> FrameInvocationGuard<'scope, 'py> {
+    fn publish(py: &'scope PyToken<'py>, callable_bits: u64) -> Self {
+        let scope = crate::concurrency::execution::CompiledScopeGuard::enter(py);
+        let pending = &py.execution_tls().pending_invocation;
         Self {
+            py,
+            scope,
             previous: pending.replace(callable_bits),
         }
     }
 
-    pub(crate) fn for_callable(_py: &PyToken<'_>, bits: u64) -> Self {
+    pub(crate) fn for_callable(_py: &'scope PyToken<'py>, bits: u64) -> Self {
         let mut ptr = obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut());
         if !ptr.is_null() && unsafe { object_type_id(ptr) } == TYPE_ID_BOUND_METHOD {
             ptr = obj_from_bits(unsafe { bound_method_func_bits(ptr) })
@@ -234,24 +239,26 @@ impl FrameInvocationGuard {
 
     /// A runtime function or a non-function callable owns no Python frame and
     /// hands nothing over; the call still restores the outer handoff.
-    pub(crate) fn for_function(_py: &PyToken<'_>, function: *mut u8) -> Self {
+    pub(crate) fn for_function(_py: &'scope PyToken<'py>, function: *mut u8) -> Self {
         if function.is_null() || unsafe { object_type_id(function) } != TYPE_ID_FUNCTION {
-            return Self::publish(0);
+            return Self::publish(_py, 0);
         }
-        Self::publish(crate::MoltObject::from_ptr(function).bits())
+        Self::publish(_py, crate::MoltObject::from_ptr(function).bits())
     }
 
     /// The resumed activation of `task`, whose frame context holds the
     /// namespace it was created with. Its poll pins the payload until the real
     /// compiled frame exits.
-    pub(crate) fn for_activation(_py: &PyToken<'_>, task: *mut u8) -> Self {
-        Self::publish(crate::MoltObject::from_ptr(task).bits())
+    pub(crate) fn for_activation(_py: &'scope PyToken<'py>, task: *mut u8) -> Self {
+        Self::publish(_py, crate::MoltObject::from_ptr(task).bits())
     }
 }
 
-impl Drop for FrameInvocationGuard {
+impl Drop for FrameInvocationGuard<'_, '_> {
     fn drop(&mut self) {
-        crate::state::execution_tls()
+        self.scope.validate();
+        self.py
+            .execution_tls()
             .pending_invocation
             .set(self.previous);
     }
@@ -266,7 +273,7 @@ pub(crate) fn take_invocation_namespace(
     py: &PyToken<'_>,
     slot: u64,
 ) -> Result<Option<[u64; 4]>, ()> {
-    let Some(callable) = pending_invocation() else {
+    let Some(callable) = pending_invocation(py) else {
         return Ok(None);
     };
     let namespace = pending_namespace(callable);
@@ -274,7 +281,7 @@ pub(crate) fn take_invocation_namespace(
     if compiled_slot_for_code(code) != Some(slot) {
         return Ok(None);
     }
-    crate::state::execution_tls().pending_invocation.set(0);
+    py.execution_tls().pending_invocation.set(0);
     if globals_namespace_storage_bits(py, globals)?.is_none() {
         if !crate::exception_pending(py) {
             raise_exception::<u64>(

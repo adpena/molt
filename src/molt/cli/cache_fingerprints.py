@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import pathlib
+import sys
 from collections.abc import Iterable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -236,9 +237,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/build_diagnostics.py": _FrontendInputRole.REPORTING,
         "cli/output.py": _FrontendInputRole.REPORTING,
         "cli/progress.py": _FrontendInputRole.REPORTING,
-        "dx.py": _FrontendInputRole.REPORTING,
         "input_report.py": _FrontendInputRole.REPORTING,
-        "process_model.py": _BUILD,
         "backend_environment.py": _BUILD,
         "backend_executable_names.py": _BUILD,
         "browser_asset_closure.py": _BUILD,
@@ -378,6 +377,30 @@ _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
 ] = ContextVar("_SOURCE_TREE_FINGERPRINT_TRANSACTION", default=None)
 
 
+def _save_operation_records(store: SourceRecordStore) -> None:
+    """Save the operation's queued records once, then its recency stamps.
+
+    The record save waits for the database writer, once per operation; stamps
+    stay nonwaiting and advisory. Records a failed or contended save leaves
+    unsaved are later cache misses, reported once.
+    """
+    from molt.cli.source_record_store import SaveOutcome
+
+    try:
+        result = store.save_pending(final=True)
+    finally:
+        store.save_renewals()
+    if result.outcome is SaveOutcome.FAILED or (
+        result.outcome is SaveOutcome.BUSY and store.pending_count()
+    ):
+        unsaved = result.dropped or store.pending_count()
+        print(
+            f"molt: warning: cannot cache {unsaved} source record(s) in "
+            f"{store.path}: {result.outcome.name.lower()}",
+            file=sys.stderr,
+        )
+
+
 @contextmanager
 def _source_tree_fingerprint_transaction(*, fresh: bool = False) -> Generator[None]:
     """Share immutable tooling snapshots within one frontend operation.
@@ -416,7 +439,7 @@ def _source_tree_fingerprint_transaction(*, fresh: bool = False) -> Generator[No
                 and store is not None
                 and (current is None or store is not current.source_records)
             ):
-                store.save_renewals()
+                _save_operation_records(store)
         finally:
             _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
 

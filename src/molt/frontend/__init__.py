@@ -4,7 +4,8 @@ The generator is composed from visitor/lowering mixins (F1 decomposition,
 move-only). Shared data types, constants, and lookup tables live in the
 ``molt.frontend._types`` leaf and are re-exported here so the historical public
 import surface (``from molt.frontend import MoltValue, MoltOp, ...``) is
-preserved exactly. Per-family method bodies live under ``molt.frontend.visitors``
+maintained for language-lowering entities. Retired optimizer-only entities
+are removed with their consumers. Per-family method bodies live under ``molt.frontend.visitors``
 and ``molt.frontend.lowering`` and are mixed into the class below via MRO.
 """
 
@@ -29,19 +30,8 @@ from molt.frontend._types import (
     ReceiverKind,
     MoltValue,
     MoltOp,
-    SCCPResult,
-    LoopBoundFact,
     _INLINE_INT_MIN,
     _INLINE_INT_MAX,
-    _SCCP_OVERDEFINED,
-    _SCCP_UNKNOWN,
-    _SCCP_MISSING,
-    MidendProfile,
-    MidendTier,
-    _MIDEND_ENV_KEYS,
-    MidendTierClassification,
-    MidendFunctionPolicy,
-    MidendEnvConfig,
     ActiveException,
     GEN_SEND_OFFSET,
     GEN_THROW_OFFSET,
@@ -66,8 +56,6 @@ from molt.frontend._types import (
     ClassInfo,
     layout_definition_symbol,
     FuncInfo,
-    _TrackedOpsList,
-    CanonicalizationState,
     CompatibilityError,
     CompatibilityReporter,
     CFGGraph,
@@ -107,7 +95,6 @@ from molt.frontend.lowering.import_lowering import ImportLoweringMixin
 from molt.frontend.lowering.local_bindings import LocalBindingMixin
 from molt.frontend.lowering.loop_lowering import LoopLoweringMixin
 from molt.frontend.lowering.builtin_guards import BuiltinGuardMixin
-from molt.frontend.lowering.midend_optimization import MidendOptimizationMixin
 from molt.frontend.lowering.module_globals import ModuleGlobalsMixin
 from molt.frontend.lowering.module_lifecycle import ModuleLifecycleMixin
 from molt.frontend.lowering.ownership_lowering import OwnershipLoweringMixin
@@ -140,19 +127,8 @@ __all__ = [
     "ReceiverKind",
     "MoltValue",
     "MoltOp",
-    "SCCPResult",
-    "LoopBoundFact",
     "_INLINE_INT_MIN",
     "_INLINE_INT_MAX",
-    "_SCCP_OVERDEFINED",
-    "_SCCP_UNKNOWN",
-    "_SCCP_MISSING",
-    "MidendProfile",
-    "MidendTier",
-    "_MIDEND_ENV_KEYS",
-    "MidendTierClassification",
-    "MidendFunctionPolicy",
-    "MidendEnvConfig",
     "ActiveException",
     "GEN_SEND_OFFSET",
     "GEN_THROW_OFFSET",
@@ -177,8 +153,6 @@ __all__ = [
     "ClassInfo",
     "layout_definition_symbol",
     "FuncInfo",
-    "_TrackedOpsList",
-    "CanonicalizationState",
     "CompatibilityError",
     "CompatibilityReporter",
     "CFGGraph",
@@ -196,7 +170,6 @@ class SimpleTIRGenerator(
     GeneratorStateMixin,
     AppBindingAuthorityMixin,
     LocalBindingMixin,
-    MidendOptimizationMixin,
     SerializationMixin,
     OwnershipLoweringMixin,
     StringFormattingMixin,

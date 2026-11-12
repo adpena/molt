@@ -4588,23 +4588,12 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "windows-2022" in release_config
     assert "windows-11-arm" in release_config
     assert "fromJSON(needs.plan.outputs.matrix)" in release_text
-    assert "schedule:" in perf_text
-    assert "MOLT_SESSION_ID: perfscore-${{ matrix.backend }}" in perf_text
-    assert "tools/guarded_exec.py --prefix MOLT_BENCH" in perf_text
-    assert "tools/perf_scoreboard.py" in perf_text
-    assert "backend: [native, llvm]" in perf_text
-    assert '--backend "${{ matrix.backend }}"' in perf_text
-    assert "--profile release-fast" in perf_text
-    assert "--samples 5" in perf_text
-    assert "--warmup 2" in perf_text
-    assert "--repeat 5" in perf_text
-    assert "--classify" in perf_text
-    assert "--require-quiescent" in perf_text
-    assert "bench/scoreboard/logs_*/" in perf_text
-    assert "--no-gate" not in perf_text
-    assert "--allow-nonauthoritative" not in perf_text
-    assert "tools/bench.py" not in perf_text
-    assert "bench/results/" not in perf_text
+    # The weekly CPython-floor board is retired (HF-222); the farm instruction
+    # signal replaces it, and the workflow keeps only explicit candidate costs.
+    assert "workflow_dispatch:" in perf_text
+    assert "schedule:" not in perf_text
+    assert "tools/perf_scoreboard.py" not in perf_text
+    assert "--run-family runtime_candidate_costs" in perf_text
     assert not (WORKFLOW_ROOT / "perf-validation.yml").exists()
 
 

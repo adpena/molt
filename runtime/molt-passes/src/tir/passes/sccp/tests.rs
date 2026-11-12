@@ -42,6 +42,7 @@ fn make_const_int(result: u32, value: i64) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -56,6 +57,7 @@ fn make_const_float(result: u32, value: f64) -> TirOp {
     attrs.insert("f_value".into(), AttrValue::Float(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstFloat,
         operands: vec![],
@@ -70,6 +72,7 @@ fn make_const_bool(result: u32, value: bool) -> TirOp {
     attrs.insert("value".into(), AttrValue::Bool(value));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -82,6 +85,7 @@ fn make_const_bool(result: u32, value: bool) -> TirOp {
 fn make_binop(opcode: OpCode, result: u32, lhs: u32, rhs: u32) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(lhs), ValueId(rhs)],
@@ -96,6 +100,7 @@ fn make_check_exception(target_label: i64) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(target_label));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -332,6 +337,7 @@ fn make_const_str(result: u32, value: &str) -> TirOp {
     attrs.insert("s_value".into(), AttrValue::Str(value.into()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -346,6 +352,7 @@ fn make_call_builtin(result: u32, name: &str, args: Vec<u32>) -> TirOp {
     attrs.insert("name".into(), AttrValue::Str(name.into()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: args.into_iter().map(ValueId).collect(),
@@ -366,6 +373,7 @@ fn make_call_method(result: u32, method: &str, args: Vec<u32>) -> TirOp {
     attrs.insert("method".into(), AttrValue::Str(method.into()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallMethod,
         operands: args.into_iter().map(ValueId).collect(),
@@ -477,6 +485,7 @@ fn no_fold_print_builtin() {
 fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildList,
         operands: elements.into_iter().map(ValueId).collect(),
@@ -489,6 +498,7 @@ fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
 fn make_build_tuple(result: u32, elements: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildTuple,
         operands: elements.into_iter().map(ValueId).collect(),
@@ -501,6 +511,7 @@ fn make_build_tuple(result: u32, elements: Vec<u32>) -> TirOp {
 fn make_build_dict(result: u32, kv_pairs: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildDict,
         operands: kv_pairs.into_iter().map(ValueId).collect(),
@@ -1134,7 +1145,7 @@ fn lattice_float_identity_preserves_all_bits() {
             let expected = left_bits == right_bits;
             assert_eq!(left == right, expected, "{left_bits:x} vs {right_bits:x}");
             assert_eq!(
-                LatticeValue::Constant(left) == LatticeValue::Constant(right),
+                Lattice::Constant(left) == Lattice::Constant(right),
                 expected,
                 "lattice wrapper must retain exact float identity"
             );
@@ -1147,10 +1158,10 @@ fn lattice_identity_preserves_variants_and_sentinels() {
     assert_ne!(ConstVal::Bool(true), ConstVal::Int(1));
     assert_ne!(ConstVal::Int(1), ConstVal::Float(1.0));
     assert_ne!(ConstVal::Bool(false), ConstVal::None);
-    assert_ne!(LatticeValue::Top, LatticeValue::Bottom);
-    assert_ne!(LatticeValue::Top, LatticeValue::Constant(ConstVal::None));
-    assert_eq!(LatticeValue::Top, LatticeValue::Top);
-    assert_eq!(LatticeValue::Bottom, LatticeValue::Bottom);
+    assert_ne!(Lattice::Unknown, Lattice::Overdefined);
+    assert_ne!(Lattice::Unknown, Lattice::Constant(ConstVal::None));
+    assert_eq!(Lattice::Unknown, Lattice::Unknown);
+    assert_eq!(Lattice::Overdefined, Lattice::Overdefined);
     for value in [
         ConstVal::Int(1),
         ConstVal::Bool(true),
@@ -1322,4 +1333,1022 @@ fn mutable_builtin_and_sequence_results_remain_runtime_values() {
         assert_eq!(result_ops[2].opcode, opcode);
         assert_eq!(result_ops[4].opcode, OpCode::CallBuiltin);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Wegman-Zadeck: executable edges, joins and exception edges (HF-773 slice 1).
+// Each fixture distinguishes the sparse solver from a plausible defect: block
+// arguments pinned overdefined, exception edges missing, edges keyed by target
+// instead of label, or a backedge read before it is executable.
+// ---------------------------------------------------------------------------
+
+fn void_function() -> TirFunction {
+    TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    )
+}
+
+fn block(id: BlockId, args: &[u32], ops: Vec<TirOp>, terminator: Terminator) -> TirBlock {
+    TirBlock {
+        id,
+        args: args
+            .iter()
+            .map(|&arg| crate::tir::values::TirValue {
+                id: ValueId(arg),
+                ty: TirType::I64,
+            })
+            .collect(),
+        ops,
+        terminator,
+    }
+}
+
+fn branch(target: BlockId, args: &[u32]) -> Terminator {
+    Terminator::Branch {
+        target,
+        args: args.iter().map(|&arg| ValueId(arg)).collect(),
+    }
+}
+
+fn ret(values: &[u32]) -> Terminator {
+    Terminator::Return {
+        values: values.iter().map(|&value| ValueId(value)).collect(),
+    }
+}
+
+fn make_try_start(target_label: i64) -> TirOp {
+    TirOp {
+        origin: None,
+        runtime: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::TryStart,
+        operands: vec![],
+        results: vec![],
+        attrs: AttrDict::from([("value".into(), AttrValue::Int(target_label))]),
+        source_span: None,
+    }
+}
+
+fn binding_check_exception(target_label: i64, operands: &[u32]) -> TirOp {
+    let mut op = make_check_exception(target_label);
+    op.operands = operands.iter().map(|&operand| ValueId(operand)).collect();
+    op
+}
+
+fn op_in(func: &TirFunction, block: BlockId, result: u32) -> &TirOp {
+    func.blocks[&block]
+        .ops
+        .iter()
+        .find(|op| op.results == [ValueId(result)])
+        .expect("op with this result")
+}
+
+#[test]
+fn join_of_equal_constants_folds_its_users() {
+    // entry: if param -> left(passes 5) / right(passes 5); join(x): x + 1.
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let (left, right, join) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    func.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+        cond: ValueId(0),
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    func.blocks.insert(
+        left,
+        block(left, &[], vec![make_const_int(1, 5)], branch(join, &[1])),
+    );
+    func.blocks.insert(
+        right,
+        block(right, &[], vec![make_const_int(2, 5)], branch(join, &[2])),
+    );
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[3],
+            vec![make_const_int(4, 1), make_binop(OpCode::Add, 5, 3, 4)],
+            ret(&[5]),
+        ),
+    );
+    func.next_value = 6;
+
+    run(&mut func);
+
+    let add = op_in(&func, join, 5);
+    assert_eq!(add.opcode, OpCode::ConstInt, "5 + 1 on every path is 6");
+    assert_eq!(add.attrs.get("value"), Some(&AttrValue::Int(6)));
+}
+
+#[test]
+fn unexecuted_predecessor_does_not_poison_the_join() {
+    // entry: if True -> left(passes 1) / right(passes 2); join(x): x + 1 is 2.
+    let mut func = void_function();
+    let (left, right, join) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops.push(make_const_bool(0, true));
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: left,
+            then_args: vec![],
+            else_block: right,
+            else_args: vec![],
+        };
+    }
+    func.blocks.insert(
+        left,
+        block(left, &[], vec![make_const_int(1, 1)], branch(join, &[1])),
+    );
+    func.blocks.insert(
+        right,
+        block(right, &[], vec![make_const_int(2, 2)], branch(join, &[2])),
+    );
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[3],
+            vec![make_const_int(4, 1), make_binop(OpCode::Add, 5, 3, 4)],
+            ret(&[]),
+        ),
+    );
+    func.next_value = 6;
+
+    run(&mut func);
+
+    assert!(
+        !func.blocks.contains_key(&right),
+        "the untaken arm is removed"
+    );
+    let add = op_in(&func, join, 5);
+    assert_eq!(add.attrs.get("value"), Some(&AttrValue::Int(2)));
+}
+
+#[test]
+fn exception_edge_value_reaches_the_join_after_try_except() {
+    // entry: a = 1; b = 2; check_exception(-> handler, binds b); goto join(a)
+    // handler(h): goto join(h); join(x): x + a must stay a runtime add.
+    let mut func = void_function();
+    func.has_exception_handling = true;
+    let (handler, join) = (func.fresh_block(), func.fresh_block());
+    func.label_id_map.insert(handler.0, 100);
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![
+            make_const_int(0, 1),
+            make_const_int(1, 2),
+            binding_check_exception(100, &[1]),
+        ];
+        entry.terminator = branch(join, &[0]);
+    }
+    func.blocks
+        .insert(handler, block(handler, &[2], vec![], branch(join, &[2])));
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[3],
+            vec![make_binop(OpCode::Add, 4, 3, 0)],
+            ret(&[4]),
+        ),
+    );
+    func.next_value = 5;
+
+    run(&mut func);
+
+    assert_eq!(
+        op_in(&func, join, 4).opcode,
+        OpCode::Add,
+        "the join sees 1 from the normal path and 2 from the handler"
+    );
+}
+
+#[test]
+fn exception_edge_with_equal_value_still_folds_the_join() {
+    // Same shape, but the handler path also carries 1: the join folds to 2.
+    let mut func = void_function();
+    func.has_exception_handling = true;
+    let (handler, join) = (func.fresh_block(), func.fresh_block());
+    func.label_id_map.insert(handler.0, 100);
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![make_const_int(0, 1), binding_check_exception(100, &[0])];
+        entry.terminator = branch(join, &[0]);
+    }
+    func.blocks
+        .insert(handler, block(handler, &[2], vec![], branch(join, &[2])));
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[3],
+            vec![make_binop(OpCode::Add, 4, 3, 0)],
+            ret(&[4]),
+        ),
+    );
+    func.next_value = 5;
+
+    run(&mut func);
+
+    assert_eq!(
+        op_in(&func, join, 4).attrs.get("value"),
+        Some(&AttrValue::Int(2))
+    );
+}
+
+#[test]
+fn try_start_handler_arguments_are_overdefined() {
+    // A region registration binds no handler argument; its argument is unknown.
+    let mut func = void_function();
+    func.has_exception_handling = true;
+    let (handler, join) = (func.fresh_block(), func.fresh_block());
+    func.label_id_map.insert(handler.0, 100);
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![make_const_int(0, 1), make_try_start(100)];
+        entry.terminator = branch(join, &[0]);
+    }
+    func.blocks
+        .insert(handler, block(handler, &[2], vec![], branch(join, &[2])));
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[3],
+            vec![make_binop(OpCode::Add, 4, 3, 0)],
+            ret(&[4]),
+        ),
+    );
+    func.next_value = 5;
+
+    run(&mut func);
+
+    assert_eq!(op_in(&func, join, 4).opcode, OpCode::Add);
+}
+
+#[test]
+fn state_dispatch_edges_are_all_executable_and_never_folded() {
+    // entry: v = 1; state_dispatch {1 -> resume(v)} default -> first(v).
+    let mut func = void_function();
+    let (resume, first) = (func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![make_const_int(0, 1)];
+        entry.terminator = Terminator::StateDispatch {
+            cases: vec![(1, resume, vec![ValueId(0)])],
+            default: first,
+            default_args: vec![ValueId(0)],
+        };
+    }
+    func.blocks.insert(
+        resume,
+        block(
+            resume,
+            &[1],
+            vec![make_binop(OpCode::Add, 2, 1, 1)],
+            ret(&[]),
+        ),
+    );
+    func.blocks.insert(
+        first,
+        block(
+            first,
+            &[3],
+            vec![make_binop(OpCode::Add, 4, 3, 3)],
+            ret(&[]),
+        ),
+    );
+    func.next_value = 5;
+
+    run(&mut func);
+
+    assert!(matches!(
+        func.blocks[&entry].terminator,
+        Terminator::StateDispatch { .. }
+    ));
+    assert_eq!(
+        op_in(&func, resume, 2).attrs.get("value"),
+        Some(&AttrValue::Int(2))
+    );
+    assert_eq!(
+        op_in(&func, first, 4).attrs.get("value"),
+        Some(&AttrValue::Int(2))
+    );
+}
+
+#[test]
+fn edge_pair_to_one_target_keeps_each_edges_arguments() {
+    // if param -> join(1) else join(2): the two edges share a target but not a
+    // value, so the join stays a runtime value.
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::Bool],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let join = func.fresh_block();
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![make_const_int(1, 1), make_const_int(2, 2)];
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: join,
+            then_args: vec![ValueId(1)],
+            else_block: join,
+            else_args: vec![ValueId(2)],
+        };
+    }
+    func.blocks.insert(
+        join,
+        block(join, &[3], vec![make_binop(OpCode::Add, 4, 3, 3)], ret(&[])),
+    );
+    func.next_value = 5;
+
+    run(&mut func);
+
+    assert_eq!(op_in(&func, join, 4).opcode, OpCode::Add);
+}
+
+#[test]
+fn constant_predicate_on_an_edge_pair_takes_the_else_arguments() {
+    // if False -> join(1) else join(2): only the Else edge runs, so x + x is 4.
+    let mut func = void_function();
+    let join = func.fresh_block();
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![
+            make_const_bool(0, false),
+            make_const_int(1, 1),
+            make_const_int(2, 2),
+        ];
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: join,
+            then_args: vec![ValueId(1)],
+            else_block: join,
+            else_args: vec![ValueId(2)],
+        };
+    }
+    func.blocks.insert(
+        join,
+        block(join, &[3], vec![make_binop(OpCode::Add, 4, 3, 3)], ret(&[])),
+    );
+    func.next_value = 5;
+
+    run(&mut func);
+
+    assert_eq!(
+        op_in(&func, join, 4).attrs.get("value"),
+        Some(&AttrValue::Int(4))
+    );
+    match &func.blocks[&entry].terminator {
+        Terminator::Branch { target, args } => {
+            assert_eq!(*target, join);
+            assert_eq!(args, &vec![ValueId(2)]);
+        }
+        other => panic!("expected Branch, got {other:?}"),
+    }
+}
+
+/// entry: i0 = 0 -> header(i); header: i < 10 ? body : exit;
+/// body: next = (i + 1 when `changing`, else i) -> header(next).
+fn counting_loop(changing: bool) -> (TirFunction, BlockId) {
+    let mut func = void_function();
+    let (header, body, exit) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![make_const_int(0, 0)];
+        entry.terminator = branch(header, &[0]);
+    }
+    func.blocks.insert(
+        header,
+        block(
+            header,
+            &[1],
+            vec![make_const_int(2, 10), make_binop(OpCode::Lt, 3, 1, 2)],
+            Terminator::CondBranch {
+                cond: ValueId(3),
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        ),
+    );
+    let (body_ops, next) = if changing {
+        (
+            vec![make_const_int(4, 1), make_binop(OpCode::Add, 5, 1, 4)],
+            5,
+        )
+    } else {
+        (vec![], 1)
+    };
+    func.blocks
+        .insert(body, block(body, &[], body_ops, branch(header, &[next])));
+    func.blocks.insert(exit, block(exit, &[], vec![], ret(&[])));
+    func.loop_roles.insert(header, LoopRole::LoopHeader);
+    func.next_value = 6;
+    (func, header)
+}
+
+#[test]
+fn changing_backedge_keeps_the_loop_condition_runtime() {
+    let (mut func, header) = counting_loop(true);
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, header, 3).opcode,
+        OpCode::Lt,
+        "i is 0, then 1, ...: the optimistic first visit must not stick"
+    );
+}
+
+#[test]
+fn invariant_backedge_folds_the_loop_condition() {
+    let (mut func, header) = counting_loop(false);
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, header, 3).attrs.get("value"),
+        Some(&AttrValue::Bool(true))
+    );
+}
+
+#[test]
+fn constant_switch_folds_to_the_matching_case() {
+    let mut func = void_function();
+    let (one, two, other) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![make_const_int(0, 2)];
+        entry.terminator = Terminator::Switch {
+            value: ValueId(0),
+            cases: vec![(1, one, vec![]), (2, two, vec![])],
+            default: other,
+            default_args: vec![],
+        };
+    }
+    for id in [one, two, other] {
+        func.blocks.insert(id, block(id, &[], vec![], ret(&[])));
+    }
+    func.next_value = 1;
+
+    run(&mut func);
+
+    assert!(matches!(
+        func.blocks[&entry].terminator,
+        Terminator::Branch { target, .. } if target == two
+    ));
+    assert!(!func.blocks.contains_key(&one));
+    assert!(!func.blocks.contains_key(&other));
+}
+
+#[test]
+fn non_int_switch_constant_keeps_every_case() {
+    let mut func = void_function();
+    let (one, other) = (func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![make_const_bool(0, true)];
+        entry.terminator = Terminator::Switch {
+            value: ValueId(0),
+            cases: vec![(1, one, vec![])],
+            default: other,
+            default_args: vec![],
+        };
+    }
+    for id in [one, other] {
+        func.blocks.insert(id, block(id, &[], vec![], ret(&[])));
+    }
+    func.next_value = 1;
+
+    run(&mut func);
+
+    assert!(matches!(
+        func.blocks[&entry].terminator,
+        Terminator::Switch { .. }
+    ));
+}
+
+fn make_copy(result: u32, source: u32, origin: Option<molt_ir::OpKind>) -> TirOp {
+    TirOp {
+        origin,
+        runtime: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![ValueId(source)],
+        results: vec![ValueId(result)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    }
+}
+
+/// `if param: x = 5 else: x = 5; return x + 1`, where each arm assigns through
+/// a copy, as the frontend lowers a variable assignment.
+fn copy_join(origin: Option<molt_ir::OpKind>) -> (TirFunction, BlockId, BlockId) {
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let (left, right, join) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    func.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+        cond: ValueId(0),
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    func.blocks.insert(
+        left,
+        block(
+            left,
+            &[],
+            vec![make_const_int(1, 5), make_copy(2, 1, origin)],
+            branch(join, &[2]),
+        ),
+    );
+    func.blocks.insert(
+        right,
+        block(
+            right,
+            &[],
+            vec![make_const_int(3, 5), make_copy(4, 3, origin)],
+            branch(join, &[4]),
+        ),
+    );
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[5],
+            vec![make_const_int(6, 1), make_binop(OpCode::Add, 7, 5, 6)],
+            ret(&[7]),
+        ),
+    );
+    func.next_value = 8;
+    (func, left, join)
+}
+
+#[test]
+fn a_join_through_plain_copies_folds() {
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::CopyVar));
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, join, 7).attrs.get("value"),
+        Some(&AttrValue::Int(6))
+    );
+    // The copy stays for copy propagation to forward; a fresh constant in its
+    // place would survive copy propagation as a duplicate.
+    assert_eq!(op_in(&func, left, 2).opcode, OpCode::Copy);
+}
+
+#[test]
+fn a_slot_store_copy_keeps_its_effect_but_folds_its_readers() {
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::StoreVar));
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, join, 7).attrs.get("value"),
+        Some(&AttrValue::Int(6))
+    );
+    let store = op_in(&func, left, 2);
+    assert_eq!(store.opcode, OpCode::Copy);
+    assert_eq!(store.origin, Some(molt_ir::OpKind::StoreVar));
+}
+
+#[test]
+fn an_opaque_copy_passthrough_stays_overdefined() {
+    // A Copy carrying an unknown SimpleIR op is not a value copy.
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::ExceptionPop));
+    run(&mut func);
+    assert_eq!(op_in(&func, join, 7).opcode, OpCode::Add);
+    assert_eq!(op_in(&func, left, 2).opcode, OpCode::Copy);
+}
+
+#[test]
+fn a_frame_home_store_forwards_a_scalar_and_keeps_its_effect() {
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::FrameHomeStore));
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, join, 7).attrs.get("value"),
+        Some(&AttrValue::Int(6))
+    );
+    let store = op_in(&func, left, 2);
+    assert_eq!(store.opcode, OpCode::Copy);
+    assert_eq!(store.origin, Some(molt_ir::OpKind::FrameHomeStore));
+}
+
+#[test]
+fn a_frame_home_store_does_not_forward_a_string() {
+    // Only an immutable scalar crosses an effectful publication.
+    let mut func = void_function();
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![
+            make_const_str(0, "a"),
+            make_copy(1, 0, Some(molt_ir::OpKind::FrameHomeStore)),
+            make_const_str(2, "b"),
+            make_binop(OpCode::Add, 3, 1, 2),
+        ];
+        entry.terminator = ret(&[]);
+    }
+    func.next_value = 4;
+    run(&mut func);
+    assert_eq!(op_in(&func, entry, 3).opcode, OpCode::Add);
+}
+
+fn make_const_none(result: u32) -> TirOp {
+    TirOp {
+        origin: None,
+        runtime: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstNone,
+        operands: vec![],
+        results: vec![ValueId(result)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    }
+}
+
+/// `flag = p is p` (an exact bool that is not one constant), `other` as
+/// v1, then `cond = predicate(lhs, v1)` and a branch on `cond`. Returns
+/// the entry terminator after SCCP and the (then, else) blocks.
+fn branch_on_class_predicate(
+    predicate: OpCode,
+    lhs: u32,
+    other: TirOp,
+) -> (Terminator, BlockId, BlockId) {
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let then_id = func.fresh_block();
+    let else_id = func.fresh_block();
+    {
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops = vec![
+            other,
+            make_binop(OpCode::Is, 2, 0, 0),
+            make_binop(predicate, 3, lhs, 1),
+        ];
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(3),
+            then_block: then_id,
+            then_args: vec![],
+            else_block: else_id,
+            else_args: vec![],
+        };
+    }
+    for id in [then_id, else_id] {
+        func.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    func.next_value = 4;
+    run(&mut func);
+    let entry = func.blocks[&func.entry_block].terminator.clone();
+    (entry, then_id, else_id)
+}
+
+fn decided_target(terminator: &Terminator) -> Option<BlockId> {
+    match terminator {
+        Terminator::Branch { target, .. } => Some(*target),
+        Terminator::CondBranch { .. } => None,
+        other => panic!("unexpected terminator {other:?}"),
+    }
+}
+
+#[test]
+fn a_never_none_producer_decides_its_none_tests() {
+    const FLAG: u32 = 2;
+    // `p is p` is a bool on every execution, so CPython answers
+    // `(p is p) is None` False and `(p is p) is not None` True.
+    for (predicate, expected) in [(OpCode::Is, false), (OpCode::IsNot, true)] {
+        let (terminator, then_id, else_id) =
+            branch_on_class_predicate(predicate, FLAG, make_const_none(1));
+        let expected_target = if expected { then_id } else { else_id };
+        assert_eq!(
+            decided_target(&terminator),
+            Some(expected_target),
+            "{predicate:?}"
+        );
+    }
+}
+
+#[test]
+fn class_predicates_stay_undecided_without_a_class_answer() {
+    const PARAM: u32 = 0;
+    const FLAG: u32 = 2;
+    // `True == 1` is True and `False == 1` is False: one numeric family.
+    // A bool is one of two singletons: `flag is True` depends on its value.
+    // A parameter has no proven exact class.
+    let cases = [
+        (OpCode::Eq, FLAG, make_const_int(1, 1)),
+        (OpCode::Is, FLAG, make_const_bool(1, true)),
+        (OpCode::Is, PARAM, make_const_none(1)),
+        (OpCode::Eq, PARAM, make_const_str(1, "x")),
+    ];
+    for (predicate, lhs, other) in cases {
+        let (terminator, _, _) = branch_on_class_predicate(predicate, lhs, other.clone());
+        assert_eq!(
+            decided_target(&terminator),
+            None,
+            "{predicate:?} of v{lhs} against {:?}",
+            other.opcode
+        );
+    }
+}
+
+#[test]
+fn identity_of_constants_follows_singletons_only() {
+    let none_is_none = run_sccp_on_ops(
+        vec![
+            make_const_none(0),
+            make_const_none(1),
+            make_binop(OpCode::Is, 2, 0, 1),
+        ],
+        3,
+    )
+    .0;
+    assert_eq!(none_is_none[2].opcode, OpCode::ConstBool);
+    assert_eq!(
+        none_is_none[2].attrs.get("value"),
+        Some(&AttrValue::Bool(true))
+    );
+
+    let true_is_false = run_sccp_on_ops(
+        vec![
+            make_const_bool(0, true),
+            make_const_bool(1, false),
+            make_binop(OpCode::IsNot, 2, 0, 1),
+        ],
+        3,
+    )
+    .0;
+    assert_eq!(true_is_false[2].opcode, OpCode::ConstBool);
+    assert_eq!(
+        true_is_false[2].attrs.get("value"),
+        Some(&AttrValue::Bool(true))
+    );
+
+    // Two equal ints may or may not be one object (the small-int cache).
+    let ints = run_sccp_on_ops(
+        vec![
+            make_const_int(0, 7),
+            make_const_int(1, 7),
+            make_binop(OpCode::Is, 2, 0, 1),
+        ],
+        3,
+    )
+    .0;
+    assert_eq!(ints[2].opcode, OpCode::Is);
+}
+
+fn make_unary(opcode: OpCode, result: u32, operand: u32) -> TirOp {
+    TirOp {
+        origin: None,
+        runtime: None,
+        dialect: Dialect::Molt,
+        opcode,
+        operands: vec![ValueId(operand)],
+        results: vec![ValueId(result)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    }
+}
+
+fn cond_branch(cond: u32, then_block: BlockId, else_block: BlockId) -> Terminator {
+    Terminator::CondBranch {
+        cond: ValueId(cond),
+        then_block,
+        then_args: vec![],
+        else_block,
+        else_args: vec![],
+    }
+}
+
+fn jump(target: BlockId, args: &[u32]) -> Terminator {
+    Terminator::Branch {
+        target,
+        args: args.iter().copied().map(ValueId).collect(),
+    }
+}
+
+fn returns() -> Terminator {
+    Terminator::Return { values: vec![] }
+}
+
+/// `def f(p): if p is None: p = <default>; if p is None: A else: B`, with
+/// the not-None path through its own block. Returns the second test's
+/// terminator and its (A, B) blocks.
+fn default_none_idiom(default: TirOp) -> (Terminator, BlockId, BlockId) {
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let entry = func.entry_block;
+    let [assign, keep, join, a, b] = std::array::from_fn(|_| func.fresh_block());
+    // v0 = p, v1 = None, v2 = p is None, v3 = default, v4 = join(p'),
+    // v5 = None, v6 = p' is None.
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops = vec![make_const_none(1), make_binop(OpCode::Is, 2, 0, 1)];
+        block.terminator = cond_branch(2, assign, keep);
+    }
+    func.blocks
+        .insert(assign, block(assign, &[], vec![default], jump(join, &[3])));
+    func.blocks
+        .insert(keep, block(keep, &[], vec![], jump(join, &[0])));
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[4],
+            vec![make_const_none(5), make_binop(OpCode::Is, 6, 4, 5)],
+            cond_branch(6, a, b),
+        ),
+    );
+    func.blocks.insert(a, block(a, &[], vec![], returns()));
+    func.blocks.insert(b, block(b, &[], vec![], returns()));
+    func.next_value = 7;
+    run(&mut func);
+    (func.blocks[&join].terminator.clone(), a, b)
+}
+
+#[test]
+fn the_default_none_idiom_makes_the_join_never_none() {
+    // `p = []` and the not-None path both bind a value that is never None.
+    let (terminator, _, not_none) = default_none_idiom(make_build_list(3, vec![]));
+    assert_eq!(decided_target(&terminator), Some(not_none));
+    // A non-None constant default decides the same way.
+    let (terminator, _, not_none) = default_none_idiom(make_const_int(3, 0));
+    assert_eq!(decided_target(&terminator), Some(not_none));
+}
+
+#[test]
+fn a_none_default_keeps_the_join_undecided() {
+    // `if p is None: p = None` merges None with a not-None path.
+    let (terminator, _, _) = default_none_idiom(make_const_none(3));
+    assert_eq!(decided_target(&terminator), None);
+}
+
+/// `if <test of p>: A else: B` where B tests `p is not None` again.
+/// `wrap` builds the first condition from v2 = `p is None` into v3.
+fn retest_in_dominated_block(wrap: Option<OpCode>) -> (Terminator, BlockId, BlockId) {
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let entry = func.entry_block;
+    let [first_then, first_else, a, b] = std::array::from_fn(|_| func.fresh_block());
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops = vec![make_const_none(1), make_binop(OpCode::Is, 2, 0, 1)];
+        let cond = match wrap {
+            Some(opcode) => {
+                block.ops.push(make_unary(opcode, 3, 2));
+                3
+            }
+            None => 2,
+        };
+        block.terminator = cond_branch(cond, first_then, first_else);
+    }
+    func.blocks
+        .insert(first_then, block(first_then, &[], vec![], returns()));
+    func.blocks.insert(
+        first_else,
+        block(
+            first_else,
+            &[],
+            vec![make_const_none(4), make_binop(OpCode::IsNot, 5, 0, 4)],
+            cond_branch(5, a, b),
+        ),
+    );
+    func.blocks.insert(a, block(a, &[], vec![], returns()));
+    func.blocks.insert(b, block(b, &[], vec![], returns()));
+    func.next_value = 6;
+    run(&mut func);
+    (func.blocks[&first_else].terminator.clone(), a, b)
+}
+
+#[test]
+fn a_dominating_none_test_decides_a_later_test_with_either_polarity() {
+    // `if p is None: return` then `if p is not None:` -> always A.
+    let (terminator, a, _) = retest_in_dominated_block(None);
+    assert_eq!(decided_target(&terminator), Some(a));
+    // `if bool(p is None):` is the same test.
+    let (terminator, a, _) = retest_in_dominated_block(Some(OpCode::Bool));
+    assert_eq!(decided_target(&terminator), Some(a));
+    // `if not (p is None): return` leaves only None: `p is not None` -> B.
+    let (terminator, _, b) = retest_in_dominated_block(Some(OpCode::Not));
+    assert_eq!(decided_target(&terminator), Some(b));
+}
+
+#[test]
+fn a_block_with_two_entries_takes_no_none_fact_from_either() {
+    // Both edges of `if p is None` reach the second test: nothing is known.
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let entry = func.entry_block;
+    let [left, join, a, b] = std::array::from_fn(|_| func.fresh_block());
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops = vec![make_const_none(1), make_binop(OpCode::Is, 2, 0, 1)];
+        block.terminator = cond_branch(2, left, join);
+    }
+    func.blocks
+        .insert(left, block(left, &[], vec![], jump(join, &[])));
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[],
+            vec![make_const_none(3), make_binop(OpCode::Is, 4, 0, 3)],
+            cond_branch(4, a, b),
+        ),
+    );
+    func.blocks.insert(a, block(a, &[], vec![], returns()));
+    func.blocks.insert(b, block(b, &[], vec![], returns()));
+    func.next_value = 5;
+    run(&mut func);
+    assert_eq!(decided_target(&func.blocks[&join].terminator), None);
+}
+
+#[test]
+fn a_tested_edge_back_into_the_entry_block_proves_nothing_there() {
+    // bb0(p): y = p is not None; if y: bb1 else: exit
+    // bb1:    c = p is None;     if c: bb0(p) else: exit
+    // The back edge is bb0's only listed predecessor, yet the first call
+    // enters bb0 without taking it: `p is not None` stays undecided.
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let entry = func.entry_block;
+    let [body, exit] = std::array::from_fn(|_| func.fresh_block());
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops = vec![make_const_none(1), make_binop(OpCode::IsNot, 2, 0, 1)];
+        block.terminator = cond_branch(2, body, exit);
+    }
+    func.blocks.insert(
+        body,
+        block(
+            body,
+            &[],
+            vec![make_const_none(3), make_binop(OpCode::Is, 4, 0, 3)],
+            Terminator::CondBranch {
+                cond: ValueId(4),
+                then_block: entry,
+                then_args: vec![ValueId(0)],
+                else_block: exit,
+                else_args: vec![],
+            },
+        ),
+    );
+    func.blocks
+        .insert(exit, block(exit, &[], vec![], returns()));
+    func.next_value = 5;
+    run(&mut func);
+    assert_eq!(decided_target(&func.blocks[&entry].terminator), None);
 }

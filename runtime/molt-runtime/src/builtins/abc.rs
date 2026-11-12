@@ -23,7 +23,7 @@ fn get_attr_default(
     let Some(name_bits) = name.owned_bits(_py) else {
         return MoltObject::none().bits();
     };
-    let out = crate::molt_getattr_builtin(obj_bits, name_bits, default_bits);
+    let out = crate::molt_getattr_builtin_attached_body(_py, obj_bits, name_bits, default_bits);
     dec_ref_bits(_py, name_bits);
     out
 }
@@ -37,7 +37,7 @@ fn set_attr_name(
     let name_bits = name
         .owned_bits(_py)
         .ok_or_else(|| MoltObject::none().bits())?;
-    let _ = crate::molt_set_attr_name(obj_bits, name_bits, value_bits);
+    let _ = crate::molt_set_attr_name_attached_body(_py, obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -46,7 +46,7 @@ fn set_attr_name(
 }
 
 fn set_add(_py: &crate::PyToken<'_>, set_bits: u64, value_bits: u64) -> Result<(), u64> {
-    let _ = crate::molt_set_add(set_bits, value_bits);
+    let _ = crate::molt_set_add_attached_body(_py, set_bits, value_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -54,7 +54,7 @@ fn set_add(_py: &crate::PyToken<'_>, set_bits: u64, value_bits: u64) -> Result<(
 }
 
 fn set_clear(_py: &crate::PyToken<'_>, set_bits: u64) -> Result<(), u64> {
-    let _ = crate::molt_set_clear(set_bits);
+    let _ = crate::molt_set_clear_attached_body(_py, set_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -92,7 +92,7 @@ fn dict_set_str_key(
 }
 
 fn iter_type(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<u64, u64> {
-    let iter_bits = crate::molt_iter(iterable_bits);
+    let iter_bits = crate::molt_iter_attached_body(_py, iterable_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -162,7 +162,7 @@ fn for_each_iter_value(
     iterable_bits: u64,
     mut visit: impl FnMut(u64) -> Result<IterVisit, u64>,
 ) -> Result<(), u64> {
-    let iter_bits = crate::molt_iter(iterable_bits);
+    let iter_bits = crate::molt_iter_attached_body(_py, iterable_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -174,7 +174,8 @@ fn for_each_iter_value(
     loop {
         let mut value_bits = 0;
         let done_bits = unsafe {
-            crate::object::ops_iter::molt_iter_next_unboxed(
+            crate::object::ops_iter::molt_iter_next_unboxed_attached_body(
+                _py,
                 iter_bits,
                 (&mut value_bits as *mut u64) as u64,
             )
@@ -463,7 +464,7 @@ fn abc_collect_abstractmethods_frozenset(
     _py: &crate::PyToken<'_>,
     cls_bits: u64,
 ) -> Result<u64, u64> {
-    let abstracts_bits = crate::molt_set_new(0);
+    let abstracts_bits = crate::molt_set_new_attached_body(_py, 0);
     if obj_from_bits(abstracts_bits).is_none() {
         return Err(MoltObject::none().bits());
     }
@@ -538,10 +539,10 @@ fn abc_init_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
         ));
     }
     let frozen_bits = abc_collect_abstractmethods_frozenset(_py, cls_bits)?;
-    let registry_bits = crate::molt_set_new(0);
-    let cache_bits = crate::molt_set_new(0);
-    let neg_cache_bits = crate::molt_set_new(0);
-    let direct_subclasses_bits = crate::molt_set_new(0);
+    let registry_bits = crate::molt_set_new_attached_body(_py, 0);
+    let cache_bits = crate::molt_set_new_attached_body(_py, 0);
+    let neg_cache_bits = crate::molt_set_new_attached_body(_py, 0);
+    let direct_subclasses_bits = crate::molt_set_new_attached_body(_py, 0);
     if obj_from_bits(registry_bits).is_none()
         || obj_from_bits(cache_bits).is_none()
         || obj_from_bits(neg_cache_bits).is_none()
@@ -715,7 +716,10 @@ fn abc_subclasscheck_impl_inner(
         return Err(MoltObject::none().bits());
     }
     if !obj_from_bits(hook_bits).is_none() {
-        let callable_ok = is_truthy(_py, obj_from_bits(crate::molt_is_callable(hook_bits)));
+        let callable_ok = is_truthy(
+            _py,
+            obj_from_bits(crate::molt_is_callable_attached_body(_py, hook_bits)),
+        );
         if callable_ok {
             let hook_res = unsafe { call_callable1(_py, hook_bits, subclass_bits) };
             if exception_pending(_py) {
@@ -803,9 +807,8 @@ fn abc_subclasscheck_impl_inner(
     Ok(false)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_collections_abc_runtime_types_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let debug = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_COLLECTIONS_ABC_TYPES);
         let trace_stage = |stage: &str| {
             if debug {
@@ -848,15 +851,15 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             return MoltObject::none().bits();
         }
         let empty_dict_bits = MoltObject::from_ptr(empty_dict_ptr).bits();
-        let dict_keys_bits = crate::molt_dict_keys(empty_dict_bits);
+        let dict_keys_bits = crate::molt_dict_keys_attached_body(_py, empty_dict_bits);
         if exception_pending(_py) || obj_from_bits(dict_keys_bits).is_none() {
             return MoltObject::none().bits();
         }
-        let dict_values_bits = crate::molt_dict_values(empty_dict_bits);
+        let dict_values_bits = crate::molt_dict_values_attached_body(_py, empty_dict_bits);
         if exception_pending(_py) || obj_from_bits(dict_values_bits).is_none() {
             return MoltObject::none().bits();
         }
-        let dict_items_bits = crate::molt_dict_items(empty_dict_bits);
+        let dict_items_bits = crate::molt_dict_items_attached_body(_py, empty_dict_bits);
         if exception_pending(_py) || obj_from_bits(dict_items_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -890,7 +893,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        let reversed_bits = crate::molt_reversed_builtin(empty_list_bits);
+        let reversed_bits = crate::molt_reversed_builtin_attached_body(_py, empty_list_bits);
         if exception_pending(_py) || obj_from_bits(reversed_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -901,7 +904,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
 
         let zero_bits = int_bits_from_i64(_py, 0);
         let one_bits = int_bits_from_i64(_py, 1);
-        let range_bits = crate::molt_range_new(zero_bits, zero_bits, one_bits);
+        let range_bits = crate::molt_range_new_attached_body(_py, zero_bits, zero_bits, one_bits);
         if exception_pending(_py) || obj_from_bits(range_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -913,11 +916,12 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         dec_ref_bits(_py, range_bits);
 
         let thousand_bits = int_bits_from_i64(_py, 1000);
-        let long_stop_bits = crate::molt_lshift(one_bits, thousand_bits);
+        let long_stop_bits = crate::molt_lshift_attached_body(_py, one_bits, thousand_bits);
         if exception_pending(_py) || obj_from_bits(long_stop_bits).is_none() {
             return MoltObject::none().bits();
         }
-        let long_range_bits = crate::molt_range_new(zero_bits, long_stop_bits, one_bits);
+        let long_range_bits =
+            crate::molt_range_new_attached_body(_py, zero_bits, long_stop_bits, one_bits);
         if exception_pending(_py) || obj_from_bits(long_range_bits).is_none() {
             if !obj_from_bits(long_stop_bits).is_none() {
                 dec_ref_bits(_py, long_stop_bits);
@@ -934,7 +938,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             dec_ref_bits(_py, long_stop_bits);
         }
 
-        let empty_set_bits = crate::molt_set_new(0);
+        let empty_set_bits = crate::molt_set_new_attached_body(_py, 0);
         if obj_from_bits(empty_set_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -966,8 +970,11 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        let zip_bits =
-            crate::molt_zip_builtin(empty_tuple_bits, MoltObject::from_bool(false).bits());
+        let zip_bits = crate::molt_zip_builtin_attached_body(
+            _py,
+            empty_tuple_bits,
+            MoltObject::from_bool(false).bits(),
+        );
         if exception_pending(_py) || obj_from_bits(zip_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -1047,14 +1054,14 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_get_cache_token() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, abc_counter_get(_py) as i64) })
+pub(crate) fn molt_abc_get_cache_token_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        int_bits_from_i64(_py, abc_counter_get(_py) as i64)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_init(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_init_attached_body(_py: &crate::PyToken<'_>, cls_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(bits) = abc_init_impl(_py, cls_bits) {
             return bits;
         }
@@ -1062,9 +1069,12 @@ pub extern "C" fn molt_abc_init(cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_register_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    subclass_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !is_type_object(subclass_bits) {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "Can only register classes");
         }
@@ -1096,9 +1106,12 @@ pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_instancecheck(cls_bits: u64, instance_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_instancecheck_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    instance_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let class_attr_bits = get_attr_default(
             _py,
             instance_bits,
@@ -1131,9 +1144,12 @@ pub extern "C" fn molt_abc_instancecheck(cls_bits: u64, instance_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_subclasscheck(cls_bits: u64, subclass_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_subclasscheck_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    subclass_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match abc_subclasscheck_impl(_py, cls_bits, subclass_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
@@ -1141,9 +1157,8 @@ pub extern "C" fn molt_abc_subclasscheck(cls_bits: u64, subclass_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_get_dump_attached_body(_py: &crate::PyToken<'_>, cls_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
@@ -1176,9 +1191,11 @@ pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_reset_registry_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
@@ -1197,9 +1214,8 @@ pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_reset_caches_attached_body(_py: &crate::PyToken<'_>, cls_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
@@ -1231,9 +1247,11 @@ pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_update_abstractmethods(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_update_abstractmethods_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match abc_update_abstractmethods_impl(_py, cls_bits) {
             Ok(bits) => bits,
             Err(bits) => bits,
@@ -1241,9 +1259,8 @@ pub extern "C" fn molt_abc_update_abstractmethods(cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_bootstrap() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_abc_bootstrap_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             return MoltObject::none().bits();
@@ -1365,7 +1382,7 @@ fn protocol_collect_own_members(
         return Err(MoltObject::none().bits());
     }
     if !obj_from_bits(ann_bits).is_none() {
-        let keys_bits = crate::molt_dict_keys(ann_bits);
+        let keys_bits = crate::molt_dict_keys_attached_body(_py, ann_bits);
         if !exception_pending(_py) && !obj_from_bits(keys_bits).is_none() {
             for_each_iter_value(_py, keys_bits, |name_bits| {
                 let name_str = crate::string_obj_to_owned(obj_from_bits(name_bits));
@@ -1428,7 +1445,7 @@ fn protocol_collect_structural_members(
     _py: &crate::PyToken<'_>,
     proto_bits: u64,
 ) -> Result<u64, u64> {
-    let members_bits = crate::molt_set_new(0);
+    let members_bits = crate::molt_set_new_attached_body(_py, 0);
     if obj_from_bits(members_bits).is_none() {
         return Err(MoltObject::none().bits());
     }
@@ -1531,9 +1548,11 @@ fn protocol_collect_structural_members(
 ///
 /// Extract the set of attribute names that define the structural contract of
 /// a Protocol class.  Used by the typing shim to populate `__protocol_attrs__`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_protocol_get_structural_members(proto_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_protocol_get_structural_members_attached_body(
+    _py: &crate::PyToken<'_>,
+    proto_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match protocol_collect_structural_members(_py, proto_bits) {
             Ok(bits) => bits,
             Err(bits) => bits,
@@ -1611,7 +1630,7 @@ fn protocol_check_impl(
     // Iterate over protocol attrs and check hasattr on the object
     let mut missing_attr = false;
     for_each_iter_value(_py, attrs_bits, |name_bits| {
-        let has = crate::molt_has_attr_name(obj_bits, name_bits);
+        let has = crate::molt_has_attr_name_attached_body(_py, obj_bits, name_bits);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
@@ -1633,9 +1652,12 @@ fn protocol_check_impl(
 /// Combined nominal + structural isinstance/issubclass check for Protocol
 /// classes.  Nominal subclasses always pass; structural checks require
 /// `@runtime_checkable`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_protocol_check(proto_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_protocol_check_attached_body(
+    _py: &crate::PyToken<'_>,
+    proto_bits: u64,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match protocol_check_impl(_py, proto_bits, obj_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
@@ -1648,15 +1670,18 @@ pub extern "C" fn molt_protocol_check(proto_bits: u64, obj_bits: u64) -> u64 {
 /// Register a class as a virtual subclass of a Protocol, analogous to
 /// `ABCMeta.register()`.  This bumps the ABC invalidation counter so cached
 /// negative checks are flushed.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_protocol_register(proto_bits: u64, subclass_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_protocol_register_attached_body(
+    _py: &crate::PyToken<'_>,
+    proto_bits: u64,
+    subclass_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !is_type_object(subclass_bits) {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "Can only register classes");
         }
         // Delegate to the ABC register machinery which already handles
         // registry, cache invalidation, and cycle detection.
-        molt_abc_register(proto_bits, subclass_bits)
+        molt_abc_register_attached_body(_py, proto_bits, subclass_bits)
     })
 }
 
@@ -1666,15 +1691,17 @@ pub extern "C" fn molt_protocol_register(proto_bits: u64, subclass_bits: u64) ->
 
 /// `typing.cast(typ, val)` → identity (returns val, ignores typ).
 /// Lowered so the compiler can recognise the no-op and elide the frame.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_typing_cast(_typ_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { owned_return(_py, val_bits) })
+pub(crate) fn molt_typing_cast_attached_body(
+    _py: &crate::PyToken<'_>,
+    _typ_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { owned_return(_py, val_bits) })
 }
 
 /// `typing.get_origin(tp)` → `tp.__origin__` or None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_typing_get_origin(tp_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_typing_get_origin_attached_body(_py: &crate::PyToken<'_>, tp_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         get_attr_default(
             _py,
             tp_bits,
@@ -1685,13 +1712,14 @@ pub extern "C" fn molt_typing_get_origin(tp_bits: u64) -> u64 {
 }
 
 /// `typing.get_args(tp)` → `tp.__args__` or `()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_typing_get_args(tp_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_typing_get_args_attached_body(_py: &crate::PyToken<'_>, tp_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let empty_tuple = new_empty_tuple_bits(_py);
         owned_default_get_attr(_py, tp_bits, crate::NameId::DunderArgs, empty_tuple)
     })
 }
+
+include!("../attached_exports_generated/builtins/abc.rs");
 
 #[cfg(test)]
 mod tests {
@@ -1700,11 +1728,11 @@ mod tests {
 
     static INIT: Once = Once::new();
 
-    fn init_runtime() {
+    fn init_runtime(py: &crate::PyToken<'_>) {
         INIT.call_once(|| {
             assert_ne!(crate::lifecycle::init(), 0);
         });
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(py);
     }
 
     unsafe fn ref_count(bits: u64) -> u32 {
@@ -1731,7 +1759,8 @@ mod tests {
         let ns_ptr = alloc_dict_with_pairs(_py, &[]);
         assert!(!ns_ptr.is_null(), "class namespace allocation failed");
         let ns_bits = MoltObject::from_ptr(ns_ptr).bits();
-        let cls_bits = crate::molt_type_new(
+        let cls_bits = crate::molt_type_new_attached_body(
+            _py,
             builtins.type_obj,
             name_bits,
             bases_bits,
@@ -1752,7 +1781,10 @@ mod tests {
     #[test]
     fn abc_register_returns_owned_reference_for_registry_insert() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -1761,7 +1793,7 @@ mod tests {
                 let sub_bits = test_class(_py, b"OwnedRegisterSub", &[]);
 
                 let before = ref_count(sub_bits);
-                let returned = molt_abc_register(abc_bits, sub_bits);
+                let returned = molt_abc_register_attached_body(_py, abc_bits, sub_bits);
                 assert_eq!(returned, sub_bits);
                 assert_eq!(
                     ref_count(sub_bits),
@@ -1775,7 +1807,7 @@ mod tests {
                     "dropping the call result must leave the registry-owned ref intact",
                 );
 
-                let reset_result = molt_abc_reset_registry(abc_bits);
+                let reset_result = molt_abc_reset_registry_attached_body(_py, abc_bits);
                 assert!(
                     obj_from_bits(reset_result).is_none(),
                     "reset_registry should return None on success"
@@ -1795,7 +1827,10 @@ mod tests {
     #[test]
     fn abc_register_returns_owned_reference_for_existing_subclass() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -1804,7 +1839,7 @@ mod tests {
                 let sub_bits = test_class(_py, b"OwnedSubclassSub", &[abc_bits]);
 
                 let before = ref_count(sub_bits);
-                let returned = molt_abc_register(abc_bits, sub_bits);
+                let returned = molt_abc_register_attached_body(_py, abc_bits, sub_bits);
                 assert_eq!(returned, sub_bits);
                 assert_eq!(
                     ref_count(sub_bits),
@@ -1823,7 +1858,10 @@ mod tests {
     #[test]
     fn abc_subclasscheck_walks_abc_direct_subclasses_for_virtual_registry() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             let root_bits = test_class(_py, b"RootABC", &[]);
@@ -1832,7 +1870,7 @@ mod tests {
             abc_init_impl(_py, child_bits).expect("child abc init failed");
             let concrete_bits = test_class(_py, b"ConcreteVirtual", &[]);
 
-            let returned = molt_abc_register(child_bits, concrete_bits);
+            let returned = molt_abc_register_attached_body(_py, child_bits, concrete_bits);
             assert_eq!(returned, concrete_bits);
             dec_ref_bits(_py, returned);
 
@@ -1856,13 +1894,16 @@ mod tests {
     #[test]
     fn abc_update_abstractmethods_returns_owned_reference() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
                 let cls_bits = test_class(_py, b"OwnedUpdateABC", &[]);
                 let before = ref_count(cls_bits);
-                let returned = molt_abc_update_abstractmethods(cls_bits);
+                let returned = molt_abc_update_abstractmethods_attached_body(_py, cls_bits);
                 assert_eq!(returned, cls_bits);
                 assert_eq!(
                     ref_count(cls_bits),
@@ -1879,7 +1920,10 @@ mod tests {
     #[test]
     fn typing_cast_returns_owned_reference() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -1887,7 +1931,8 @@ mod tests {
                 assert!(!value_ptr.is_null());
                 let value_bits = MoltObject::from_ptr(value_ptr).bits();
                 let before = ref_count(value_bits);
-                let returned = molt_typing_cast(MoltObject::none().bits(), value_bits);
+                let returned =
+                    molt_typing_cast_attached_body(_py, MoltObject::none().bits(), value_bits);
                 assert_eq!(returned, value_bits);
                 assert_eq!(
                     ref_count(value_bits),
@@ -1904,11 +1949,15 @@ mod tests {
     #[test]
     fn typing_get_args_missing_attr_returns_tagged_empty_tuple() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
-                let out_bits = molt_typing_get_args(MoltObject::from_int(1).bits());
+                let out_bits =
+                    molt_typing_get_args_attached_body(_py, MoltObject::from_int(1).bits());
                 let out_ptr = maybe_ptr_from_bits(out_bits).expect("expected tagged tuple object");
                 assert_eq!(object_type_id(out_ptr), crate::TYPE_ID_TUPLE);
                 assert_eq!(crate::object::seq_access::len(out_ptr), 0);
@@ -1920,7 +1969,10 @@ mod tests {
     #[test]
     fn get_attr_default_reads_inherited_type_attrs_through_mro() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         let (set_base_ok, set_base_pending, set_attr_ok, set_attr_pending, inherited) =
             crate::with_gil_entry_nopanic!(_py, {
@@ -1964,7 +2016,8 @@ mod tests {
                         );
                     }
                     let base_ns_bits = MoltObject::from_ptr(base_ns_ptr).bits();
-                    let base_bits = crate::molt_type_new(
+                    let base_bits = crate::molt_type_new_attached_body(
+                        _py,
                         builtins.type_obj,
                         base_name_bits,
                         base_bases_bits,
@@ -2014,7 +2067,8 @@ mod tests {
                         );
                     }
                     let child_ns_bits = MoltObject::from_ptr(child_ns_ptr).bits();
-                    let child_bits = crate::molt_type_new(
+                    let child_bits = crate::molt_type_new_attached_body(
+                        _py,
                         builtins.type_obj,
                         child_name_bits,
                         child_bases_bits,
@@ -2029,7 +2083,8 @@ mod tests {
 
                     let attr_name_bits = dynamic_attr_name_bits(_py, b"append")
                         .expect("attr name allocation failed");
-                    let set_attr = crate::molt_set_attr_name(
+                    let set_attr = crate::molt_set_attr_name_attached_body(
+                        _py,
                         base_bits,
                         attr_name_bits,
                         MoltObject::from_bool(true).bits(),

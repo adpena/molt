@@ -5,8 +5,8 @@
   subsequent instruction or the block's terminator. This is a conservative,
   instruction-level DCE — it does not remove entire blocks.
 
-  Corresponds to the DCE pass in Molt's midend pipeline
-  (SimpleTIRGenerator._run_ir_midend_passes → _dce_pass).
+  Models an abstract TIR transform. Rust owns production optimization in
+  runtime/molt-passes/src/tir/passes; source correspondence remains unproved.
 -/
 import MoltTIR.Semantics.EvalExpr
 

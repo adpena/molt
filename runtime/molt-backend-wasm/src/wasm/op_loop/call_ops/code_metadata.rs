@@ -2,8 +2,9 @@ use super::super::result_sink::{discard_runtime_result, store_runtime_result};
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_code_metadata_call_op(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
@@ -54,6 +55,8 @@ pub(super) fn emit_code_metadata_call_op(
                         .expect("admitted trace_enter_slot symbol"),
                 )
                 .expect("admitted compiled-code slot binding") as i64,
+            op.value
+                .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value),
             call_ctx.import_ids,
             call_ctx.reloc_enabled,
         ),
@@ -146,12 +149,9 @@ pub(super) fn emit_code_metadata_call_op(
                 WasmRuntimeImport::LocalsBuiltin,
             );
         }
-        molt_ir::OpKind::Line => emit_value_drop_call(
-            call_ctx,
-            func,
-            op.value.unwrap_or(0),
-            WasmRuntimeImport::TraceSetLine,
-        ),
+        // A statement marker: it emits no code. Tracebacks read the location
+        // that `frame_set_location` publishes before each raising op.
+        molt_ir::OpKind::Line => {}
         molt_ir::OpKind::FrameLocalsSet => {
             emit_one_local_drop_call(call_ctx, func, op, WasmRuntimeImport::FrameLocalsSet)
         }

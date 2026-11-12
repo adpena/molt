@@ -1,6 +1,7 @@
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_i32_const;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmFunctionSymbol {

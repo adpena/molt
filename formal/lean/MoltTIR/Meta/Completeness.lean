@@ -30,9 +30,9 @@ namespace MoltTIR.Meta.Completeness
     Section 1: Pipeline pass enumeration
     ═══════════════════════════════════════════════════════════════ -/
 
-/-- Enumeration of all midend optimization passes in the Molt pipeline.
-    The order matches the actual compiler execution order in
-    SimpleTIRGenerator._run_ir_midend_passes. -/
+/-- Enumeration of the eight abstract optimization models composed here.
+    Production Rust build_default_pipeline has its own order and additional
+    passes; this model enumeration does not prove implementation coverage. -/
 inductive MidendPass where
   | constFold   -- Constant folding
   | sccp        -- Sparse Conditional Constant Propagation

@@ -487,7 +487,7 @@ fn copy_callable(py: &PyToken<'_>, module: u64) -> u64 {
     let Some(pointer) = obj_from_bits(bits).as_ptr() else {
         return 0;
     };
-    let mut pin = PtrDropGuard::new(pointer);
+    let mut pin = PtrDropGuard::new(py, pointer);
     let module_name = text(py, "_contextvars");
     let spec = NativeCallableSpec {
         name: Some(
@@ -517,9 +517,9 @@ fn copy_callable(py: &PyToken<'_>, module: u64) -> u64 {
     pin.release();
     bits
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_types(module: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_types_attached_body(_py: &crate::PyToken<'_>, module: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if obj_from_bits(module)
             .as_ptr()
             .is_none_or(|p| unsafe { object_type_id(p) != crate::TYPE_ID_MODULE })
@@ -538,7 +538,7 @@ pub extern "C" fn molt_contextvars_types(module: u64) -> u64 {
         if copy == 0 {
             return none();
         }
-        let _pin = PtrDropGuard::new(obj_from_bits(copy).as_ptr().unwrap());
+        let _pin = PtrDropGuard::new(py, obj_from_bits(copy).as_ptr().unwrap());
         let p = crate::alloc_tuple(py, &[classes[0], classes[1], classes[2], copy]);
         if p.is_null() {
             none()
@@ -547,13 +547,18 @@ pub extern "C" fn molt_contextvars_types(module: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_copy_current() -> u64 {
-    crate::with_gil_entry_nopanic!(py, { copy_current(py).unwrap_or_else(none) })
+
+pub(crate) fn molt_contextvars_copy_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { copy_current(py).unwrap_or_else(none) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_new(class: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let declaring = context_class(py);
         if declaring == 0
             || crate::builtins::type_ops::native_constructor_receiver(
@@ -590,13 +595,25 @@ fn unconstructible(py: &PyToken<'_>, declaring: u64, receiver: u64, label: &str)
         "Instances of this type cannot be created",
     )
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_token_new(class: u64, _args: u64, _kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { unconstructible(py, token_class(py), class, "Token") })
+
+pub(crate) fn molt_contextvars_token_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    _args: u64,
+    _kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        unconstructible(py, token_class(py), class, "Token")
+    })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_missing_new(class: u64, _args: u64, _kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_missing_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    _args: u64,
+    _kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = missing(py);
         let declaring = runtime_state(py)
             .types
@@ -605,27 +622,47 @@ pub extern "C" fn molt_contextvars_missing_new(class: u64, _args: u64, _kwargs: 
         unconstructible(py, declaring, class, "Token.MISSING")
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_keys_new(class: u64, _args: u64, _kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_keys_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    _args: u64,
+    _kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unconstructible(py, iterator_class(py, 0), class, "keys")
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_values_new(class: u64, _args: u64, _kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_values_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    _args: u64,
+    _kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unconstructible(py, iterator_class(py, 1), class, "values")
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_items_new(class: u64, _args: u64, _kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_items_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    _args: u64,
+    _kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unconstructible(py, iterator_class(py, 2), class, "items")
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_var_new(class: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_var_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let declaring = variable_class(py);
         if declaring == 0
             || crate::builtins::type_ops::native_constructor_receiver(
@@ -666,9 +703,14 @@ pub extern "C" fn molt_contextvars_var_new(class: u64, args: u64, kwargs: u64) -
         new_variable(py, bound[0].unwrap(), bound[1]).unwrap_or_else(none)
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_var_get(var: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_var_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    var: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some((a, n)) = positional(py, args, kwargs, 0, 1, "get") else {
             return none();
         };
@@ -679,33 +721,43 @@ pub extern "C" fn molt_contextvars_var_get(var: u64, args: u64, kwargs: u64) -> 
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_var_set(var: u64, value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_variable(py, var, value).unwrap_or_else(none) })
+
+pub(crate) fn molt_contextvars_var_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    var: u64,
+    value: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        set_variable(py, var, value).unwrap_or_else(none)
+    })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_var_reset(var: u64, token: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_var_reset_attached_body(
+    _py: &crate::PyToken<'_>,
+    var: u64,
+    token: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         reset_variable(py, var, token);
         none()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_var_hash(var: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_var_hash_attached_body(_py: &crate::PyToken<'_>, var: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if checked(py, var, ObjectShapeId::ContextVar, "ContextVar").is_none() {
             return none();
         }
         crate::builtins::numbers::int_bits_from_i64(py, unsafe { variable(var).hash })
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_copy(ctx: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { copy_context(py, ctx).unwrap_or_else(none) })
+
+pub(crate) fn molt_contextvars_copy_attached_body(_py: &crate::PyToken<'_>, ctx: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { copy_context(py, ctx).unwrap_or_else(none) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_len(ctx: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_len_attached_body(_py: &crate::PyToken<'_>, ctx: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if checked(py, ctx, ObjectShapeId::Context, "Context").is_none() {
             return none();
         }
@@ -721,9 +773,13 @@ fn mapping_value(py: &PyToken<'_>, ctx: u64, var: u64) -> Option<Option<u64>> {
         var_hash(var),
     ))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_getitem(ctx: u64, var: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    ctx: u64,
+    var: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         match mapping_value(py, ctx, var) {
             Some(Some(v)) => owned(py, v),
             Some(None) => crate::builtins::exceptions::raise_key_error_with_key(py, var),
@@ -731,24 +787,38 @@ pub extern "C" fn molt_contextvars_getitem(ctx: u64, var: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_contains(ctx: u64, var: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    ctx: u64,
+    var: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         mapping_value(py, ctx, var).map_or_else(none, |v| MoltObject::from_bool(v.is_some()).bits())
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_get(ctx: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    ctx: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some((a, _)) = positional(py, args, kwargs, 1, 2, "get") else {
             return none();
         };
         mapping_value(py, ctx, a[0]).map_or_else(none, |v| owned(py, v.unwrap_or(a[1])))
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_run(ctx: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_run_attached_body(
+    _py: &crate::PyToken<'_>,
+    ctx: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(args_ptr) = obj_from_bits(args).as_ptr() else {
             return none();
         };
@@ -765,20 +835,21 @@ pub extern "C" fn molt_contextvars_run(ctx: u64, args: u64, kwargs: u64) -> u64 
         let Some(_lease) = EnteredContext::enter(py, ctx) else {
             return none();
         };
-        let builder = crate::molt_callargs_new(0, 0);
+        let builder = crate::molt_callargs_new_attached_body(py, 0, 0);
         let Some(p) = obj_from_bits(builder).as_ptr() else {
             return none();
         };
-        let mut pin = PtrDropGuard::new(p);
+        let mut pin = PtrDropGuard::new(py, p);
         for &value in rest {
-            let result = unsafe { crate::molt_callargs_push_pos(builder, value) };
+            let result = unsafe { crate::molt_callargs_push_pos_attached_body(py, builder, value) };
             dec_ref_bits(py, result);
             if exception_pending(py) {
                 return none();
             }
         }
         if !obj_from_bits(kwargs).is_none() {
-            let result = unsafe { crate::molt_callargs_expand_kwstar(builder, kwargs) };
+            let result =
+                unsafe { crate::molt_callargs_expand_kwstar_attached_body(py, builder, kwargs) };
             dec_ref_bits(py, result);
             if exception_pending(py) {
                 return none();
@@ -787,7 +858,7 @@ pub extern "C" fn molt_contextvars_run(ctx: u64, args: u64, kwargs: u64) -> u64 
         // call_bind consumes the builder, preserving the ordinary call argument
         // custody authority and native/WASM dispatch.
         pin.release();
-        crate::molt_call_bind(function, builder)
+        crate::molt_call_bind_attached_body(py, function, builder)
     })
 }
 fn iter(py: &PyToken<'_>, ctx: u64, mode: u64) -> u64 {
@@ -795,7 +866,7 @@ fn iter(py: &PyToken<'_>, ctx: u64, mode: u64) -> u64 {
         return none();
     }
     let root = owned(py, unsafe { context(ctx).root });
-    let _pin = (root != 0).then(|| PtrDropGuard::new(obj_from_bits(root).as_ptr().unwrap()));
+    let _pin = (root != 0).then(|| PtrDropGuard::new(py, obj_from_bits(root).as_ptr().unwrap()));
     let Some(bits) = alloc(
         py,
         iterator_class(py, mode),
@@ -816,30 +887,30 @@ fn iter(py: &PyToken<'_>, ctx: u64, mode: u64) -> u64 {
     }
     bits
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_keys(ctx: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { iter(py, ctx, 0) })
+
+pub(crate) fn molt_contextvars_keys_attached_body(_py: &crate::PyToken<'_>, ctx: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { iter(py, ctx, 0) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_values(ctx: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { iter(py, ctx, 1) })
+
+pub(crate) fn molt_contextvars_values_attached_body(_py: &crate::PyToken<'_>, ctx: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { iter(py, ctx, 1) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_items(ctx: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { iter(py, ctx, 2) })
+
+pub(crate) fn molt_contextvars_items_attached_body(_py: &crate::PyToken<'_>, ctx: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { iter(py, ctx, 2) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_iter_self(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_iter_self_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if checked(py, bits, ObjectShapeId::ContextIterator, "Context iterator").is_none() {
             return none();
         }
         owned(py, bits)
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_iter_next(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_iter_next_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(p) = checked(py, bits, ObjectShapeId::ContextIterator, "Context iterator") else {
             return none();
         };
@@ -867,8 +938,8 @@ fn equal(py: &PyToken<'_>, left: u64, right: u64, invert: bool) -> u64 {
     }
     let a = owned(py, unsafe { context(left).root });
     let b = owned(py, unsafe { context(right).root });
-    let _ap = (a != 0).then(|| PtrDropGuard::new(obj_from_bits(a).as_ptr().unwrap()));
-    let _bp = (b != 0).then(|| PtrDropGuard::new(obj_from_bits(b).as_ptr().unwrap()));
+    let _ap = (a != 0).then(|| PtrDropGuard::new(py, obj_from_bits(a).as_ptr().unwrap()));
+    let _bp = (b != 0).then(|| PtrDropGuard::new(py, obj_from_bits(b).as_ptr().unwrap()));
     let mut result = unsafe { context(left).len == context(right).len };
     if result && a != b {
         let mut cursor = trie::Cursor::new(a);
@@ -893,17 +964,21 @@ fn equal(py: &PyToken<'_>, left: u64, right: u64, invert: bool) -> u64 {
     }
     MoltObject::from_bool(result ^ invert).bits()
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_eq(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { equal(py, a, b, false) })
+
+pub(crate) fn molt_contextvars_eq_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { equal(py, a, b, false) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_ne(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { equal(py, a, b, true) })
+
+pub(crate) fn molt_contextvars_ne_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { equal(py, a, b, true) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_property(descriptor: u64, bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_property_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let p = obj_from_bits(descriptor).as_ptr().unwrap();
         let op = unsafe { crate::object::layout::native_descriptor_operation(p) }.unwrap();
         if op == 1 {
@@ -925,9 +1000,12 @@ pub extern "C" fn molt_contextvars_property(descriptor: u64, bits: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_token_enter(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_token_enter_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(p) = checked(py, bits, ObjectShapeId::ContextToken, "Token") else {
             return none();
         };
@@ -935,9 +1013,15 @@ pub extern "C" fn molt_contextvars_token_enter(bits: u64) -> u64 {
         owned(py, bits)
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_token_exit(bits: u64, _ty: u64, _value: u64, _tb: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_token_exit_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    _ty: u64,
+    _value: u64,
+    _tb: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(p) = checked(py, bits, ObjectShapeId::ContextToken, "Token") else {
             return none();
         };
@@ -946,7 +1030,7 @@ pub extern "C" fn molt_contextvars_token_exit(bits: u64, _ty: u64, _value: u64, 
     })
 }
 fn repr(py: &PyToken<'_>, value: u64) -> Option<String> {
-    let bits = crate::molt_repr_from_obj(value);
+    let bits = crate::molt_repr_from_obj_attached_body(py, value);
     if exception_pending(py) {
         return None;
     }
@@ -954,9 +1038,9 @@ fn repr(py: &PyToken<'_>, value: u64) -> Option<String> {
     dec_ref_bits(py, bits);
     out
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_var_repr(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_var_repr_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if checked(py, bits, ObjectShapeId::ContextVar, "ContextVar").is_none() {
             return none();
         }
@@ -981,9 +1065,12 @@ pub extern "C" fn molt_contextvars_var_repr(bits: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_token_repr(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_contextvars_token_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(p) = checked(py, bits, ObjectShapeId::ContextToken, "Token") else {
             return none();
         };
@@ -998,7 +1085,12 @@ pub extern "C" fn molt_contextvars_token_repr(bits: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextvars_missing_repr(_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { text(py, "<Token.MISSING>") })
+
+pub(crate) fn molt_contextvars_missing_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    _bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { text(py, "<Token.MISSING>") })
 }
+
+include!("../../attached_exports_generated/builtins/contextvars/native.rs");

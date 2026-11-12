@@ -21,6 +21,11 @@
 //! ## Soundness gates (each refusal is conservative-correct: the loop simply
 //! keeps its per-iteration dict traffic)
 //!
+//! * **Asynchronous work**: a loop's poll runs signal handlers and pending
+//!   calls, which may read or write any slot. The loop is versioned: the
+//!   promoted copy has no poll, tests the thread's pending-work word at each
+//!   back edge and leaves, with its dirty slots stored, for an unpromoted copy
+//!   that polls (`promote::version_loop_at_polls`).
 //! * **Concurrent observers**: CPython permits another *thread* to observe
 //!   module globals mid-loop. [`module_has_concurrency_markers`] scans the
 //!   whole module for threading reachability (`molt_thread_*` intrinsic name
@@ -35,8 +40,12 @@
 //!   disjoint (key-precise refinement of the oracle's coarse `ModuleDict`
 //!   region).
 //! * **Dynamic module access**: a module op with a non-constant name (or a
-//!   `ModuleDelGlobal*` / `ModuleGetGlobal`) may touch any ATTR slot → the
-//!   containing FUNCTION is skipped entirely. (`ModuleCache*` ops operate on
+//!   `ModuleDelGlobal*`) may touch any ATTR slot → the containing FUNCTION is
+//!   skipped entirely. A const-named `ModuleGetGlobal` on the module root is a
+//!   keyed read: module-level code reads every global through it. It differs
+//!   from `ModuleGetAttr` in one way, the builtins fallback on a miss, so a
+//!   hoisted load keeps the read's opcode, and a written slot is refused when
+//!   its entry value comes from such a read. (`ModuleCache*` ops operate on
 //!   the separate `sys.modules` registry, not the attr dict — not wildcards.)
 //! * **Entry availability (no speculation)**: a slot is promoted only when its
 //!   value is available at loop entry without hoisting a may-raise load past

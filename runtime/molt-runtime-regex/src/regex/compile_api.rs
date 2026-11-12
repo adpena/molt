@@ -9,16 +9,19 @@ use molt_runtime_core::BuiltinExc;
 ///
 /// Parse a regex pattern string and return an owned immutable native handle.
 /// Returns -1 and raises `re.error` on parse failure.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_re_compile_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    pattern_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let pattern_obj = obj_from_bits(pattern_bits);
         let is_bytes = pattern_obj
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_BYTES);
         let pattern = if is_bytes {
             let Some(bytes) = (unsafe { bytes_obj_to_borrowed(pattern_obj) }) else {
-                if rt_exception_pending() {
+                if rt_exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
                 return raise_exception::<_>(
@@ -66,7 +69,7 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
                     Ok(compiled) => compiled,
                     Err(error) => return match_error_result(_py, error),
                 };
-                match pattern_handle_new(std::sync::Arc::new(PatternHandle::new(compiled))) {
+                match pattern_handle_new(_py, std::sync::Arc::new(PatternHandle::new(compiled))) {
                     Some(bits) => bits,
                     None => MoltObject::none().bits(),
                 }
@@ -87,15 +90,20 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
 ///   1: group_names â€” dict,  {name: index}
 ///   2: flags       â€” int,   effective flags (pattern flags | inline flags)
 ///   3: warn_pos    â€” int or None,  char position of nested-set warning (or None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(compiled) = pattern_handle_arc(handle_bits) else {
+pub fn molt_re_pattern_info_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(compiled) = pattern_handle_arc(_py, handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         // Project the canonical group-open order directly. Match/groupdict
         // consumers retain this declaration order without sorting per match.
-        let mut pairs = Vec::with_capacity(compiled.compiled.group_names.len() * 2);
+        let mut pairs = molt_runtime_core::RuntimeValueCollection::with_capacity(
+            _py,
+            compiled.compiled.group_names.len() * 2,
+        );
         for (name, &idx) in &compiled.compiled.group_names {
             let name_ptr = alloc_string(_py, name.as_bytes());
             if name_ptr.is_null() {
@@ -106,7 +114,7 @@ pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
             pairs.push(unsafe { OwnedRuntimeValue::from_owned_bits(_py, name_bits) });
             pairs.push(unsafe { OwnedRuntimeValue::from_owned_bits(_py, idx_bits) });
         }
-        let dict_ptr = alloc_dict_with_pairs(_py, OwnedRuntimeValue::as_bits_slice(&pairs));
+        let dict_ptr = alloc_dict_with_pairs(_py, pairs.as_bits_slice());
         if dict_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -132,3 +140,5 @@ pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
         MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
+
+include!("../attached_exports_generated/regex/compile_api.rs");

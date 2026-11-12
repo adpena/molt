@@ -9,9 +9,9 @@ from molt._wasm_abi_generated import (
     WASM_SYNTHETIC_ERRNO,
     WASM_WASI_PREVIEW1_ERRNO,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
-    wasm_import_result_kind,
-    wasm_import_signature,
+    WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
     wasm_runtime_import_name,
+    compiled_execution_symbol,
 )
 from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
 from molt.wasm_artifact import (
@@ -22,6 +22,9 @@ from molt._wasm_runtime_exports import (
     wasm_split_runtime_canonical_import_name,
     wasm_split_runtime_export_name_for_import,
     wasm_split_runtime_import_name_for_export,
+    wasm_split_runtime_import_signature,
+    wasm_runtime_lifetime_export_names,
+    wasm_runtime_is_attached_physical_export,
 )
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
@@ -114,10 +117,15 @@ def _runtime_import_signature_from_manifest(
     import_name: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
     manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
-    return wasm_import_signature(manifest_import_name)
+    return wasm_split_runtime_import_signature(manifest_import_name)
 
 
 def _runtime_lookup_import_name_from_manifest(name: str) -> str:
+    if (
+        name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
+        or wasm_runtime_is_attached_physical_export(name)
+    ):
+        return name
     canonical_name = wasm_split_runtime_canonical_import_name(name)
     return wasm_runtime_import_name(canonical_name) or canonical_name
 
@@ -141,6 +149,11 @@ def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | Non
 
 
 def _runtime_import_name_for_export_from_manifest(export_name: str) -> str | None:
+    if (
+        export_name in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
+        or wasm_runtime_is_attached_physical_export(export_name)
+    ):
+        return export_name
     import_name = wasm_runtime_import_name(export_name)
     if import_name is not None:
         return import_name
@@ -191,14 +204,21 @@ def _runtime_export_signature_for_cpython_abi_link_import(
 
 
 def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
-    manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
-    return wasm_import_result_kind(manifest_import_name)
+    signature = _runtime_import_signature_from_manifest(import_name)
+    if signature is None:
+        return None
+    results = signature[1]
+    return "nil" if not results else ", ".join(results)
 
 
 def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
     # Runtime callables are keys the runtime resolves itself: the browser ABI
     # names no reserved callable and no table layout (HF-699 K1, K3).
-    return {"call_indirect_imports": list(WASM_CALL_INDIRECT_IMPORTS)}
+    return {
+        "call_indirect_imports": [
+            compiled_execution_symbol(name) for name in WASM_CALL_INDIRECT_IMPORTS
+        ]
+    }
 
 
 def _generate_split_worker_js(
@@ -245,9 +265,10 @@ def _generate_split_worker_js(
         runtime_import_names,
         runtime_export_signatures=runtime_export_signatures,
     )
-    runtime_import_export_names = _runtime_import_export_names_from_manifest(
-        runtime_import_names,
-    )
+    runtime_import_export_names = {
+        **_runtime_import_export_names_from_manifest(runtime_import_names),
+        **wasm_runtime_lifetime_export_names(),
+    }
     runtime_import_result_kinds_json = json.dumps(
         runtime_import_result_kinds, sort_keys=True
     )
@@ -260,7 +281,9 @@ def _generate_split_worker_js(
     runtime_export_signatures_json = json.dumps(
         dict(runtime_export_signatures or {}), sort_keys=True
     )
-    call_indirect_imports_json = json.dumps(list(WASM_CALL_INDIRECT_IMPORTS))
+    call_indirect_imports_json = json.dumps(
+        [compiled_execution_symbol(name) for name in WASM_CALL_INDIRECT_IMPORTS]
+    )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import "./molt_vfs_browser.js";
@@ -272,6 +295,11 @@ import appModule from "./app.wasm";
 
 const {
   requireMoltDeploymentManifest,
+  requireAttachedExecutionAbi,
+  compiledExecutionSymbol,
+  requireSharedExecutionMemory,
+  requireSharedExecutionMemoryImport,
+  callIsolateImportExport,
   deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callableTableFromModule,
@@ -282,7 +310,7 @@ const {
 } = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
-const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, runtimeExport, combinedError } = globalThis.MoltRuntimeLifecycle;
 const appCallableTable = readCallableTableAttestation({
   module: appModule,
   label: "app wasm",
@@ -878,14 +906,6 @@ export default {
       return BigInt.asUintN(64, BigInt(value));
     };
 
-    const callIsolateImportExport = (fn, args) => {
-      if (args.length !== 1) {
-        throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
-      }
-      const handle = normalizeI64BridgeValue(args[0], "molt_isolate_import handle");
-      return normalizeI64BridgeValue(fn(handle), "molt_isolate_import result");
-    };
-
     const formatDebugValue = (value) => {
       if (typeof value === "bigint") {
         return `${value}n`;
@@ -994,11 +1014,11 @@ export default {
           return writeErrno(err, EINVAL) * -1;
         }
       },
-      molt_isolate_import(...args) {
-        if (!appInstance || !appInstance.exports.molt_isolate_import) {
+      [compiledExecutionSymbol("molt_isolate_import")](...args) {
+        if (!appInstance || !appInstance.exports[compiledExecutionSymbol("molt_isolate_import")]) {
           throw new Error("molt_isolate_import called before app instantiation");
         }
-        return callIsolateImportExport(appInstance.exports.molt_isolate_import, args);
+        return callIsolateImportExport(appInstance.exports[compiledExecutionSymbol("molt_isolate_import")], args);
       },
       molt_time_timezone_host()  { return 0n; },
       molt_time_local_offset_host() { return 0n; },
@@ -1053,7 +1073,7 @@ export default {
     };
 
     for (const indirectName of callIndirectImportNames) {
-      hostEnv[indirectName] = (fnIndex, ...args) => {
+      hostEnv[indirectName] = (context, fnIndex, ...args) => {
         // Runtime callables are keys the runtime resolves itself, so every
         // index here is a slot of the shared table (HF-699 K1, K3).
         const dispatchIdx = Number(fnIndex);
@@ -1063,7 +1083,7 @@ export default {
           callableTableSignature(runtimeCallableTable, dispatchIdx);
         if (typeof tableFn === "function" && directSignature) {
           try {
-            return callWithSignature(tableFn, directSignature, args);
+            return callWithSignature(tableFn, directSignature, [context, ...args]);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             const fnName = tableFn.name || "<anon>";
@@ -1101,7 +1121,7 @@ export default {
         if (runtimeExceptionPending(rtInstance)) {
           throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception");
         }
-      });
+      }, deploymentManifest.abi.runtime_imports);
       lifetime.admit();
       verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
       // 2. Instantiate the app module.
@@ -1115,22 +1135,26 @@ export default {
         },
         molt_runtime: buildRuntimeImports(appModule, rtInstance),
       };
+      requireAttachedExecutionAbi(appModule, rtInstance, deploymentManifest.abi.runtime_imports);
+      requireSharedExecutionMemoryImport(appModule);
       appInstance = await WebAssembly.instantiate(appModule, appImports);
+      requireSharedExecutionMemory(rtInstance.exports.molt_memory || rtInstance.exports.memory || wasmMemory,
+        appInstance.exports.molt_memory || appInstance.exports.memory || wasmMemory);
       // 3. Bind WASI/libc constructors as lifetime-owned bootstrap, then run
       //    application code under the canonical execution lease.
       verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
       lifetime.initialize(() => {
         if (rtInstance.exports._initialize) rtInstance.exports._initialize();
       });
-      lifetime.execute(() => {
-        if (typeof appInstance.exports.molt_main !== "function") {
+      lifetime.execute((context) => {
+        if (typeof appInstance.exports[compiledExecutionSymbol("molt_main")] !== "function") {
           throw new Error("missing application startup export");
         }
-        appInstance.exports.molt_main();
+        appInstance.exports[compiledExecutionSymbol("molt_main")](context);
         // The runtime reports an exception the entry left pending (CPython's
         // PyErr_Print, through sys.excepthook into stderr) and returns the
         // program's exit status, as the native main stub does.
-        exitStatus = Number(rtInstance.exports.molt_main_exit_status());
+        exitStatus = Number(runtimeExport(rtInstance, "molt_main_exit_status")());
       });
     } catch (err) {
       if (err instanceof ProcExit) procExit = err;

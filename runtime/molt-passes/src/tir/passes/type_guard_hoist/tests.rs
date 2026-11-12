@@ -10,6 +10,7 @@ use super::run;
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -24,6 +25,7 @@ fn make_type_guard(operand: ValueId, result: ValueId) -> TirOp {
     attrs.insert("ty".to_string(), AttrValue::Str("INT".to_string()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],

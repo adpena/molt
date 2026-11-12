@@ -85,11 +85,10 @@ The verify-first pass (CLAUDE.md, charter §"RECON") found that the substrate is
   `runtime/molt-ir/src/tir/ops.rs` (`SourceSite` over `_source_line`,
   `_col_offset`, `_end_col_offset`), and SSA/lowering/rewrite passes now inherit
   that fact as one unit instead of carrying columns as ad hoc keys.
-- `src/molt/frontend/lowering/op_kinds_generated.py` (generated from
-  `runtime/molt-ir/src/tir/op_kinds.toml`, doc 25) carries `RAISING_KIND_NAMES`
-  (line 292): the set of op.kinds that can raise, for which `emit()` attaches the caret
-  `col_offset` (header lines 16–17, 289). This is a *generated, registry-backed* fact —
-  exactly the right shape, already wired to the op-kind single source of truth.
+- `lowering/frame_locations.py` publishes frontend source positions using the
+  generated callback and pure/control effects from `op_kinds.toml` (doc 25).
+  HF-773 slice E retires the unused `RAISING_KIND_NAMES` optimizer projection;
+  its source rows remain inputs to the live callback-effect projection.
 - So: **the frontend already produces PEP-657-grade location facts.** The gap is NOT
   "the frontend doesn't know the span." It is downstream (transport + one authority).
 
@@ -226,8 +225,8 @@ layer (charter §loop step 4: "facts silently die at REPRESENTATION BOUNDARIES")
   is exactly the "fact dies at a boundary" landmine the charter warns about.
 - **Producer.** The frontend span post-pass (`serialization.py:4405`) extended from
   "raising kinds get caret cols" to "every op carries its `SourceSpan` + owning
-  function/qualname," gated by the op_kinds registry (`RAISING_KIND_NAMES` generalized to a
-  `carries_span` column in `op_kinds.toml`).
+  function/qualname," through the existing source-position and TIR SourceSite
+  authorities, preserving the registry-backed observer effects.
 - **Transport.** The current line/column site travels as a typed TIR op attribute
   through the SimpleIR/TIR round-trip. The remaining target is to extend this
   carried fact from line/column SourceSite into full span + function identity and
@@ -272,7 +271,7 @@ consumers. This is the phase order in §4.
 |---|---|---|
 | `cli/` package with `_shared.py` leaf + `__init__` dispatch | **21d** | 21d §2 target layout; `_shared.py` holds `_fail`/`_emit_json`. This arc turns `_fail` INTO the diagnostic funnel. **Ordering: F-DIAG CLI consumer lands AFTER 21d Phase 1 (`_shared.py` extracted).** |
 | op_kinds registry pattern (toml → generated producer+consumer) | **doc 25** (`25_op_kind_registry.md`) | `diagnostics.toml` and the `carries_span` column reuse this exact generation discipline; `tests/test_gen_op_kinds.py` is the template for `test_gen_diagnostics.py`. |
-| Source spans already on raising ops | **frontend F2** (doc 44, `op_kinds_generated.py:RAISING_KIND_NAMES`) | F-SRCMAP generalizes `RAISING_KIND_NAMES` → `carries_span`; composes with 21c frontend mixin decomposition. |
+| Source positions already on frontend ops | **frontend F2** (doc 44, `lowering/frame_locations.py`) | F-SRCMAP extends the existing source-position/SourceSite transport; composes with 21c frontend mixin decomposition. |
 | Existing caret formatter + chaining | runtime `exceptions.rs` | Refactored to BUILD `Diagnostic` rather than format strings inline; the parity behavior is preserved as the oracle. |
 | Inliner / generator-fusion span preservation | **doc 01** (E1, `da591a7d5`), **doc 07** (D1) | F-SRCMAP must add inline-stack carrying; this is a *consumer obligation on the inliner*, flagged as the top risk (§7). Coordinate file-lane with whoever owns the inliner. |
 | Verified-subset witnesses | `verified_subset_contract.md`, doc 52 §C.3-#12 | The `SubsetAlternative` hint + generated catalog derive from these; this arc makes the subset *visible at the error*, advancing the 50-year manifest goal. |
@@ -344,9 +343,9 @@ unification of the runtime path.
 every backend get correct `File "...", line N, in name` — retiring the "wrong/missing
 traceback on backend X / interior frame" class.
 
-- `op_kinds.toml`: generalize `RAISING_KIND_NAMES` to a `carries_span` column +
-  add per-function `qualname`/`co_filename` identity to the function fact. Regenerate
-  both `op_kinds_generated.{rs,py}`.
+- Extend the existing source-position/SourceSite authority with the necessary
+  per-function `qualname`/`co_filename` identity. Registry-backed observer effects
+  remain in `op_kinds.toml`; regenerate affected projections with that authority.
 - Frontend (`serialization.py:4405` post-pass): emit the full `SourceSpan` +
   owning-function identity on every span-carrying op (not just raising ones), so the IR
   carries a complete line table.

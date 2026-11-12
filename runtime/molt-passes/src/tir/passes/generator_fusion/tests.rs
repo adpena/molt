@@ -28,6 +28,7 @@ fn only_candidate(poll: &TirFunction, caller: &TirFunction) -> FusionCandidate {
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

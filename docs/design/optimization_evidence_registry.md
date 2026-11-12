@@ -46,8 +46,8 @@ those changes, a rejected idea can start to pay, and a landed one can stop payin
      spread.
 
    Anchors cite existing evidence and add no measurement store of their own. They cite
-   `perf_history` board identities (revision, methodology, suite, host class), landing receipts
-   for gate wall time, and `perf_causality` attributions.
+   instruction-signal records (`tools/perf_instructions.py`: commit and run identity), landing
+   receipts for gate wall time, and `perf_causality` attributions.
 2. **Context fingerprint.** Typed features drawn from Molt's generated authorities, never prose:
    - the op-kind table and its facts;
    - the heap-kind, ABI, carrier and intrinsic manifests;

@@ -29,6 +29,7 @@ fn conditional_branch() {
         args: vec![],
         ops: vec![TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -50,6 +51,7 @@ fn conditional_branch() {
         args: vec![],
         ops: vec![TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -77,7 +79,7 @@ fn conditional_branch() {
         !output.bails_to_generic_path,
         "annotation-only conditional branch must stay in the LIR fast lane"
     );
-    assert_eq!(output.param_types, vec![ValType::I64]);
+    assert_eq!(output.param_types, vec![ValType::I64; 2]);
     assert!(output.runtime_calls.contains(&"is_truthy"));
 }
 
@@ -93,6 +95,7 @@ fn dynbox_bool_uses_lir_truthiness_without_generic_bail() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Bool,
         operands: vec![ValueId(0)],
@@ -152,6 +155,7 @@ fn dynbox_conditional_branch_uses_lir_truthiness_without_generic_bail() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -175,6 +179,7 @@ fn dynbox_conditional_branch_uses_lir_truthiness_without_generic_bail() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

@@ -303,8 +303,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 params=[], param_types=[], return_abi="value", return_hint=None, ops=[]
             ),
         )
-        if origin := self._gpu_body_origin_candidates.get(id(node)):
-            self.funcs_map[func_symbol]["gpu_body_origin"] = dict(origin)
         self.funcs_map[func_symbol]["return_hint"] = self._normalized_return_hint(
             node.returns
         )
@@ -402,6 +400,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 needs_return_slot=has_return,
                 has_exception_handlers=self._body_has_exception_handlers(node.body),
                 code_slots=code_slots,
+                source_node=node,
             )
             self._inherit_free_var_import_resolution(free_vars, prev_state)
             self.parameter_bindings = parameter_bindings

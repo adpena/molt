@@ -29,8 +29,12 @@ struct SlotAccess {
     block: BlockId,
     op_index: usize,
     /// True for `ModuleSetAttr` (operands `[module, name, value]`), false for
-    /// `ModuleGetAttr` (operands `[module, name]`, one result).
+    /// a read: `ModuleGetAttr` or `ModuleGetGlobal` (operands `[module, name]`,
+    /// one result).
     is_set: bool,
+    /// The access's opcode. A `ModuleGetGlobal` read falls back to builtins
+    /// when the module lacks the name, so its value need not be the slot's.
+    opcode: OpCode,
     /// The stored value (set) or the loaded result (get).
     value: ValueId,
 }
@@ -44,8 +48,9 @@ struct LoopPlan {
     /// In-loop accesses, per slot.
     accesses: Vec<Vec<SlotAccess>>,
     /// Preheader gets that must be INSERTED (header-accessed slots with no
-    /// preheader access): (slot index, fresh name-const ValueId).
-    hoisted_loads: Vec<(usize, ValueId)>,
+    /// preheader access): (slot index, fresh name-const ValueId, the read's
+    /// opcode, so the hoisted load raises and resolves as the first read did).
+    hoisted_loads: Vec<(usize, ValueId, OpCode)>,
 }
 
 struct PromotionEvidence {
@@ -63,7 +68,31 @@ pub(super) fn promote_loop(
     stats: &mut PromotionStats,
     dbg: &mut DebugLog,
 ) -> bool {
-    // ---- legality + classification (no mutation) ---------------------------
+    if !lp.linear_order.iter().any(|bid| {
+        func.blocks[bid].ops.iter().any(|op| {
+            opcode_module_slot_access_role_table(op.opcode) == ModuleSlotAccessRole::KeyedAttr
+        })
+    }) {
+        return false;
+    }
+    // Everything below may move ops, allocate fresh SSA ids or rewrite CFG
+    // state. Build it on a candidate so every refusal preserves the original
+    // function, including counters, annotations, and analysis-visible
+    // structure.
+    let original_func = func;
+    let mut candidate = original_func.clone();
+    let func = &mut candidate;
+    let polls = lp
+        .linear_order
+        .iter()
+        .any(|bid| func.blocks[bid].ops.iter().any(TirOp::is_async_work_poll));
+    if polls {
+        // Before any op index is recorded: versioning needs every loop value
+        // that code after the loop reads to be defined once, above both copies.
+        hoist_escaping_literals(func, lp);
+    }
+
+    // ---- legality + classification (no mutation of the original) -----------
     let mut accesses_by_slot: HashMap<String, Vec<SlotAccess>> = HashMap::new();
     for &bid in &lp.linear_order {
         let block = &func.blocks[&bid];
@@ -91,16 +120,15 @@ pub(super) fn promote_loop(
                         block: bid,
                         op_index,
                         is_set,
+                        opcode: op.opcode,
                         value,
                     });
                 }
-                _ if op.is_async_work_poll() => {
-                    dbg.note(format!(
-                        "{} loop@{:?}: refused (async-work poll can observe module slots)",
-                        func.name, lp.header
-                    ));
-                    return false;
-                }
+                // A poll runs signal handlers and pending calls, which may
+                // read or write any slot. The candidate is versioned below:
+                // the promoted loop tests for pending work and leaves for an
+                // unpromoted copy, which polls.
+                _ if op.is_async_work_poll() => {}
                 // Remaining loop-local effects are validated transactionally
                 // after promotion. Rewriting module loads into real header
                 // phis lets the shared exact-scalar solver prove arithmetic
@@ -143,12 +171,16 @@ pub(super) fn promote_loop(
     let mut slots: Vec<String> = accesses_by_slot.keys().cloned().collect();
     slots.sort();
 
-    // Everything below may allocate fresh SSA ids or rewrite CFG state. Build
-    // it on a candidate so every refusal preserves the original function,
-    // including counters, annotations, and analysis-visible structure.
-    let original_func = func;
-    let mut candidate = original_func.clone();
-    let func = &mut candidate;
+    // Versioning adds one block per back edge to the loop.
+    let mut versioned = lp.clone();
+    if polls && let Err(reason) = version_loop_at_polls(func, &mut versioned) {
+        dbg.note(format!(
+            "{} loop@{:?}: refused (async-work poll; {reason})",
+            func.name, lp.header
+        ));
+        return false;
+    }
+    let lp = &versioned;
     let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
     let seed_stores = typed_slot_access::for_alias(func, alias);
     // The entry-seed scan walks ops BACKWARDS across the straight-line chain
@@ -191,6 +223,12 @@ pub(super) fn promote_loop(
         // Walk the preheader block backwards for the LAST access of this slot
         // with no ModuleDict-aliasing barrier after it.
         let mut found: Option<ValueId> = None;
+        let mut found_opcode: Option<OpCode> = None;
+        // The op that ended the backward scan, for the refusal note.
+        let mut barrier: Option<String> = None;
+        // Whether the entry value may be a builtin rather than the slot's own
+        // value: it came from a `ModuleGetGlobal` read.
+        let seed_may_be_builtin;
         for (site, op) in preheader_ops.iter().rev() {
             match opcode_module_slot_access_role_table(op.opcode) {
                 ModuleSlotAccessRole::KeyedAttr => {
@@ -202,6 +240,7 @@ pub(super) fn promote_loop(
                         } else {
                             op.results[0]
                         });
+                        found_opcode = Some(op.opcode);
                         break;
                     }
                     // A different slot's const-named access: key-disjoint, keep
@@ -224,6 +263,10 @@ pub(super) fn promote_loop(
                     .region_at(alias, *site, op)
                     .may_alias(&MemRegion::ModuleDict) =>
                 {
+                    barrier = Some(match op.origin {
+                        Some(kind) => format!("{:?} (origin={kind})", op.opcode),
+                        None => format!("{:?}", op.opcode),
+                    });
                     break;
                 }
                 _ => {}
@@ -231,6 +274,7 @@ pub(super) fn promote_loop(
         }
         match found {
             Some(v) => {
+                seed_may_be_builtin = found_opcode == Some(OpCode::ModuleGetGlobal);
                 entry_values.push(v);
             }
             None => {
@@ -267,30 +311,47 @@ pub(super) fn promote_loop(
                         break;
                     }
                 }
-                let first_in_guaranteed = accesses_by_slot[slot]
-                    .iter()
-                    .min_by_key(|a| {
-                        (
-                            lp.linear_order.iter().position(|b| *b == a.block),
-                            a.op_index,
-                        )
-                    })
-                    .is_some_and(|a| guaranteed.contains(&a.block));
+                let first = accesses_by_slot[slot].iter().min_by_key(|a| {
+                    (
+                        lp.linear_order.iter().position(|b| *b == a.block),
+                        a.op_index,
+                    )
+                });
+                let first_in_guaranteed = first.is_some_and(|a| guaranteed.contains(&a.block));
                 if !first_in_guaranteed {
                     dbg.note(format!(
-                        "{} loop@{:?}: refused (slot '{}' not entry-available)",
-                        func.name, lp.header, slot
+                        "{} loop@{:?}: refused (slot '{}' not entry-available; seed scan stopped at {})",
+                        func.name,
+                        lp.header,
+                        slot,
+                        barrier.as_deref().unwrap_or("the chain's start")
                     ));
                     return false;
                 }
                 // The name const must dominate the preheader insertion point.
                 // The in-loop ConstStr does NOT; synthesize a fresh ConstStr in
                 // the preheader instead (constants are position-free).
+                let load_opcode = match first {
+                    Some(a) if a.opcode == OpCode::ModuleGetGlobal => OpCode::ModuleGetGlobal,
+                    _ => OpCode::ModuleGetAttr,
+                };
+                seed_may_be_builtin = load_opcode == OpCode::ModuleGetGlobal;
                 let fresh_name = func.fresh_value();
                 let fresh_load = func.fresh_value();
-                hoisted_loads.push((slot_idx, fresh_name));
+                hoisted_loads.push((slot_idx, fresh_name, load_opcode));
                 entry_values.push(fresh_load);
             }
+        }
+        // A written slot stores its carried value back at every exit and in
+        // every exception compensation, including before the loop's first
+        // write. A builtin read through the fallback would then appear in the
+        // module's namespace, where the program never stored it.
+        if seed_may_be_builtin && accesses_by_slot[slot].iter().any(|a| a.is_set) {
+            dbg.note(format!(
+                "{} loop@{:?}: refused (written slot '{}' enters through a global read that may resolve to a builtin)",
+                func.name, lp.header, slot
+            ));
+            return false;
         }
     }
 
@@ -311,6 +372,228 @@ pub(super) fn promote_loop(
     stats.slots_promoted += candidate_stats.slots_promoted;
     stats.ops_eliminated += candidate_stats.ops_eliminated;
     true
+}
+
+/// Move each literal that the loop defines and code after the loop reads to
+/// the end of the preheader.
+///
+/// GVN shares one name constant between a loop's module access and the access
+/// that follows the loop (`while i < N: ...` then `print(i)`). Versioning makes
+/// two copies of the loop, and a value defined in one copy cannot be read
+/// after both. A literal has no operands and the same value wherever it is
+/// built, so one definition above the loop serves both copies and every exit.
+fn hoist_escaping_literals(func: &mut TirFunction, lp: &LoopInfo) {
+    let mut read_outside: HashSet<ValueId> = HashSet::new();
+    for (bid, block) in &func.blocks {
+        if lp.blocks.contains(bid) {
+            continue;
+        }
+        read_outside.extend(block.ops.iter().flat_map(|op| op.operands.iter().copied()));
+        block.terminator.for_each_value(|value| {
+            read_outside.insert(value);
+        });
+    }
+    let mut hoisted = Vec::new();
+    for bid in &lp.linear_order {
+        let block = func.blocks.get_mut(bid).expect("loop block");
+        let (escaping, kept): (Vec<TirOp>, Vec<TirOp>) =
+            std::mem::take(&mut block.ops).into_iter().partition(|op| {
+                op.operands.is_empty()
+                    && crate::tir::op_kinds_generated::opcode_literal_payload_kind_table(op.opcode)
+                        .is_some()
+                    && op
+                        .results
+                        .iter()
+                        .any(|result| read_outside.contains(result))
+            });
+        block.ops = kept;
+        hoisted.extend(escaping);
+    }
+    func.blocks
+        .get_mut(&lp.preheader)
+        .expect("preheader")
+        .ops
+        .extend(hoisted);
+}
+
+/// Split a loop that polls into a promotable loop and an unpromoted copy.
+///
+/// A poll services signal handlers and pending calls. That code may read or
+/// write any module slot, so a slot cannot stay in a register across it. The
+/// loop is cloned first. The original keeps its metadata, loses its polls, and
+/// tests the thread's pending-work word once per iteration, at each back edge:
+///
+/// ```text
+/// latch:  ...                       ; the polls are plain exception checks
+///         %p = AsyncWorkPending
+///         cond_br %p, ^slow_header(args), ^back
+/// back:   br ^header(args)          ; the loop's one unconditional back edge
+/// ```
+///
+/// The back edge stays unconditional, in a block of its own, because the
+/// counted-loop and range recognizers read a loop whose latch branches
+/// straight to the header.
+///
+/// The copy is the loop as written, polls included. The edge into it leaves
+/// the promoted loop, so promotion stores the dirty slots on it like on any
+/// other exit; the copy then reads every slot from the module and polls at
+/// its own back edge, one iteration later. It never returns to the promoted
+/// loop: pending work is rare, and the copy is correct for the rest of the
+/// run. The same exit is how HotSpot and V8 leave compiled loops for a
+/// safepoint.
+///
+/// Refusals keep the loop as it was. A value of the loop that code after the
+/// loop reads directly would need a merge of the two copies. A loop block that
+/// is an exception target would need a second label. A conditional back edge
+/// has no place for the test.
+fn version_loop_at_polls(func: &mut TirFunction, lp: &mut LoopInfo) -> Result<(), &'static str> {
+    let defined: HashSet<ValueId> = lp
+        .blocks
+        .iter()
+        .flat_map(|bid| {
+            let block = &func.blocks[bid];
+            block
+                .args
+                .iter()
+                .map(|arg| arg.id)
+                .chain(block.ops.iter().flat_map(|op| op.results.iter().copied()))
+        })
+        .collect();
+    for (bid, block) in &func.blocks {
+        if !lp.blocks.contains(bid)
+            && (block
+                .ops
+                .iter()
+                .any(|op| op.operands.iter().any(|v| defined.contains(v)))
+                || terminator_uses(&block.terminator, &defined))
+        {
+            return Err("a loop value is read after the loop");
+        }
+    }
+    let targeted: HashSet<i64> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(crate::tir::clone_support::exception_label_of)
+        .collect();
+    if lp.blocks.iter().any(|bid| {
+        func.label_id_map
+            .get(&bid.0)
+            .is_some_and(|label| targeted.contains(label))
+    }) {
+        return Err("a loop block is an exception target");
+    }
+    let latches: Vec<BlockId> = lp
+        .linear_order
+        .iter()
+        .copied()
+        .filter(|b| terminator_successors(&func.blocks[b].terminator).contains(&lp.header))
+        .collect();
+    if latches.iter().any(|latch| {
+        !matches!(&func.blocks[latch].terminator, Terminator::Branch { target, .. } if *target == lp.header)
+    }) {
+        return Err("a back edge is conditional");
+    }
+
+    // The copy: fresh blocks and fresh values for everything the loop defines.
+    let block_map: HashMap<BlockId, BlockId> = lp
+        .linear_order
+        .iter()
+        .map(|&bid| (bid, func.fresh_block()))
+        .collect();
+    let mut ordered: Vec<ValueId> = defined.iter().copied().collect();
+    ordered.sort_unstable_by_key(|value| value.0);
+    let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
+    for value in ordered {
+        let fresh = func.fresh_value();
+        if let Some(ty) = func.value_types.get(&value).cloned() {
+            func.value_types.insert(fresh, ty);
+        }
+        value_map.insert(value, fresh);
+    }
+    let value = |v: ValueId| value_map.get(&v).copied().unwrap_or(v);
+    for &bid in &lp.linear_order {
+        let source = &func.blocks[&bid];
+        let mut terminator = source.terminator.clone();
+        terminator.for_each_value_mut(|v| *v = value(*v));
+        terminator.for_each_edge_mut(|target, _| {
+            if let Some(&copy) = block_map.get(target) {
+                *target = copy;
+            }
+        });
+        let copy = TirBlock {
+            id: block_map[&bid],
+            args: source
+                .args
+                .iter()
+                .map(|arg| TirValue {
+                    id: value(arg.id),
+                    ty: arg.ty.clone(),
+                })
+                .collect(),
+            ops: source
+                .ops
+                .iter()
+                .map(|op| {
+                    let mut op = op.clone();
+                    op.operands.iter_mut().for_each(|v| *v = value(*v));
+                    op.results.iter_mut().for_each(|v| *v = value(*v));
+                    op
+                })
+                .collect(),
+            terminator,
+        };
+        func.blocks.insert(copy.id, copy);
+    }
+
+    // The promotable loop: no poll, one pending-work test per back edge.
+    for bid in &lp.linear_order {
+        for op in &mut func.blocks.get_mut(bid).expect("loop block").ops {
+            op.clear_async_work_poll();
+        }
+    }
+    let slow_header = block_map[&lp.header];
+    for latch in latches {
+        let pending = func.fresh_value();
+        func.value_types
+            .insert(pending, crate::tir::types::TirType::Bool);
+        let block = func.blocks.get_mut(&latch).expect("latch");
+        let Terminator::Branch { args, .. } = &block.terminator else {
+            unreachable!("latches were checked above");
+        };
+        let args = args.clone();
+        block
+            .ops
+            .push(TirOp::new(OpCode::AsyncWorkPending, vec![], vec![pending]));
+        let back = func.fresh_block();
+        func.blocks.get_mut(&latch).expect("latch").terminator = Terminator::CondBranch {
+            cond: pending,
+            then_block: slow_header,
+            then_args: args.clone(),
+            else_block: back,
+            else_args: vec![],
+        };
+        func.blocks.insert(
+            back,
+            TirBlock {
+                id: back,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: lp.header,
+                    args,
+                },
+            },
+        );
+        lp.blocks.insert(back);
+        let at = lp
+            .linear_order
+            .iter()
+            .position(|b| *b == latch)
+            .expect("a latch is a loop block");
+        lp.linear_order.insert(at + 1, back);
+    }
+    Ok(())
 }
 
 fn candidate_is_legal(
@@ -475,7 +758,7 @@ fn apply_promotion(
     // them now at the end of the preheader.
     {
         let mut hoist_ops = Vec::new();
-        for &(slot_idx, fresh_name) in &plan.hoisted_loads {
+        for &(slot_idx, fresh_name, load_opcode) in &plan.hoisted_loads {
             let mut name_attrs = crate::tir::ops::AttrDict::new();
             name_attrs.insert(
                 "s_value".into(),
@@ -483,6 +766,7 @@ fn apply_promotion(
             );
             hoist_ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: OpCode::ConstStr,
                 operands: vec![],
@@ -492,8 +776,9 @@ fn apply_promotion(
             });
             hoist_ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: crate::tir::ops::Dialect::Molt,
-                opcode: OpCode::ModuleGetAttr,
+                opcode: load_opcode,
                 operands: vec![module_root, fresh_name],
                 results: vec![plan.entry_values[slot_idx]],
                 attrs: crate::tir::ops::AttrDict::new(),
@@ -567,6 +852,29 @@ fn apply_promotion(
         .flat_map(|(i, accs)| accs.iter().map(move |a| ((a.block, a.op_index), i)))
         .collect();
 
+    // A name constant that only the deleted accesses read is dead. Left in
+    // the loop it would build and release a string on every iteration.
+    let dead_names: HashSet<ValueId> = {
+        let names: HashSet<ValueId> = slot_index_of_access
+            .keys()
+            .map(|(bid, op_index)| func.blocks[bid].ops[*op_index].operands[1])
+            .collect();
+        let mut other_use: HashSet<ValueId> = HashSet::new();
+        for (bid, block) in &func.blocks {
+            for (op_index, op) in block.ops.iter().enumerate() {
+                if !slot_index_of_access.contains_key(&(*bid, op_index)) {
+                    other_use.extend(op.operands.iter().filter(|v| names.contains(v)));
+                }
+            }
+            block.terminator.for_each_value(|value| {
+                if names.contains(&value) {
+                    other_use.insert(value);
+                }
+            });
+        }
+        names.difference(&other_use).copied().collect()
+    };
+
     for &bid in &lp.linear_order {
         let block = func.blocks.get_mut(&bid).expect("loop block");
         let mut new_ops: Vec<TirOp> = Vec::with_capacity(block.ops.len());
@@ -580,6 +888,11 @@ fn apply_promotion(
                     replace.insert(op.results[0], cur[slot]);
                 }
                 stats.ops_eliminated += 1;
+                continue;
+            }
+            if op.opcode == OpCode::ConstStr
+                && op.results.first().is_some_and(|r| dead_names.contains(r))
+            {
                 continue;
             }
             if op.opcode == OpCode::CheckException && any_dirty {
@@ -799,6 +1112,7 @@ fn alloc_store_back_ops(
         name_attrs.insert("s_value".into(), AttrValue::Str(slot.clone()));
         ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: OpCode::ConstStr,
             operands: vec![],
@@ -808,6 +1122,7 @@ fn alloc_store_back_ops(
         });
         ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: OpCode::ModuleSetAttr,
             operands: vec![module_root, name_id, values[i]],

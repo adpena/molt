@@ -4,7 +4,7 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-/// Exact literal payload identity for same-block constant value numbering.
+/// Exact literal payload identity for scoped heap / block-local immediate numbering.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub(super) enum GvnValueKey {
     I64(i64),

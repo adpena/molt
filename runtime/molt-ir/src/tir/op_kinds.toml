@@ -22,10 +22,10 @@ simpleir_backend_private_kinds = [
 # ordering is nothrow only within an ordering-enabled domain. This policy is
 # projected into both frontend Python and shared native/WASM Rust consumers.
 comparison_scalar_domains = [
-    { name = "number", ordering = true, tir_types = ["I64", "F64", "Bool", "BigInt"], frontend_types = ["int", "float", "bool"] },
-    { name = "text", ordering = true, tir_types = ["Str"], frontend_types = ["str"] },
-    { name = "bytes", ordering = true, tir_types = ["Bytes"], frontend_types = ["bytes"] },
-    { name = "none", ordering = false, tir_types = ["None"], frontend_types = ["None"] },
+    { name = "number", ordering = true, tir_types = ["I64", "F64", "Bool", "BigInt"] },
+    { name = "text", ordering = true, tir_types = ["Str"] },
+    { name = "bytes", ordering = true, tir_types = ["Bytes"] },
+    { name = "none", ordering = false, tir_types = ["None"] },
 ]
 
 # Equality/inequality may warn or raise under CPython -b/-bb. Without a proven
@@ -130,8 +130,6 @@ primitive_operator_effect_cases = [
 #                  a fixed nonnegative integer, "variable" for audited builders
 #                  and Copy transport, or "variable_pairs" for dict key/value
 #                  builders. Fuzz SSA operand counts must agree with it.
-#                  frontend_intrinsic_scalar_arity owns the distinct frontend
-#                  argument domain, whose payloads may lower into TIR attrs.
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
@@ -166,6 +164,10 @@ primitive_operator_effect_cases = [
 #                  generated opcode-only facts for polyhedral.rs loop-header
 #                  annotation and affine-body eligibility. The pass owns body
 #                  traversal and Copy refinement; the registry owns membership.
+#   - negated_predicates - generated opcode -> the predicate it negates
+#                  (`IsNot` negates `Is`). One authority for canonical
+#                  predicate polarity: truth-wrapper peeling, None tests and
+#                  the branch census read it; none spells the pairs.
 #   - sccp_constant_seed_rules / sccp_constant_eval_rules - generated
 #                  opcode-to-rule lattices for SCCP constant seeding and
 #                  constant evaluation. The registry owns opcode membership;
@@ -242,9 +244,6 @@ primitive_operator_effect_cases = [
 #                  TirFunction::has_state_machine. StateDispatch terminators
 #                  are the other half, so this remains distinct from the broad
 #                  state-machine pass-exclusion fact below.
-#   - boxed_runtime_inplace_dispatch_opcodes - first-class opcodes whose boxed
-#                  runtime fallback must call `molt_inplace_*` and try the
-#                  in-place dunder before binary fallback.
 #                  for drop_insertion.rs. Omitted opcodes do not suspend and do
 #                  not require pre-op coroutine-frame IncRefs.
 #   - drop_insertion_return_deferral_barrier_opcodes - opcode-only fact for
@@ -420,7 +419,7 @@ simpleir_exception_semantics_kinds = [
     "exception_new_builtin_empty", "exception_new_builtin_one",
     "exception_match_builtin", "exception_class",
     "exceptiongroup_match", "exceptiongroup_combine",
-    "exception_pending",
+    "exception_pending", "async_work_pending",
 ]
 simpleir_deterministic_lifetime_semantics_kinds = [
     "inc_ref", "dec_ref", "borrow", "release",
@@ -672,6 +671,12 @@ callback_free_copy_kinds = [
     "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
     "line", "missing", "nop", "print_newline",
 ]
+
+# Preserved Copy carriers that cannot introduce a pending exception. Line is
+# metadata under terminal TIR ownership. Native legacy cleanup may release at
+# this marker, but finalizers report unraisable errors and restore prior state.
+# This is not purity: keep the Copy effect-free/consistent floor unchanged.
+nothrow_copy_kinds = ["line"]
 
 # Preserved primitives whose successful result is an exact `int` of any
 # magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact
@@ -1175,6 +1180,7 @@ opcode_has_local_only_operands_opcodes = [
     "DecRef",
     "DelBoundary",
     "DeleteVar",
+    "AsyncWorkPending",
     "ExceptionPending",
     "Free",
     "FunctionDefaultsVersion",
@@ -1190,6 +1196,7 @@ opcode_has_local_only_operands_opcodes = [
 alias_rc_barrier_opcodes = [
     "CallargsPushMethodReceiver",
     "Call",
+    "DirectCall",
     "CallBuiltin",
     "CallLoadedMethod",
     "CallMethod",
@@ -1360,7 +1367,7 @@ module_concurrency_marker_source_roles = [
 module_slot_access_roles = [
     { opcode = "ModuleGetAttr", role = "keyed_attr" },
     { opcode = "ModuleSetAttr", role = "keyed_attr" },
-    { opcode = "ModuleGetGlobal", role = "wildcard_module_dict" },
+    { opcode = "ModuleGetGlobal", role = "keyed_attr" },
     { opcode = "ModuleDelGlobal", role = "wildcard_module_dict" },
     { opcode = "ModuleDelGlobalIfPresent", role = "wildcard_module_dict" },
 ]
@@ -1442,18 +1449,6 @@ i64_checked_overflow_triple_opcodes = [
     "Sub",
 ]
 
-# boxed_runtime_inplace_dispatch_opcodes: first-class opcodes whose boxed
-# runtime arithmetic fallback must call `molt_inplace_*` instead of `molt_*`,
-# preserving CPython's augmented-assignment protocol (`__i<op>__` before the
-# binary/reflected dunder chain). Preserved-Copy `inplace_*` spellings remain
-# string namespace facts carried by `_original_kind`; this opcode fact covers
-# the first-class InplaceAdd/Sub/Mul trio only.
-boxed_runtime_inplace_dispatch_opcodes = [
-    "InplaceAdd",
-    "InplaceSub",
-    "InplaceMul",
-]
-
 # i64_zero_divisor_guard_opcodes: raw i64 lowering for these binary opcodes can
 # machine-trap on a zero RHS (`i64.div_s`/`i64.rem_s`) while Python semantics
 # require `ZeroDivisionError`. The same semantic fact is consumed by
@@ -1490,14 +1485,23 @@ literal_payload_opcodes = [
 # transforms that can share the scoped dominator value table without extra
 # operand proof. Type-gated ops are deterministic computations only when all
 # operands are primitive; gvn.rs checks that per value. Value-keyed constants
-# receive same-block local value numbers only, because backend-native constant
-# materialization is representation-sensitive. gvn_numberable_attr_key_opcodes
+# use the generated owned-literal classifier to admit heap payloads to the
+# scoped table; immediate constants keep same-block local numbers because their
+# backend-native materialization is representation-sensitive. gvn_numberable_attr_key_opcodes
 # covers non-constant numbered ops whose semantic equivalence includes an attr
 # payload (TypeGuard's expected type, today). Each row names the exact payload
 # key GVN may extract; omitted/malformed attrs fail closed to identity numbering
 # rather than colliding through a pass-local default.
 gvn_always_numberable_opcodes = [
     "UnboxVal",
+    # Late-TIR primitives: pure and total on every word (HF-821).
+    "IsInlineInt",
+    "UnboxInlineInt",
+    "IsFloatWord",
+    "UnboxFloatWord",
+    "IsBoolWord",
+    "UnboxBoolWord",
+    "BoxInlineInt",
 ]
 
 gvn_type_gated_numberable_opcodes = [
@@ -1546,6 +1550,22 @@ gvn_value_keyed_constant_opcodes = [
 
 gvn_numberable_attr_key_opcodes = [
     { opcode = "TypeGuard", key = "str_attr", attrs = ["expected_type", "ty"] },
+]
+
+# final_tir_opcodes: produced only by the late lowering stage of TIR for targets
+# whose backend consumes final TIR (HF-821). They never cross the SimpleIR wire
+# and carry no frontend facts.
+final_tir_opcodes = [
+    "IsInlineInt",
+    "UnboxInlineInt",
+    "IsFloatWord",
+    "UnboxFloatWord",
+    "IsBoolWord",
+    "UnboxBoolWord",
+    "BoxInlineInt",
+    "CodeIs",
+    "DirectCall",
+    "CallRuntime",
 ]
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
@@ -1601,6 +1621,13 @@ type_refine_operand_type_rules = [
     { opcode = "UnboxVal", rule = "unbox_val" },
 ]
 
+negated_predicates = [
+    { opcode = "IsNot", negates = "Is" },
+    { opcode = "Ne", negates = "Eq" },
+    { opcode = "NotIn", negates = "In" },
+    { opcode = "Not", negates = "Bool" },
+]
+
 sccp_constant_seed_rules = [
     { opcode = "ConstInt", rule = "int_attr" },
     { opcode = "ConstFloat", rule = "float_attr" },
@@ -1621,6 +1648,8 @@ sccp_constant_eval_rules = [
     { opcode = "Pow", rule = "pow" },
     { opcode = "Eq", rule = "eq" },
     { opcode = "Ne", rule = "ne" },
+    { opcode = "Is", rule = "is" },
+    { opcode = "IsNot", rule = "is_not" },
     { opcode = "Lt", rule = "lt" },
     { opcode = "Le", rule = "le" },
     { opcode = "Gt", rule = "gt" },
@@ -1629,6 +1658,27 @@ sccp_constant_eval_rules = [
     { opcode = "Not", rule = "not" },
     { opcode = "Bool", rule = "bool" },
     { opcode = "BuildTuple", rule = "build_tuple" },
+]
+
+# fast_path_expansion_rules: the ops the late lowering stage of TIR expands on
+# boxed words (HF-821). Each takes an inline-int arm and a float arm where it
+# has one; multiplication has only the float arm until its int arm can test
+# overflow. Anything else takes the op's own runtime entry.
+fast_path_expansion_rules = [
+    { opcode = "Add", rule = "numeric_add" },
+    { opcode = "InplaceAdd", rule = "numeric_add" },
+    { opcode = "Sub", rule = "numeric_sub" },
+    { opcode = "InplaceSub", rule = "numeric_sub" },
+    { opcode = "Mul", rule = "numeric_mul" },
+    { opcode = "InplaceMul", rule = "numeric_mul" },
+    { opcode = "Eq", rule = "numeric_compare" },
+    { opcode = "Ne", rule = "numeric_compare" },
+    { opcode = "Lt", rule = "numeric_compare" },
+    { opcode = "Le", rule = "numeric_compare" },
+    { opcode = "Gt", rule = "numeric_compare" },
+    { opcode = "Ge", rule = "numeric_compare" },
+    { opcode = "Bool", rule = "truthiness" },
+    { opcode = "Call", rule = "guarded_call" },
 ]
 
 value_range_transfer_rules = [
@@ -1644,6 +1694,7 @@ value_range_transfer_rules = [
     { opcode = "Mod", rule = "mod" },
     { opcode = "Shr", rule = "shr" },
     { opcode = "Shl", rule = "shl" },
+    { opcode = "UnboxInlineInt", rule = "inline_int_payload" },
 ]
 
 value_range_const_fold_rules = [
@@ -1741,6 +1792,10 @@ repr_raw_i64_full_deopt_seed_rules = [
     { opcode = "CheckedAdd", rule = "checked_result0" },
     { opcode = "CheckedMul", rule = "checked_result0" },
     { opcode = "ConstInt", rule = "const_int_not_inline_safe" },
+    # The late stage's fast arm (HF-821): the sum of two inline-int payloads is
+    # exact in i64 and may leave the inline window.
+    { opcode = "Add", rule = "exact_sum_of_inline_payloads" },
+    { opcode = "Sub", rule = "exact_sum_of_inline_payloads" },
 ]
 
 repr_projectable_bool_result_rules = [
@@ -1751,6 +1806,7 @@ repr_projectable_bool_result_rules = [
     { opcode = "Not", rule = "always" },
     { opcode = "Bool", rule = "always" },
     { opcode = "ExceptionPending", rule = "always" },
+    { opcode = "AsyncWorkPending", rule = "always" },
     { opcode = "CheckedAdd", rule = "result1" },
     { opcode = "CheckedMul", rule = "result1" },
     { opcode = "IterNextUnboxed", rule = "result1" },
@@ -1796,6 +1852,9 @@ exception_region_nesting_roles = [
     { opcode = "TryEnd", role = "exit" },
 ]
 
+# FrameSetLocation stores a location id in the frame record. No TIR load reads
+# that word (frame introspection reaches it through an opaque runtime call), so
+# the store touches no region a pass tracks; it stays pinned by its side effect.
 alias_memory_inert_opcodes = [
     "ModuleSlot",
     "Add",
@@ -1819,8 +1878,10 @@ alias_memory_inert_opcodes = [
     "ConstStr",
     "Div",
     "Eq",
+    "AsyncWorkPending",
     "ExceptionPending",
     "FloorDiv",
+    "FrameSetLocation",
     "FunctionDefaultsVersion",
     "Ge",
     "Gt",
@@ -1894,6 +1955,7 @@ alias_slot_direct_observer_opcodes = [
     "BuildSlice",
     "BuildTuple",
     "Call",
+    "DirectCall",
     "CallBuiltin",
     "CallLoadedMethod",
     "CallMethod",
@@ -2907,6 +2969,7 @@ operand_arity = 0
 may_throw = false
 side_effecting = true
 purity = "impure"
+may_access_arbitrary_heap = false
 result_arity = "zero"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -3152,7 +3215,6 @@ result_absorbs_operands = false
 name = "Is"
 may_call_python = false
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3165,7 +3227,6 @@ result_absorbs_operands = false
 name = "IsNot"
 may_call_python = false
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3178,7 +3239,6 @@ result_absorbs_operands = false
 name = "In"
 may_call_python = true
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3192,7 +3252,6 @@ result_absorbs_operands = false
 name = "NotIn"
 may_call_python = true
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3302,7 +3361,6 @@ result_mints_owned_selected_operand = true
 name = "Not"
 may_call_python = true
 operand_arity = 1
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3316,7 +3374,6 @@ result_absorbs_operands = false
 name = "Bool"
 may_call_python = true
 operand_arity = 1
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -3547,7 +3604,6 @@ result_absorbs_operands = false
 name = "OrdAt"
 may_call_python = true
 operand_arity = 2
-frontend_intrinsic_scalar_arity = 2
 may_throw = true
 side_effecting = false
 purity = "impure"
@@ -3592,6 +3648,140 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Late-TIR representation primitives (HF-821): produced only by the final
+# lowering stage for targets whose backend consumes final TIR. IsInlineInt is
+# total; UnboxInlineInt is total and meaningful where IsInlineInt holds.
+# BoxInlineInt is its inverse: the inline-int word of a value proven to fit the
+# inline window (RawI64Safe); it allocates nothing and cannot raise.
+[[opcode]]
+name = "IsInlineInt"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "UnboxInlineInt"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["i64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IsBoolWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "UnboxBoolWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# IsFloatWord is total: true iff the word is a float (its quiet-NaN prefix is
+# not the tag space). UnboxFloatWord is total and meaningful where IsFloatWord
+# holds: the word's bits as an f64. A boxed float is its own bits, so the
+# inverse is BoxVal of an f64, which canonicalizes NaN and cannot raise.
+[[opcode]]
+name = "IsFloatWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "UnboxFloatWord"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["f64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BoxInlineInt"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["dynbox"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# The guarded direct call (HF-821 D4). CodeIs tests that a function word's code
+# pointer is the compiled target named by the op's call-target attribute; it
+# reads a mutable field, so it cannot raise but is never merged or hoisted
+# (op_semantics). DirectCall publishes the invocation, calls that target with
+# the operands after the callable, and restores; the callable is a borrowed
+# operand, so it outlives the call. Both are produced only by the final
+# lowering stage.
+[[opcode]]
+name = "CodeIs"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "DirectCall"
+may_call_python = true
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# The cold edge of an expanded fast path: a call of the typed runtime entry in
+# TirOp.runtime (HF-821). Produced only by the final lowering stage.
+[[opcode]]
+name = "CallRuntime"
+may_call_python = true
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3798,7 +3988,6 @@ result_absorbs_operands = false
 [[opcode]]
 name = "IsPending"
 may_call_python = false
-frontend_intrinsic_scalar_arity = 1
 operand_independent_result_types = ["bool"]
 operand_arity = 1
 may_throw = false
@@ -3906,6 +4095,25 @@ name = "ExceptionPending"
 may_call_python = false
 operand_arity = 0
 operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Reads the thread's pending-work word: true when a signal handler, a pending
+# call or a scheduler request waits for the next poll. It runs no work and
+# cannot raise. Another thread or a signal sets the word at any time, so the
+# read is pinned at its program point like `ExceptionPending`. Module-slot
+# promotion tests it once per iteration of a promoted loop and leaves for the
+# unpromoted loop, which polls, when it is set.
+[[opcode]]
+name = "AsyncWorkPending"
+may_call_python = false
+operand_arity = 0
+operand_independent_result_types = ["bool"]
 frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = true
@@ -3977,7 +4185,6 @@ result_absorbs_operands = false
 name = "ModuleSlot"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -3990,7 +4197,6 @@ result_absorbs_operands = false
 name = "ConstInt"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4003,7 +4209,6 @@ result_absorbs_operands = false
 name = "ConstBigInt"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 exact_scalar_result_type = "BigInt"
 may_throw = true
 side_effecting = false
@@ -4020,7 +4225,6 @@ result_absorbs_operands = false
 name = "ConstFloat"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4033,7 +4237,6 @@ result_absorbs_operands = false
 name = "ConstStr"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
@@ -4046,7 +4249,6 @@ result_absorbs_operands = false
 name = "ConstBool"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4059,7 +4261,6 @@ result_absorbs_operands = false
 name = "ConstNone"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 0
 may_throw = false
 side_effecting = false
 purity = "pure"
@@ -4072,7 +4273,6 @@ result_absorbs_operands = false
 name = "ConstBytes"
 may_call_python = false
 operand_arity = 0
-frontend_intrinsic_scalar_arity = 1
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
@@ -4726,6 +4926,11 @@ aliases = []
 mapper_opcode = "ExceptionPending"
 
 [[kind]]
+canonical = "async_work_pending"
+aliases = []
+mapper_opcode = "AsyncWorkPending"
+
+[[kind]]
 canonical = "function_defaults_version"
 aliases = []
 mapper_opcode = "FunctionDefaultsVersion"
@@ -5137,15 +5342,16 @@ branch_arg = "none"
 # DISTINCT vocabulary from the wire kinds: e.g. the frontend emits
 # `GETATTR_GENERIC_OBJ` which serialization rewrites to the wire kind
 # `get_attr_generic_obj`. tools/gen_op_kinds.py renders these into
-# src/molt/frontend/lowering/op_kinds_generated.py as RAISING_KIND_NAMES,
+# src/molt/frontend/lowering/op_kinds_generated.py as callback effects,
 # CHECK_EXCEPTION_SKIP_KINDS, AUGASSIGN_OP_KIND and BINOP_OP_KIND, killing the
 # frontend⇄backend dual raising-oracle (the residual task-#42 drift vector).
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# RAISING_KIND_NAMES — frontend `op.kind`s that can raise at runtime, so emit()
-# attaches the expression-level col_offset for traceback caret annotations.
-# Replaces the hand-kept `_RAISING_OP_KINDS` frozenset.
+# Frontend observer rows map raising `op.kind`s to their opcode facts. Their
+# opcode-backed rows feed callback effects used by traceback placement. The
+# optimizer-only RAISING_KIND_NAMES projection is retired with HF-773 slice E;
+# source positions are published by lowering/frame_locations.py.
 #
 # Each row is one frontend UPPERCASE `op.kind`, in exactly ONE of two forms:
 #
@@ -5628,8 +5834,6 @@ reason = "structural: SSA phi merge node, not a runtime operation"
 [[frontend_effect_kind]]
 kind = "TYPE_OF"
 effect = "reads_heap"
-exact_scalar_result_type = "I64"
-frontend_intrinsic_scalar_arity = 1
 reason = "observe the runtime class; only exact immutable builtin-class provenance permits pure instance effects"
 
 [[frontend_effect_kind]]
@@ -5716,49 +5920,41 @@ reason = "locals() reads the frame's bindings and, before PEP 667, refreshes the
 
 [[frontend_effect_kind]]
 kind = "ABS"
-effects_like_opcode = "Neg"
 effect = "writes_heap"
 reason = "dynamic unary dispatch may invoke observable __abs__; exact primitive recovery is instance-specific"
 
 [[frontend_effect_kind]]
 kind = "INVERT"
-effects_like_opcode = "BitNot"
 effect = "writes_heap"
 reason = "dynamic unary dispatch may invoke observable __invert__; ~bool also emits a warning"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_DIV"
-effects_like_opcode = "Div"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __itruediv__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_FLOORDIV"
-effects_like_opcode = "FloorDiv"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __ifloordiv__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_MOD"
-effects_like_opcode = "Mod"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __imod__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_POW"
-effects_like_opcode = "Pow"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __ipow__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_LSHIFT"
-effects_like_opcode = "Shl"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __ilshift__ or fallback callbacks"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_RSHIFT"
-effects_like_opcode = "Shr"
 effect = "writes_heap"
 reason = "dynamic inplace dispatch may invoke observable __irshift__ or fallback callbacks"
 
@@ -5774,19 +5970,16 @@ reason = "operator callbacks can mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_BIT_AND"
-effects_like_opcode = "BitAnd"
 effect = "writes_heap"
 reason = "operator callbacks can mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_BIT_OR"
-effects_like_opcode = "BitOr"
 effect = "writes_heap"
 reason = "operator callbacks can mutate arbitrary captured objects"
 
 [[frontend_effect_kind]]
 kind = "INPLACE_BIT_XOR"
-effects_like_opcode = "BitXor"
 effect = "writes_heap"
 reason = "operator callbacks can mutate arbitrary captured objects"
 

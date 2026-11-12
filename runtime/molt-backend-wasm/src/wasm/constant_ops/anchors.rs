@@ -3,9 +3,9 @@ use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::WasmFrameLocalKind;
 use crate::wasm::function_frame::{WasmConstAnchorRegion, WasmConstAnchorSlot};
 use crate::wasm::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm_binary::Function;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::Function;
 
 impl WasmConstOpPolicy {
     fn emit_anchor_materialization(

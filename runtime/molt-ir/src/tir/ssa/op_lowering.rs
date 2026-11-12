@@ -57,6 +57,7 @@ impl<'a> SsaContext<'a> {
         let result = self.fresh_value_typed();
         let mut constant = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -361,6 +362,7 @@ impl<'a> SsaContext<'a> {
 
         let mut tir_op = TirOp {
             origin,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

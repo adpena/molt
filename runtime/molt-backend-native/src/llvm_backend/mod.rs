@@ -6,6 +6,8 @@
 //! slower compilation. Use Cranelift backend for development iteration.
 
 mod app_resolver;
+#[cfg(feature = "llvm")]
+mod execution_abi;
 pub mod lowering;
 mod module_registry;
 mod program_slots;
@@ -26,9 +28,9 @@ use inkwell::targets::TargetMachine;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "llvm")]
-use crate::NativeFunctionLinkageAbi;
-#[cfg(feature = "llvm")]
 use crate::representation_plan::ProducerCarrierPlan;
+#[cfg(feature = "llvm")]
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 #[cfg(feature = "llvm")]
 pub struct LlvmBackend<'ctx> {
     pub context: &'ctx Context,

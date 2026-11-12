@@ -180,6 +180,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
     entry.ops = vec![
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -189,6 +190,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
         },
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::BoxVal,
             operands: vec![raw],
@@ -198,6 +200,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
         },
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnboxVal,
             operands: vec![boxed],
@@ -260,6 +263,7 @@ fn discarded_boxing_effect_survives_simple_ir_roundtrip() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BoxVal,
         operands: vec![crate::tir::values::ValueId(0)],
@@ -643,6 +647,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
             ops: vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],
@@ -652,6 +657,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
                 },
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::StateYield,
                     operands: vec![yielded_pair],
@@ -679,6 +685,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstNone,
                 operands: vec![],
@@ -752,6 +759,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -764,6 +772,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         attrs.insert("_var".into(), AttrValue::Str("slot".into()));
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source],
@@ -864,6 +873,7 @@ fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -875,6 +885,7 @@ fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
         attrs.insert("_var".into(), AttrValue::Str("x".into()));
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source],
@@ -922,6 +933,7 @@ fn copy_source_substitution_never_revives_transport_metadata() {
             }
             let mut op = TirOp {
                 origin: kind,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![ValueId(1)],
@@ -947,6 +959,7 @@ fn named_store_substitution_changes_source_but_not_destination() {
     for results in [vec![], vec![ValueId(2)]] {
         let mut op = TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![ValueId(1)],
@@ -977,6 +990,7 @@ fn named_store_substitution_changes_source_but_not_destination() {
 fn named_store_cannot_invent_a_destination_from_its_result() {
     super::super::op_lowering::lower_op_many(&TirOp {
         origin: Some(molt_ir::OpKind::StoreVar),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![ValueId(1)],
@@ -991,6 +1005,7 @@ fn named_store_cannot_invent_a_destination_from_its_result() {
 fn named_delete_cannot_invent_a_destination_from_its_result() {
     super::super::op_lowering::lower_op_many(&TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DeleteVar,
         operands: vec![],
@@ -1015,6 +1030,7 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Shl,
         operands: vec![ValueId(0), ValueId(1)],
@@ -1024,6 +1040,7 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Shr,
         operands: vec![shl, ValueId(1)],
@@ -1055,6 +1072,7 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1068,6 +1086,7 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Import,
         operands: vec![name],
@@ -1097,6 +1116,7 @@ fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: molt_ir::OpKin
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: (0..arity as u32).map(ValueId).collect(),
@@ -1470,6 +1490,7 @@ fn linearize_multi_block_emits_labels() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -1490,6 +1511,7 @@ fn linearize_multi_block_emits_labels() {
             args: vec![],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

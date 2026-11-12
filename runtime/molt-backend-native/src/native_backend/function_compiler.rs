@@ -1,10 +1,10 @@
 use super::*;
 use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, MOLT_REFCOUNT_ADMISSION};
 use crate::tir::simple_def_use::simple_ir_binding;
 use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 // Per-op-family Cranelift codegen handlers lifted out of `compile_func_inner`
 // (decomposition program M1). Scalar carrier/boxing helpers live in
@@ -229,6 +229,11 @@ impl SimpleBackend {
                 .returns
                 .push(AbiParam::new(types::I64));
         }
+        self.ctx
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
         for _ in &func_ir.params {
             self.ctx
                 .func
@@ -367,7 +372,8 @@ impl SimpleBackend {
         switch_to_block_materialized(&mut builder, entry_block);
         cleanup_roots.initialize(&mut builder);
 
-        for (i, val) in entry_param_values.iter().copied().enumerate() {
+        let execution_context = entry_param_values[0];
+        for (i, val) in entry_param_values.iter().copied().skip(1).enumerate() {
             let name = &func_ir.params[i];
             def_var_named(&mut builder, &vars, name, val);
         }
@@ -461,14 +467,14 @@ impl SimpleBackend {
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            MOLT_DEC_REF_OBJ,
+            RuntimeFn::DecRefObj,
         );
         let local_inc_ref_slow = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            MOLT_INC_REF_OBJ,
+            RuntimeFn::IncRefObj,
         );
 
         // Import the exception-pending function for check_exception.
@@ -484,8 +490,8 @@ impl SimpleBackend {
             &[],
             &[types::I64],
         );
-        // The thread record (`molt_thread_record`): fetch its address once
-        // per invocation and keep it in a dedicated stack slot. Inline
+        // The context header supplies the thread record once per invocation;
+        // keep it in a dedicated stack slot. Inline
         // exception checks load its pending byte; direct Python calls write
         // its invocation handoff. Using a Cranelift Variable here let SSA
         // repair synthesize zero-valued placeholder predecessors in nested
@@ -505,22 +511,54 @@ impl SimpleBackend {
             .ops
             .iter()
             .any(|op| matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc));
-        let has_async_work_polls = func_ir.ops.iter().any(OpIR::is_async_work_poll);
-        let thread_record_fn = (inline_exception_checks
-            || makes_direct_python_calls
-            || has_async_work_polls)
-            .then(|| {
-                import_func_ref(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    &mut builder,
-                    &mut import_refs,
-                    "molt_thread_record",
-                    &[],
-                    &[types::I64],
+        let has_async_work_polls = func_ir.ops.iter().any(OpIR::reads_pending_work_word);
+        let frame_home_slots = func_ir
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind,
+                    OpKind::FrameHomeStore
+                        | OpKind::FrameHomeCell
+                        | OpKind::FrameHomePrivateCell
+                        | OpKind::FrameHomeLoad
+                        | OpKind::FrameHomeTake
+                        | OpKind::FrameHomeClear
                 )
+            })
+            .filter_map(|op| op.value)
+            .max()
+            .map(|slot| slot + 1)
+            .or_else(|| {
+                // A publication or a check's cold `frame_location` store
+                // needs the location word, even with no binding homes.
+                func_ir
+                    .ops
+                    .iter()
+                    .any(|op| op.kind == OpKind::FrameSetLocation || op.frame_location.is_some())
+                    .then_some(0)
             });
-        let thread_record_slot = thread_record_fn.map(|_| {
+        let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        // A synchronous frame's entry carries its home count and clear order
+        // and pushes its record inline; every other frame is runtime-linked.
+        let frame_shape = func_ir
+            .ops
+            .iter()
+            .find(|op| op.kind == OpKind::TraceEnterSlot)
+            .and_then(|op| op.value)
+            .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value);
+        debug_assert!(
+            frame_shape.is_none_or(|shape| frame_home_slots.unwrap_or(0) <= i64::from(shape.homes)),
+            "compiled frame addresses more homes than its entry declares"
+        );
+        // An inline push and pop work on the thread record's arena; a split
+        // chunk reads the frame it runs in from it.
+        let needs_thread_record = inline_exception_checks
+            || makes_direct_python_calls
+            || has_async_work_polls
+            || frame_shape.is_some()
+            || (frame_home_slots.is_some() && !has_frame_slot);
+        let thread_record_slot = needs_thread_record.then(|| {
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
         });
         // The pending-exception byte is the record's first byte.
@@ -658,9 +696,13 @@ impl SimpleBackend {
         // Fetch the thread record once in the entry block and keep it in a
         // stack slot so later exception checks and direct calls can load it
         // without re-entering Cranelift SSA variable repair.
-        if let (Some(slot), Some(record_fn_ref)) = (thread_record_slot, thread_record_fn) {
-            let call = builder.ins().call(record_fn_ref, &[]);
-            let record = builder.inst_results(call)[0];
+        if let Some(slot) = thread_record_slot {
+            let record = builder.ins().load(
+                types::I64,
+                MemFlagsData::trusted(),
+                execution_context,
+                molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+            );
             builder.ins().stack_store(pointer_type, record, slot, 0);
             if let Some(work_slot) = work_ptr_slot {
                 let word_ptr = builder.ins().load(
@@ -811,12 +853,30 @@ impl SimpleBackend {
         // branch to the shared return. A leading function-frame entry is emitted
         // immediately below; module frames retain their IR-positioned binding
         // prologue because their trace_enter_slot is not the leading op.
-        let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        // The base of the record this invocation entered, zero until it does.
         let owned_frame_entered = has_frame_slot.then(|| {
-            let entered = builder.declare_var(types::I8);
-            let inactive = builder.ins().iconst(types::I8, 0);
+            let entered = builder.declare_var(types::I64);
+            let inactive = builder.ins().iconst(types::I64, 0);
             builder.def_var(entered, inactive);
             entered
+        });
+        let frame_sites = has_frame_slot.then(|| NativeFrameSites {
+            retain: local_inc_ref_obj,
+            release: local_dec_ref_obj,
+            enter: import_runtime_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                RuntimeFn::FrameRecordEnter,
+            ),
+            exit: import_runtime_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                RuntimeFn::FrameRecordExit,
+            ),
         });
         let leading_frame_entry_op_idx = func_ir
             .ops
@@ -866,8 +926,10 @@ impl SimpleBackend {
             emit_owned_execution_frame_enter(
                 entered,
                 code_owner,
+                frame_shape,
+                frame_sites.expect("a frame entry has its sites"),
+                thread_record_slot,
                 &mut self.module,
-                &mut self.import_ids,
                 &mut builder,
             );
         }
@@ -880,32 +942,6 @@ impl SimpleBackend {
         // before any home op runs. A split chunk has no entry: it borrows the
         // homes of the frame it runs in at its own entry and, if none are lent,
         // returns at once through the prologue-failure exit.
-        let frame_home_slots = func_ir
-            .ops
-            .iter()
-            .filter(|op| {
-                matches!(
-                    op.kind,
-                    OpKind::FrameHomeStore
-                        | OpKind::FrameHomeCell
-                        | OpKind::FrameHomePrivateCell
-                        | OpKind::FrameHomeLoad
-                        | OpKind::FrameHomeTake
-                        | OpKind::FrameHomeClear
-                )
-            })
-            .filter_map(|op| op.value)
-            .max()
-            .map(|slot| slot + 1)
-            .or_else(|| {
-                // A publication or a check's cold `frame_location` store
-                // needs the location word, even with no binding homes.
-                func_ir
-                    .ops
-                    .iter()
-                    .any(|op| op.kind == OpKind::FrameSetLocation || op.frame_location.is_some())
-                    .then_some(0)
-            });
         let enters_later = leading_frame_code_owner.is_none()
             && func_ir
                 .ops
@@ -925,9 +961,8 @@ impl SimpleBackend {
                 let base = fc::funcobj::emit_frame_homes_lend(
                     homes,
                     cold_homes,
-                    slots,
-                    &mut self.module,
-                    &mut self.import_ids,
+                    owned_frame_entered,
+                    thread_record_slot,
                     &mut builder,
                 );
                 if leading_frame_exception_check_idx.is_none() {
@@ -1517,15 +1552,14 @@ impl SimpleBackend {
                     }
                     // The ABI manifest admits this complete positional boxed-call family.
                     fc::NativeOpFamily::BoxedRuntimeCalls => {
-                        let abi =
-                            molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind)
-                                .expect("generated boxed-call family must have an ABI");
+                        let abi = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(op.kind)
+                            .expect("generated boxed-call family must have an ABI");
                         let args = op.args.as_deref().unwrap_or(&[]);
-                        assert_eq!(args.len(), abi.arity, "{} boxed-call arity", op.kind);
+                        assert_eq!(args.len(), abi.arity(), "{} boxed-call arity", op.kind);
                         shared::emit_operand_transaction_call(
                             &op,
                             args,
-                            abi.symbol,
+                            abi.symbol(),
                             &mut self.module,
                             &mut self.import_ids,
                             &mut builder,
@@ -1567,6 +1601,7 @@ impl SimpleBackend {
                             representation_plan,
                             local_exc_pending_fast,
                             exc_flag_ptr_slot,
+                            work_ptr_slot,
                             &nbc,
                         );
                     }
@@ -1655,6 +1690,8 @@ impl SimpleBackend {
                             owned_frame_entered,
                             frame_homes,
                             cold_frame_homes,
+                            frame_sites,
+                            thread_record_slot,
                             leading_frame_entry_op_idx,
                             is_block_filled,
                             rc_authority,
@@ -2353,14 +2390,10 @@ impl SimpleBackend {
 
         literal_hoists.release_anchors(&mut builder, pointer_type, local_dec_ref_obj);
 
-        emit_owned_execution_frame_exit(
-            owned_frame_entered,
-            &mut self.module,
-            &mut self.import_ids,
-            &mut builder,
-            &mut import_refs,
-            &mut sealed_blocks,
-        );
+        if let (Some(entered), Some(sites)) = (owned_frame_entered, frame_sites) {
+            let base = builder.use_var(entered);
+            emit_frame_record_pop(&mut builder, sites, thread_record_slot, base, frame_shape);
+        }
 
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the join-slot
         // exit-teardown is the memory-phi arm of the native value-tracking RC — it
@@ -2392,47 +2425,8 @@ impl SimpleBackend {
             None
         };
 
-        // For molt_main: route the SUCCESS path through the runtime's
-        // executable finalizer. The finalizer runs Python-level process-exit
-        // hooks and then hard-exits, avoiding allocator/TLS destructor races.
-        // On the EXCEPTION path, return normally so the C stub can print the
-        // traceback before invoking the same finalizer with a failure code.
-        if func_ir.name == "molt_main" {
-            let has_exc = emit_exception_pending_condition(
-                &mut builder,
-                pointer_type,
-                local_exc_pending_fast,
-                exc_flag_ptr_slot,
-            );
-
-            let exit_block = builder.create_block();
-            let normal_ret_block = builder.create_block();
-            builder
-                .ins()
-                .brif(has_exc, normal_ret_block, &[], exit_block, &[]);
-
-            // Success path: Python-level exit finalization + _exit(0).
-            switch_to_block_materialized(&mut builder, exit_block);
-            seal_block_once(&mut builder, &mut sealed_blocks, exit_block);
-            let runtime_exit = Self::import_func_id_split(
-                &mut self.module,
-                &mut self.import_ids,
-                "molt_runtime_exit",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_runtime_exit = self.module.declare_func_in_func(runtime_exit, builder.func);
-            let zero = builder.ins().iconst(types::I64, 0);
-            builder.ins().call(local_runtime_exit, &[zero]);
-            // Unreachable after molt_runtime_exit, but Cranelift needs a terminator.
-            builder
-                .ins()
-                .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
-
-            // Exception path: return normally for traceback printing.
-            switch_to_block_materialized(&mut builder, normal_ret_block);
-            seal_block_once(&mut builder, &mut sealed_blocks, normal_ret_block);
-        }
+        // Both successful and exceptional main returns cross the host's
+        // compiled-scope leave before the host invokes process finalization.
         if let Some(res) = final_res {
             builder.ins().return_(&[res]);
         } else {
@@ -2473,7 +2467,7 @@ impl SimpleBackend {
                 &mut self.import_ids,
                 builder,
                 &mut import_refs,
-                MOLT_REFCOUNT_ADMISSION,
+                RuntimeFn::RefcountAdmission,
             )
         });
         builder.seal_all_blocks();
@@ -2487,6 +2481,7 @@ impl SimpleBackend {
             );
         }
         builder.finalize(frontend_config);
+        complete_attached_calls(&self.module, &mut self.ctx.func, execution_context);
 
         if let Some(config) = should_dump_ir()
             && dump_ir_matches(&config, &func_ir.name)
@@ -2521,7 +2516,7 @@ impl SimpleBackend {
         }
 
         let id = match self.module.declare_function(
-            &func_ir.name,
+            &compiled_execution_symbol(&func_ir.name),
             Linkage::Export,
             &self.ctx.func.signature,
         ) {
@@ -2552,7 +2547,8 @@ impl SimpleBackend {
             func: built_func,
             name: func_ir.name.clone(),
         });
-        self.defined_func_names.insert(func_ir.name.clone());
+        self.defined_func_names
+            .insert(compiled_execution_symbol(&func_ir.name));
         self.module.clear_context(&mut self.ctx);
     }
 }

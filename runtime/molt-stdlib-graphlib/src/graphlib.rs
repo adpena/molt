@@ -140,7 +140,7 @@ fn graph_from_bits(bits: u64) -> Option<Arc<GraphHandle>> {
 }
 
 fn node_repr(_py: &PyToken, node_bits: u64) -> Result<String, u64> {
-    let repr_bits = molt_runtime_core::rt_repr(node_bits);
+    let repr_bits = molt_runtime_core::rt_repr(_py, node_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -237,9 +237,8 @@ fn graph_ready_tuple(_py: &PyToken, ready: &[usize], nodes: &[NodeInfo]) -> u64 
     MoltObject::from_ptr(ptr).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_new() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = GraphHandle::new(_py) else {
             return MoltObject::none().bits();
         };
@@ -249,9 +248,13 @@ pub extern "C" fn molt_graphlib_new() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_add_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    node_bits: u64,
+    preds_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
@@ -288,7 +291,7 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
                     "predecessors must be a tuple",
                 );
             }
-            let elems = seq_snapshot(preds_ptr);
+            let elems = seq_snapshot(_py, preds_ptr);
             let pred_count = elems.len();
             if pred_count > 0 {
                 state.nodes[node_idx].npredecessors += pred_count as i64;
@@ -305,9 +308,11 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_prepare_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
@@ -323,9 +328,11 @@ pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_get_ready_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
@@ -351,9 +358,11 @@ pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_is_active_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
@@ -369,9 +378,12 @@ pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_done_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    nodes_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
@@ -398,7 +410,7 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, BuiltinExc::TypeError, "nodes must be a tuple");
             }
-            let elems = seq_snapshot(nodes_ptr);
+            let elems = seq_snapshot(_py, nodes_ptr);
             for &node_bits in elems.iter() {
                 let node_idx = match state.lookup_node_index(_py, node_bits) {
                     Ok(Some(idx)) => idx,
@@ -449,9 +461,11 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_static_order_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
@@ -522,9 +536,8 @@ pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_graphlib_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_graphlib_drop_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -539,3 +552,5 @@ pub extern "C" fn molt_graphlib_drop(handle_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/graphlib.rs");

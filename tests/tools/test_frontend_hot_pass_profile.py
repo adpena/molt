@@ -25,40 +25,6 @@ def test_main_summary_reports_actual_exit_code(
     assert "'error': 1" in output
 
 
-def test_rank_passes_sorts_by_total_ms() -> None:
-    tool = frontend_hot_pass_profile
-    aggregate = {
-        "cse": {
-            "pass": "cse",
-            "total_ms": 2.0,
-            "max_ms": 1.5,
-            "attempted": 2,
-            "accepted": 1,
-            "degraded": 0,
-            "samples_ms": [0.5, 1.5],
-            "functions": {"f"},
-            "sources": {"a.py"},
-        },
-        "verifier": {
-            "pass": "verifier",
-            "total_ms": 5.0,
-            "max_ms": 5.0,
-            "attempted": 1,
-            "accepted": 1,
-            "degraded": 0,
-            "samples_ms": [5.0],
-            "functions": {"f"},
-            "sources": {"a.py"},
-        },
-    }
-
-    ranked = tool._rank_passes(aggregate, limit=2)
-
-    assert [row["pass"] for row in ranked] == ["verifier", "cse"]
-    assert ranked[0]["source_count"] == 1
-    assert ranked[0]["attempted"] == 1
-
-
 def test_profile_sources_emits_pass_and_cprofile_tables(tmp_path: Path) -> None:
     tool = frontend_hot_pass_profile
     source = tmp_path / "sample.py"
@@ -77,14 +43,14 @@ def test_profile_sources_emits_pass_and_cprofile_tables(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    report = tool.profile_sources([source], optimization_profile="dev", top=5)
+    report = tool.profile_sources([source], top=5)
 
     assert report["source_count"] == 1
-    assert report["schema_version"] == "1.2"
+    assert report["schema_version"] == "2.0"
     assert report["status_counts"] == {"pass": 1}
     assert report["corpus_digest"]
     assert report["profile_inputs"]["resolved_sources"] == [tool._repo_rel(source)]
-    assert report["ranked_midend_passes"], report
+    assert "ranked_midend_passes" not in report
     assert report["ranked_frontend_functions"], report
     assert report["sources"][0]["op_count"] > 0
 
@@ -117,15 +83,13 @@ def test_version_excluded_source_never_reaches_parser_or_generator(
 
     monkeypatch.setattr(tool.ast, "parse", forbidden)
     monkeypatch.setattr(tool, "SimpleTIRGenerator", forbidden)
-    report = tool.profile_sources(
-        [source], optimization_profile="dev", top=3, target_python=(3, 12)
-    )
+    report = tool.profile_sources([source], top=3, target_python=(3, 12))
     assert report["status_counts"] == {"skip": 1}
     assert report["source_count"] == 1
     assert report["target_python"] == "3.12"
     assert report["sources"][0]["exclusion_reason"] == "min_py 3.13"
     assert report["sources"][0]["sha256"]
-    assert report["ranked_midend_passes"] == []
+    assert "ranked_midend_passes" not in report
     markdown = tool.format_markdown(report)
     assert "## Excluded Sources" in markdown
     assert "## Errors" not in markdown
@@ -145,9 +109,7 @@ def test_profile_target_reaches_generator(
         return original(**kwargs)
 
     monkeypatch.setattr(tool, "SimpleTIRGenerator", generator)
-    result, _ = tool.profile_one(
-        source, optimization_profile="dev", top_functions=3, target_python=(3, 13)
-    )
+    result, _ = tool.profile_one(source, top_functions=3, target_python=(3, 13))
     assert result["status"] == "pass", result
     assert seen == [(3, 13)]
 
@@ -176,7 +138,7 @@ def test_cli_version_skip_is_reported_without_fail_on_error_failure(
         (out_dir / "frontend_hot_pass_profile.json").read_text(encoding="utf-8")
     )
     assert rc == 0
-    assert report["schema_version"] == "1.2"
+    assert report["schema_version"] == "2.0"
     assert report["status_counts"] == {"skip": 1}
     assert report["sources"][0]["exclusion_reason"] == "min_py 3.13"
     assert "rc=0 sources=1 statuses={'skip': 1}" in capsys.readouterr().out
@@ -194,8 +156,6 @@ def test_main_records_manifest_input_custody(tmp_path: Path) -> None:
         [
             "--manifest",
             str(manifest),
-            "--optimization-profile",
-            "dev",
             "--out-dir",
             str(out_dir),
             "--top",
@@ -209,7 +169,7 @@ def test_main_records_manifest_input_custody(tmp_path: Path) -> None:
     )
     markdown = (out_dir / "frontend_hot_pass_profile.md").read_text(encoding="utf-8")
     assert rc == 0
-    assert payload["schema_version"] == "1.2"
+    assert payload["schema_version"] == "2.0"
     assert payload["profile_inputs"]["manifest"]["path"] == tool._repo_rel(manifest)
     assert payload["profile_inputs"]["manifest"]["sha256"] == tool._sha256_text(
         manifest.read_text(encoding="utf-8")

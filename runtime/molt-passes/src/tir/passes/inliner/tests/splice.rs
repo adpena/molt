@@ -45,6 +45,7 @@ fn splice_void_return() {
     let block = caller.blocks.get_mut(&centry).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -94,6 +95,7 @@ fn refcount_guard_refuses_arg_incref() {
     let block = caller.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::IncRef,
         operands: vec![arg],
@@ -103,6 +105,7 @@ fn refcount_guard_refuses_arg_incref() {
     });
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![arg],
@@ -279,6 +282,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         call_attrs.insert("s_value".into(), AttrValue::Str("obs_custody".into()));
         let mut call = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![argument],
@@ -299,6 +303,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         block.ops = vec![
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -312,6 +317,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
             call,
             TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],

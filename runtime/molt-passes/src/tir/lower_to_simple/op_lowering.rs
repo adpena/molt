@@ -336,6 +336,21 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // boxing may allocate even when the result binding is discarded.
         OpCode::BoxVal => Some(unary_op(molt_ir::OpKind::Box, op, out_var)),
         OpCode::UnboxVal => Some(unary_op(molt_ir::OpKind::Unbox, op, out_var)),
+        // The final lowering stage runs only for targets whose backend consumes
+        // final TIR (FinalLowering::FinalTir), so its ops never reach SimpleIR.
+        OpCode::IsInlineInt
+        | OpCode::UnboxInlineInt
+        | OpCode::IsBoolWord
+        | OpCode::IsFloatWord
+        | OpCode::UnboxFloatWord
+        | OpCode::UnboxBoolWord
+        | OpCode::BoxInlineInt
+        | OpCode::CodeIs
+        | OpCode::DirectCall
+        | OpCode::CallRuntime => unreachable!(
+            "{:?} is a final-TIR op; a SimpleIR target never runs the late lowering stage",
+            op.opcode
+        ),
         OpCode::TypeGuard => {
             if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
                 Some(OpIR {
@@ -612,6 +627,15 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             args: None,
             out: out_var,
             ..OpIR::new(molt_ir::OpKind::ExceptionPending)
+        }),
+        OpCode::AsyncWorkPending => Some(OpIR {
+            // Tests the thread's pending-work word. No operands; the result
+            // is the condition of a promoted loop's exit to its unpromoted
+            // copy.
+            kind: molt_ir::OpKind::AsyncWorkPending,
+            args: None,
+            out: out_var,
+            ..OpIR::new(molt_ir::OpKind::AsyncWorkPending)
         }),
         OpCode::FunctionDefaultsVersion => Some(OpIR {
             // Reads a function object's `__defaults__`/`__kwdefaults__`

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import native_link_command
 from molt.cli.build_output_layout import _resolve_build_output_layout
@@ -240,7 +241,7 @@ def test_macho_runtime_image_keeps_every_archive_member(
     assert "-dynamiclib" in command
     assert f"-Wl,-force_load,{binding.runtime_lib}" in command
     # The program, not the runtime, defines the isolate initializer.
-    assert "-Wl,-U,_molt_isolate_bootstrap" in command
+    assert f"-Wl,-U,_{compiled_execution_symbol('molt_isolate_bootstrap')}" in command
     assert command[command.index("-o") + 1] == str(output)
     # An AOT link dead-strips unreferenced runtime functions; the image must
     # keep them, because generated code resolves imports in it by name.

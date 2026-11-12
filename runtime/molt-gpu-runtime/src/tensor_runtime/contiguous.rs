@@ -1,10 +1,12 @@
 use super::*;
 use molt_runtime_core::BuiltinExc;
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_interop__load_safetensors(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_interop__load_safetensors_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let load_bits = match unsafe {
             module_global_bits(
                 _py,
@@ -22,8 +24,12 @@ pub extern "C" fn molt_gpu_interop__load_safetensors(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_tensor_from_parts(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_gpu_tensor_from_parts_attached_body(
+    _py: &molt_runtime_core::PyToken,
     tensor_class_bits: u64,
     buffer_class_bits: u64,
     data_bits: u64,
@@ -33,7 +39,7 @@ pub extern "C" fn molt_gpu_tensor_from_parts(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let size = match parse_usize_arg(_py, size_bits, "size") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -99,8 +105,8 @@ pub extern "C" fn molt_gpu_tensor_from_parts(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_repeat_axis_contiguous(
+pub fn molt_gpu_repeat_axis_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     shape_bits: u64,
@@ -108,7 +114,7 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
     repeats_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -233,14 +239,14 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_tensor_from_buffer(
+pub fn molt_gpu_tensor_from_buffer_attached_body(
+    _py: &molt_runtime_core::PyToken,
     tensor_class_bits: u64,
     buffer_bits: u64,
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (shape_bits, owns_shape_bits) = match normalize_shape_bits(_py, shape_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -263,9 +269,12 @@ pub extern "C" fn molt_gpu_tensor_from_buffer(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_buffer_to_list(buffer_bits: u64, count_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_buffer_to_list_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    buffer_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let count = match parse_usize_arg(_py, count_bits, "count") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -326,8 +335,12 @@ pub extern "C" fn molt_gpu_buffer_to_list(buffer_bits: u64, count_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_linear_contiguous(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_gpu_linear_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     weight_data_bits: u64,
@@ -337,7 +350,7 @@ pub extern "C" fn molt_gpu_linear_contiguous(
     out_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let trace_linear = std::env::var("MOLT_TRACE_GPU_LINEAR").as_deref() == Ok("1");
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
@@ -552,8 +565,12 @@ pub extern "C" fn molt_gpu_linear_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_gpu_linear_split_last_dim_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     weight_data_bits: u64,
@@ -563,7 +580,7 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
     split_sizes_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -814,8 +831,12 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     weight_data_bits: u64,
@@ -824,7 +845,7 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
     in_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1040,8 +1061,12 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_gpu_broadcast_binary_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     a_data_bits: u64,
     a_format_bits: u64,
     a_shape_bits: u64,
@@ -1051,7 +1076,7 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
     op_code_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let a_format = match parse_format(_py, a_format_bits, "a_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1072,7 +1097,7 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let Some(op_code) = to_i64(obj_from_bits(op_code_bits)) else {
+        let Some(op_code) = to_i64(_py, obj_from_bits(op_code_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "op_code must be an integer");
         };
         let a_view = match bytes_like_view(_py, a_data_bits, "a_data") {
@@ -1161,8 +1186,12 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_matmul_contiguous(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_gpu_matmul_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     a_data_bits: u64,
     a_format_bits: u64,
     a_shape_bits: u64,
@@ -1171,7 +1200,7 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
     b_shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let a_format = match parse_format(_py, a_format_bits, "a_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1357,8 +1386,12 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_rope_apply_contiguous(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_gpu_rope_apply_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     cos_data_bits: u64,
@@ -1371,7 +1404,7 @@ pub extern "C" fn molt_gpu_rope_apply_contiguous(
     seq_len_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1551,15 +1584,15 @@ pub extern "C" fn molt_gpu_rope_apply_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_permute_contiguous(
+pub fn molt_gpu_permute_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     shape_bits: u64,
     dims_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1628,14 +1661,14 @@ pub extern "C" fn molt_gpu_permute_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_softmax_last_axis_contiguous(
+pub fn molt_gpu_softmax_last_axis_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1704,15 +1737,15 @@ pub extern "C" fn molt_gpu_softmax_last_axis_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_rms_norm_last_axis_contiguous(
+pub fn molt_gpu_rms_norm_last_axis_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     shape_bits: u64,
     eps_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1729,7 +1762,7 @@ pub extern "C" fn molt_gpu_rms_norm_last_axis_contiguous(
             Ok(shape) => shape,
             Err(bits) => return bits,
         };
-        let Some(eps) = to_f64(obj_from_bits(eps_bits)) else {
+        let Some(eps) = to_f64(_py, obj_from_bits(eps_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "eps must be a float");
         };
         if shape.is_empty() {
@@ -1785,14 +1818,14 @@ pub extern "C" fn molt_gpu_rms_norm_last_axis_contiguous(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
+pub fn molt_gpu_squared_relu_gate_interleaved_contiguous_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
     x_format_bits: u64,
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1861,3 +1894,5 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
         MoltObject::from_ptr(out_ptr).bits()
     })
 }
+
+include!("../attached_exports_generated/tensor_runtime/contiguous.rs");

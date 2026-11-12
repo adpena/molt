@@ -33,6 +33,7 @@ fn typed_membership_selects_specialized_contains_runtime_calls() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::In,
             operands: vec![ValueId(0), ValueId(1)],

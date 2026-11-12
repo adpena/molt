@@ -130,6 +130,7 @@ mod iter_next_fusion {
                 ops: vec![
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -139,6 +140,7 @@ mod iter_next_fusion {
                     },
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -148,6 +150,7 @@ mod iter_next_fusion {
                     },
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNext,
                         operands: vec![ValueId(0)],
@@ -157,6 +160,7 @@ mod iter_next_fusion {
                     },
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(1)],
@@ -178,6 +182,7 @@ mod iter_next_fusion {
                 args: vec![],
                 ops: vec![TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Index,
                     operands: vec![ValueId(3), ValueId(2)],
@@ -535,6 +540,7 @@ mod iter_next_fusion {
                 ops: vec![
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -544,6 +550,7 @@ mod iter_next_fusion {
                     },
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -553,6 +560,7 @@ mod iter_next_fusion {
                     },
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNext,
                         operands: vec![ValueId(0)],
@@ -562,6 +570,7 @@ mod iter_next_fusion {
                     },
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(1)],
@@ -571,6 +580,7 @@ mod iter_next_fusion {
                     },
                     TirOp {
                         origin: None,
+                        runtime: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(2)],
@@ -601,6 +611,7 @@ mod iter_next_fusion {
                 args: vec![],
                 ops: vec![TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],

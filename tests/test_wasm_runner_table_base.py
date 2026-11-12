@@ -12,13 +12,53 @@ from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_SECTION_VERSION,
     WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
     WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
+    compiled_execution_symbol,
+    runtime_execution_abi,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+    ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
-from tests.wasm_execution_manifest import write_wasm_execution_manifest
+from tests.wasm_execution_manifest import (
+    write_wasm_execution_manifest,
+    execution_abi_metadata,
+)
 from tools.wasm_link_format import _write_varuint
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _runtime_symbol(logical: str) -> str:
+    abi = runtime_execution_abi(logical)
+    if abi is None:
+        raise ValueError(f"unregistered runtime WAT provider {logical}")
+    return abi.physical_symbol
+
+
+def _context_boundary_wat() -> str:
+    fingerprint = ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT
+    signed = fingerprint if fingerprint < 1 << 63 else fingerprint - (1 << 64)
+    return f"""
+      (func $fixture_context (export "molt_attached_context") (result i64) i64.const 32768)
+      (func (export "molt_compiled_execution_enter") (param $ctx i64) (result i64)
+        local.get $ctx i64.const 32768 i64.ne if unreachable end i64.const 1)
+      (func (export "molt_compiled_execution_leave") (param $ctx i64) (param $scope i64)
+        local.get $ctx i64.const 32768 i64.ne if unreachable end
+        local.get $scope i64.const 1 i64.ne if unreachable end)
+      (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const {signed})
+    """
+
+
+def _write_execution_abi_section(wasm_path: Path) -> None:
+    name = ATTACHED_EXECUTION_CONTEXT_ABI_SECTION.encode()
+    payload = (
+        _write_varuint(len(name))
+        + name
+        + ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT.to_bytes(8, "little")
+    )
+    wasm_path.write_bytes(
+        wasm_path.read_bytes() + b"\0" + _write_varuint(len(payload)) + payload
+    )
 
 
 def test_node_manifest_rejects_incompatible_receiver_before_module_read(
@@ -79,7 +119,7 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
     wat_path = tmp_path / "argv_guest.wat"
     wasm_path = tmp_path / "argv_guest.wasm"
     wat_path.write_text(
-        """
+        f"""
         (module
           (import "wasi_snapshot_preview1" "args_sizes_get"
             (func $sizes (param i32 i32) (result i32)))
@@ -95,12 +135,14 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
             local.get $value
             i32.ne
             if unreachable end)
-          (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
-          (func (export "molt_runtime_execution_leave") (param i64))
-          (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
-          (func (export "molt_exception_pending") (result i64) i64.const 0)
-          (func (export "molt_main_exit_status") (result i64) i64.const 0)
-          (func (export "molt_main")
+          (func (export "{_runtime_symbol("molt_runtime_execution_enter")}") (result i64) i64.const 1)
+          (func (export "{_runtime_symbol("molt_runtime_execution_leave")}") (param i64))
+          (func (export "{_runtime_symbol("molt_runtime_shutdown")}") (result i64) i64.const 1)
+          (func (export "{_runtime_symbol("molt_exception_pending_detached")}") (result i64) i64.const 0)
+          (func (export "{_runtime_symbol("molt_main_exit_status")}") (result i64) i64.const 0)
+          {_context_boundary_wat()}
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             i32.const 0
             i32.const 4
             call $sizes
@@ -185,6 +227,7 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
 
 
 def _attest_empty_callable_table(wasm_path: Path) -> None:
+    _write_execution_abi_section(wasm_path)
     # This fixture has no callable-table entries. Publish the generated ABI's
     # empty attestation, without invoking the Rust publishing build lane.
     name = WASM_CALLABLE_TABLE_SECTION_NAME.encode("utf-8")
@@ -250,6 +293,8 @@ def _wasm_from_wat(
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+    if not empty_callable_table:
+        _write_execution_abi_section(wasm_path)
     if callable_table_payload is not None:
         if callable_table_payload:
             name_bytes = WASM_CALLABLE_TABLE_SECTION_NAME.encode()
@@ -299,13 +344,14 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
     source = wat.rstrip()
     if not source.endswith(")"):
         raise ValueError("synthetic executable WAT must end with its module delimiter")
-    execution_boundary = """
-      (func (export "molt_runtime_execution_enter") (result i64)
+    execution_boundary = f"""
+      (func (export "{_runtime_symbol("molt_runtime_execution_enter")}") (result i64)
         i64.const 1)
-      (func (export "molt_runtime_execution_leave") (param i64))
-      (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
-      (func (export "molt_exception_pending") (result i64) i64.const 0)
-      (func (export "molt_main_exit_status") (result i64) i64.const 0)
+      (func (export "{_runtime_symbol("molt_runtime_execution_leave")}") (param i64))
+      (func (export "{_runtime_symbol("molt_runtime_shutdown")}") (result i64) i64.const 1)
+      (func (export "{_runtime_symbol("molt_exception_pending_detached")}") (result i64) i64.const 0)
+      (func (export "{_runtime_symbol("molt_main_exit_status")}") (result i64) i64.const 0)
+          {_context_boundary_wat()}
     """
     return _wasm_from_wat(
         tmp_path,
@@ -437,24 +483,30 @@ def test_hosts_share_callable_table_admission(
         {"local.get 0 global.set $published" if nonempty else "unreachable"})
     """
     )
+    indirect_export = (
+        f'(func (export "{compiled_execution_symbol("molt_call_indirect0")}") (param i64))'
+        if case == "missing-indirect-export"
+        else ""
+    )
     wat = f"""(module
           {'(import "env" "molt_call_indirect012habE" (func))' if case == "missing-indirect-export" else ""}
           (memory (export "memory") 1)
           (table (export "molt_table") 8 funcref)
           (func $ref)
-          {'(func (export "molt_call_indirect0"))' if case == "missing-indirect-export" else ""}
+          {indirect_export}
           {f"(elem (i32.const {base}) func $ref)" if nonempty else ""}
           (global $published (mut i64) (i64.const 0))
           {setter}
-          (func (export "molt_runtime_execution_enter") (result i64) {check} i64.const 1)
-          (func (export "molt_runtime_execution_leave") (param i64))
-          (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
-          (func (export "molt_exception_pending") (result i64) i64.const 0)
-          (func (export "molt_main_exit_status") (result i64) i64.const 0)
+          (func (export "{_runtime_symbol("molt_runtime_execution_enter")}") (result i64) {check} i64.const 1)
+          (func (export "{_runtime_symbol("molt_runtime_execution_leave")}") (param i64))
+          (func (export "{_runtime_symbol("molt_runtime_shutdown")}") (result i64) i64.const 1)
+          (func (export "{_runtime_symbol("molt_exception_pending_detached")}") (result i64) i64.const 0)
+          (func (export "{_runtime_symbol("molt_main_exit_status")}") (result i64) i64.const 0)
+          {_context_boundary_wat()}
           (func (export "_initialize") {check})
-          (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-          (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
-          (func (export "molt_main") (result i64) {check} i64.const 0))"""
+          (func (export "{_runtime_symbol("molt_isolate_bootstrap")}") (param $context i64) (result i64) i64.const 0)
+          (func (export "{compiled_execution_symbol("molt_isolate_import")}") (param $context i64) (param i64) (result i64) i64.const 0)
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end {check} i64.const 0))"""
     runtime = None
     if split:
         runtime_wat = (
@@ -470,7 +522,7 @@ def test_hosts_share_callable_table_admission(
         )
         runtime_wat = (
             runtime_wat[:-1]
-            + f'(func (export "molt_runtime_init") (result i64) {check} i64.const 1))'
+            + f'(func (export "{_runtime_symbol("molt_runtime_init")}") (result i64) {check} i64.const 1))'
         )
         runtime = _wasm_from_wat(
             tmp_path, "molt_runtime", runtime_wat, empty_callable_table=True
@@ -478,13 +530,13 @@ def test_hosts_share_callable_table_admission(
         wat = f"""(module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 8 funcref))
-          (import "molt_runtime" "runtime_init" (func $init (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $init (result i64)))
           (export "memory" (memory 0))
           (func $ref)
           {f"(elem (i32.const {base}) func $ref)" if nonempty else ""}
-          (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-          (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
-          (func (export "molt_main") (result i64) call $init drop i64.const 0))"""
+          (func (export "{_runtime_symbol("molt_isolate_bootstrap")}") (param $context i64) (result i64) i64.const 0)
+          (func (export "{compiled_execution_symbol("molt_isolate_import")}") (param $context i64) (param i64) (result i64) i64.const 0)
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end call $init drop i64.const 0))"""
     wasm = _wasm_from_wat(
         tmp_path,
         "app" if split else "admission",
@@ -521,6 +573,7 @@ def test_hosts_share_callable_table_admission(
     data["abi"] = {
         "linked_self_imports": [],
         "runtime_imports": {
+            **execution_abi_metadata(),
             "names": [
                 "runtime_execution_enter",
                 "runtime_execution_leave",
@@ -530,6 +583,9 @@ def test_hosts_share_callable_table_admission(
                 "runtime_execution_enter": "molt_runtime_execution_enter",
                 "runtime_execution_leave": "molt_runtime_execution_leave",
                 "runtime_shutdown": "molt_runtime_shutdown",
+                "attached_context": "molt_attached_context",
+                "compiled_execution_enter": "molt_compiled_execution_enter",
+                "compiled_execution_leave": "molt_compiled_execution_leave",
                 "molt_set_wasm_table_base": (
                     "molt_set_wasm_table_base" if "worker" in host else "publish_base"
                 ),
@@ -546,9 +602,10 @@ def test_hosts_share_callable_table_admission(
             "browser_probes": {"webgpu": {"required": False}},
         }
         imports = data["abi"]["runtime_imports"]
-        imports["names"].append("runtime_init")
-        imports["export_names"]["runtime_init"] = "molt_runtime_init"
-        imports["signatures"] = {"runtime_init": {"params": [], "result": "i64"}}
+        init_symbol = _runtime_symbol("molt_runtime_init")
+        imports["names"].append(init_symbol)
+        imports["export_names"][init_symbol] = init_symbol
+        imports["signatures"] = {init_symbol: {"params": [], "result": "i64"}}
         data["abi"]["browser_embed"] = _split_runtime_browser_abi_from_manifest()
         data["abi"]["callable_table"] = {
             role: {
@@ -604,7 +661,7 @@ def test_hosts_share_callable_table_admission(
                 shared_table_base=base
                 if nonempty and case not in {"nonempty-layout", "nonempty-attested"}
                 else None,
-                runtime_import_names={"runtime_init"},
+                runtime_import_names={_runtime_symbol("molt_runtime_init")},
             ),
             encoding="utf-8",
         )
@@ -636,7 +693,7 @@ def test_hosts_share_callable_table_admission(
   const embed = process.argv[2] === 'embed';
   const host = await import(pathToFileURL(require('node:path').resolve(embed ? 'wasm/browser_embed.js' : 'wasm/browser_host.js')).href);
   const loaded = await (embed ? host.loadMoltBrowserEmbed : host.loadMoltWasm)({manifestUrl: pathToFileURL(process.argv[1]).href, vfs: {}});
-  try { if (embed) loaded.execute(() => loaded.appInstance.exports.molt_main()); else loaded.run(); }
+  try { if (embed) loaded.execute(context => loaded.appInstance.exports[require('./wasm/loader_bridge.js').compiledExecutionSymbol('molt_main')](context)); else loaded.run(); }
   finally { loaded.dispose(); }
 })().catch(error => {console.error(error); process.exitCode = 1;});
 """
@@ -675,19 +732,21 @@ def _stderr_guest_manifest(
         local.get $fd i32.const 0 i32.const 1 i32.const 8 call $write
         if unreachable end)
     """
-    lifecycle = """
-      (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
-      (func (export "molt_runtime_execution_leave") (param i64))
-      (func (export "molt_exception_pending") (result i64) i64.const 0)
-      (func (export "molt_main_exit_status") (result i64) i64.const 0)
-      (func (export "molt_runtime_shutdown") (result i64)
+    lifecycle = f"""
+      (func (export "{_runtime_symbol("molt_runtime_execution_enter")}") (result i64) i64.const 1)
+      (func (export "{_runtime_symbol("molt_runtime_execution_leave")}") (param i64))
+      (func (export "{_runtime_symbol("molt_exception_pending_detached")}") (result i64) i64.const 0)
+      (func (export "{_runtime_symbol("molt_main_exit_status")}") (result i64) i64.const 0)
+          {_context_boundary_wat()}
+      (func (export "{_runtime_symbol("molt_runtime_shutdown")}") (result i64)
         i32.const 2 i32.const 256 i32.const 9 call $emit i64.const 1)
       (data (i32.const 256) "|shutdown")
     """
     main = f"""
       (data (i32.const 128) "{escaped}")
       (data (i32.const 224) "stdout")
-      (func (export "molt_main")
+      (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
         {"call $init drop" if layout == "split" else ""}
         i32.const 1 i32.const 224 i32.const 6 call $emit
         i32.const 2 i32.const 128 i32.const {len(guest_bytes)} call $emit
@@ -713,10 +772,10 @@ def _stderr_guest_manifest(
           (import "env" "__indirect_function_table" (table 1 funcref))
           {wasi_import}
           (export "memory" (memory 0))
-          (func (export "molt_set_wasm_table_base") (param i64))
+          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
           {writer} {lifecycle}
           (data (i32.const 320) "runtime|")
-          (func (export "molt_runtime_init") (result i64)
+          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i32.const 2 i32.const 320 i32.const 8 call $emit i64.const 1))""",
         empty_callable_table=True,
     )
@@ -724,10 +783,11 @@ def _stderr_guest_manifest(
         tmp_path,
         "stderr_app",
         f"""(module
+          (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $init (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $init (result i64)))
           {wasi_import}
-          (memory (export "memory") 1)
+          (export "memory" (memory 0))
           {writer} {main})""",
         empty_callable_table=True,
     )
@@ -867,7 +927,8 @@ def test_direct_node_runner_retires_capture_after_guest_fd_ownership_changes(
             i32.const 4 i32.const 4 i32.store
             local.get $fd i32.const 0 i32.const 1 i32.const 8 call $write
             if unreachable end)
-          (func (export "molt_main")
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             i32.const 2 call $write_tail
             {operation}
             {after}))""",
@@ -1103,12 +1164,12 @@ def test_linked_runner_uses_only_main_startup_authority(
     wasm_path = _execution_wasm_from_wat(
         tmp_path,
         "linked_main_owns_startup",
-        """
+        f"""
         (module
           (memory (export "molt_memory") 1)
-          (func (export "molt_host_init") unreachable)
-          (func (export "molt_isolate_bootstrap") (result i64) unreachable)
-          (func (export "molt_main"))
+          (func (export "{compiled_execution_symbol("molt_host_init")}") (param $context i64) unreachable)
+          (func (export "{_runtime_symbol("molt_isolate_bootstrap")}") (param $context i64) (result i64) unreachable)
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64))
         )
         """,
     )
@@ -1123,25 +1184,97 @@ def test_linked_runner_uses_only_main_startup_authority(
     assert result.returncode == 0, result.stderr
 
 
-def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
+def test_host_byte_bridges_preserve_distinct_memory_payloads(tmp_path: Path) -> None:
+    """Byte bridges serve host interfaces; compiled Python still shares memory zero."""
+    provider = _wasm_from_wat(
+        tmp_path,
+        "byte_bridge_provider",
+        f"""(module
+          (import "env" "memory" (memory 1))
+          (export "memory" (memory 0))
+          (func (export "{_runtime_symbol("molt_string_from_bytes")}")
+            (param $ctx i64) (param $ptr i32) (param $len i64) (param $out i32) (result i32)
+            local.get $ctx i64.const 32768 i64.ne if unreachable end
+            local.get $len i64.const 2 i64.ne if unreachable end
+            local.get $ptr i32.load16_u i32.const 27503 i32.ne if unreachable end
+            local.get $out i64.const 4660 i64.store i32.const 0)
+          (func (export "{_runtime_symbol("molt_call_func_dispatch")}")
+            (param $ctx i64) (param $func i64) (param $argv i64) (param $argc i64) (param $code i64) (result i64)
+            local.get $ctx i64.const 32768 i64.ne if unreachable end
+            local.get $func i64.const 999 i64.ne if unreachable end
+            local.get $argc i64.const 3 i64.ne if unreachable end
+            local.get $code i64.eqz if else unreachable end
+            local.get $argv i32.wrap_i64 i64.load i64.const 11 i64.ne if unreachable end
+            local.get $argv i32.wrap_i64 i32.const 8 i32.add i64.load i64.const 22 i64.ne if unreachable end
+            local.get $argv i32.wrap_i64 i32.const 16 i32.add i64.load i64.const 33 i64.ne if unreachable end
+            i64.const 777))""",
+        empty_callable_table=True,
+    )
+    script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const bridge = require('./wasm/loader_bridge.js');
+const generated = require('./wasm/wasm_abi_generated.json');
+const runtimeMemory = new WebAssembly.Memory({initial: 1});
+const appMemory = new WebAssembly.Memory({initial: 1});
+const runtime = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(process.argv[1])),
+  {env: {memory: runtimeMemory}});
+let cursor = 4096, allocated = 0, retired = 0;
+const live = new Set();
+const allocRuntimeTempBytes = (_runtime, memory, payload) => {
+  assert.equal(memory, runtimeMemory);
+  const allocation = {payloadPtr: BigInt(cursor)}; cursor += payload.length + 8;
+  new Uint8Array(memory.buffer, Number(allocation.payloadPtr), payload.length).set(payload);
+  live.add(allocation); allocated++; return allocation;
+};
+const freeRuntimeTempBytes = (_runtime, allocation) => {
+  assert.equal(live.delete(allocation), true); retired++;
+};
+const common = {runtime, runtimeMemory, appMemory, allocRuntimeTempBytes, freeRuntimeTempBytes,
+  readBytesFromMemory: (memory, ptr, len) => new Uint8Array(memory.buffer, Number(ptr), len)};
+new Uint8Array(appMemory.buffer, 64, 2).set([111, 107]);
+const byteResult = bridge.callRuntimeByteSpanOutImport({...common, name: 'string_from_bytes',
+  fn: runtime.exports[generated.runtime_execution_abis.molt_string_from_bytes.physical_symbol],
+  args: [32768n, 64, 2n, 80],
+  writeU64ToMemory: (memory, ptr, value) => new DataView(memory.buffer).setBigUint64(Number(ptr), value, true)});
+assert.equal(byteResult, 0);
+assert.equal(new DataView(appMemory.buffer).getBigUint64(80, true), 4660n);
+const argv = new DataView(appMemory.buffer);
+[11n, 22n, 33n].forEach((value, index) => argv.setBigUint64(128 + 8 * index, value, true));
+assert.equal(bridge.callRuntimeObjectArrayArgImport({...common, name: 'call_func_dispatch',
+  fn: runtime.exports[generated.runtime_execution_abis.molt_call_func_dispatch.physical_symbol],
+  args: [32768n, 999n, 128n, 3n, 0n]}), 777n);
+assert.equal(allocated, 3); assert.equal(retired, allocated); assert.equal(live.size, 0);
+"""
+    result = _run_wasm_test_process(
+        ["node", "-e", script, str(provider)],
+        role="tool",
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_direct_split_runner_shares_runtime_memory_with_app_wasi(
     tmp_path: Path,
 ) -> None:
     runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 2 funcref))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
-          (func (export "molt_set_wasm_table_base") (param i64))
-          (type $runtime_init_indirect (func (result i64)))
-          (func $runtime_table_entry (result i64)
+          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
+          (type $runtime_init_indirect (func (param i64) (result i64)))
+          (func $runtime_table_entry (param $context i64) (result i64)
             i64.const 0)
           (elem (i32.const 1) func $runtime_table_entry)
           (global $heap (mut i32) (i32.const 2048))
-          (func (export "molt_scratch_alloc") (param $size i64) (result i64)
+          (func (export "{_runtime_symbol("molt_scratch_alloc")}") (param $context i64) (param $size i64) (result i64)
             (local $ptr i32)
             global.get $heap
             local.set $ptr
@@ -1152,8 +1285,8 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
             global.set $heap
             local.get $ptr
             i64.extend_i32_u)
-          (func (export "molt_scratch_free") (param i64 i64))
-          (func (export "molt_string_from_bytes") (param $ptr i32) (param $len i64) (param $out i32) (result i32)
+          (func (export "{_runtime_symbol("molt_scratch_free")}") (param $context i64) (param i64 i64))
+          (func (export "{_runtime_symbol("molt_string_from_bytes")}") (param $context i64) (param $ptr i32) (param $len i64) (param $out i32) (result i32)
             local.get $len
             i64.const 2
             i64.ne
@@ -1180,7 +1313,8 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
             i64.const 1234
             i64.store
             i32.const 0)
-          (func (export "molt_runtime_init") (result i64)
+          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
+            call $fixture_context
             i32.const 1
             call_indirect (type $runtime_init_indirect))
         )
@@ -1189,20 +1323,23 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
     app_path = _wasm_from_wat(
         tmp_path,
         "split_app_own_memory_wasi",
-        """
+        f"""
         (module
+          (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 2 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "molt_string_from_bytes"
-            (func $string_from_bytes (param i32 i64 i32) (result i32)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_string_from_bytes")}"
+            (func $string_from_bytes (param $context i64) (param i32 i64 i32) (result i32)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
-          (memory (export "memory") 1)
+          (export "memory" (memory 0))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
           (data (i32.const 64) "ok")
-          (func (export "molt_main")
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             call $rt
             drop
+            local.get $context
             i32.const 64
             i64.const 2
             i32.const 40
@@ -1244,19 +1381,19 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
     assert result.stdout == "ok"
 
 
-def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
+def test_direct_split_runner_reads_call_dispatch_argv_in_shared_memory(
     tmp_path: Path,
 ) -> None:
     runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_call_dispatch",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
           (global $heap (mut i32) (i32.const 2048))
-          (func (export "molt_set_wasm_table_base") (param i64))
-          (func (export "molt_scratch_alloc") (param $size i64) (result i64)
+          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
+          (func (export "{_runtime_symbol("molt_scratch_alloc")}") (param $context i64) (param $size i64) (result i64)
             (local $ptr i32)
             global.get $heap
             local.set $ptr
@@ -1267,10 +1404,10 @@ def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
             global.set $heap
             local.get $ptr
             i64.extend_i32_u)
-          (func (export "molt_scratch_free") (param i64 i64))
-          (func (export "molt_runtime_init") (result i64)
+          (func (export "{_runtime_symbol("molt_scratch_free")}") (param $context i64) (param i64 i64))
+          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
-          (func (export "molt_call_func_dispatch")
+          (func (export "{_runtime_symbol("molt_call_func_dispatch")}") (param $context i64)
             (param $func i64) (param $argv i64) (param $argc i64) (param $code i64)
             (result i64)
             local.get $func
@@ -1326,18 +1463,20 @@ def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
     app_path = _wasm_from_wat(
         tmp_path,
         "split_app_call_dispatch_own_memory",
-        """
+        f"""
         (module
+          (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "call_func_dispatch"
-            (func $dispatch (param i64 i64 i64 i64) (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_call_func_dispatch")}"
+            (func $dispatch (param $context i64) (param i64 i64 i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
-          (memory (export "memory") 1)
+          (export "memory" (memory 0))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
           (data (i32.const 64) "ok")
-          (func (export "molt_main")
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             call $rt
             drop
             i32.const 96
@@ -1349,6 +1488,7 @@ def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
             i32.const 112
             i64.const 33
             i64.store
+            local.get $context
             i64.const 999
             i64.const 96
             i64.const 3
@@ -1390,14 +1530,14 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
     runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_call_dispatch_shared_memory",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "molt_set_wasm_table_base") (param i64))
-          (func (export "molt_runtime_init") (result i64)
+          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
+          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
-          (func (export "molt_call_func_dispatch")
+          (func (export "{_runtime_symbol("molt_call_func_dispatch")}") (param $context i64)
             (param $func i64) (param $argv i64) (param $argc i64) (param $code i64)
             (result i64)
             local.get $func
@@ -1453,18 +1593,19 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
     app_path = _wasm_from_wat(
         tmp_path,
         "split_app_call_dispatch_shared_memory",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "call_func_dispatch"
-            (func $dispatch (param i64 i64 i64 i64) (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_call_func_dispatch")}"
+            (func $dispatch (param $context i64) (param i64 i64 i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
           (data (i32.const 64) "ok")
-          (func (export "molt_main")
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             call $rt
             drop
             i32.const 96
@@ -1476,6 +1617,7 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
             i32.const 112
             i64.const 33
             i64.store
+            local.get $context
             i64.const 999
             i64.const 96
             i64.const 3
@@ -1517,22 +1659,22 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
     runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_export_signature_fallback",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "molt_set_wasm_table_base") (param i64))
-          (func (export "molt_runtime_init") (result i64)
+          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
+          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
-          (func (export "molt_guarded_class_def")
+          (func (export "{_runtime_symbol("molt_guarded_class_def")}") (param $context i64)
             (param i64 i64 i64 i64 i64 i64 i64 i64) (result i64)
-            local.get 1
+            local.get 2
             i64.const 1234
             i64.ne
             if
               unreachable
             end
-            local.get 3
+            local.get 4
             i64.const 5678
             i64.ne
             if
@@ -1545,21 +1687,23 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
     app_path = _wasm_from_wat(
         tmp_path,
         "split_app_runtime_export_signature_fallback",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "guarded_class_def"
-            (func $class_def
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_guarded_class_def")}"
+            (func $class_def (param $context i64)
               (param i64 i32 i64 i32 i64 i64 i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
           (data (i32.const 64) "ok")
-          (func (export "molt_main")
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             call $rt
             drop
+            local.get $context
             i64.const 1
             i32.const 1234
             i64.const 2
@@ -1608,26 +1752,26 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
     runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_pointer_imports",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (func (export "molt_set_wasm_table_base") (param i64))
-          (func (export "molt_runtime_init") (result i64)
+          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
+          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
             i64.const 0)
-          (func (export "molt_closure_load") (param i64 i64) (result i64)
-            local.get 0
+          (func (export "{_runtime_symbol("molt_closure_load")}") (param $context i64) (param i64 i64) (result i64)
+            local.get 1
             i64.const 4096
             i64.ne
             if
               unreachable
             end
-            local.get 0
             local.get 1
+            local.get 2
             i64.add)
-          (func (export "molt_object_set_class") (param i64 i64) (result i64)
-            local.get 0
+          (func (export "{_runtime_symbol("molt_object_set_class")}") (param $context i64) (param i64 i64) (result i64)
             local.get 1
+            local.get 2
             i64.add)
         )
         """,
@@ -1635,22 +1779,24 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
     app_path = _wasm_from_wat(
         tmp_path,
         "split_app_pointer_imports",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "closure_load"
-            (func $closure_load (param i64 i64) (result i64)))
-          (import "molt_runtime" "object_set_class"
-            (func $set_class (param i64 i64) (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_closure_load")}"
+            (func $closure_load (param $context i64) (param i64 i64) (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_object_set_class")}"
+            (func $set_class (param $context i64) (param i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
           (data (i32.const 64) "ok")
-          (func (export "molt_main")
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             call $rt
             drop
+            local.get $context
             i64.const 4096
             i64.const 8
             call $closure_load
@@ -1659,6 +1805,7 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
             if
               unreachable
             end
+            local.get $context
             i64.const 4096
             i64.const 32
             call $set_class
@@ -1698,14 +1845,15 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
     runtime_path = _execution_wasm_from_wat(
         tmp_path,
         "molt_runtime_call_indirect_i64",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 5 funcref))
-          (import "env" "molt_call_indirect3"
-            (func $call_indirect3 (param i64 i64 i64 i64) (result i64)))
-          (func (export "molt_set_wasm_table_base") (param i64))
-          (func (export "molt_runtime_init") (result i64)
+          (import "env" "{compiled_execution_symbol("molt_call_indirect3")}"
+            (func $call_indirect3 (param $context i64) (param i64 i64 i64 i64) (result i64)))
+          (func (export "{_runtime_symbol("molt_set_wasm_table_base")}") (param i64))
+          (func (export "{_runtime_symbol("molt_runtime_init")}") (result i64)
+            call $fixture_context
             i64.const 4
             i64.const 11
             i64.const 22
@@ -1723,23 +1871,25 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
     app_path = _wasm_from_wat(
         tmp_path,
         "split_app_call_indirect_table_ref_i64",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 5 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
           (data (i32.const 64) "ok")
-          (func $target (param i64 i64 i64) (result i64)
-            local.get 0
+          (func $target (param $context i64) (param i64 i64 i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             local.get 1
-            i64.add
             local.get 2
+            i64.add
+            local.get 3
             i64.add)
           (elem (i32.const 4) func $target)
-          (func (export "molt_main")
+          (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
             call $rt
             drop
             i32.const 1
@@ -2084,19 +2234,21 @@ def test_public_node_and_browser_deliver_declared_policy_to_wasi(
     wat = tmp_path / "environment.wat"
     wasm = tmp_path / "environment.wasm"
     wat.write_text(
-        r"""
+        rf"""
 (module
   (import "wasi_snapshot_preview1" "environ_sizes_get" (func $sizes (param i32 i32) (result i32)))
   (import "wasi_snapshot_preview1" "environ_get" (func $get (param i32 i32) (result i32)))
   (import "wasi_snapshot_preview1" "fd_write" (func $write (param i32 i32 i32 i32) (result i32)))
   (memory (export "molt_memory") 2)
   (table (export "molt_table") 1 funcref)
-  (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
-  (func (export "molt_runtime_execution_leave") (param i64))
-  (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
-  (func (export "molt_exception_pending") (result i64) i64.const 0)
-  (func (export "molt_main_exit_status") (result i64) i64.const 0)
-  (func (export "molt_main")
+  (func (export "{_runtime_symbol("molt_runtime_execution_enter")}") (result i64) i64.const 1)
+  (func (export "{_runtime_symbol("molt_runtime_execution_leave")}") (param i64))
+  (func (export "{_runtime_symbol("molt_runtime_shutdown")}") (result i64) i64.const 1)
+  (func (export "{_runtime_symbol("molt_exception_pending_detached")}") (result i64) i64.const 0)
+  (func (export "{_runtime_symbol("molt_main_exit_status")}") (result i64) i64.const 0)
+          {_context_boundary_wat()}
+  (func (export "{compiled_execution_symbol("molt_main")}") (param $context i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
     i32.const 0 i32.const 4 call $sizes if unreachable end
     i32.const 1024 i32.const 8192 call $get if unreachable end
     i32.const 512 i32.const 8192 i32.store
@@ -2125,6 +2277,7 @@ def test_public_node_and_browser_deliver_declared_policy_to_wasi(
     payload["abi"] = {
         "linked_self_imports": [],
         "runtime_imports": {
+            **execution_abi_metadata(),
             "names": [
                 "runtime_execution_enter",
                 "runtime_execution_leave",
@@ -2134,6 +2287,9 @@ def test_public_node_and_browser_deliver_declared_policy_to_wasi(
                 "runtime_execution_enter": "molt_runtime_execution_enter",
                 "runtime_execution_leave": "molt_runtime_execution_leave",
                 "runtime_shutdown": "molt_runtime_shutdown",
+                "attached_context": "molt_attached_context",
+                "compiled_execution_enter": "molt_compiled_execution_enter",
+                "compiled_execution_leave": "molt_compiled_execution_leave",
             },
         },
     }

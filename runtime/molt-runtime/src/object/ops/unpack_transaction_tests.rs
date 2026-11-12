@@ -6,8 +6,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 static FAILING_ITER_VALUE: AtomicU64 = AtomicU64::new(0);
 static FAILING_ITER_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-extern "C" fn yield_heap_value_then_raise() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn yield_heap_value_then_raise(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if FAILING_ITER_CALLS.fetch_add(1, Ordering::Relaxed) == 0 {
             let bits = FAILING_ITER_VALUE.load(Ordering::Relaxed);
             inc_ref_bits(_py, bits);
@@ -15,11 +23,19 @@ extern "C" fn yield_heap_value_then_raise() -> u64 {
         } else {
             raise_exception::<u64>(_py, BuiltinExc::LookupError, "injected iterator failure")
         }
-    })
+    }
 }
 
-extern "C" fn yield_heap_value_then_sentinel() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn yield_heap_value_then_sentinel(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if FAILING_ITER_CALLS.fetch_add(1, Ordering::Relaxed) == 0 {
             let bits = FAILING_ITER_VALUE.load(Ordering::Relaxed);
             inc_ref_bits(_py, bits);
@@ -27,11 +43,19 @@ extern "C" fn yield_heap_value_then_sentinel() -> u64 {
         } else {
             MoltObject::from_int(777).bits()
         }
-    })
+    }
 }
 
-extern "C" fn yield_raise_yield_then_sentinel() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn yield_raise_yield_then_sentinel(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         match FAILING_ITER_CALLS.fetch_add(1, Ordering::Relaxed) {
             0 | 2 => {
                 let bits = FAILING_ITER_VALUE.load(Ordering::Relaxed);
@@ -41,10 +65,10 @@ extern "C" fn yield_raise_yield_then_sentinel() -> u64 {
             1 => raise_exception::<u64>(_py, BuiltinExc::LookupError, "injected iterator failure"),
             _ => MoltObject::from_int(777).bits(),
         }
-    })
+    }
 }
 
-fn alloc_test_call_iterator(_py: &PyToken<'_>, target: extern "C" fn() -> u64) -> u64 {
+fn alloc_test_call_iterator(_py: &PyToken<'_>, target: extern "C" fn(u64) -> u64) -> u64 {
     let callable_ptr = crate::object::builders::alloc_function_obj(
         _py,
         crate::provenance::abi::expose_function_address(target as *const ()),
@@ -55,7 +79,11 @@ fn alloc_test_call_iterator(_py: &PyToken<'_>, target: extern "C" fn() -> u64) -
         crate::object::layout::function_set_call_target_ptr(callable_ptr, target as *const ());
     }
     let callable_bits = MoltObject::from_ptr(callable_ptr).bits();
-    let iter_bits = crate::molt_iter_sentinel(callable_bits, MoltObject::from_int(777).bits());
+    let iter_bits = crate::molt_iter_sentinel_attached_body(
+        _py,
+        callable_bits,
+        MoltObject::from_int(777).bits(),
+    );
     dec_ref_bits(_py, callable_bits);
     assert!(!obj_from_bits(iter_bits).is_none());
     iter_bits
@@ -72,9 +100,13 @@ impl Drop for TrackerReset {
 #[test]
 fn failed_unpack_initializes_every_result_slot_to_none() {
     let _lock = crate::test_support::RuntimeTestTransaction::new();
+    let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    let py = fixture_execution.token();
+
     let mut outputs = [u64::MAX, u64::MAX, u64::MAX];
     let result = unsafe {
-        molt_unpack_sequence(
+        molt_unpack_sequence_attached_body(
+            py,
             MoltObject::from_int(7).bits(),
             outputs.len() as u64,
             crate::provenance::abi::expose_address(outputs.as_mut_ptr()),
@@ -82,8 +114,11 @@ fn failed_unpack_initializes_every_result_slot_to_none() {
     };
     assert_eq!(result, MoltObject::none().bits());
     assert_eq!(outputs, [MoltObject::none().bits(); 3]);
-    assert_eq!(crate::molt_exception_pending(), 1);
-    let _ = crate::molt_exception_clear();
+    assert_eq!(
+        crate::builtins::exceptions::molt_exception_pending_attached_body(py),
+        1
+    );
+    let _ = crate::molt_exception_clear_attached_body(py);
 }
 
 #[test]
@@ -93,7 +128,8 @@ fn preexisting_exception_still_initializes_every_result_slot() {
         let _: u64 = raise_exception(_py, BuiltinExc::RuntimeError, "prior failure");
         let mut outputs = [u64::MAX, u64::MAX];
         let result = unsafe {
-            molt_unpack_sequence(
+            molt_unpack_sequence_attached_body(
+                _py,
                 MoltObject::none().bits(),
                 outputs.len() as u64,
                 crate::provenance::abi::expose_address(outputs.as_mut_ptr()),
@@ -101,8 +137,11 @@ fn preexisting_exception_still_initializes_every_result_slot() {
         };
         assert_eq!(result, MoltObject::none().bits());
         assert_eq!(outputs, [MoltObject::none().bits(); 2]);
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let _ = crate::molt_exception_clear();
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            1
+        );
+        let _ = crate::molt_exception_clear_attached_body(_py);
     });
 }
 
@@ -112,18 +151,24 @@ fn zero_target_unpack_validates_arity_without_output_memory() {
     crate::with_gil_entry_nopanic!(_py, {
         let empty_ptr = crate::alloc_tuple(_py, &[]);
         let empty_bits = MoltObject::from_ptr(empty_ptr).bits();
-        let result = unsafe { molt_unpack_sequence(empty_bits, 0, 0) };
+        let result = unsafe { molt_unpack_sequence_attached_body(_py, empty_bits, 0, 0) };
         assert_eq!(result, 0);
-        assert_eq!(crate::molt_exception_pending(), 0);
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            0
+        );
         dec_ref_bits(_py, empty_bits);
 
         let item = MoltObject::from_int(1).bits();
         let one_ptr = crate::alloc_tuple(_py, &[item]);
         let one_bits = MoltObject::from_ptr(one_ptr).bits();
-        let result = unsafe { molt_unpack_sequence(one_bits, 0, 0) };
+        let result = unsafe { molt_unpack_sequence_attached_body(_py, one_bits, 0, 0) };
         assert_eq!(result, MoltObject::none().bits());
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let _ = crate::molt_exception_clear();
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            1
+        );
+        let _ = crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, one_bits);
     });
 }
@@ -139,7 +184,7 @@ fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
         FAILING_ITER_VALUE.store(item, Ordering::Relaxed);
         FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
         let source_bits = alloc_test_call_iterator(_py, yield_heap_value_then_sentinel);
-        let result = unsafe { molt_unpack_sequence(source_bits, 1, 0) };
+        let result = unsafe { molt_unpack_sequence_attached_body(_py, source_bits, 1, 0) };
         assert_eq!(result, MoltObject::none().bits());
         assert_eq!(FAILING_ITER_CALLS.load(Ordering::Relaxed), 0);
         assert!(exception_pending(_py));
@@ -183,7 +228,8 @@ fn nonzero_unpack_with_null_output_raises_memory_error_before_iteration() {
         // proves that the zero-call failure witness observes actual iteration.
         let mut output = [MoltObject::none().bits()];
         let result = unsafe {
-            molt_unpack_sequence(
+            molt_unpack_sequence_attached_body(
+                _py,
                 source_bits,
                 1,
                 crate::provenance::abi::expose_address(output.as_mut_ptr()),
@@ -217,7 +263,8 @@ fn exact_builtin_unpack_is_allocation_free_after_source_construction() {
         for source_bits in [tuple_bits, list_bits] {
             let mut outputs = [u64::MAX; 2];
             let result = unsafe {
-                molt_unpack_sequence(
+                molt_unpack_sequence_attached_body(
+                    _py,
                     source_bits,
                     outputs.len() as u64,
                     crate::provenance::abi::expose_address(outputs.as_mut_ptr()),
@@ -225,7 +272,10 @@ fn exact_builtin_unpack_is_allocation_free_after_source_construction() {
             };
             assert_eq!(result, 0);
             assert_eq!(outputs, values);
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
         }
 
         drop(reset);
@@ -250,7 +300,8 @@ fn exact_builtin_unpack_mints_and_releases_one_owner_per_heap_output() {
         let mut outputs = [0; 2];
         assert_eq!(
             unsafe {
-                molt_unpack_sequence(
+                molt_unpack_sequence_attached_body(
+                    _py,
                     source_bits,
                     2,
                     crate::provenance::abi::expose_address(outputs.as_mut_ptr()),
@@ -287,7 +338,8 @@ fn generic_unpack_rolls_back_heap_outputs_when_iteration_raises() {
         let mut outputs = [u64::MAX; 2];
         assert_eq!(
             unsafe {
-                molt_unpack_sequence(
+                molt_unpack_sequence_attached_body(
+                    _py,
                     iter_bits,
                     outputs.len() as u64,
                     crate::provenance::abi::expose_address(outputs.as_mut_ptr()),
@@ -301,15 +353,18 @@ fn generic_unpack_rolls_back_heap_outputs_when_iteration_raises() {
             baseline,
             "published heap owner must be rolled back"
         );
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            1
+        );
+        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
         let exc_ptr = obj_from_bits(exc_bits)
             .as_ptr()
             .expect("LookupError must remain pending");
         assert!(
             crate::format_exception_message(_py, exc_ptr).contains("injected iterator failure")
         );
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, exc_bits);
 
         dec_ref_bits(_py, iter_bits);
@@ -341,7 +396,8 @@ impl IteratorAbi {
             Self::Unboxed => {
                 let mut output = none;
                 let done = unsafe {
-                    crate::molt_iter_next_unboxed(
+                    crate::molt_iter_next_unboxed_attached_body(
+                        _py,
                         iter_bits,
                         crate::provenance::abi::expose_address(&raw mut output),
                     )
@@ -349,7 +405,7 @@ impl IteratorAbi {
                 (done, output)
             }
             Self::Pair => {
-                let pair = crate::molt_iter_next(iter_bits);
+                let pair = crate::molt_iter_next_attached_body(_py, iter_bits);
                 let Some(pair_ptr) = obj_from_bits(pair).as_ptr() else {
                     return (none, none);
                 };
@@ -432,8 +488,11 @@ fn callable_iterator_exception_clears_cache_before_reentry() {
                 baseline,
                 "{abi:?}: error propagation must clear the cache"
             );
-            assert_eq!(crate::molt_exception_pending(), 1);
-            let _ = crate::molt_exception_clear();
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                1
+            );
+            let _ = crate::molt_exception_clear_attached_body(_py);
 
             let (resumed, output) = abi.advance(_py, iter_bits);
             assert!(!is_truthy(_py, obj_from_bits(resumed)));
@@ -501,7 +560,8 @@ fn exact_builtin_unpack_hot_path_performs_zero_allocator_calls() {
             let mut outputs = [0; 2];
             assert_eq!(
                 unsafe {
-                    molt_unpack_sequence(
+                    molt_unpack_sequence_attached_body(
+                        _py,
                         source,
                         2,
                         crate::provenance::abi::expose_address(outputs.as_mut_ptr()),

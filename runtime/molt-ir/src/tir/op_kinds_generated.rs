@@ -51,6 +51,8 @@ pub enum OpKind {
     AsyncForEnd,
     #[serde(rename = "async_for_start")]
     AsyncForStart,
+    #[serde(rename = "async_work_pending")]
+    AsyncWorkPending,
     #[serde(rename = "async_work_poll")]
     AsyncWorkPoll,
     #[serde(rename = "asyncgen_new")]
@@ -1102,6 +1104,7 @@ impl OpKind {
         Self::AsciiFromObj,
         Self::AsyncForEnd,
         Self::AsyncForStart,
+        Self::AsyncWorkPending,
         Self::AsyncWorkPoll,
         Self::AsyncgenNew,
         Self::Band,
@@ -1638,6 +1641,7 @@ impl OpKind {
             Self::AsciiFromObj => "ascii_from_obj",
             Self::AsyncForEnd => "async_for_end",
             Self::AsyncForStart => "async_for_start",
+            Self::AsyncWorkPending => "async_work_pending",
             Self::AsyncWorkPoll => "async_work_poll",
             Self::AsyncgenNew => "asyncgen_new",
             Self::Band => "band",
@@ -2185,6 +2189,7 @@ impl std::str::FromStr for OpKind {
             "ascii_from_obj" => Ok(Self::AsciiFromObj),
             "async_for_end" => Ok(Self::AsyncForEnd),
             "async_for_start" => Ok(Self::AsyncForStart),
+            "async_work_pending" => Ok(Self::AsyncWorkPending),
             "async_work_poll" => Ok(Self::AsyncWorkPoll),
             "asyncgen_new" => Ok(Self::AsyncgenNew),
             "band" => Ok(Self::Band),
@@ -2743,6 +2748,7 @@ pub const fn simpleir_backend_private_owner(kind: OpKind) -> Option<&'static str
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -3311,6 +3317,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -3947,6 +3954,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -4488,6 +4496,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -5029,6 +5038,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -5569,6 +5579,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -6110,6 +6121,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -6651,6 +6663,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -7192,6 +7205,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -7733,6 +7747,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -8273,6 +8288,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -8812,6 +8828,7 @@ impl OpKind {
             | OpKind::Anext
             | OpKind::Any
             | OpKind::AsciiFromObj
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -9355,6 +9372,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -9896,6 +9914,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -10437,6 +10456,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -10976,6 +10996,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -11516,6 +11537,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -12056,6 +12078,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -12596,6 +12619,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -13137,6 +13161,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -13678,6 +13703,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -14218,6 +14244,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -14758,6 +14785,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -15303,6 +15331,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -15849,6 +15878,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -16388,6 +16418,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -16933,6 +16964,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -17479,6 +17511,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -18016,6 +18049,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -18554,6 +18588,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -19273,6 +19308,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -19853,6 +19889,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::BindingAlias
@@ -20994,20 +21031,8 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::ReprFromObj
         | OpKind::Str
         | OpKind::StrFromObj => Some(SimpleIrRuntimeRequirements(512)),
-        OpKind::AsyncWorkPoll => Some(SimpleIrRuntimeRequirements(32772)),
-        OpKind::Borrow
-        | OpKind::DecRef
-        | OpKind::DelBoundary
-        | OpKind::DeleteVar
-        | OpKind::Free
-        | OpKind::IncRef
-        | OpKind::Release => Some(SimpleIrRuntimeRequirements(8)),
-        OpKind::BuildTuple | OpKind::TupleNew => Some(SimpleIrRuntimeRequirements(2)),
-        OpKind::CallargsExpandKwstar
-        | OpKind::CallargsPushKw
-        | OpKind::CallargsPushMethodReceiver => Some(SimpleIrRuntimeRequirements(576)),
-        OpKind::CallargsExpandStar => Some(SimpleIrRuntimeRequirements(608)),
-        OpKind::CheckException
+        OpKind::AsyncWorkPending
+        | OpKind::CheckException
         | OpKind::ExceptEnd
         | OpKind::ExceptStart
         | OpKind::ExceptionActive
@@ -21041,6 +21066,19 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Reraise
         | OpKind::TryEnd
         | OpKind::TryStart => Some(SimpleIrRuntimeRequirements(4)),
+        OpKind::AsyncWorkPoll => Some(SimpleIrRuntimeRequirements(32772)),
+        OpKind::Borrow
+        | OpKind::DecRef
+        | OpKind::DelBoundary
+        | OpKind::DeleteVar
+        | OpKind::Free
+        | OpKind::IncRef
+        | OpKind::Release => Some(SimpleIrRuntimeRequirements(8)),
+        OpKind::BuildTuple | OpKind::TupleNew => Some(SimpleIrRuntimeRequirements(2)),
+        OpKind::CallargsExpandKwstar
+        | OpKind::CallargsPushKw
+        | OpKind::CallargsPushMethodReceiver => Some(SimpleIrRuntimeRequirements(576)),
+        OpKind::CallargsExpandStar => Some(SimpleIrRuntimeRequirements(608)),
         OpKind::CmpEq
         | OpKind::CmpGe
         | OpKind::CmpGt
@@ -21200,6 +21238,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -21745,6 +21784,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -22289,6 +22329,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -22829,6 +22870,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -23385,6 +23427,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -24288,6 +24331,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::Alloc => Some(OpCode::Alloc),
         OpKind::AllocTask => Some(OpCode::AllocTask),
         OpKind::And => Some(OpCode::And),
+        OpKind::AsyncWorkPending => Some(OpCode::AsyncWorkPending),
         OpKind::AsyncWorkPoll | OpKind::CheckException => Some(OpCode::CheckException),
         OpKind::BinopFloorDiv | OpKind::FloorDiv | OpKind::Floordiv => Some(OpCode::FloorDiv),
         OpKind::BitAnd => Some(OpCode::BitAnd),
@@ -24494,6 +24538,16 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::BoxVal => Some(OpKind::Box),
         OpCode::UnboxVal => Some(OpKind::Unbox),
         OpCode::TypeGuard => Some(OpKind::TypeGuard),
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => Some(OpKind::IncRef),
         OpCode::DecRef => Some(OpKind::DecRef),
         OpCode::DelBoundary => Some(OpKind::DelBoundary),
@@ -24522,6 +24576,7 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::Raise => Some(OpKind::Raise),
         OpCode::CheckException => Some(OpKind::CheckException),
         OpCode::ExceptionPending => Some(OpKind::ExceptionPending),
+        OpCode::AsyncWorkPending => Some(OpKind::AsyncWorkPending),
         OpCode::FunctionDefaultsVersion => Some(OpKind::FunctionDefaultsVersion),
         OpCode::TryStart => Some(OpKind::TryStart),
         OpCode::TryEnd => Some(OpKind::TryEnd),
@@ -24619,6 +24674,16 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
         OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => None,
         OpCode::DecRef => None,
         OpCode::DelBoundary => None,
@@ -24647,6 +24712,7 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -24702,6 +24768,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -25237,6 +25304,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::Any
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::Band
         | OpKind::BindingAlias
@@ -25779,6 +25847,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -26317,6 +26386,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -26855,6 +26925,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -27392,6 +27463,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -27931,6 +28003,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -28469,6 +28542,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -29007,6 +29081,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -29585,6 +29660,16 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::BoxVal,
     OpCode::UnboxVal,
     OpCode::TypeGuard,
+    OpCode::IsInlineInt,
+    OpCode::UnboxInlineInt,
+    OpCode::IsBoolWord,
+    OpCode::UnboxBoolWord,
+    OpCode::IsFloatWord,
+    OpCode::UnboxFloatWord,
+    OpCode::BoxInlineInt,
+    OpCode::CodeIs,
+    OpCode::DirectCall,
+    OpCode::CallRuntime,
     OpCode::IncRef,
     OpCode::DecRef,
     OpCode::DelBoundary,
@@ -29613,6 +29698,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::Raise,
     OpCode::CheckException,
     OpCode::ExceptionPending,
+    OpCode::AsyncWorkPending,
     OpCode::FunctionDefaultsVersion,
     OpCode::TryStart,
     OpCode::TryEnd,
@@ -29709,6 +29795,16 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => true,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => true,
+        OpCode::CallRuntime => true,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -29737,6 +29833,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -29833,6 +29930,16 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => true,
+        OpCode::CallRuntime => true,
         OpCode::IncRef => true,
         OpCode::DecRef => true,
         OpCode::DelBoundary => true,
@@ -29861,6 +29968,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => true,
+        OpCode::AsyncWorkPending => true,
         OpCode::FunctionDefaultsVersion => true,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -29957,6 +30065,16 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => true,
+        OpCode::CallRuntime => true,
         OpCode::IncRef => false,
         OpCode::DecRef => true,
         OpCode::DelBoundary => true,
@@ -29985,6 +30103,7 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -30065,7 +30184,7 @@ pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {
 #[inline]
 pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
     let mut effects = match opcode {
-        OpCode::FrameSetLocation => OPCODE_EFFECTS_IMPURE,
+        OpCode::FrameSetLocation => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::Add => OPCODE_EFFECTS_IMPURE,
         OpCode::Sub => OPCODE_EFFECTS_IMPURE,
         OpCode::Mul => OPCODE_EFFECTS_IMPURE,
@@ -30122,6 +30241,16 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::BoxVal => OPCODE_EFFECTS_PURE_MAY_THROW,
         OpCode::UnboxVal => OPCODE_EFFECTS_PURE,
         OpCode::TypeGuard => OPCODE_EFFECTS_PURE,
+        OpCode::IsInlineInt => OPCODE_EFFECTS_PURE,
+        OpCode::UnboxInlineInt => OPCODE_EFFECTS_PURE,
+        OpCode::IsBoolWord => OPCODE_EFFECTS_PURE,
+        OpCode::UnboxBoolWord => OPCODE_EFFECTS_PURE,
+        OpCode::IsFloatWord => OPCODE_EFFECTS_PURE,
+        OpCode::UnboxFloatWord => OPCODE_EFFECTS_PURE,
+        OpCode::BoxInlineInt => OPCODE_EFFECTS_PURE,
+        OpCode::CodeIs => OPCODE_EFFECTS_PURE,
+        OpCode::DirectCall => OPCODE_EFFECTS_IMPURE,
+        OpCode::CallRuntime => OPCODE_EFFECTS_IMPURE,
         OpCode::IncRef => OPCODE_EFFECTS_IMPURE,
         OpCode::DecRef => OPCODE_EFFECTS_IMPURE,
         OpCode::DelBoundary => OPCODE_EFFECTS_IMPURE,
@@ -30150,6 +30279,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::Raise => OPCODE_EFFECTS_IMPURE,
         OpCode::CheckException => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::ExceptionPending => OPCODE_EFFECTS_IMPURE_LOCAL,
+        OpCode::AsyncWorkPending => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::FunctionDefaultsVersion => OPCODE_EFFECTS_IMPURE_LOCAL,
         OpCode::TryStart => OPCODE_EFFECTS_IMPURE,
         OpCode::TryEnd => OPCODE_EFFECTS_IMPURE,
@@ -30209,6 +30339,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -30728,6 +30859,545 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
 }
 
 #[inline]
+pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
+    match kind {
+        OpKind::MAnd
+        | OpKind::Abs
+        | OpKind::Add
+        | OpKind::Aiter
+        | OpKind::All
+        | OpKind::Alloc
+        | OpKind::AllocClass
+        | OpKind::AllocClassStatic
+        | OpKind::AllocClassTrusted
+        | OpKind::AllocInstance
+        | OpKind::AllocTask
+        | OpKind::And
+        | OpKind::Anext
+        | OpKind::Any
+        | OpKind::AsciiFromObj
+        | OpKind::AsyncForEnd
+        | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
+        | OpKind::AsyncWorkPoll
+        | OpKind::AsyncgenNew
+        | OpKind::Band
+        | OpKind::BindingAlias
+        | OpKind::Binop
+        | OpKind::BinopAdd
+        | OpKind::BinopFloorDiv
+        | OpKind::BinopMod
+        | OpKind::BinopMul
+        | OpKind::BinopPow
+        | OpKind::BinopSub
+        | OpKind::BitAnd
+        | OpKind::BitNot
+        | OpKind::BitOr
+        | OpKind::BitXor
+        | OpKind::Bool
+        | OpKind::BoolConst
+        | OpKind::Bor
+        | OpKind::Borrow
+        | OpKind::BoundMethodNew
+        | OpKind::Box
+        | OpKind::BoxFromRawInt
+        | OpKind::BrIf
+        | OpKind::Branch
+        | OpKind::BranchFalse
+        | OpKind::BranchTrue
+        | OpKind::BuildDict
+        | OpKind::BuildList
+        | OpKind::BuildSet
+        | OpKind::BuildSlice
+        | OpKind::BuildTuple
+        | OpKind::BuiltinAbs
+        | OpKind::BuiltinAll
+        | OpKind::BuiltinAny
+        | OpKind::BuiltinBool
+        | OpKind::BuiltinFloat
+        | OpKind::BuiltinFunc
+        | OpKind::BuiltinInt
+        | OpKind::BuiltinLen
+        | OpKind::BuiltinPrint
+        | OpKind::BuiltinRange
+        | OpKind::BuiltinReversed
+        | OpKind::BuiltinSorted
+        | OpKind::BuiltinStr
+        | OpKind::BuiltinSum
+        | OpKind::BuiltinType
+        | OpKind::Bxor
+        | OpKind::BytearrayCount
+        | OpKind::BytearrayCountSlice
+        | OpKind::BytearrayEndswith
+        | OpKind::BytearrayEndswithSlice
+        | OpKind::BytearrayFillRange
+        | OpKind::BytearrayFind
+        | OpKind::BytearrayFindSlice
+        | OpKind::BytearrayFromObj
+        | OpKind::BytearrayFromStr
+        | OpKind::BytearrayReplace
+        | OpKind::BytearraySplit
+        | OpKind::BytearraySplitMax
+        | OpKind::BytearrayStartswith
+        | OpKind::BytearrayStartswithSlice
+        | OpKind::BytesCount
+        | OpKind::BytesCountSlice
+        | OpKind::BytesEndswith
+        | OpKind::BytesEndswithSlice
+        | OpKind::BytesFind
+        | OpKind::BytesFindSlice
+        | OpKind::BytesFromObj
+        | OpKind::BytesFromStr
+        | OpKind::BytesReplace
+        | OpKind::BytesSplit
+        | OpKind::BytesSplitMax
+        | OpKind::BytesStartswith
+        | OpKind::BytesStartswithSlice
+        | OpKind::Call
+        | OpKind::CallAsync
+        | OpKind::CallBind
+        | OpKind::CallBuiltin
+        | OpKind::CallFunc
+        | OpKind::CallFunction
+        | OpKind::CallGuarded
+        | OpKind::CallIndirect
+        | OpKind::CallInternal
+        | OpKind::CallLoadedMethod
+        | OpKind::CallMethod
+        | OpKind::CallargsExpandKwstar
+        | OpKind::CallargsExpandStar
+        | OpKind::CallargsNew
+        | OpKind::CallargsPushKw
+        | OpKind::CallargsPushMethodReceiver
+        | OpKind::CallargsPushPos
+        | OpKind::Cast
+        | OpKind::CastBool
+        | OpKind::CastFloat
+        | OpKind::CastInt
+        | OpKind::CastStr
+        | OpKind::CheckException
+        | OpKind::CheckedAdd
+        | OpKind::CheckedMul
+        | OpKind::Chr
+        | OpKind::ClassDef
+        | OpKind::ClassLayoutFieldCount
+        | OpKind::ClassLayoutSlotCount
+        | OpKind::ClassSetDefinition
+        | OpKind::ClassmethodNew
+        | OpKind::ClosureLoad
+        | OpKind::ClosureStore
+        | OpKind::CmpEq
+        | OpKind::CmpGe
+        | OpKind::CmpGt
+        | OpKind::CmpLe
+        | OpKind::CmpLt
+        | OpKind::CmpNe
+        | OpKind::CodeNew
+        | OpKind::CodeSlotSet
+        | OpKind::CodeSlotsInit
+        | OpKind::Compare
+        | OpKind::ComplexFromObj
+        | OpKind::Const
+        | OpKind::ConstBigint
+        | OpKind::ConstBool
+        | OpKind::ConstBytes
+        | OpKind::ConstEllipsis
+        | OpKind::ConstFloat
+        | OpKind::ConstInt
+        | OpKind::ConstNone
+        | OpKind::ConstNotImplemented
+        | OpKind::ConstStr
+        | OpKind::Contains
+        | OpKind::ContextEnter
+        | OpKind::ContextExit
+        | OpKind::Copy
+        | OpKind::CopyVar
+        | OpKind::DecRef
+        | OpKind::DelAttr
+        | OpKind::DelAttrGenericObj
+        | OpKind::DelAttrGenericPtr
+        | OpKind::DelAttrName
+        | OpKind::DelBoundary
+        | OpKind::DelIndex
+        | OpKind::DelItem
+        | OpKind::DeleteVar
+        | OpKind::DictClear
+        | OpKind::DictCopy
+        | OpKind::DictFromObj
+        | OpKind::DictGet
+        | OpKind::DictItems
+        | OpKind::DictKeys
+        | OpKind::DictNew
+        | OpKind::DictPop
+        | OpKind::DictPopitem
+        | OpKind::DictSet
+        | OpKind::DictSetdefault
+        | OpKind::DictSetdefaultEmptyList
+        | OpKind::DictStrIntInc
+        | OpKind::DictUnpack
+        | OpKind::DictUpdate
+        | OpKind::DictUpdateKwstar
+        | OpKind::DictUpdateMissing
+        | OpKind::DictValues
+        | OpKind::Div
+        | OpKind::DropInserted
+        | OpKind::Else
+        | OpKind::EndFor
+        | OpKind::EndIf
+        | OpKind::Enumerate
+        | OpKind::Eq
+        | OpKind::ExceptEnd
+        | OpKind::ExceptStart
+        | OpKind::ExceptionActive
+        | OpKind::ExceptionClass
+        | OpKind::ExceptionClear
+        | OpKind::ExceptionContextSet
+        | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFinallyPendingObserver
+        | OpKind::ExceptionLast
+        | OpKind::ExceptionLastPending
+        | OpKind::ExceptionMatchBuiltin
+        | OpKind::ExceptionNew
+        | OpKind::ExceptionNewBuiltin
+        | OpKind::ExceptionNewBuiltinEmpty
+        | OpKind::ExceptionNewBuiltinOne
+        | OpKind::ExceptionNewFromClass
+        | OpKind::ExceptionPending
+        | OpKind::ExceptionPop
+        | OpKind::ExceptionPush
+        | OpKind::ExceptionRegionDropsInserted
+        | OpKind::ExceptionSetLast
+        | OpKind::ExceptionStackClear
+        | OpKind::ExceptionStackDepth
+        | OpKind::ExceptionStackEnter
+        | OpKind::ExceptionStackExit
+        | OpKind::ExceptionStackSetDepth
+        | OpKind::ExceptiongroupCombine
+        | OpKind::ExceptiongroupMatch
+        | OpKind::FinallyEnd
+        | OpKind::FinallyStart
+        | OpKind::Float
+        | OpKind::FloatFromObj
+        | OpKind::FloorDiv
+        | OpKind::Floordiv
+        | OpKind::ForIter
+        | OpKind::ForIterEnd
+        | OpKind::ForIterStart
+        | OpKind::ForRange
+        | OpKind::FormatString
+        | OpKind::FrameContextSet
+        | OpKind::FrameHomeCell
+        | OpKind::FrameHomeClear
+        | OpKind::FrameHomeLoad
+        | OpKind::FrameHomePrivateCell
+        | OpKind::FrameHomeStore
+        | OpKind::FrameHomeTake
+        | OpKind::FrameLocals
+        | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
+        | OpKind::Free
+        | OpKind::FrozensetAdd
+        | OpKind::FrozensetNew
+        | OpKind::FuncNew
+        | OpKind::FuncNewClosure
+        | OpKind::FunctionClosureBits
+        | OpKind::FunctionDefaultsVersion
+        | OpKind::Ge
+        | OpKind::GenClose
+        | OpKind::GenSend
+        | OpKind::GenThrow
+        | OpKind::GetAttr
+        | OpKind::GetAttrGenericObj
+        | OpKind::GetAttrGenericPtr
+        | OpKind::GetAttrName
+        | OpKind::GetAttrNameDefault
+        | OpKind::GetAttrSpecialObj
+        | OpKind::GetItem
+        | OpKind::GetIter
+        | OpKind::Getframe
+        | OpKind::Goto
+        | OpKind::GpuBarrier
+        | OpKind::GpuBlockDim
+        | OpKind::GpuBlockId
+        | OpKind::GpuGridDim
+        | OpKind::GpuThreadId
+        | OpKind::Gt
+        | OpKind::GuardBool
+        | OpKind::GuardFloat
+        | OpKind::GuardInt
+        | OpKind::GuardLayout
+        | OpKind::GuardNone
+        | OpKind::GuardStr
+        | OpKind::GuardTag
+        | OpKind::GuardType
+        | OpKind::GuardedFieldGet
+        | OpKind::GuardedFieldSet
+        | OpKind::GuardedLoad
+        | OpKind::HasAttrName
+        | OpKind::Id
+        | OpKind::IdentityAlias
+        | OpKind::If
+        | OpKind::IfNot
+        | OpKind::Import
+        | OpKind::ImportFrom
+        | OpKind::ImportName
+        | OpKind::In
+        | OpKind::IncRef
+        | OpKind::Index
+        | OpKind::IndexSet
+        | OpKind::InitInstance
+        | OpKind::InplaceAdd
+        | OpKind::InplaceBitAnd
+        | OpKind::InplaceBitOr
+        | OpKind::InplaceBitXor
+        | OpKind::InplaceDiv
+        | OpKind::InplaceFloordiv
+        | OpKind::InplaceLshift
+        | OpKind::InplaceMatmul
+        | OpKind::InplaceMod
+        | OpKind::InplaceMul
+        | OpKind::InplacePow
+        | OpKind::InplaceRshift
+        | OpKind::InplaceSub
+        | OpKind::InstanceGetField
+        | OpKind::InstanceHasField
+        | OpKind::InstanceSetField
+        | OpKind::Int
+        | OpKind::IntFromObj
+        | OpKind::IntFromStrOfObj
+        | OpKind::Invert
+        | OpKind::InvokeFfi
+        | OpKind::Is
+        | OpKind::IsBoundMethod
+        | OpKind::IsCallable
+        | OpKind::IsGenerator
+        | OpKind::IsNativeAwaitable
+        | OpKind::IsNot
+        | OpKind::IsPending
+        | OpKind::Isinstance
+        | OpKind::Issubclass
+        | OpKind::Iter
+        | OpKind::IterNext
+        | OpKind::IterNextUnboxed
+        | OpKind::Jump
+        | OpKind::Label
+        | OpKind::Le
+        | OpKind::Len
+        | OpKind::ListAppend
+        | OpKind::ListClear
+        | OpKind::ListCopy
+        | OpKind::ListCount
+        | OpKind::ListExtend
+        | OpKind::ListFillNew
+        | OpKind::ListFromRange
+        | OpKind::ListIndex
+        | OpKind::ListIndexRange
+        | OpKind::ListInsert
+        | OpKind::ListIntNew
+        | OpKind::ListNew
+        | OpKind::ListPop
+        | OpKind::ListRemove
+        | OpKind::ListReverse
+        | OpKind::Load
+        | OpKind::LoadAttr
+        | OpKind::LoadConst
+        | OpKind::LoadLocal
+        | OpKind::LoadMethod
+        | OpKind::LoadSuperMethod
+        | OpKind::LoadVar
+        | OpKind::LoopBreak
+        | OpKind::LoopBreakIfException
+        | OpKind::LoopBreakIfFalse
+        | OpKind::LoopBreakIfTrue
+        | OpKind::LoopCarryInit
+        | OpKind::LoopCarryUpdate
+        | OpKind::LoopContinue
+        | OpKind::LoopEnd
+        | OpKind::LoopIndexEnd
+        | OpKind::LoopIndexNext
+        | OpKind::LoopIndexStart
+        | OpKind::LoopStart
+        | OpKind::Lshift
+        | OpKind::Lt
+        | OpKind::Matmul
+        | OpKind::Missing
+        | OpKind::Mod
+        | OpKind::Mod_
+        | OpKind::ModuleCacheDel
+        | OpKind::ModuleCacheGet
+        | OpKind::ModuleCacheSet
+        | OpKind::ModuleDelGlobal
+        | OpKind::ModuleDelGlobalIfPresent
+        | OpKind::ModuleGetAttr
+        | OpKind::ModuleGetGlobal
+        | OpKind::ModuleGetName
+        | OpKind::ModuleImport
+        | OpKind::ModuleImportFrom
+        | OpKind::ModuleImportStar
+        | OpKind::ModuleLoadCached
+        | OpKind::ModuleNew
+        | OpKind::ModuleSetAttr
+        | OpKind::ModuleSlot
+        | OpKind::Modulo
+        | OpKind::Mul
+        | OpKind::Ne
+        | OpKind::Neg
+        | OpKind::NoneConst
+        | OpKind::Nop
+        | OpKind::Not
+        | OpKind::NotIn
+        | OpKind::ObjectNew
+        | OpKind::ObjectNewBound
+        | OpKind::OperatorIndex
+        | OpKind::Or
+        | OpKind::Ord
+        | OpKind::OrdAt
+        | OpKind::PcallWrapBegin
+        | OpKind::PcallWrapEnd
+        | OpKind::Phi
+        | OpKind::Pos
+        | OpKind::Pow
+        | OpKind::PowMod
+        | OpKind::Print
+        | OpKind::PrintNewline
+        | OpKind::PropertyNew
+        | OpKind::Raise
+        | OpKind::RaiseFrom
+        | OpKind::Range
+        | OpKind::RangeNew
+        | OpKind::Release
+        | OpKind::ReprFromObj
+        | OpKind::Reraise
+        | OpKind::Ret
+        | OpKind::RetVoid
+        | OpKind::Reversed
+        | OpKind::Round
+        | OpKind::Rshift
+        | OpKind::SetAdd
+        | OpKind::SetAddProbe
+        | OpKind::SetAttr
+        | OpKind::SetAttrGenericObj
+        | OpKind::SetAttrGenericPtr
+        | OpKind::SetAttrName
+        | OpKind::SetClear
+        | OpKind::SetDifferenceUpdate
+        | OpKind::SetDiscard
+        | OpKind::SetIntersectionUpdate
+        | OpKind::SetItem
+        | OpKind::SetNew
+        | OpKind::SetPop
+        | OpKind::SetRemove
+        | OpKind::SetSymdiffUpdate
+        | OpKind::SetUpdate
+        | OpKind::Shl
+        | OpKind::Shr
+        | OpKind::Slice
+        | OpKind::SliceNew
+        | OpKind::Sorted
+        | OpKind::StackAlloc
+        | OpKind::StateBlockEnd
+        | OpKind::StateBlockStart
+        | OpKind::StateLabel
+        | OpKind::StateSet
+        | OpKind::StateSwitch
+        | OpKind::StateTransition
+        | OpKind::StateYield
+        | OpKind::StatefulLocalsRegister
+        | OpKind::StaticmethodNew
+        | OpKind::Store
+        | OpKind::StoreAttr
+        | OpKind::StoreFast
+        | OpKind::StoreIndex
+        | OpKind::StoreLocal
+        | OpKind::StoreSubscript
+        | OpKind::StoreVar
+        | OpKind::Str
+        | OpKind::StrFromObj
+        | OpKind::StringCapitalize
+        | OpKind::StringConcat
+        | OpKind::StringConst
+        | OpKind::StringCount
+        | OpKind::StringCountSlice
+        | OpKind::StringEndswith
+        | OpKind::StringEndswithSlice
+        | OpKind::StringEq
+        | OpKind::StringFind
+        | OpKind::StringFindSlice
+        | OpKind::StringFormat
+        | OpKind::StringIndex
+        | OpKind::StringIndexSlice
+        | OpKind::StringJoin
+        | OpKind::StringLower
+        | OpKind::StringLstrip
+        | OpKind::StringPartition
+        | OpKind::StringRepeat
+        | OpKind::StringReplace
+        | OpKind::StringRfind
+        | OpKind::StringRfindSlice
+        | OpKind::StringRindex
+        | OpKind::StringRindexSlice
+        | OpKind::StringRpartition
+        | OpKind::StringRstrip
+        | OpKind::StringSplit
+        | OpKind::StringSplitField
+        | OpKind::StringSplitFieldEnd
+        | OpKind::StringSplitFieldEq
+        | OpKind::StringSplitFieldIsAscii
+        | OpKind::StringSplitFieldLen
+        | OpKind::StringSplitFieldLenFromBounds
+        | OpKind::StringSplitFieldOrdAtBounds
+        | OpKind::StringSplitFieldStart
+        | OpKind::StringSplitFieldToInt
+        | OpKind::StringSplitMax
+        | OpKind::StringSplitSepDictInc
+        | OpKind::StringSplitValidate
+        | OpKind::StringSplitWsDictInc
+        | OpKind::StringSplitlines
+        | OpKind::StringStartswith
+        | OpKind::StringStartswithSlice
+        | OpKind::StringStrip
+        | OpKind::StringUpper
+        | OpKind::Sub
+        | OpKind::Subscript
+        | OpKind::Sum
+        | OpKind::TaskWait
+        | OpKind::TraceEnterSlot
+        | OpKind::TraceExit
+        | OpKind::TrueDiv
+        | OpKind::Trunc
+        | OpKind::TryEnd
+        | OpKind::TryStart
+        | OpKind::TupleCount
+        | OpKind::TupleFromList
+        | OpKind::TupleIndex
+        | OpKind::TupleNew
+        | OpKind::TypeGuard
+        | OpKind::TypeOf
+        | OpKind::UnaryInvert
+        | OpKind::UnaryNeg
+        | OpKind::UnaryNot
+        | OpKind::UnaryOp
+        | OpKind::UnaryPos
+        | OpKind::Unbox
+        | OpKind::UnboxToRawInt
+        | OpKind::UnpackSequence
+        | OpKind::Unreachable
+        | OpKind::VecMax
+        | OpKind::VecMin
+        | OpKind::VecProd
+        | OpKind::VecSum
+        | OpKind::WarnStderr
+        | OpKind::WhileEnd
+        | OpKind::WhileStart
+        | OpKind::Widen
+        | OpKind::Yield
+        | OpKind::YieldFrom
+        | OpKind::Zip => false,
+        OpKind::Line => true,
+    }
+}
+
+#[inline]
 pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
     match kind {
         OpKind::MAnd
@@ -30747,6 +31417,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -31284,6 +31955,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -31823,6 +32495,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -32363,6 +33036,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -32902,6 +33576,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -33442,6 +34117,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -33982,6 +34658,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
@@ -34522,6 +35199,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -35062,6 +35740,7 @@ impl OpKind {
             | OpKind::AsciiFromObj
             | OpKind::AsyncForEnd
             | OpKind::AsyncForStart
+            | OpKind::AsyncWorkPending
             | OpKind::AsyncWorkPoll
             | OpKind::AsyncgenNew
             | OpKind::Band
@@ -35644,6 +36323,16 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -35672,6 +36361,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -35770,6 +36460,16 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::BoxVal => Some(1),
         OpCode::UnboxVal => Some(1),
         OpCode::TypeGuard => Some(1),
+        OpCode::IsInlineInt => Some(1),
+        OpCode::UnboxInlineInt => Some(1),
+        OpCode::IsBoolWord => Some(1),
+        OpCode::UnboxBoolWord => Some(1),
+        OpCode::IsFloatWord => Some(1),
+        OpCode::UnboxFloatWord => Some(1),
+        OpCode::BoxInlineInt => Some(1),
+        OpCode::CodeIs => Some(1),
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => Some(0),
         OpCode::DecRef => Some(0),
         OpCode::DelBoundary => Some(0),
@@ -35798,6 +36498,7 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::Raise => Some(0),
         OpCode::CheckException => None,
         OpCode::ExceptionPending => Some(1),
+        OpCode::AsyncWorkPending => Some(1),
         OpCode::FunctionDefaultsVersion => Some(1),
         OpCode::TryStart => Some(0),
         OpCode::TryEnd => Some(0),
@@ -36006,6 +36707,16 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::BoxVal => Some(1),
         OpCode::UnboxVal => Some(1),
         OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => Some(1),
         OpCode::DecRef => Some(1),
         OpCode::DelBoundary => None,
@@ -36034,6 +36745,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -36130,6 +36842,16 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::BoxVal => FuzzTirAttrPayloadRule::None,
         OpCode::UnboxVal => FuzzTirAttrPayloadRule::None,
         OpCode::TypeGuard => FuzzTirAttrPayloadRule::None,
+        OpCode::IsInlineInt => FuzzTirAttrPayloadRule::None,
+        OpCode::UnboxInlineInt => FuzzTirAttrPayloadRule::None,
+        OpCode::IsBoolWord => FuzzTirAttrPayloadRule::None,
+        OpCode::UnboxBoolWord => FuzzTirAttrPayloadRule::None,
+        OpCode::IsFloatWord => FuzzTirAttrPayloadRule::None,
+        OpCode::UnboxFloatWord => FuzzTirAttrPayloadRule::None,
+        OpCode::BoxInlineInt => FuzzTirAttrPayloadRule::None,
+        OpCode::CodeIs => FuzzTirAttrPayloadRule::None,
+        OpCode::DirectCall => FuzzTirAttrPayloadRule::None,
+        OpCode::CallRuntime => FuzzTirAttrPayloadRule::None,
         OpCode::IncRef => FuzzTirAttrPayloadRule::None,
         OpCode::DecRef => FuzzTirAttrPayloadRule::None,
         OpCode::DelBoundary => FuzzTirAttrPayloadRule::None,
@@ -36158,6 +36880,7 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::Raise => FuzzTirAttrPayloadRule::None,
         OpCode::CheckException => FuzzTirAttrPayloadRule::None,
         OpCode::ExceptionPending => FuzzTirAttrPayloadRule::None,
+        OpCode::AsyncWorkPending => FuzzTirAttrPayloadRule::None,
         OpCode::FunctionDefaultsVersion => FuzzTirAttrPayloadRule::None,
         OpCode::TryStart => FuzzTirAttrPayloadRule::None,
         OpCode::TryEnd => FuzzTirAttrPayloadRule::None,
@@ -36261,6 +36984,16 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
         OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => None,
         OpCode::DecRef => None,
         OpCode::DelBoundary => None,
@@ -36289,6 +37022,7 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -36599,6 +37333,16 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::BoxVal => count == 1,
         OpCode::UnboxVal => count == 1,
         OpCode::TypeGuard => count == 1,
+        OpCode::IsInlineInt => count == 1,
+        OpCode::UnboxInlineInt => count == 1,
+        OpCode::IsBoolWord => count == 1,
+        OpCode::UnboxBoolWord => count == 1,
+        OpCode::IsFloatWord => count == 1,
+        OpCode::UnboxFloatWord => count == 1,
+        OpCode::BoxInlineInt => count == 1,
+        OpCode::CodeIs => count == 1,
+        OpCode::DirectCall => true,
+        OpCode::CallRuntime => true,
         OpCode::IncRef => count == 1,
         OpCode::DecRef => count == 1,
         OpCode::DelBoundary => true,
@@ -36627,6 +37371,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => count == 0,
+        OpCode::AsyncWorkPending => count == 0,
         OpCode::FunctionDefaultsVersion => true,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -36792,6 +37537,16 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::BoxVal => &[],
         OpCode::UnboxVal => &[],
         OpCode::TypeGuard => &[],
+        OpCode::IsInlineInt => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::UnboxInlineInt => &[Some(OperandIndependentResultType::I64)],
+        OpCode::IsBoolWord => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::UnboxBoolWord => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::IsFloatWord => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::UnboxFloatWord => &[Some(OperandIndependentResultType::F64)],
+        OpCode::BoxInlineInt => &[Some(OperandIndependentResultType::DynBox)],
+        OpCode::CodeIs => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::DirectCall => &[],
+        OpCode::CallRuntime => &[],
         OpCode::IncRef => &[],
         OpCode::DecRef => &[],
         OpCode::DelBoundary => &[],
@@ -36820,6 +37575,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::Raise => &[],
         OpCode::CheckException => &[],
         OpCode::ExceptionPending => &[Some(OperandIndependentResultType::Bool)],
+        OpCode::AsyncWorkPending => &[Some(OperandIndependentResultType::Bool)],
         OpCode::FunctionDefaultsVersion => &[],
         OpCode::TryStart => &[],
         OpCode::TryEnd => &[],
@@ -36940,6 +37696,16 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::BoxVal => TypeRefineAttrResultTypeRule::None,
         OpCode::UnboxVal => TypeRefineAttrResultTypeRule::None,
         OpCode::TypeGuard => TypeRefineAttrResultTypeRule::TypeGuard,
+        OpCode::IsInlineInt => TypeRefineAttrResultTypeRule::None,
+        OpCode::UnboxInlineInt => TypeRefineAttrResultTypeRule::None,
+        OpCode::IsBoolWord => TypeRefineAttrResultTypeRule::None,
+        OpCode::UnboxBoolWord => TypeRefineAttrResultTypeRule::None,
+        OpCode::IsFloatWord => TypeRefineAttrResultTypeRule::None,
+        OpCode::UnboxFloatWord => TypeRefineAttrResultTypeRule::None,
+        OpCode::BoxInlineInt => TypeRefineAttrResultTypeRule::None,
+        OpCode::CodeIs => TypeRefineAttrResultTypeRule::None,
+        OpCode::DirectCall => TypeRefineAttrResultTypeRule::None,
+        OpCode::CallRuntime => TypeRefineAttrResultTypeRule::None,
         OpCode::IncRef => TypeRefineAttrResultTypeRule::None,
         OpCode::DecRef => TypeRefineAttrResultTypeRule::None,
         OpCode::DelBoundary => TypeRefineAttrResultTypeRule::None,
@@ -36968,6 +37734,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::Raise => TypeRefineAttrResultTypeRule::None,
         OpCode::CheckException => TypeRefineAttrResultTypeRule::None,
         OpCode::ExceptionPending => TypeRefineAttrResultTypeRule::None,
+        OpCode::AsyncWorkPending => TypeRefineAttrResultTypeRule::None,
         OpCode::FunctionDefaultsVersion => TypeRefineAttrResultTypeRule::None,
         OpCode::TryStart => TypeRefineAttrResultTypeRule::None,
         OpCode::TryEnd => TypeRefineAttrResultTypeRule::None,
@@ -37089,6 +37856,16 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::BoxVal => TypeRefineOperandTypeRule::BoxVal,
         OpCode::UnboxVal => TypeRefineOperandTypeRule::UnboxVal,
         OpCode::TypeGuard => TypeRefineOperandTypeRule::None,
+        OpCode::IsInlineInt => TypeRefineOperandTypeRule::None,
+        OpCode::UnboxInlineInt => TypeRefineOperandTypeRule::None,
+        OpCode::IsBoolWord => TypeRefineOperandTypeRule::None,
+        OpCode::UnboxBoolWord => TypeRefineOperandTypeRule::None,
+        OpCode::IsFloatWord => TypeRefineOperandTypeRule::None,
+        OpCode::UnboxFloatWord => TypeRefineOperandTypeRule::None,
+        OpCode::BoxInlineInt => TypeRefineOperandTypeRule::None,
+        OpCode::CodeIs => TypeRefineOperandTypeRule::None,
+        OpCode::DirectCall => TypeRefineOperandTypeRule::None,
+        OpCode::CallRuntime => TypeRefineOperandTypeRule::None,
         OpCode::IncRef => TypeRefineOperandTypeRule::None,
         OpCode::DecRef => TypeRefineOperandTypeRule::None,
         OpCode::DelBoundary => TypeRefineOperandTypeRule::None,
@@ -37117,6 +37894,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::Raise => TypeRefineOperandTypeRule::None,
         OpCode::CheckException => TypeRefineOperandTypeRule::None,
         OpCode::ExceptionPending => TypeRefineOperandTypeRule::None,
+        OpCode::AsyncWorkPending => TypeRefineOperandTypeRule::None,
         OpCode::FunctionDefaultsVersion => TypeRefineOperandTypeRule::None,
         OpCode::TryStart => TypeRefineOperandTypeRule::None,
         OpCode::TryEnd => TypeRefineOperandTypeRule::None,
@@ -37226,6 +38004,16 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::BoxVal => SccpConstantSeedRule::None,
         OpCode::UnboxVal => SccpConstantSeedRule::None,
         OpCode::TypeGuard => SccpConstantSeedRule::None,
+        OpCode::IsInlineInt => SccpConstantSeedRule::None,
+        OpCode::UnboxInlineInt => SccpConstantSeedRule::None,
+        OpCode::IsBoolWord => SccpConstantSeedRule::None,
+        OpCode::UnboxBoolWord => SccpConstantSeedRule::None,
+        OpCode::IsFloatWord => SccpConstantSeedRule::None,
+        OpCode::UnboxFloatWord => SccpConstantSeedRule::None,
+        OpCode::BoxInlineInt => SccpConstantSeedRule::None,
+        OpCode::CodeIs => SccpConstantSeedRule::None,
+        OpCode::DirectCall => SccpConstantSeedRule::None,
+        OpCode::CallRuntime => SccpConstantSeedRule::None,
         OpCode::IncRef => SccpConstantSeedRule::None,
         OpCode::DecRef => SccpConstantSeedRule::None,
         OpCode::DelBoundary => SccpConstantSeedRule::None,
@@ -37254,6 +38042,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::Raise => SccpConstantSeedRule::None,
         OpCode::CheckException => SccpConstantSeedRule::None,
         OpCode::ExceptionPending => SccpConstantSeedRule::None,
+        OpCode::AsyncWorkPending => SccpConstantSeedRule::None,
         OpCode::FunctionDefaultsVersion => SccpConstantSeedRule::None,
         OpCode::TryStart => SccpConstantSeedRule::None,
         OpCode::TryEnd => SccpConstantSeedRule::None,
@@ -37302,6 +38091,8 @@ pub enum SccpConstantEvalRule {
     FloorDiv,
     Ge,
     Gt,
+    Is,
+    IsNot,
     Le,
     Lt,
     Mod,
@@ -37339,8 +38130,8 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::Le => SccpConstantEvalRule::Le,
         OpCode::Gt => SccpConstantEvalRule::Gt,
         OpCode::Ge => SccpConstantEvalRule::Ge,
-        OpCode::Is => SccpConstantEvalRule::None,
-        OpCode::IsNot => SccpConstantEvalRule::None,
+        OpCode::Is => SccpConstantEvalRule::Is,
+        OpCode::IsNot => SccpConstantEvalRule::IsNot,
         OpCode::In => SccpConstantEvalRule::None,
         OpCode::NotIn => SccpConstantEvalRule::None,
         OpCode::BitAnd => SccpConstantEvalRule::None,
@@ -37375,6 +38166,16 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::BoxVal => SccpConstantEvalRule::None,
         OpCode::UnboxVal => SccpConstantEvalRule::None,
         OpCode::TypeGuard => SccpConstantEvalRule::None,
+        OpCode::IsInlineInt => SccpConstantEvalRule::None,
+        OpCode::UnboxInlineInt => SccpConstantEvalRule::None,
+        OpCode::IsBoolWord => SccpConstantEvalRule::None,
+        OpCode::UnboxBoolWord => SccpConstantEvalRule::None,
+        OpCode::IsFloatWord => SccpConstantEvalRule::None,
+        OpCode::UnboxFloatWord => SccpConstantEvalRule::None,
+        OpCode::BoxInlineInt => SccpConstantEvalRule::None,
+        OpCode::CodeIs => SccpConstantEvalRule::None,
+        OpCode::DirectCall => SccpConstantEvalRule::None,
+        OpCode::CallRuntime => SccpConstantEvalRule::None,
         OpCode::IncRef => SccpConstantEvalRule::None,
         OpCode::DecRef => SccpConstantEvalRule::None,
         OpCode::DelBoundary => SccpConstantEvalRule::None,
@@ -37403,6 +38204,7 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::Raise => SccpConstantEvalRule::None,
         OpCode::CheckException => SccpConstantEvalRule::None,
         OpCode::ExceptionPending => SccpConstantEvalRule::None,
+        OpCode::AsyncWorkPending => SccpConstantEvalRule::None,
         OpCode::FunctionDefaultsVersion => SccpConstantEvalRule::None,
         OpCode::TryStart => SccpConstantEvalRule::None,
         OpCode::TryEnd => SccpConstantEvalRule::None,
@@ -37437,6 +38239,142 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
     }
 }
 
+/// The predicate an opcode negates (`IsNot` negates `Is`), from the
+/// registry's `negated_predicates`. EXHAUSTIVE over OpCode so a new
+/// negating predicate cannot hide behind a hand-written default.
+#[inline]
+pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
+    match opcode {
+        OpCode::FrameSetLocation => None,
+        OpCode::Add => None,
+        OpCode::Sub => None,
+        OpCode::Mul => None,
+        OpCode::CheckedAdd => None,
+        OpCode::CheckedMul => None,
+        OpCode::InplaceAdd => None,
+        OpCode::InplaceSub => None,
+        OpCode::InplaceMul => None,
+        OpCode::Div => None,
+        OpCode::FloorDiv => None,
+        OpCode::Mod => None,
+        OpCode::Pow => None,
+        OpCode::Neg => None,
+        OpCode::Pos => None,
+        OpCode::Eq => None,
+        OpCode::Ne => Some(OpCode::Eq),
+        OpCode::Lt => None,
+        OpCode::Le => None,
+        OpCode::Gt => None,
+        OpCode::Ge => None,
+        OpCode::Is => None,
+        OpCode::IsNot => Some(OpCode::Is),
+        OpCode::In => None,
+        OpCode::NotIn => Some(OpCode::In),
+        OpCode::BitAnd => None,
+        OpCode::BitOr => None,
+        OpCode::BitXor => None,
+        OpCode::BitNot => None,
+        OpCode::Shl => None,
+        OpCode::Shr => None,
+        OpCode::And => None,
+        OpCode::Or => None,
+        OpCode::Not => Some(OpCode::Bool),
+        OpCode::Bool => None,
+        OpCode::Alloc => None,
+        OpCode::StackAlloc => None,
+        OpCode::ObjectNewBound => None,
+        OpCode::Free => None,
+        OpCode::LoadAttr => None,
+        OpCode::StoreAttr => None,
+        OpCode::DelAttr => None,
+        OpCode::Index => None,
+        OpCode::StoreIndex => None,
+        OpCode::DelIndex => None,
+        OpCode::DeleteVar => None,
+        OpCode::Call => None,
+        OpCode::CallMethod => None,
+        OpCode::LoadMethod => None,
+        OpCode::LoadSuperMethod => None,
+        OpCode::CallLoadedMethod => None,
+        OpCode::CallargsPushMethodReceiver => None,
+        OpCode::CallBuiltin => None,
+        OpCode::OrdAt => None,
+        OpCode::BoxVal => None,
+        OpCode::UnboxVal => None,
+        OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
+        OpCode::IncRef => None,
+        OpCode::DecRef => None,
+        OpCode::DelBoundary => None,
+        OpCode::BuildList => None,
+        OpCode::BuildDict => None,
+        OpCode::BuildTuple => None,
+        OpCode::BuildSet => None,
+        OpCode::BuildSlice => None,
+        OpCode::GetIter => None,
+        OpCode::IterNext => None,
+        OpCode::IterNextUnboxed => None,
+        OpCode::UnpackSequence => None,
+        OpCode::ForIter => None,
+        OpCode::AllocTask => None,
+        OpCode::StateSwitch => None,
+        OpCode::StateTransition => None,
+        OpCode::StateSet => None,
+        OpCode::IsPending => None,
+        OpCode::TaskWait => None,
+        OpCode::StateYield => None,
+        OpCode::ClosureLoad => None,
+        OpCode::FrameContextSet => None,
+        OpCode::ClosureStore => None,
+        OpCode::Yield => None,
+        OpCode::YieldFrom => None,
+        OpCode::Raise => None,
+        OpCode::CheckException => None,
+        OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
+        OpCode::FunctionDefaultsVersion => None,
+        OpCode::TryStart => None,
+        OpCode::TryEnd => None,
+        OpCode::StateBlockStart => None,
+        OpCode::StateBlockEnd => None,
+        OpCode::ModuleSlot => None,
+        OpCode::ConstInt => None,
+        OpCode::ConstBigInt => None,
+        OpCode::ConstFloat => None,
+        OpCode::ConstStr => None,
+        OpCode::ConstBool => None,
+        OpCode::ConstNone => None,
+        OpCode::ConstBytes => None,
+        OpCode::Copy => None,
+        OpCode::Import => None,
+        OpCode::ImportFrom => None,
+        OpCode::ModuleCacheGet => None,
+        OpCode::ModuleCacheSet => None,
+        OpCode::ModuleCacheDel => None,
+        OpCode::ModuleGetAttr => None,
+        OpCode::ModuleImportFrom => None,
+        OpCode::ModuleGetGlobal => None,
+        OpCode::ModuleGetName => None,
+        OpCode::ModuleSetAttr => None,
+        OpCode::ModuleDelGlobal => None,
+        OpCode::ModuleDelGlobalIfPresent => None,
+        OpCode::WarnStderr => None,
+        OpCode::ScfIf => None,
+        OpCode::ScfFor => None,
+        OpCode::ScfWhile => None,
+        OpCode::ScfYield => None,
+    }
+}
+
 /// Value-range transfer rule by opcode. This table owns opcode
 /// membership for modeled integer transfer functions; value_range.rs
 /// owns each rule's interval arithmetic semantics.
@@ -37448,6 +38386,7 @@ pub enum ValueRangeTransferRule {
     BitOr,
     BitXor,
     FloorDiv,
+    InlineIntPayload,
     Mod,
     ModuleSlot,
     Mul,
@@ -37519,6 +38458,16 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::BoxVal => ValueRangeTransferRule::None,
         OpCode::UnboxVal => ValueRangeTransferRule::None,
         OpCode::TypeGuard => ValueRangeTransferRule::None,
+        OpCode::IsInlineInt => ValueRangeTransferRule::None,
+        OpCode::UnboxInlineInt => ValueRangeTransferRule::InlineIntPayload,
+        OpCode::IsBoolWord => ValueRangeTransferRule::None,
+        OpCode::UnboxBoolWord => ValueRangeTransferRule::None,
+        OpCode::IsFloatWord => ValueRangeTransferRule::None,
+        OpCode::UnboxFloatWord => ValueRangeTransferRule::None,
+        OpCode::BoxInlineInt => ValueRangeTransferRule::None,
+        OpCode::CodeIs => ValueRangeTransferRule::None,
+        OpCode::DirectCall => ValueRangeTransferRule::None,
+        OpCode::CallRuntime => ValueRangeTransferRule::None,
         OpCode::IncRef => ValueRangeTransferRule::None,
         OpCode::DecRef => ValueRangeTransferRule::None,
         OpCode::DelBoundary => ValueRangeTransferRule::None,
@@ -37547,6 +38496,7 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::Raise => ValueRangeTransferRule::None,
         OpCode::CheckException => ValueRangeTransferRule::None,
         OpCode::ExceptionPending => ValueRangeTransferRule::None,
+        OpCode::AsyncWorkPending => ValueRangeTransferRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeTransferRule::None,
         OpCode::TryStart => ValueRangeTransferRule::None,
         OpCode::TryEnd => ValueRangeTransferRule::None,
@@ -37578,6 +38528,151 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::ScfFor => ValueRangeTransferRule::None,
         OpCode::ScfWhile => ValueRangeTransferRule::None,
         OpCode::ScfYield => ValueRangeTransferRule::None,
+    }
+}
+
+/// The fast arm the late lowering stage of TIR expands an op into (HF-821).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FastPathExpansionRule {
+    None,
+    GuardedCall,
+    NumericAdd,
+    NumericCompare,
+    NumericMul,
+    NumericSub,
+    Truthiness,
+}
+
+#[inline]
+pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansionRule {
+    match opcode {
+        OpCode::FrameSetLocation => FastPathExpansionRule::None,
+        OpCode::Add => FastPathExpansionRule::NumericAdd,
+        OpCode::Sub => FastPathExpansionRule::NumericSub,
+        OpCode::Mul => FastPathExpansionRule::NumericMul,
+        OpCode::CheckedAdd => FastPathExpansionRule::None,
+        OpCode::CheckedMul => FastPathExpansionRule::None,
+        OpCode::InplaceAdd => FastPathExpansionRule::NumericAdd,
+        OpCode::InplaceSub => FastPathExpansionRule::NumericSub,
+        OpCode::InplaceMul => FastPathExpansionRule::NumericMul,
+        OpCode::Div => FastPathExpansionRule::None,
+        OpCode::FloorDiv => FastPathExpansionRule::None,
+        OpCode::Mod => FastPathExpansionRule::None,
+        OpCode::Pow => FastPathExpansionRule::None,
+        OpCode::Neg => FastPathExpansionRule::None,
+        OpCode::Pos => FastPathExpansionRule::None,
+        OpCode::Eq => FastPathExpansionRule::NumericCompare,
+        OpCode::Ne => FastPathExpansionRule::NumericCompare,
+        OpCode::Lt => FastPathExpansionRule::NumericCompare,
+        OpCode::Le => FastPathExpansionRule::NumericCompare,
+        OpCode::Gt => FastPathExpansionRule::NumericCompare,
+        OpCode::Ge => FastPathExpansionRule::NumericCompare,
+        OpCode::Is => FastPathExpansionRule::None,
+        OpCode::IsNot => FastPathExpansionRule::None,
+        OpCode::In => FastPathExpansionRule::None,
+        OpCode::NotIn => FastPathExpansionRule::None,
+        OpCode::BitAnd => FastPathExpansionRule::None,
+        OpCode::BitOr => FastPathExpansionRule::None,
+        OpCode::BitXor => FastPathExpansionRule::None,
+        OpCode::BitNot => FastPathExpansionRule::None,
+        OpCode::Shl => FastPathExpansionRule::None,
+        OpCode::Shr => FastPathExpansionRule::None,
+        OpCode::And => FastPathExpansionRule::None,
+        OpCode::Or => FastPathExpansionRule::None,
+        OpCode::Not => FastPathExpansionRule::None,
+        OpCode::Bool => FastPathExpansionRule::Truthiness,
+        OpCode::Alloc => FastPathExpansionRule::None,
+        OpCode::StackAlloc => FastPathExpansionRule::None,
+        OpCode::ObjectNewBound => FastPathExpansionRule::None,
+        OpCode::Free => FastPathExpansionRule::None,
+        OpCode::LoadAttr => FastPathExpansionRule::None,
+        OpCode::StoreAttr => FastPathExpansionRule::None,
+        OpCode::DelAttr => FastPathExpansionRule::None,
+        OpCode::Index => FastPathExpansionRule::None,
+        OpCode::StoreIndex => FastPathExpansionRule::None,
+        OpCode::DelIndex => FastPathExpansionRule::None,
+        OpCode::DeleteVar => FastPathExpansionRule::None,
+        OpCode::Call => FastPathExpansionRule::GuardedCall,
+        OpCode::CallMethod => FastPathExpansionRule::None,
+        OpCode::LoadMethod => FastPathExpansionRule::None,
+        OpCode::LoadSuperMethod => FastPathExpansionRule::None,
+        OpCode::CallLoadedMethod => FastPathExpansionRule::None,
+        OpCode::CallargsPushMethodReceiver => FastPathExpansionRule::None,
+        OpCode::CallBuiltin => FastPathExpansionRule::None,
+        OpCode::OrdAt => FastPathExpansionRule::None,
+        OpCode::BoxVal => FastPathExpansionRule::None,
+        OpCode::UnboxVal => FastPathExpansionRule::None,
+        OpCode::TypeGuard => FastPathExpansionRule::None,
+        OpCode::IsInlineInt => FastPathExpansionRule::None,
+        OpCode::UnboxInlineInt => FastPathExpansionRule::None,
+        OpCode::IsBoolWord => FastPathExpansionRule::None,
+        OpCode::UnboxBoolWord => FastPathExpansionRule::None,
+        OpCode::IsFloatWord => FastPathExpansionRule::None,
+        OpCode::UnboxFloatWord => FastPathExpansionRule::None,
+        OpCode::BoxInlineInt => FastPathExpansionRule::None,
+        OpCode::CodeIs => FastPathExpansionRule::None,
+        OpCode::DirectCall => FastPathExpansionRule::None,
+        OpCode::CallRuntime => FastPathExpansionRule::None,
+        OpCode::IncRef => FastPathExpansionRule::None,
+        OpCode::DecRef => FastPathExpansionRule::None,
+        OpCode::DelBoundary => FastPathExpansionRule::None,
+        OpCode::BuildList => FastPathExpansionRule::None,
+        OpCode::BuildDict => FastPathExpansionRule::None,
+        OpCode::BuildTuple => FastPathExpansionRule::None,
+        OpCode::BuildSet => FastPathExpansionRule::None,
+        OpCode::BuildSlice => FastPathExpansionRule::None,
+        OpCode::GetIter => FastPathExpansionRule::None,
+        OpCode::IterNext => FastPathExpansionRule::None,
+        OpCode::IterNextUnboxed => FastPathExpansionRule::None,
+        OpCode::UnpackSequence => FastPathExpansionRule::None,
+        OpCode::ForIter => FastPathExpansionRule::None,
+        OpCode::AllocTask => FastPathExpansionRule::None,
+        OpCode::StateSwitch => FastPathExpansionRule::None,
+        OpCode::StateTransition => FastPathExpansionRule::None,
+        OpCode::StateSet => FastPathExpansionRule::None,
+        OpCode::IsPending => FastPathExpansionRule::None,
+        OpCode::TaskWait => FastPathExpansionRule::None,
+        OpCode::StateYield => FastPathExpansionRule::None,
+        OpCode::ClosureLoad => FastPathExpansionRule::None,
+        OpCode::FrameContextSet => FastPathExpansionRule::None,
+        OpCode::ClosureStore => FastPathExpansionRule::None,
+        OpCode::Yield => FastPathExpansionRule::None,
+        OpCode::YieldFrom => FastPathExpansionRule::None,
+        OpCode::Raise => FastPathExpansionRule::None,
+        OpCode::CheckException => FastPathExpansionRule::None,
+        OpCode::ExceptionPending => FastPathExpansionRule::None,
+        OpCode::AsyncWorkPending => FastPathExpansionRule::None,
+        OpCode::FunctionDefaultsVersion => FastPathExpansionRule::None,
+        OpCode::TryStart => FastPathExpansionRule::None,
+        OpCode::TryEnd => FastPathExpansionRule::None,
+        OpCode::StateBlockStart => FastPathExpansionRule::None,
+        OpCode::StateBlockEnd => FastPathExpansionRule::None,
+        OpCode::ModuleSlot => FastPathExpansionRule::None,
+        OpCode::ConstInt => FastPathExpansionRule::None,
+        OpCode::ConstBigInt => FastPathExpansionRule::None,
+        OpCode::ConstFloat => FastPathExpansionRule::None,
+        OpCode::ConstStr => FastPathExpansionRule::None,
+        OpCode::ConstBool => FastPathExpansionRule::None,
+        OpCode::ConstNone => FastPathExpansionRule::None,
+        OpCode::ConstBytes => FastPathExpansionRule::None,
+        OpCode::Copy => FastPathExpansionRule::None,
+        OpCode::Import => FastPathExpansionRule::None,
+        OpCode::ImportFrom => FastPathExpansionRule::None,
+        OpCode::ModuleCacheGet => FastPathExpansionRule::None,
+        OpCode::ModuleCacheSet => FastPathExpansionRule::None,
+        OpCode::ModuleCacheDel => FastPathExpansionRule::None,
+        OpCode::ModuleGetAttr => FastPathExpansionRule::None,
+        OpCode::ModuleImportFrom => FastPathExpansionRule::None,
+        OpCode::ModuleGetGlobal => FastPathExpansionRule::None,
+        OpCode::ModuleGetName => FastPathExpansionRule::None,
+        OpCode::ModuleSetAttr => FastPathExpansionRule::None,
+        OpCode::ModuleDelGlobal => FastPathExpansionRule::None,
+        OpCode::ModuleDelGlobalIfPresent => FastPathExpansionRule::None,
+        OpCode::WarnStderr => FastPathExpansionRule::None,
+        OpCode::ScfIf => FastPathExpansionRule::None,
+        OpCode::ScfFor => FastPathExpansionRule::None,
+        OpCode::ScfWhile => FastPathExpansionRule::None,
+        OpCode::ScfYield => FastPathExpansionRule::None,
     }
 }
 
@@ -37659,6 +38754,16 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::BoxVal => ValueRangeConstFoldRule::None,
         OpCode::UnboxVal => ValueRangeConstFoldRule::None,
         OpCode::TypeGuard => ValueRangeConstFoldRule::None,
+        OpCode::IsInlineInt => ValueRangeConstFoldRule::None,
+        OpCode::UnboxInlineInt => ValueRangeConstFoldRule::None,
+        OpCode::IsBoolWord => ValueRangeConstFoldRule::None,
+        OpCode::UnboxBoolWord => ValueRangeConstFoldRule::None,
+        OpCode::IsFloatWord => ValueRangeConstFoldRule::None,
+        OpCode::UnboxFloatWord => ValueRangeConstFoldRule::None,
+        OpCode::BoxInlineInt => ValueRangeConstFoldRule::None,
+        OpCode::CodeIs => ValueRangeConstFoldRule::None,
+        OpCode::DirectCall => ValueRangeConstFoldRule::None,
+        OpCode::CallRuntime => ValueRangeConstFoldRule::None,
         OpCode::IncRef => ValueRangeConstFoldRule::None,
         OpCode::DecRef => ValueRangeConstFoldRule::None,
         OpCode::DelBoundary => ValueRangeConstFoldRule::None,
@@ -37687,6 +38792,7 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::Raise => ValueRangeConstFoldRule::None,
         OpCode::CheckException => ValueRangeConstFoldRule::None,
         OpCode::ExceptionPending => ValueRangeConstFoldRule::None,
+        OpCode::AsyncWorkPending => ValueRangeConstFoldRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeConstFoldRule::None,
         OpCode::TryStart => ValueRangeConstFoldRule::None,
         OpCode::TryEnd => ValueRangeConstFoldRule::None,
@@ -37793,6 +38899,16 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::BoxVal => ValueRangeCondNarrowRule::None,
         OpCode::UnboxVal => ValueRangeCondNarrowRule::None,
         OpCode::TypeGuard => ValueRangeCondNarrowRule::None,
+        OpCode::IsInlineInt => ValueRangeCondNarrowRule::None,
+        OpCode::UnboxInlineInt => ValueRangeCondNarrowRule::None,
+        OpCode::IsBoolWord => ValueRangeCondNarrowRule::None,
+        OpCode::UnboxBoolWord => ValueRangeCondNarrowRule::None,
+        OpCode::IsFloatWord => ValueRangeCondNarrowRule::None,
+        OpCode::UnboxFloatWord => ValueRangeCondNarrowRule::None,
+        OpCode::BoxInlineInt => ValueRangeCondNarrowRule::None,
+        OpCode::CodeIs => ValueRangeCondNarrowRule::None,
+        OpCode::DirectCall => ValueRangeCondNarrowRule::None,
+        OpCode::CallRuntime => ValueRangeCondNarrowRule::None,
         OpCode::IncRef => ValueRangeCondNarrowRule::None,
         OpCode::DecRef => ValueRangeCondNarrowRule::None,
         OpCode::DelBoundary => ValueRangeCondNarrowRule::None,
@@ -37821,6 +38937,7 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::Raise => ValueRangeCondNarrowRule::None,
         OpCode::CheckException => ValueRangeCondNarrowRule::None,
         OpCode::ExceptionPending => ValueRangeCondNarrowRule::None,
+        OpCode::AsyncWorkPending => ValueRangeCondNarrowRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeCondNarrowRule::None,
         OpCode::TryStart => ValueRangeCondNarrowRule::None,
         OpCode::TryEnd => ValueRangeCondNarrowRule::None,
@@ -37931,6 +39048,16 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::BoxVal => ValueRangeContainerLengthRule::None,
         OpCode::UnboxVal => ValueRangeContainerLengthRule::None,
         OpCode::TypeGuard => ValueRangeContainerLengthRule::None,
+        OpCode::IsInlineInt => ValueRangeContainerLengthRule::None,
+        OpCode::UnboxInlineInt => ValueRangeContainerLengthRule::None,
+        OpCode::IsBoolWord => ValueRangeContainerLengthRule::None,
+        OpCode::UnboxBoolWord => ValueRangeContainerLengthRule::None,
+        OpCode::IsFloatWord => ValueRangeContainerLengthRule::None,
+        OpCode::UnboxFloatWord => ValueRangeContainerLengthRule::None,
+        OpCode::BoxInlineInt => ValueRangeContainerLengthRule::None,
+        OpCode::CodeIs => ValueRangeContainerLengthRule::None,
+        OpCode::DirectCall => ValueRangeContainerLengthRule::None,
+        OpCode::CallRuntime => ValueRangeContainerLengthRule::None,
         OpCode::IncRef => ValueRangeContainerLengthRule::None,
         OpCode::DecRef => ValueRangeContainerLengthRule::None,
         OpCode::DelBoundary => ValueRangeContainerLengthRule::None,
@@ -37959,6 +39086,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::Raise => ValueRangeContainerLengthRule::None,
         OpCode::CheckException => ValueRangeContainerLengthRule::None,
         OpCode::ExceptionPending => ValueRangeContainerLengthRule::None,
+        OpCode::AsyncWorkPending => ValueRangeContainerLengthRule::None,
         OpCode::FunctionDefaultsVersion => ValueRangeContainerLengthRule::None,
         OpCode::TryStart => ValueRangeContainerLengthRule::None,
         OpCode::TryEnd => ValueRangeContainerLengthRule::None,
@@ -38066,6 +39194,16 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::BoxVal => RangeDevirtRole::None,
         OpCode::UnboxVal => RangeDevirtRole::None,
         OpCode::TypeGuard => RangeDevirtRole::None,
+        OpCode::IsInlineInt => RangeDevirtRole::None,
+        OpCode::UnboxInlineInt => RangeDevirtRole::None,
+        OpCode::IsBoolWord => RangeDevirtRole::None,
+        OpCode::UnboxBoolWord => RangeDevirtRole::None,
+        OpCode::IsFloatWord => RangeDevirtRole::None,
+        OpCode::UnboxFloatWord => RangeDevirtRole::None,
+        OpCode::BoxInlineInt => RangeDevirtRole::None,
+        OpCode::CodeIs => RangeDevirtRole::None,
+        OpCode::DirectCall => RangeDevirtRole::None,
+        OpCode::CallRuntime => RangeDevirtRole::None,
         OpCode::IncRef => RangeDevirtRole::None,
         OpCode::DecRef => RangeDevirtRole::None,
         OpCode::DelBoundary => RangeDevirtRole::None,
@@ -38094,6 +39232,7 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::Raise => RangeDevirtRole::None,
         OpCode::CheckException => RangeDevirtRole::None,
         OpCode::ExceptionPending => RangeDevirtRole::None,
+        OpCode::AsyncWorkPending => RangeDevirtRole::None,
         OpCode::FunctionDefaultsVersion => RangeDevirtRole::None,
         OpCode::TryStart => RangeDevirtRole::None,
         OpCode::TryEnd => RangeDevirtRole::None,
@@ -38453,6 +39592,56 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
+        OpCode::IsInlineInt => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::UnboxInlineInt => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::IsBoolWord => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::UnboxBoolWord => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::IsFloatWord => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::UnboxFloatWord => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::BoxInlineInt => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::CodeIs => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::DirectCall => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::CallRuntime => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
         OpCode::IncRef => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
@@ -38589,6 +39778,11 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             annotation_target: false,
         },
         OpCode::ExceptionPending => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
+        OpCode::AsyncWorkPending => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
@@ -38825,6 +40019,16 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::BoxVal => LirVerifyRule::BoxValue,
         OpCode::UnboxVal => LirVerifyRule::UnboxValue,
         OpCode::TypeGuard => LirVerifyRule::None,
+        OpCode::IsInlineInt => LirVerifyRule::None,
+        OpCode::UnboxInlineInt => LirVerifyRule::None,
+        OpCode::IsBoolWord => LirVerifyRule::None,
+        OpCode::UnboxBoolWord => LirVerifyRule::None,
+        OpCode::IsFloatWord => LirVerifyRule::None,
+        OpCode::UnboxFloatWord => LirVerifyRule::None,
+        OpCode::BoxInlineInt => LirVerifyRule::None,
+        OpCode::CodeIs => LirVerifyRule::None,
+        OpCode::DirectCall => LirVerifyRule::None,
+        OpCode::CallRuntime => LirVerifyRule::None,
         OpCode::IncRef => LirVerifyRule::None,
         OpCode::DecRef => LirVerifyRule::None,
         OpCode::DelBoundary => LirVerifyRule::None,
@@ -38853,6 +40057,7 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::Raise => LirVerifyRule::None,
         OpCode::CheckException => LirVerifyRule::None,
         OpCode::ExceptionPending => LirVerifyRule::None,
+        OpCode::AsyncWorkPending => LirVerifyRule::None,
         OpCode::FunctionDefaultsVersion => LirVerifyRule::None,
         OpCode::TryStart => LirVerifyRule::None,
         OpCode::TryEnd => LirVerifyRule::None,
@@ -38895,6 +40100,7 @@ pub enum ReprRawI64FullDeoptSeedRule {
     None,
     CheckedResultZero,
     ConstIntNotInlineSafe,
+    ExactSumOfInlinePayloads,
 }
 
 /// Raw-i64 full-deopt seed role by opcode. EXHAUSTIVE over OpCode so new
@@ -38906,8 +40112,8 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
 ) -> ReprRawI64FullDeoptSeedRule {
     match opcode {
         OpCode::FrameSetLocation => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::Add => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::Sub => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::Add => ReprRawI64FullDeoptSeedRule::ExactSumOfInlinePayloads,
+        OpCode::Sub => ReprRawI64FullDeoptSeedRule::ExactSumOfInlinePayloads,
         OpCode::Mul => ReprRawI64FullDeoptSeedRule::None,
         OpCode::CheckedAdd => ReprRawI64FullDeoptSeedRule::CheckedResultZero,
         OpCode::CheckedMul => ReprRawI64FullDeoptSeedRule::CheckedResultZero,
@@ -38962,6 +40168,16 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::BoxVal => ReprRawI64FullDeoptSeedRule::None,
         OpCode::UnboxVal => ReprRawI64FullDeoptSeedRule::None,
         OpCode::TypeGuard => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::IsInlineInt => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::UnboxInlineInt => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::IsBoolWord => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::UnboxBoolWord => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::IsFloatWord => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::UnboxFloatWord => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::BoxInlineInt => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::CodeIs => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::DirectCall => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::CallRuntime => ReprRawI64FullDeoptSeedRule::None,
         OpCode::IncRef => ReprRawI64FullDeoptSeedRule::None,
         OpCode::DecRef => ReprRawI64FullDeoptSeedRule::None,
         OpCode::DelBoundary => ReprRawI64FullDeoptSeedRule::None,
@@ -38990,6 +40206,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::Raise => ReprRawI64FullDeoptSeedRule::None,
         OpCode::CheckException => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ExceptionPending => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::AsyncWorkPending => ReprRawI64FullDeoptSeedRule::None,
         OpCode::FunctionDefaultsVersion => ReprRawI64FullDeoptSeedRule::None,
         OpCode::TryStart => ReprRawI64FullDeoptSeedRule::None,
         OpCode::TryEnd => ReprRawI64FullDeoptSeedRule::None,
@@ -39103,6 +40320,16 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::BoxVal => ReprProjectableBoolResultRule::None,
         OpCode::UnboxVal => ReprProjectableBoolResultRule::None,
         OpCode::TypeGuard => ReprProjectableBoolResultRule::None,
+        OpCode::IsInlineInt => ReprProjectableBoolResultRule::None,
+        OpCode::UnboxInlineInt => ReprProjectableBoolResultRule::None,
+        OpCode::IsBoolWord => ReprProjectableBoolResultRule::None,
+        OpCode::UnboxBoolWord => ReprProjectableBoolResultRule::None,
+        OpCode::IsFloatWord => ReprProjectableBoolResultRule::None,
+        OpCode::UnboxFloatWord => ReprProjectableBoolResultRule::None,
+        OpCode::BoxInlineInt => ReprProjectableBoolResultRule::None,
+        OpCode::CodeIs => ReprProjectableBoolResultRule::None,
+        OpCode::DirectCall => ReprProjectableBoolResultRule::None,
+        OpCode::CallRuntime => ReprProjectableBoolResultRule::None,
         OpCode::IncRef => ReprProjectableBoolResultRule::None,
         OpCode::DecRef => ReprProjectableBoolResultRule::None,
         OpCode::DelBoundary => ReprProjectableBoolResultRule::None,
@@ -39131,6 +40358,7 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::Raise => ReprProjectableBoolResultRule::None,
         OpCode::CheckException => ReprProjectableBoolResultRule::None,
         OpCode::ExceptionPending => ReprProjectableBoolResultRule::Always,
+        OpCode::AsyncWorkPending => ReprProjectableBoolResultRule::Always,
         OpCode::FunctionDefaultsVersion => ReprProjectableBoolResultRule::None,
         OpCode::TryStart => ReprProjectableBoolResultRule::None,
         OpCode::TryEnd => ReprProjectableBoolResultRule::None,
@@ -39242,6 +40470,16 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::BoxVal => ReprProjectableFloatResultRule::None,
         OpCode::UnboxVal => ReprProjectableFloatResultRule::None,
         OpCode::TypeGuard => ReprProjectableFloatResultRule::None,
+        OpCode::IsInlineInt => ReprProjectableFloatResultRule::None,
+        OpCode::UnboxInlineInt => ReprProjectableFloatResultRule::None,
+        OpCode::IsBoolWord => ReprProjectableFloatResultRule::None,
+        OpCode::UnboxBoolWord => ReprProjectableFloatResultRule::None,
+        OpCode::IsFloatWord => ReprProjectableFloatResultRule::None,
+        OpCode::UnboxFloatWord => ReprProjectableFloatResultRule::None,
+        OpCode::BoxInlineInt => ReprProjectableFloatResultRule::None,
+        OpCode::CodeIs => ReprProjectableFloatResultRule::None,
+        OpCode::DirectCall => ReprProjectableFloatResultRule::None,
+        OpCode::CallRuntime => ReprProjectableFloatResultRule::None,
         OpCode::IncRef => ReprProjectableFloatResultRule::None,
         OpCode::DecRef => ReprProjectableFloatResultRule::None,
         OpCode::DelBoundary => ReprProjectableFloatResultRule::None,
@@ -39270,6 +40508,7 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::Raise => ReprProjectableFloatResultRule::None,
         OpCode::CheckException => ReprProjectableFloatResultRule::None,
         OpCode::ExceptionPending => ReprProjectableFloatResultRule::None,
+        OpCode::AsyncWorkPending => ReprProjectableFloatResultRule::None,
         OpCode::FunctionDefaultsVersion => ReprProjectableFloatResultRule::None,
         OpCode::TryStart => ReprProjectableFloatResultRule::None,
         OpCode::TryEnd => ReprProjectableFloatResultRule::None,
@@ -39404,6 +40643,16 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::BoxVal => CountedLoopComparisonRole::None,
         OpCode::UnboxVal => CountedLoopComparisonRole::None,
         OpCode::TypeGuard => CountedLoopComparisonRole::None,
+        OpCode::IsInlineInt => CountedLoopComparisonRole::None,
+        OpCode::UnboxInlineInt => CountedLoopComparisonRole::None,
+        OpCode::IsBoolWord => CountedLoopComparisonRole::None,
+        OpCode::UnboxBoolWord => CountedLoopComparisonRole::None,
+        OpCode::IsFloatWord => CountedLoopComparisonRole::None,
+        OpCode::UnboxFloatWord => CountedLoopComparisonRole::None,
+        OpCode::BoxInlineInt => CountedLoopComparisonRole::None,
+        OpCode::CodeIs => CountedLoopComparisonRole::None,
+        OpCode::DirectCall => CountedLoopComparisonRole::None,
+        OpCode::CallRuntime => CountedLoopComparisonRole::None,
         OpCode::IncRef => CountedLoopComparisonRole::None,
         OpCode::DecRef => CountedLoopComparisonRole::None,
         OpCode::DelBoundary => CountedLoopComparisonRole::None,
@@ -39432,6 +40681,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::Raise => CountedLoopComparisonRole::None,
         OpCode::CheckException => CountedLoopComparisonRole::None,
         OpCode::ExceptionPending => CountedLoopComparisonRole::None,
+        OpCode::AsyncWorkPending => CountedLoopComparisonRole::None,
         OpCode::FunctionDefaultsVersion => CountedLoopComparisonRole::None,
         OpCode::TryStart => CountedLoopComparisonRole::None,
         OpCode::TryEnd => CountedLoopComparisonRole::None,
@@ -39528,6 +40778,16 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
         OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => None,
         OpCode::DecRef => None,
         OpCode::DelBoundary => None,
@@ -39556,6 +40816,7 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -39592,8 +40853,8 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
 
 /// GVN numbering role by opcode. `Always` joins the scoped dominator
 /// value table directly; `TypeGated` requires primitive operand proof at
-/// the use site; `ValueKeyedConstant` receives same-block local value
-/// numbers only; `Never` is not numbered. EXHAUSTIVE over OpCode.
+/// the use site; `ValueKeyedConstant` uses exact payload identity and
+/// owned-literal admission; `Never` is not numbered. EXHAUSTIVE over OpCode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GvnNumberingRole {
     Never,
@@ -39672,6 +40933,16 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::BoxVal => GvnNumberingRole::Never,
         OpCode::UnboxVal => GvnNumberingRole::Always,
         OpCode::TypeGuard => GvnNumberingRole::TypeGated,
+        OpCode::IsInlineInt => GvnNumberingRole::Always,
+        OpCode::UnboxInlineInt => GvnNumberingRole::Always,
+        OpCode::IsBoolWord => GvnNumberingRole::Always,
+        OpCode::UnboxBoolWord => GvnNumberingRole::Always,
+        OpCode::IsFloatWord => GvnNumberingRole::Always,
+        OpCode::UnboxFloatWord => GvnNumberingRole::Always,
+        OpCode::BoxInlineInt => GvnNumberingRole::Always,
+        OpCode::CodeIs => GvnNumberingRole::Never,
+        OpCode::DirectCall => GvnNumberingRole::Never,
+        OpCode::CallRuntime => GvnNumberingRole::Never,
         OpCode::IncRef => GvnNumberingRole::Never,
         OpCode::DecRef => GvnNumberingRole::Never,
         OpCode::DelBoundary => GvnNumberingRole::Never,
@@ -39700,6 +40971,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::Raise => GvnNumberingRole::Never,
         OpCode::CheckException => GvnNumberingRole::Never,
         OpCode::ExceptionPending => GvnNumberingRole::Never,
+        OpCode::AsyncWorkPending => GvnNumberingRole::Never,
         OpCode::FunctionDefaultsVersion => GvnNumberingRole::Never,
         OpCode::TryStart => GvnNumberingRole::Never,
         OpCode::TryEnd => GvnNumberingRole::Never,
@@ -39829,6 +41101,16 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
             kind: GvnValueKeyKind::StrAttr,
             attrs: GVN_VALUE_KEY_ATTRS_TYPE_GUARD,
         }),
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => None,
         OpCode::DecRef => None,
         OpCode::DelBoundary => None,
@@ -39857,6 +41139,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -39976,6 +41259,16 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -40004,6 +41297,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -40102,6 +41396,16 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => true,
         OpCode::DecRef => true,
         OpCode::DelBoundary => true,
@@ -40130,6 +41434,7 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => true,
+        OpCode::AsyncWorkPending => true,
         OpCode::FunctionDefaultsVersion => true,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -40226,6 +41531,16 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => true,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -40254,6 +41569,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => false,
@@ -40351,6 +41667,16 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -40379,6 +41705,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -40476,6 +41803,16 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -40504,6 +41841,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -40601,6 +41939,16 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -40629,6 +41977,7 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -40760,6 +42109,16 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::BoxVal => RefcountBalanceRole::NotRefcountBalance,
         OpCode::UnboxVal => RefcountBalanceRole::NotRefcountBalance,
         OpCode::TypeGuard => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IsInlineInt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::UnboxInlineInt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IsBoolWord => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::UnboxBoolWord => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IsFloatWord => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::UnboxFloatWord => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BoxInlineInt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::CodeIs => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::DirectCall => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::CallRuntime => RefcountBalanceRole::NotRefcountBalance,
         OpCode::IncRef => RefcountBalanceRole::Increment,
         OpCode::DecRef => RefcountBalanceRole::Decrement,
         OpCode::DelBoundary => RefcountBalanceRole::NotRefcountBalance,
@@ -40788,6 +42147,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::Raise => RefcountBalanceRole::NotRefcountBalance,
         OpCode::CheckException => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ExceptionPending => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::AsyncWorkPending => RefcountBalanceRole::NotRefcountBalance,
         OpCode::FunctionDefaultsVersion => RefcountBalanceRole::NotRefcountBalance,
         OpCode::TryStart => RefcountBalanceRole::NotRefcountBalance,
         OpCode::TryEnd => RefcountBalanceRole::NotRefcountBalance,
@@ -40886,6 +42246,16 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -40914,6 +42284,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41011,6 +42382,16 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => true,
         OpCode::DecRef => true,
         OpCode::DelBoundary => false,
@@ -41039,6 +42420,7 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41158,6 +42540,16 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::BoxVal => GeneratorFusionPollRole::Neutral,
         OpCode::UnboxVal => GeneratorFusionPollRole::Neutral,
         OpCode::TypeGuard => GeneratorFusionPollRole::Neutral,
+        OpCode::IsInlineInt => GeneratorFusionPollRole::Neutral,
+        OpCode::UnboxInlineInt => GeneratorFusionPollRole::Neutral,
+        OpCode::IsBoolWord => GeneratorFusionPollRole::Neutral,
+        OpCode::UnboxBoolWord => GeneratorFusionPollRole::Neutral,
+        OpCode::IsFloatWord => GeneratorFusionPollRole::Neutral,
+        OpCode::UnboxFloatWord => GeneratorFusionPollRole::Neutral,
+        OpCode::BoxInlineInt => GeneratorFusionPollRole::Neutral,
+        OpCode::CodeIs => GeneratorFusionPollRole::Neutral,
+        OpCode::DirectCall => GeneratorFusionPollRole::Neutral,
+        OpCode::CallRuntime => GeneratorFusionPollRole::Neutral,
         OpCode::IncRef => GeneratorFusionPollRole::Neutral,
         OpCode::DecRef => GeneratorFusionPollRole::Neutral,
         OpCode::DelBoundary => GeneratorFusionPollRole::Neutral,
@@ -41186,6 +42578,7 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::Raise => GeneratorFusionPollRole::Neutral,
         OpCode::CheckException => GeneratorFusionPollRole::Neutral,
         OpCode::ExceptionPending => GeneratorFusionPollRole::Neutral,
+        OpCode::AsyncWorkPending => GeneratorFusionPollRole::Neutral,
         OpCode::FunctionDefaultsVersion => GeneratorFusionPollRole::Neutral,
         OpCode::TryStart => GeneratorFusionPollRole::Neutral,
         OpCode::TryEnd => GeneratorFusionPollRole::Neutral,
@@ -41293,6 +42686,16 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::BoxVal => GeneratorFusionIterUseRole::None,
         OpCode::UnboxVal => GeneratorFusionIterUseRole::None,
         OpCode::TypeGuard => GeneratorFusionIterUseRole::None,
+        OpCode::IsInlineInt => GeneratorFusionIterUseRole::None,
+        OpCode::UnboxInlineInt => GeneratorFusionIterUseRole::None,
+        OpCode::IsBoolWord => GeneratorFusionIterUseRole::None,
+        OpCode::UnboxBoolWord => GeneratorFusionIterUseRole::None,
+        OpCode::IsFloatWord => GeneratorFusionIterUseRole::None,
+        OpCode::UnboxFloatWord => GeneratorFusionIterUseRole::None,
+        OpCode::BoxInlineInt => GeneratorFusionIterUseRole::None,
+        OpCode::CodeIs => GeneratorFusionIterUseRole::None,
+        OpCode::DirectCall => GeneratorFusionIterUseRole::None,
+        OpCode::CallRuntime => GeneratorFusionIterUseRole::None,
         OpCode::IncRef => GeneratorFusionIterUseRole::None,
         OpCode::DecRef => GeneratorFusionIterUseRole::None,
         OpCode::DelBoundary => GeneratorFusionIterUseRole::None,
@@ -41321,6 +42724,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::Raise => GeneratorFusionIterUseRole::None,
         OpCode::CheckException => GeneratorFusionIterUseRole::None,
         OpCode::ExceptionPending => GeneratorFusionIterUseRole::None,
+        OpCode::AsyncWorkPending => GeneratorFusionIterUseRole::None,
         OpCode::FunctionDefaultsVersion => GeneratorFusionIterUseRole::None,
         OpCode::TryStart => GeneratorFusionIterUseRole::None,
         OpCode::TryEnd => GeneratorFusionIterUseRole::None,
@@ -41420,6 +42824,16 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -41448,6 +42862,7 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41545,6 +42960,16 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => true,
         OpCode::DelBoundary => false,
@@ -41573,6 +42998,7 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -41704,6 +43130,16 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::BoxVal => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::UnboxVal => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::TypeGuard => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::IsInlineInt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::UnboxInlineInt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::IsBoolWord => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::UnboxBoolWord => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::IsFloatWord => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::UnboxFloatWord => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::BoxInlineInt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::CodeIs => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::DirectCall => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::CallRuntime => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::IncRef => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::DecRef => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::DelBoundary => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -41732,6 +43168,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::Raise => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::CheckException => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ExceptionPending => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::AsyncWorkPending => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::FunctionDefaultsVersion => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::TryStart => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::TryEnd => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -41845,6 +43282,16 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::BoxVal => ModuleSlotAccessRole::None,
         OpCode::UnboxVal => ModuleSlotAccessRole::None,
         OpCode::TypeGuard => ModuleSlotAccessRole::None,
+        OpCode::IsInlineInt => ModuleSlotAccessRole::None,
+        OpCode::UnboxInlineInt => ModuleSlotAccessRole::None,
+        OpCode::IsBoolWord => ModuleSlotAccessRole::None,
+        OpCode::UnboxBoolWord => ModuleSlotAccessRole::None,
+        OpCode::IsFloatWord => ModuleSlotAccessRole::None,
+        OpCode::UnboxFloatWord => ModuleSlotAccessRole::None,
+        OpCode::BoxInlineInt => ModuleSlotAccessRole::None,
+        OpCode::CodeIs => ModuleSlotAccessRole::None,
+        OpCode::DirectCall => ModuleSlotAccessRole::None,
+        OpCode::CallRuntime => ModuleSlotAccessRole::None,
         OpCode::IncRef => ModuleSlotAccessRole::None,
         OpCode::DecRef => ModuleSlotAccessRole::None,
         OpCode::DelBoundary => ModuleSlotAccessRole::None,
@@ -41873,6 +43320,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::Raise => ModuleSlotAccessRole::None,
         OpCode::CheckException => ModuleSlotAccessRole::None,
         OpCode::ExceptionPending => ModuleSlotAccessRole::None,
+        OpCode::AsyncWorkPending => ModuleSlotAccessRole::None,
         OpCode::FunctionDefaultsVersion => ModuleSlotAccessRole::None,
         OpCode::TryStart => ModuleSlotAccessRole::None,
         OpCode::TryEnd => ModuleSlotAccessRole::None,
@@ -41894,7 +43342,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::ModuleCacheDel => ModuleSlotAccessRole::None,
         OpCode::ModuleGetAttr => ModuleSlotAccessRole::KeyedAttr,
         OpCode::ModuleImportFrom => ModuleSlotAccessRole::None,
-        OpCode::ModuleGetGlobal => ModuleSlotAccessRole::WildcardModuleDict,
+        OpCode::ModuleGetGlobal => ModuleSlotAccessRole::KeyedAttr,
         OpCode::ModuleGetName => ModuleSlotAccessRole::None,
         OpCode::ModuleSetAttr => ModuleSlotAccessRole::KeyedAttr,
         OpCode::ModuleDelGlobal => ModuleSlotAccessRole::WildcardModuleDict,
@@ -41980,6 +43428,16 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::BoxVal => BoxedAllocationLayoutRule::None,
         OpCode::UnboxVal => BoxedAllocationLayoutRule::None,
         OpCode::TypeGuard => BoxedAllocationLayoutRule::None,
+        OpCode::IsInlineInt => BoxedAllocationLayoutRule::None,
+        OpCode::UnboxInlineInt => BoxedAllocationLayoutRule::None,
+        OpCode::IsBoolWord => BoxedAllocationLayoutRule::None,
+        OpCode::UnboxBoolWord => BoxedAllocationLayoutRule::None,
+        OpCode::IsFloatWord => BoxedAllocationLayoutRule::None,
+        OpCode::UnboxFloatWord => BoxedAllocationLayoutRule::None,
+        OpCode::BoxInlineInt => BoxedAllocationLayoutRule::None,
+        OpCode::CodeIs => BoxedAllocationLayoutRule::None,
+        OpCode::DirectCall => BoxedAllocationLayoutRule::None,
+        OpCode::CallRuntime => BoxedAllocationLayoutRule::None,
         OpCode::IncRef => BoxedAllocationLayoutRule::None,
         OpCode::DecRef => BoxedAllocationLayoutRule::None,
         OpCode::DelBoundary => BoxedAllocationLayoutRule::None,
@@ -42008,6 +43466,7 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::Raise => BoxedAllocationLayoutRule::None,
         OpCode::CheckException => BoxedAllocationLayoutRule::None,
         OpCode::ExceptionPending => BoxedAllocationLayoutRule::None,
+        OpCode::AsyncWorkPending => BoxedAllocationLayoutRule::None,
         OpCode::FunctionDefaultsVersion => BoxedAllocationLayoutRule::None,
         OpCode::TryStart => BoxedAllocationLayoutRule::None,
         OpCode::TryEnd => BoxedAllocationLayoutRule::None,
@@ -42117,6 +43576,16 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::BoxVal => TirVerifyAttrRule::None,
         OpCode::UnboxVal => TirVerifyAttrRule::None,
         OpCode::TypeGuard => TirVerifyAttrRule::None,
+        OpCode::IsInlineInt => TirVerifyAttrRule::None,
+        OpCode::UnboxInlineInt => TirVerifyAttrRule::None,
+        OpCode::IsBoolWord => TirVerifyAttrRule::None,
+        OpCode::UnboxBoolWord => TirVerifyAttrRule::None,
+        OpCode::IsFloatWord => TirVerifyAttrRule::None,
+        OpCode::UnboxFloatWord => TirVerifyAttrRule::None,
+        OpCode::BoxInlineInt => TirVerifyAttrRule::None,
+        OpCode::CodeIs => TirVerifyAttrRule::None,
+        OpCode::DirectCall => TirVerifyAttrRule::None,
+        OpCode::CallRuntime => TirVerifyAttrRule::None,
         OpCode::IncRef => TirVerifyAttrRule::None,
         OpCode::DecRef => TirVerifyAttrRule::None,
         OpCode::DelBoundary => TirVerifyAttrRule::None,
@@ -42145,6 +43614,7 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::Raise => TirVerifyAttrRule::None,
         OpCode::CheckException => TirVerifyAttrRule::None,
         OpCode::ExceptionPending => TirVerifyAttrRule::None,
+        OpCode::AsyncWorkPending => TirVerifyAttrRule::None,
         OpCode::FunctionDefaultsVersion => TirVerifyAttrRule::None,
         OpCode::TryStart => TirVerifyAttrRule::None,
         OpCode::TryEnd => TirVerifyAttrRule::None,
@@ -42254,6 +43724,16 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::BoxVal => StrengthReductionRule::None,
         OpCode::UnboxVal => StrengthReductionRule::None,
         OpCode::TypeGuard => StrengthReductionRule::None,
+        OpCode::IsInlineInt => StrengthReductionRule::None,
+        OpCode::UnboxInlineInt => StrengthReductionRule::None,
+        OpCode::IsBoolWord => StrengthReductionRule::None,
+        OpCode::UnboxBoolWord => StrengthReductionRule::None,
+        OpCode::IsFloatWord => StrengthReductionRule::None,
+        OpCode::UnboxFloatWord => StrengthReductionRule::None,
+        OpCode::BoxInlineInt => StrengthReductionRule::None,
+        OpCode::CodeIs => StrengthReductionRule::None,
+        OpCode::DirectCall => StrengthReductionRule::None,
+        OpCode::CallRuntime => StrengthReductionRule::None,
         OpCode::IncRef => StrengthReductionRule::None,
         OpCode::DecRef => StrengthReductionRule::None,
         OpCode::DelBoundary => StrengthReductionRule::None,
@@ -42282,6 +43762,7 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::Raise => StrengthReductionRule::None,
         OpCode::CheckException => StrengthReductionRule::None,
         OpCode::ExceptionPending => StrengthReductionRule::None,
+        OpCode::AsyncWorkPending => StrengthReductionRule::None,
         OpCode::FunctionDefaultsVersion => StrengthReductionRule::None,
         OpCode::TryStart => StrengthReductionRule::None,
         OpCode::TryEnd => StrengthReductionRule::None,
@@ -42390,6 +43871,16 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::BoxVal => ScevExprRule::None,
         OpCode::UnboxVal => ScevExprRule::None,
         OpCode::TypeGuard => ScevExprRule::None,
+        OpCode::IsInlineInt => ScevExprRule::None,
+        OpCode::UnboxInlineInt => ScevExprRule::None,
+        OpCode::IsBoolWord => ScevExprRule::None,
+        OpCode::UnboxBoolWord => ScevExprRule::None,
+        OpCode::IsFloatWord => ScevExprRule::None,
+        OpCode::UnboxFloatWord => ScevExprRule::None,
+        OpCode::BoxInlineInt => ScevExprRule::None,
+        OpCode::CodeIs => ScevExprRule::None,
+        OpCode::DirectCall => ScevExprRule::None,
+        OpCode::CallRuntime => ScevExprRule::None,
         OpCode::IncRef => ScevExprRule::None,
         OpCode::DecRef => ScevExprRule::None,
         OpCode::DelBoundary => ScevExprRule::None,
@@ -42418,6 +43909,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::Raise => ScevExprRule::None,
         OpCode::CheckException => ScevExprRule::None,
         OpCode::ExceptionPending => ScevExprRule::None,
+        OpCode::AsyncWorkPending => ScevExprRule::None,
         OpCode::FunctionDefaultsVersion => ScevExprRule::None,
         OpCode::TryStart => ScevExprRule::None,
         OpCode::TryEnd => ScevExprRule::None,
@@ -42518,6 +44010,16 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -42546,6 +44048,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -42645,6 +44148,16 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -42673,6 +44186,7 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -42773,6 +44287,16 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -42801,6 +44325,7 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -42899,6 +44424,16 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -42927,6 +44462,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -43024,6 +44560,16 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -43052,6 +44598,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -43149,6 +44696,16 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -43177,6 +44734,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -43276,6 +44834,16 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -43304,6 +44872,7 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -43401,6 +44970,16 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -43429,134 +45008,7 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
-        OpCode::FunctionDefaultsVersion => false,
-        OpCode::TryStart => false,
-        OpCode::TryEnd => false,
-        OpCode::StateBlockStart => false,
-        OpCode::StateBlockEnd => false,
-        OpCode::ModuleSlot => false,
-        OpCode::ConstInt => false,
-        OpCode::ConstBigInt => false,
-        OpCode::ConstFloat => false,
-        OpCode::ConstStr => false,
-        OpCode::ConstBool => false,
-        OpCode::ConstNone => false,
-        OpCode::ConstBytes => false,
-        OpCode::Copy => false,
-        OpCode::Import => false,
-        OpCode::ImportFrom => false,
-        OpCode::ModuleCacheGet => false,
-        OpCode::ModuleCacheSet => false,
-        OpCode::ModuleCacheDel => false,
-        OpCode::ModuleGetAttr => false,
-        OpCode::ModuleImportFrom => false,
-        OpCode::ModuleGetGlobal => false,
-        OpCode::ModuleGetName => false,
-        OpCode::ModuleSetAttr => false,
-        OpCode::ModuleDelGlobal => false,
-        OpCode::ModuleDelGlobalIfPresent => false,
-        OpCode::WarnStderr => false,
-        OpCode::ScfIf => false,
-        OpCode::ScfFor => false,
-        OpCode::ScfWhile => false,
-        OpCode::ScfYield => false,
-    }
-}
-
-/// Whether a first-class opcode's boxed arithmetic runtime fallback must
-/// dispatch through `molt_inplace_*`, trying `__i<op>__` before the binary
-/// / reflected dunder chain. Preserved-Copy `inplace_*` spellings are
-/// wire facts carried by typed `origin`; this table owns OpCode facts.
-/// EXHAUSTIVE over OpCode so augmented-assignment dunder routing cannot
-/// drift behind newly added first-class in-place opcodes.
-#[inline]
-pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool {
-    match opcode {
-        OpCode::FrameSetLocation => false,
-        OpCode::Add => false,
-        OpCode::Sub => false,
-        OpCode::Mul => false,
-        OpCode::CheckedAdd => false,
-        OpCode::CheckedMul => false,
-        OpCode::InplaceAdd => true,
-        OpCode::InplaceSub => true,
-        OpCode::InplaceMul => true,
-        OpCode::Div => false,
-        OpCode::FloorDiv => false,
-        OpCode::Mod => false,
-        OpCode::Pow => false,
-        OpCode::Neg => false,
-        OpCode::Pos => false,
-        OpCode::Eq => false,
-        OpCode::Ne => false,
-        OpCode::Lt => false,
-        OpCode::Le => false,
-        OpCode::Gt => false,
-        OpCode::Ge => false,
-        OpCode::Is => false,
-        OpCode::IsNot => false,
-        OpCode::In => false,
-        OpCode::NotIn => false,
-        OpCode::BitAnd => false,
-        OpCode::BitOr => false,
-        OpCode::BitXor => false,
-        OpCode::BitNot => false,
-        OpCode::Shl => false,
-        OpCode::Shr => false,
-        OpCode::And => false,
-        OpCode::Or => false,
-        OpCode::Not => false,
-        OpCode::Bool => false,
-        OpCode::Alloc => false,
-        OpCode::StackAlloc => false,
-        OpCode::ObjectNewBound => false,
-        OpCode::Free => false,
-        OpCode::LoadAttr => false,
-        OpCode::StoreAttr => false,
-        OpCode::DelAttr => false,
-        OpCode::Index => false,
-        OpCode::StoreIndex => false,
-        OpCode::DelIndex => false,
-        OpCode::DeleteVar => false,
-        OpCode::Call => false,
-        OpCode::CallMethod => false,
-        OpCode::LoadMethod => false,
-        OpCode::LoadSuperMethod => false,
-        OpCode::CallLoadedMethod => false,
-        OpCode::CallargsPushMethodReceiver => false,
-        OpCode::CallBuiltin => false,
-        OpCode::OrdAt => false,
-        OpCode::BoxVal => false,
-        OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
-        OpCode::IncRef => false,
-        OpCode::DecRef => false,
-        OpCode::DelBoundary => false,
-        OpCode::BuildList => false,
-        OpCode::BuildDict => false,
-        OpCode::BuildTuple => false,
-        OpCode::BuildSet => false,
-        OpCode::BuildSlice => false,
-        OpCode::GetIter => false,
-        OpCode::IterNext => false,
-        OpCode::IterNextUnboxed => false,
-        OpCode::UnpackSequence => false,
-        OpCode::ForIter => false,
-        OpCode::AllocTask => false,
-        OpCode::StateSwitch => false,
-        OpCode::StateTransition => false,
-        OpCode::StateSet => false,
-        OpCode::IsPending => false,
-        OpCode::TaskWait => false,
-        OpCode::StateYield => false,
-        OpCode::ClosureLoad => false,
-        OpCode::FrameContextSet => false,
-        OpCode::ClosureStore => false,
-        OpCode::Yield => false,
-        OpCode::YieldFrom => false,
-        OpCode::Raise => false,
-        OpCode::CheckException => false,
-        OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -43656,6 +45108,16 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -43684,6 +45146,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -43781,6 +45244,16 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -43809,6 +45282,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -43906,6 +45380,16 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -43934,6 +45418,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
@@ -44031,6 +45516,16 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -44059,6 +45554,7 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => true,
         OpCode::TryEnd => false,
@@ -44163,6 +45659,16 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::BoxVal => ExceptionRegionNestingRole::None,
         OpCode::UnboxVal => ExceptionRegionNestingRole::None,
         OpCode::TypeGuard => ExceptionRegionNestingRole::None,
+        OpCode::IsInlineInt => ExceptionRegionNestingRole::None,
+        OpCode::UnboxInlineInt => ExceptionRegionNestingRole::None,
+        OpCode::IsBoolWord => ExceptionRegionNestingRole::None,
+        OpCode::UnboxBoolWord => ExceptionRegionNestingRole::None,
+        OpCode::IsFloatWord => ExceptionRegionNestingRole::None,
+        OpCode::UnboxFloatWord => ExceptionRegionNestingRole::None,
+        OpCode::BoxInlineInt => ExceptionRegionNestingRole::None,
+        OpCode::CodeIs => ExceptionRegionNestingRole::None,
+        OpCode::DirectCall => ExceptionRegionNestingRole::None,
+        OpCode::CallRuntime => ExceptionRegionNestingRole::None,
         OpCode::IncRef => ExceptionRegionNestingRole::None,
         OpCode::DecRef => ExceptionRegionNestingRole::None,
         OpCode::DelBoundary => ExceptionRegionNestingRole::None,
@@ -44191,6 +45697,7 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::Raise => ExceptionRegionNestingRole::None,
         OpCode::CheckException => ExceptionRegionNestingRole::None,
         OpCode::ExceptionPending => ExceptionRegionNestingRole::None,
+        OpCode::AsyncWorkPending => ExceptionRegionNestingRole::None,
         OpCode::FunctionDefaultsVersion => ExceptionRegionNestingRole::None,
         OpCode::TryStart => ExceptionRegionNestingRole::Enter,
         OpCode::TryEnd => ExceptionRegionNestingRole::Exit,
@@ -44295,6 +45802,16 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::BoxVal => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::UnboxVal => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::TypeGuard => AliasTransparentAliasRole::TypeGuard,
+        OpCode::IsInlineInt => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::UnboxInlineInt => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::IsBoolWord => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::UnboxBoolWord => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::IsFloatWord => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::UnboxFloatWord => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::BoxInlineInt => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::CodeIs => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::DirectCall => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::CallRuntime => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::IncRef => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::DecRef => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::DelBoundary => AliasTransparentAliasRole::NotTransparentAlias,
@@ -44323,6 +45840,7 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::Raise => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::CheckException => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ExceptionPending => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::AsyncWorkPending => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::FunctionDefaultsVersion => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::TryStart => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::TryEnd => AliasTransparentAliasRole::NotTransparentAlias,
@@ -44375,7 +45893,7 @@ pub enum AliasMemoryRegionClass {
 #[inline]
 pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClass {
     match opcode {
-        OpCode::FrameSetLocation => AliasMemoryRegionClass::GenericHeap,
+        OpCode::FrameSetLocation => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Add => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Sub => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Mul => AliasMemoryRegionClass::ScalarRegister,
@@ -44432,6 +45950,16 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::BoxVal => AliasMemoryRegionClass::ScalarRegister,
         OpCode::UnboxVal => AliasMemoryRegionClass::ScalarRegister,
         OpCode::TypeGuard => AliasMemoryRegionClass::ScalarRegister,
+        OpCode::IsInlineInt => AliasMemoryRegionClass::GenericHeap,
+        OpCode::UnboxInlineInt => AliasMemoryRegionClass::GenericHeap,
+        OpCode::IsBoolWord => AliasMemoryRegionClass::GenericHeap,
+        OpCode::UnboxBoolWord => AliasMemoryRegionClass::GenericHeap,
+        OpCode::IsFloatWord => AliasMemoryRegionClass::GenericHeap,
+        OpCode::UnboxFloatWord => AliasMemoryRegionClass::GenericHeap,
+        OpCode::BoxInlineInt => AliasMemoryRegionClass::GenericHeap,
+        OpCode::CodeIs => AliasMemoryRegionClass::GenericHeap,
+        OpCode::DirectCall => AliasMemoryRegionClass::GenericHeap,
+        OpCode::CallRuntime => AliasMemoryRegionClass::GenericHeap,
         OpCode::IncRef => AliasMemoryRegionClass::GenericHeap,
         OpCode::DecRef => AliasMemoryRegionClass::GenericHeap,
         OpCode::DelBoundary => AliasMemoryRegionClass::GenericHeap,
@@ -44460,6 +45988,7 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::Raise => AliasMemoryRegionClass::GenericHeap,
         OpCode::CheckException => AliasMemoryRegionClass::ScalarRegister,
         OpCode::ExceptionPending => AliasMemoryRegionClass::ScalarRegister,
+        OpCode::AsyncWorkPending => AliasMemoryRegionClass::ScalarRegister,
         OpCode::FunctionDefaultsVersion => AliasMemoryRegionClass::ScalarRegister,
         OpCode::TryStart => AliasMemoryRegionClass::GenericHeap,
         OpCode::TryEnd => AliasMemoryRegionClass::GenericHeap,
@@ -44568,6 +46097,16 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::BoxVal => AliasSlotObservation::ConservativeObserver,
         OpCode::UnboxVal => AliasSlotObservation::ConservativeObserver,
         OpCode::TypeGuard => AliasSlotObservation::TransparentAlias,
+        OpCode::IsInlineInt => AliasSlotObservation::ConservativeObserver,
+        OpCode::UnboxInlineInt => AliasSlotObservation::ConservativeObserver,
+        OpCode::IsBoolWord => AliasSlotObservation::ConservativeObserver,
+        OpCode::UnboxBoolWord => AliasSlotObservation::ConservativeObserver,
+        OpCode::IsFloatWord => AliasSlotObservation::ConservativeObserver,
+        OpCode::UnboxFloatWord => AliasSlotObservation::ConservativeObserver,
+        OpCode::BoxInlineInt => AliasSlotObservation::ConservativeObserver,
+        OpCode::CodeIs => AliasSlotObservation::ConservativeObserver,
+        OpCode::DirectCall => AliasSlotObservation::DirectObserver,
+        OpCode::CallRuntime => AliasSlotObservation::ConservativeObserver,
         OpCode::IncRef => AliasSlotObservation::NeverObserver,
         OpCode::DecRef => AliasSlotObservation::NeverObserver,
         OpCode::DelBoundary => AliasSlotObservation::ConservativeObserver,
@@ -44596,6 +46135,7 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::Raise => AliasSlotObservation::DirectObserver,
         OpCode::CheckException => AliasSlotObservation::NeverObserver,
         OpCode::ExceptionPending => AliasSlotObservation::ConservativeObserver,
+        OpCode::AsyncWorkPending => AliasSlotObservation::ConservativeObserver,
         OpCode::FunctionDefaultsVersion => AliasSlotObservation::ConservativeObserver,
         OpCode::TryStart => AliasSlotObservation::ConservativeObserver,
         OpCode::TryEnd => AliasSlotObservation::ConservativeObserver,
@@ -44759,6 +46299,16 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
             type_guard: true,
             ..PASS_DELTA_OPCODE_FACTS_NONE
         },
+        OpCode::IsInlineInt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::UnboxInlineInt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::IsBoolWord => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::UnboxBoolWord => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::IsFloatWord => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::UnboxFloatWord => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BoxInlineInt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::CodeIs => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::DirectCall => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::CallRuntime => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::IncRef => PassDeltaOpcodeFacts {
             rc_event: true,
             inc_ref: true,
@@ -44808,6 +46358,7 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
             exception_event: true,
             ..PASS_DELTA_OPCODE_FACTS_NONE
         },
+        OpCode::AsyncWorkPending => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::FunctionDefaultsVersion => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::TryStart => PassDeltaOpcodeFacts {
             exception_event: true,
@@ -44933,6 +46484,16 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
         OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => None,
         OpCode::DecRef => None,
         OpCode::DelBoundary => None,
@@ -44961,6 +46522,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -45084,6 +46646,16 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
         OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => None,
         OpCode::DecRef => None,
         OpCode::DelBoundary => None,
@@ -45112,6 +46684,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -45208,6 +46781,16 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
         OpCode::TypeGuard => None,
+        OpCode::IsInlineInt => None,
+        OpCode::UnboxInlineInt => None,
+        OpCode::IsBoolWord => None,
+        OpCode::UnboxBoolWord => None,
+        OpCode::IsFloatWord => None,
+        OpCode::UnboxFloatWord => None,
+        OpCode::BoxInlineInt => None,
+        OpCode::CodeIs => None,
+        OpCode::DirectCall => None,
+        OpCode::CallRuntime => None,
         OpCode::IncRef => None,
         OpCode::DecRef => None,
         OpCode::DelBoundary => None,
@@ -45236,6 +46819,7 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::Raise => None,
         OpCode::CheckException => None,
         OpCode::ExceptionPending => None,
+        OpCode::AsyncWorkPending => None,
         OpCode::FunctionDefaultsVersion => None,
         OpCode::TryStart => None,
         OpCode::TryEnd => None,
@@ -45624,6 +47208,16 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::BoxVal => &[],
         OpCode::UnboxVal => &[],
         OpCode::TypeGuard => &[],
+        OpCode::IsInlineInt => &[],
+        OpCode::UnboxInlineInt => &[],
+        OpCode::IsBoolWord => &[],
+        OpCode::UnboxBoolWord => &[],
+        OpCode::IsFloatWord => &[],
+        OpCode::UnboxFloatWord => &[],
+        OpCode::BoxInlineInt => &[],
+        OpCode::CodeIs => &[],
+        OpCode::DirectCall => &[],
+        OpCode::CallRuntime => &[],
         OpCode::IncRef => &[],
         OpCode::DecRef => &[],
         OpCode::DelBoundary => &[],
@@ -45652,6 +47246,7 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::Raise => &[],
         OpCode::CheckException => &[],
         OpCode::ExceptionPending => &[],
+        OpCode::AsyncWorkPending => &[],
         OpCode::FunctionDefaultsVersion => &[],
         OpCode::TryStart => &[],
         OpCode::TryEnd => &[],
@@ -45842,6 +47437,16 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::BoxVal => OperandOwnership::Borrowed,
         OpCode::UnboxVal => OperandOwnership::Borrowed,
         OpCode::TypeGuard => OperandOwnership::Borrowed,
+        OpCode::IsInlineInt => OperandOwnership::Borrowed,
+        OpCode::UnboxInlineInt => OperandOwnership::Borrowed,
+        OpCode::IsBoolWord => OperandOwnership::Borrowed,
+        OpCode::UnboxBoolWord => OperandOwnership::Borrowed,
+        OpCode::IsFloatWord => OperandOwnership::Borrowed,
+        OpCode::UnboxFloatWord => OperandOwnership::Borrowed,
+        OpCode::BoxInlineInt => OperandOwnership::Borrowed,
+        OpCode::CodeIs => OperandOwnership::Borrowed,
+        OpCode::DirectCall => OperandOwnership::Borrowed,
+        OpCode::CallRuntime => OperandOwnership::Borrowed,
         OpCode::IncRef => OperandOwnership::Borrowed,
         OpCode::DecRef => OperandOwnership::Consumed,
         OpCode::DelBoundary => OperandOwnership::Borrowed,
@@ -45870,6 +47475,7 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::Raise => OperandOwnership::Borrowed,
         OpCode::CheckException => OperandOwnership::Borrowed,
         OpCode::ExceptionPending => OperandOwnership::Borrowed,
+        OpCode::AsyncWorkPending => OperandOwnership::Borrowed,
         OpCode::FunctionDefaultsVersion => OperandOwnership::Borrowed,
         OpCode::TryStart => OperandOwnership::Borrowed,
         OpCode::TryEnd => OperandOwnership::Borrowed,
@@ -45942,6 +47548,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -46477,6 +48084,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -47015,6 +48623,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -47553,6 +49162,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -48135,6 +49745,16 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
         OpCode::TypeGuard => false,
+        OpCode::IsInlineInt => false,
+        OpCode::UnboxInlineInt => false,
+        OpCode::IsBoolWord => false,
+        OpCode::UnboxBoolWord => false,
+        OpCode::IsFloatWord => false,
+        OpCode::UnboxFloatWord => false,
+        OpCode::BoxInlineInt => false,
+        OpCode::CodeIs => false,
+        OpCode::DirectCall => false,
+        OpCode::CallRuntime => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
         OpCode::DelBoundary => false,
@@ -48163,6 +49783,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::Raise => false,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::AsyncWorkPending => false,
         OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
@@ -48229,6 +49850,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -48768,6 +50390,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -49309,6 +50932,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::AsciiFromObj
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPending
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
@@ -49899,6 +51523,16 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::BoxVal => ResultValidity::AlwaysValid,
         OpCode::UnboxVal => ResultValidity::AlwaysValid,
         OpCode::TypeGuard => ResultValidity::AlwaysValid,
+        OpCode::IsInlineInt => ResultValidity::AlwaysValid,
+        OpCode::UnboxInlineInt => ResultValidity::AlwaysValid,
+        OpCode::IsBoolWord => ResultValidity::AlwaysValid,
+        OpCode::UnboxBoolWord => ResultValidity::AlwaysValid,
+        OpCode::IsFloatWord => ResultValidity::AlwaysValid,
+        OpCode::UnboxFloatWord => ResultValidity::AlwaysValid,
+        OpCode::BoxInlineInt => ResultValidity::AlwaysValid,
+        OpCode::CodeIs => ResultValidity::AlwaysValid,
+        OpCode::DirectCall => ResultValidity::AlwaysValid,
+        OpCode::CallRuntime => ResultValidity::AlwaysValid,
         OpCode::IncRef => ResultValidity::AlwaysValid,
         OpCode::DecRef => ResultValidity::AlwaysValid,
         OpCode::DelBoundary => ResultValidity::AlwaysValid,
@@ -49930,6 +51564,7 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::Raise => ResultValidity::AlwaysValid,
         OpCode::CheckException => ResultValidity::AlwaysValid,
         OpCode::ExceptionPending => ResultValidity::AlwaysValid,
+        OpCode::AsyncWorkPending => ResultValidity::AlwaysValid,
         OpCode::FunctionDefaultsVersion => ResultValidity::AlwaysValid,
         OpCode::TryStart => ResultValidity::AlwaysValid,
         OpCode::TryEnd => ResultValidity::AlwaysValid,
@@ -50051,6 +51686,16 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::BoxVal => ExplicitReleaseOperands::None,
         OpCode::UnboxVal => ExplicitReleaseOperands::None,
         OpCode::TypeGuard => ExplicitReleaseOperands::None,
+        OpCode::IsInlineInt => ExplicitReleaseOperands::None,
+        OpCode::UnboxInlineInt => ExplicitReleaseOperands::None,
+        OpCode::IsBoolWord => ExplicitReleaseOperands::None,
+        OpCode::UnboxBoolWord => ExplicitReleaseOperands::None,
+        OpCode::IsFloatWord => ExplicitReleaseOperands::None,
+        OpCode::UnboxFloatWord => ExplicitReleaseOperands::None,
+        OpCode::BoxInlineInt => ExplicitReleaseOperands::None,
+        OpCode::CodeIs => ExplicitReleaseOperands::None,
+        OpCode::DirectCall => ExplicitReleaseOperands::None,
+        OpCode::CallRuntime => ExplicitReleaseOperands::None,
         OpCode::IncRef => ExplicitReleaseOperands::None,
         OpCode::DecRef => ExplicitReleaseOperands::All,
         OpCode::DelBoundary => ExplicitReleaseOperands::All,
@@ -50079,6 +51724,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::Raise => ExplicitReleaseOperands::None,
         OpCode::CheckException => ExplicitReleaseOperands::None,
         OpCode::ExceptionPending => ExplicitReleaseOperands::None,
+        OpCode::AsyncWorkPending => ExplicitReleaseOperands::None,
         OpCode::FunctionDefaultsVersion => ExplicitReleaseOperands::None,
         OpCode::TryStart => ExplicitReleaseOperands::None,
         OpCode::TryEnd => ExplicitReleaseOperands::None,
@@ -50193,7 +51839,11 @@ pub fn terminator_operand_is_transferred(kind: TerminatorKind, category: Operand
 pub mod runtime_calls {
     // @generated by tools/gen_op_kinds.py; DO NOT EDIT.
     // Op identity: tir/op_kinds.toml; function ABI: wasm_abi_manifest.toml.
-    use crate::{OpKind, runtime_boxed_abi_generated::RuntimeFn, tir::target_info::TargetKind};
+    use crate::{
+        OpKind,
+        runtime_fn_generated::{RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn},
+        tir::target_info::TargetKind,
+    };
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum RuntimeCall {
         DictSet,
@@ -50247,6 +51897,19 @@ pub mod runtime_calls {
                 Self::Iter => RuntimeFn::IterChecked,
             }
         }
+        /// The boxed call this op lowers to; every runtime-call row names a boxed function.
+        pub const fn boxed_abi(self) -> RuntimeBoxedAbi {
+            match self {
+                Self::DictSet => RuntimeBoxedAbi {
+                    function: RuntimeFn::DictSet,
+                    result: RuntimeBoxedReturn::BorrowedValue,
+                },
+                Self::Iter => RuntimeBoxedAbi {
+                    function: RuntimeFn::IterChecked,
+                    result: RuntimeBoxedReturn::OwnedValue,
+                },
+            }
+        }
         /// Explicit references to the canonical effect matrix, never inert Copy.
         pub fn effects(self) -> crate::tir::op_kinds_generated::OpcodeEffects {
             use crate::tir::{op_kinds_generated::opcode_effects_table, ops::OpCode};
@@ -50263,7 +51926,7 @@ pub mod runtime_calls {
         }
         /// Boxed entrypoints borrow operands; the result ABI owns its refinement.
         pub fn argument_ownership(self, index: usize) -> RuntimeArgumentOwnership {
-            assert!(index < self.function().boxed_abi().arity);
+            assert!(index < self.boxed_abi().arity());
             RuntimeArgumentOwnership::Borrowed
         }
         pub const fn realization(self, target: TargetKind) -> RuntimeCallRealization {

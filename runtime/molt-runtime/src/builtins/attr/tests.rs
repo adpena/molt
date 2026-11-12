@@ -16,7 +16,7 @@ fn ordinary_missing_observation_needs_no_allocation() {
     crate::with_gil_entry_nopanic!(py, {
         let name = crate::NameId::DunderDeepcopy.bits(py);
         let class_name = crate::dynamic_attr_name_bits(py, b"AllocationFreeLookup").unwrap();
-        let class = crate::molt_class_new(class_name);
+        let class = crate::molt_class_new_attached_body(py, class_name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         unsafe { crate::object::class_finish_definition(py, class_ptr).unwrap() };
         let instance = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
@@ -59,7 +59,11 @@ fn ordinary_missing_observation_needs_no_allocation() {
             #[cfg(feature = "stdlib_http")]
             {
                 assert_eq!(
-                    crate::http_bridge::__molt_http_lookup_attribute(receiver, name),
+                    crate::http_bridge::__molt_http_lookup_attribute(
+                        py.attached_context(),
+                        receiver,
+                        name
+                    ),
                     super::AttributeLookup::Missing
                 );
                 assert_eq!(
@@ -75,7 +79,11 @@ fn ordinary_missing_observation_needs_no_allocation() {
             #[cfg(feature = "molt_gpu_primitives")]
             {
                 assert_eq!(
-                    crate::gpu_bridge::__molt_gpu_lookup_attribute(receiver, name),
+                    crate::gpu_bridge::__molt_gpu_lookup_attribute(
+                        py.attached_context(),
+                        receiver,
+                        name
+                    ),
                     super::AttributeLookup::Missing
                 );
                 assert!(!crate::exception_pending(py));
@@ -98,7 +106,7 @@ fn physical_slot_declaration_survives_public_rebind_mutation_and_iterator_exhaus
             let dict = crate::dynamic_attr_name_bits(_py, b"__dict__").unwrap();
             let weakref = crate::dynamic_attr_name_bits(_py, b"__weakref__").unwrap();
             let slots = crate::dynamic_attr_name_bits(_py, b"__slots__").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(_py, name);
             let ptr = obj_from_bits(class).as_ptr().unwrap();
             let declaration = match kind {
                 0 => {
@@ -111,12 +119,12 @@ fn physical_slot_declaration_survives_public_rebind_mutation_and_iterator_exhaus
                     let tuple =
                         MoltObject::from_ptr(crate::alloc_tuple(_py, &[field, dict, weakref]))
                             .bits();
-                    let iterator = crate::molt_iter(tuple);
+                    let iterator = crate::molt_iter_attached_body(_py, tuple);
                     dec_ref_bits(_py, tuple);
                     iterator
                 }
             };
-            crate::molt_set_attr_name(class, slots, declaration);
+            crate::molt_set_attr_name_attached_body(_py, class, slots, declaration);
             unsafe {
                 crate::object::class_finish_definition(_py, ptr).expect("seal valid slots");
                 let offset = super::class_own_slot_field_offset(_py, ptr, field).unwrap();
@@ -138,10 +146,10 @@ fn physical_slot_declaration_survives_public_rebind_mutation_and_iterator_exhaus
                 crate::object::class_finish_definition(_py, ptr).expect("seal valid slots");
                 crate::object::class_finish_definition(_py, ptr).expect("seal valid slots");
                 if kind == 2 {
-                    crate::molt_list_clear(declaration);
+                    crate::molt_list_clear_attached_body(_py, declaration);
                 }
                 let empty = MoltObject::from_ptr(crate::alloc_tuple(_py, &[])).bits();
-                crate::molt_set_attr_name(class, slots, empty);
+                crate::molt_set_attr_name_attached_body(_py, class, slots, empty);
                 dec_ref_bits(_py, empty);
                 assert_eq!(
                     crate::object::layout::class_slot_declaration_bits(ptr),
@@ -170,12 +178,12 @@ fn absence_of_slots_is_sealed_and_invalid_declarations_do_not_publish_provenance
         let name = crate::dynamic_attr_name_bits(_py, b"Unslotted").unwrap();
         let slots = crate::dynamic_attr_name_bits(_py, b"__slots__").unwrap();
         let empty = MoltObject::from_ptr(crate::alloc_tuple(_py, &[])).bits();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(_py, name);
         let ptr = obj_from_bits(class).as_ptr().unwrap();
         unsafe {
             crate::object::class_finish_definition(_py, ptr).expect("seal unslotted class");
         }
-        crate::molt_set_attr_name(class, slots, empty);
+        crate::molt_set_attr_name_attached_body(_py, class, slots, empty);
         let policy = unsafe { super::class_slots_info(_py, ptr) }.unwrap();
         assert!(policy.allows_dict && policy.allows_weakref);
         assert!(matches!(
@@ -183,21 +191,21 @@ fn absence_of_slots_is_sealed_and_invalid_declarations_do_not_publish_provenance
             crate::object::layout::ClassSlotDeclaration::Absent
         ));
 
-        let invalid_class = crate::molt_class_new(name);
+        let invalid_class = crate::molt_class_new_attached_body(_py, name);
         let invalid_ptr = obj_from_bits(invalid_class).as_ptr().unwrap();
         let invalid =
             MoltObject::from_ptr(crate::alloc_tuple(_py, &[MoltObject::from_int(1).bits()])).bits();
-        crate::molt_set_attr_name(invalid_class, slots, invalid);
+        crate::molt_set_attr_name_attached_body(_py, invalid_class, slots, invalid);
         assert!(unsafe { crate::object::class_finish_definition(_py, invalid_ptr) }.is_err());
         assert!(crate::exception_pending(_py));
         assert!(!unsafe { crate::object::class_definition_is_finished(invalid_ptr) });
         assert!(unsafe { crate::object::layout::class_cached_layout_size(invalid_ptr) }.is_none());
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         assert!(matches!(
             unsafe { crate::object::layout::class_slot_declaration(invalid_ptr) },
             crate::object::layout::ClassSlotDeclaration::Uninitialized
         ));
-        crate::molt_set_attr_name(invalid_class, slots, empty);
+        crate::molt_set_attr_name_attached_body(_py, invalid_class, slots, empty);
         unsafe { crate::object::class_finish_definition(_py, invalid_ptr) }
             .expect("retry valid declaration");
         assert!(
@@ -220,13 +228,18 @@ fn sealed_field_offsets_retain_exact_map_and_ignore_namespace_rebinding() {
         let field = crate::dynamic_attr_name_bits(_py, b"field").unwrap();
         let offsets_name = crate::dynamic_attr_name_bits(_py, b"__molt_field_offsets__").unwrap();
         let size_name = crate::dynamic_attr_name_bits(_py, b"__molt_layout_size__").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(_py, name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         let offsets_ptr =
             crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(0).bits()]);
         let offsets = MoltObject::from_ptr(offsets_ptr).bits();
-        crate::molt_set_attr_name(class, offsets_name, offsets);
-        crate::molt_set_attr_name(class, size_name, MoltObject::from_int(16).bits());
+        crate::molt_set_attr_name_attached_body(_py, class, offsets_name, offsets);
+        crate::molt_set_attr_name_attached_body(
+            _py,
+            class,
+            size_name,
+            MoltObject::from_int(16).bits(),
+        );
         unsafe { crate::object::class_finish_definition(_py, class_ptr) }
             .expect("seal exact field map");
         assert_eq!(
@@ -254,29 +267,29 @@ fn sealed_field_offsets_retain_exact_map_and_ignore_namespace_rebinding() {
         let rebound_ptr =
             crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(8).bits()]);
         let rebound = MoltObject::from_ptr(rebound_ptr).bits();
-        crate::molt_set_attr_name(class, offsets_name, rebound);
+        crate::molt_set_attr_name_attached_body(_py, class, offsets_name, rebound);
         assert!(crate::exception_pending(_py));
-        let exception = crate::molt_exception_last();
+        let exception = crate::molt_exception_last_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             exception,
             crate::BuiltinExc::TypeError,
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, exception);
         assert_eq!(
             unsafe { super::class_field_offset(_py, class_ptr, field) },
             Some(0)
         );
-        crate::molt_del_attr_name(class, offsets_name);
+        crate::molt_del_attr_name_attached_body(_py, class, offsets_name);
         assert!(crate::exception_pending(_py));
-        let exception = crate::molt_exception_last();
+        let exception = crate::molt_exception_last_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             exception,
             crate::BuiltinExc::TypeError,
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, exception);
         assert_eq!(
             unsafe { super::class_field_offset(_py, class_ptr, field) },
@@ -389,12 +402,17 @@ fn malformed_field_offsets_fail_before_private_publication() {
             (field, MoltObject::from_int(8).bits(), 16),
         ];
         for (key, offset, size) in cases {
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(_py, name);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let offsets_ptr = crate::alloc_dict_with_pairs(_py, &[key, offset]);
             let offsets = MoltObject::from_ptr(offsets_ptr).bits();
-            crate::molt_set_attr_name(class, offsets_name, offsets);
-            crate::molt_set_attr_name(class, size_name, MoltObject::from_int(size).bits());
+            crate::molt_set_attr_name_attached_body(_py, class, offsets_name, offsets);
+            crate::molt_set_attr_name_attached_body(
+                _py,
+                class,
+                size_name,
+                MoltObject::from_int(size).bits(),
+            );
             assert!(unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err());
             assert!(crate::exception_pending(_py));
             assert_eq!(
@@ -405,12 +423,12 @@ fn malformed_field_offsets_fail_before_private_publication() {
                 unsafe { crate::object::layout::class_cached_layout_size(class_ptr) }.is_none()
             );
             assert!(!unsafe { crate::object::class_definition_is_finished(class_ptr) });
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
             dec_ref_bits(_py, offsets);
             dec_ref_bits(_py, class);
         }
 
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(_py, name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         let offsets_ptr = crate::alloc_dict_with_pairs(
             _py,
@@ -422,14 +440,19 @@ fn malformed_field_offsets_fail_before_private_publication() {
             ],
         );
         let offsets = MoltObject::from_ptr(offsets_ptr).bits();
-        crate::molt_set_attr_name(class, offsets_name, offsets);
-        crate::molt_set_attr_name(class, size_name, MoltObject::from_int(16).bits());
+        crate::molt_set_attr_name_attached_body(_py, class, offsets_name, offsets);
+        crate::molt_set_attr_name_attached_body(
+            _py,
+            class,
+            size_name,
+            MoltObject::from_int(16).bits(),
+        );
         assert!(unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err());
         assert_eq!(
             unsafe { crate::object::layout::class_field_offsets_bits(class_ptr) },
             0,
         );
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, offsets);
         dec_ref_bits(_py, class);
 

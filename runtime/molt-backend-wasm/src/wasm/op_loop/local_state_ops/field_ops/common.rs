@@ -2,10 +2,11 @@ use super::super::super::result_sink::store_runtime_result;
 use super::super::LocalStateOpContext;
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::{POINTER_MASK, box_bool};
 use molt_codegen_abi::{HEADER_FLAG_HAS_PTRS, HEADER_FLAGS_OFFSET};
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 #[derive(Clone, Copy)]
 pub(super) enum FieldObject {

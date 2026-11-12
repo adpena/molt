@@ -83,7 +83,9 @@ uv run python3 tools/perf_scoreboard.py \
   --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
 ```
 
-It is mirrored by `.github/workflows/perf-gate.yml`. Use `tools/bench.py` for
+Run it on a quiet host for release measurement; no workflow runs it. Main's
+head is watched in instructions retired by `tools/perf_instructions.py` on the
+farm (`tools/PERF_AUTHORITY.md`). Use `tools/bench.py` for
 native triage and `tools/bench_wasm.py` for WASM triage; their JSON and Markdown
 outputs are non-canonical evidence and must not be cited as PR/release
 performance authority.
@@ -1071,11 +1073,6 @@ nonzero result; an existing build failure keeps its primary error and code.
   - `--diagnostics-file <path>`
   - Example:
     `uv run python3 -m molt.cli build --build-profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
-  - Midend payloads include tiering telemetry (`tier_base_summary`,
-    `promoted_functions`, `promotion_source_summary`,
-    `promotion_hotspots_top`) for PGO-guided tier promotion audits.
-  - Disable hot-function tier promotion explicitly with
-    `MOLT_MIDEND_HOT_TIER_PROMOTION=0` when doing controlled A/B pass studies.
 - Queue lanes (daemon warm queue, opt-in):
   - `--cases dev_queue_daemon_on dev_queue_daemon_off`
   - each queue case performs warmup runs before the measured attempt

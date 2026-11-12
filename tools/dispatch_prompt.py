@@ -74,6 +74,10 @@ class DispatchBounds:
         return "\n".join(
             (
                 "Read the assigned checkout's AGENTS.md; it owns standing project policy.",
+                "This code is yours: within the outcome below, what it is for and how it is "
+                "built are your call, and you will keep building on it. Merge repeated code and "
+                "fix related defects you find in the code you touch, with their tests; do not "
+                "report them for someone else to fix.",
                 f"User outcome: {self.outcome}",
                 f"Assigned deliverable: {self.deliverable}",
                 f"Integration owner: {self.integration_owner}",
@@ -102,6 +106,10 @@ class DispatchBounds:
                 "Return at the deliverable or budget, whichever comes first. Close any owned commands canonically.",
                 "Return only for a reserved path, an unsettled semantic decision or the budget "
                 "when the deliverable remains incomplete; report overturn evidence under the stop condition.",
+                "Steps that need no approval: retrying a failed or timed-out command that is safe "
+                "to repeat, rerunning gates after a fix, fixing failures and regressions your "
+                "change exposes, re-measuring, merging origin/main into your lane, and choosing "
+                "between designs inside the settled contract.",
                 "Class sweep: report the mechanism of each defect fixed, siblings found by "
                 "mechanism, and paths, including unverified cells.",
             )
@@ -129,7 +137,8 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "model-tier": ("MODEL_TIER",),
     "triality": ("TRIALITY_WIRING",),
     "preflight": ("PREMISE_VERIFICATION",),
-    "egm": ("DESIGN_REVIEW",),
+    "egm": ("DESIGN_REVIEW", "TYPED_FACTS"),
+    "typed": ("TYPED_FACTS",),
     "handoff": ("HANDOFF_PRECHECK", "WHOLE_CRATE_TESTS"),
 }
 

@@ -69,6 +69,7 @@ fn aggregate_builders_stay_lir_fast_runtime_calls() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),

@@ -15,8 +15,8 @@ fn pickle_payload_len(_py: &PyToken<'_>, len: u64) -> Result<usize, u64> {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_dumps_core(
+pub(crate) fn molt_pickle_dumps_core_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     protocol_bits: u64,
     _fix_imports_bits: u64,
@@ -24,7 +24,7 @@ pub extern "C" fn molt_pickle_dumps_core(
     buffer_callback_bits: u64,
     dispatch_table_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(protocol) = to_i64(obj_from_bits(protocol_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle protocol must be int");
         };
@@ -41,7 +41,8 @@ pub extern "C" fn molt_pickle_dumps_core(
             protocol
         };
         if actual_protocol <= 1 {
-            return molt_pickle_dumps_protocol01(
+            return molt_pickle_dumps_protocol01_attached_body(
+                _py,
                 obj_bits,
                 MoltObject::from_int(actual_protocol).bits(),
             );
@@ -90,8 +91,12 @@ pub extern "C" fn molt_pickle_dumps_core(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_loads_core(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub(crate) fn molt_pickle_loads_core_attached_body(
+    _py: &crate::PyToken<'_>,
     data_bits: u64,
     _fix_imports_bits: u64,
     encoding_bits: u64,
@@ -100,7 +105,7 @@ pub extern "C" fn molt_pickle_loads_core(
     find_class_bits: u64,
     buffers_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let encoding = if let Some(text) = string_obj_to_owned(obj_from_bits(encoding_bits)) {
             text
         } else {
@@ -127,7 +132,7 @@ pub extern "C" fn molt_pickle_loads_core(
         let buffers_iter = if obj_from_bits(buffers_bits).is_none() {
             None
         } else {
-            let iter_bits = molt_iter(buffers_bits);
+            let iter_bits = molt_iter_attached_body(_py, buffers_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -152,7 +157,7 @@ pub extern "C" fn molt_pickle_loads_core(
                 return MoltObject::none().bits();
             }
             let text_bits = MoltObject::from_ptr(text_ptr).bits();
-            let out_bits = molt_pickle_loads_protocol01(text_bits);
+            let out_bits = molt_pickle_loads_protocol01_attached_body(_py, text_bits);
             dec_ref_bits(_py, text_bits);
             return out_bits;
         }
@@ -654,7 +659,7 @@ pub extern "C" fn molt_pickle_loads_core(
                     stack.push(PickleVmItem::Value(dict_bits));
                 }
                 PICKLE_OP_EMPTY_SET => {
-                    let bits = crate::molt_set_new(0);
+                    let bits = crate::molt_set_new_attached_body(_py, 0);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -1061,13 +1066,16 @@ pub extern "C" fn molt_pickle_loads_core(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_multiprocessing_codec_dumps(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_multiprocessing_codec_dumps_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let protocol_bits = MoltObject::from_int(PICKLE_PROTO_5).bits();
         let true_bits = MoltObject::from_bool(true).bits();
         let none_bits = MoltObject::none().bits();
-        molt_pickle_dumps_core(
+        molt_pickle_dumps_core_attached_body(
+            _py,
             obj_bits,
             protocol_bits,
             true_bits,
@@ -1078,9 +1086,11 @@ pub extern "C" fn molt_multiprocessing_codec_dumps(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_multiprocessing_codec_loads(data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_multiprocessing_codec_loads_attached_body(
+    _py: &crate::PyToken<'_>,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let true_bits = MoltObject::from_bool(true).bits();
         let none_bits = MoltObject::none().bits();
         let encoding_ptr = alloc_string(_py, b"ASCII");
@@ -1094,7 +1104,8 @@ pub extern "C" fn molt_multiprocessing_codec_loads(data_bits: u64) -> u64 {
         }
         let encoding_bits = MoltObject::from_ptr(encoding_ptr).bits();
         let errors_bits = MoltObject::from_ptr(errors_ptr).bits();
-        let out_bits = molt_pickle_loads_core(
+        let out_bits = molt_pickle_loads_core_attached_body(
+            _py,
             data_bits,
             true_bits,
             encoding_bits,
@@ -1108,3 +1119,5 @@ pub extern "C" fn molt_multiprocessing_codec_loads(data_bits: u64) -> u64 {
         out_bits
     })
 }
+
+include!("../../../attached_exports_generated/builtins/functions_pickle/binary/entry.rs");

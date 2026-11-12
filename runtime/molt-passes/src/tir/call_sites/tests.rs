@@ -10,6 +10,7 @@ use crate::tir::values::ValueId;
 fn op(opcode: OpCode, args: &[ValueId], results: &[ValueId]) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: args.to_vec(),

@@ -66,6 +66,7 @@ from .schema import (
     _VALUE_RANGE_CONST_FOLD_RULES,
     _VALUE_RANGE_CONTAINER_LENGTH_RULES,
     _VALUE_RANGE_TRANSFER_RULES,
+    _FAST_PATH_EXPANSION_RULES,
     _VARIABLE_RESULT_ARITY_OPCODES,
     _VARIABLE_OPERAND_ARITIES,
     _VECTORIZE_BODY_ACTIONS,
@@ -97,7 +98,6 @@ def load_table(table_path: Path = TABLE) -> dict:
     seen_domains: set[str] = set()
     seen_scalar_types: dict[str, set[str]] = {
         "tir_types": set(),
-        "frontend_types": set(),
     }
     for domain in domains:
         name = domain.get("name")
@@ -267,23 +267,6 @@ def load_table(table_path: Path = TABLE) -> dict:
         )
         comparison = row.get("predicate_semantics")
         exact_scalar = row.get("exact_scalar_result_type")
-        if exact_scalar is not None or result_type in {
-            "i64",
-            "f64",
-            "bool",
-            "str",
-            "bytes",
-            "none",
-        }:
-            arity = row.get("frontend_intrinsic_scalar_arity")
-            if type(arity) is not int or arity < 0:
-                raise OpKindTableError(
-                    f"opcode {name}: exact scalar requires frontend_intrinsic_scalar_arity"
-                )
-            # Frontend args and TIR SSA operands are distinct transport domains:
-            # lowering can move payload arguments into attrs. The opcode row owns
-            # both shapes; equal opcode identity alone does not prove an
-            # operand-preserving transport and cannot impose equal arities.
         if exact_scalar is not None and (
             exact_scalar not in seen_scalar_types["tir_types"]
             or result_arity != "one"
@@ -783,12 +766,20 @@ def load_table(table_path: Path = TABLE) -> dict:
         _SCCP_CONSTANT_EVAL_RULES,
         "SCCP constant eval rule",
     )
+    _validate_negated_predicates(data, opcodes)
     _validate_opcode_rule_rows(
         data,
         "value_range_transfer_rules",
         seen_opcodes,
         _VALUE_RANGE_TRANSFER_RULES,
         "value-range transfer rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "fast_path_expansion_rules",
+        seen_opcodes,
+        _FAST_PATH_EXPANSION_RULES,
+        "fast-path expansion rule",
     )
     _validate_opcode_rule_rows(
         data,
@@ -982,6 +973,21 @@ def load_table(table_path: Path = TABLE) -> dict:
             "callback_free_copy_kinds requires unique registered spellings"
         )
     exact_int = data.get("exact_int_result_copy_kinds")
+    nothrow = data.get("nothrow_copy_kinds")
+    if (
+        not isinstance(nothrow, list)
+        or any(
+            not isinstance(kind, str)
+            or kind not in registered
+            or kind in mapper_opcode_by_spelling
+            and mapper_opcode_by_spelling[kind] != "Copy"
+            for kind in nothrow
+        )
+        or len(set(nothrow)) != len(nothrow)
+    ):
+        raise OpKindTableError(
+            "nothrow_copy_kinds requires unique registered Copy-carrier spellings"
+        )
     if (
         not isinstance(exact_int, list)
         or any(
@@ -1028,12 +1034,11 @@ def load_table(table_path: Path = TABLE) -> dict:
 
     _validate_terminators(data)
 
-    from .primitive_effects import comparison_warning_pairs, frontend_operator_map
+    from .primitive_effects import comparison_warning_pairs
 
     comparison_warning_pairs(data)
 
     validate_registration(data)
-    frontend_operator_map(data)
     _validate_frontend_tables(data, opcodes)
 
     unknown_requirement_carriers = set(
@@ -1577,6 +1582,40 @@ def _validate_gvn_numberable_attr_key_facts(
             raise OpKindTableError(
                 f"gvn_numberable_attr_key_opcodes {opcode}: duplicate attrs"
             )
+
+
+def _validate_negated_predicates(data: dict, opcodes: list[dict]) -> None:
+    """Each row pairs a predicate with the one it negates, at equal arity.
+
+    A negating opcode never negates another negation, so one lookup gives the
+    canonical predicate and its polarity.
+    """
+    rows = data.get("negated_predicates", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("negated_predicates must be an array of tables")
+    arity = {row["name"]: row.get("operand_arity") for row in opcodes}
+    negating: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"opcode", "negates"}:
+            raise OpKindTableError(
+                f"negated_predicates rows need exactly opcode and negates: {row}"
+            )
+        opcode, negates = row["opcode"], row["negates"]
+        for name in (opcode, negates):
+            if name not in arity:
+                raise OpKindTableError(
+                    f"negated_predicates names unknown OpCode {name!r}"
+                )
+        if opcode == negates or opcode in negating:
+            raise OpKindTableError(f"negated_predicates {opcode}: invalid or duplicate")
+        if arity[opcode] != arity[negates]:
+            raise OpKindTableError(
+                f"negated_predicates {opcode}: operand_arity differs from {negates}"
+            )
+        negating[opcode] = negates
+    chained = sorted(set(negating) & set(negating.values()))
+    if chained:
+        raise OpKindTableError(f"negated_predicates chain through {chained}")
 
 
 def _validate_opcode_rule_rows(

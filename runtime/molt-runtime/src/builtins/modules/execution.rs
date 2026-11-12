@@ -64,7 +64,15 @@ const LOADER_PATH_PENDING: u8 = 1 << 4;
 const LOADER_METADATA_PENDING: u8 = SCRIPT_METADATA_PENDING | LOADER_PATH_PENDING;
 
 thread_local! {
-    static EXECUTION_STACK: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
+    static EXECUTION_STACK: std::mem::ManuallyDrop<RefCell<Vec<ExecutionContext>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+}
+
+pub(crate) fn clear_module_execution_tls_storage() {
+    EXECUTION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        assert!(stack.is_empty(), "retiring an active module execution");
+        *stack = Vec::new();
+    });
 }
 
 struct Argv0Swap {
@@ -442,7 +450,7 @@ fn save_pending_exception(_py: &PyToken<'_>) -> Option<u64> {
     if !exception_pending(_py) {
         return None;
     }
-    let bits = molt_exception_last_pending();
+    let bits = molt_exception_last_pending_attached_body(_py);
     clear_exception(_py);
     Some(bits)
 }
@@ -455,7 +463,7 @@ fn restore_pending_exception(_py: &PyToken<'_>, saved: Option<u64>) {
         clear_exception(_py);
     }
     if !obj_from_bits(bits).is_none() {
-        let _ = crate::molt_exception_set_last(bits);
+        let _ = crate::molt_exception_set_last_attached_body(_py, bits);
     }
     dec_ref_bits(_py, bits);
 }
@@ -601,7 +609,33 @@ pub(super) fn module_metadata_store(
     attr_bits: u64,
 ) -> Result<MetadataStore, u64> {
     let runtime_id = runtime_state(_py) as *const _ as usize;
-    let Some(attr) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
+    // Every module global store comes here, so the common answer costs no
+    // allocation: the context decides first, then the name's bytes in place.
+    let window_open = EXECUTION_STACK.with(|stack| {
+        stack.borrow().last().is_some_and(|ctx| {
+            ctx.runtime_id == runtime_id
+                && ctx.module_bits == module_bits
+                && ctx.metadata_override_pending != 0
+        })
+    });
+    if !window_open {
+        return Ok(MetadataStore::Body);
+    }
+    // SAFETY: the match neither calls back nor retires a reference.
+    let attr = unsafe {
+        crate::object::ops_format::with_string_bytes(
+            obj_from_bits(attr_bits),
+            |bytes| match bytes {
+                b"__name__" => Some("__name__"),
+                b"__file__" => Some("__file__"),
+                b"__package__" => Some("__package__"),
+                b"__path__" => Some("__path__"),
+                b"__spec__" => Some("__spec__"),
+                _ => None,
+            },
+        )
+    };
+    let Some(Some(attr)) = attr else {
         return Ok(MetadataStore::Body);
     };
     enum MetadataOverride {
@@ -614,7 +648,7 @@ pub(super) fn module_metadata_store(
         if ctx.runtime_id != runtime_id || ctx.module_bits != module_bits {
             return None;
         }
-        let (bit, value) = match (&ctx.metadata, attr.as_str()) {
+        let (bit, value) = match (&ctx.metadata, attr) {
             (_, "__name__") => (
                 EXECUTION_NAME_PENDING,
                 MetadataOverride::Text(Some(ctx.run_name.clone())),
@@ -766,7 +800,12 @@ pub(super) unsafe fn after_module_metadata_set(
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let value_bits = MoltObject::from_ptr(value_ptr).bits();
-            let result = crate::molt_set_attr_name(effective_val_bits, name_bits, value_bits);
+            let result = crate::molt_set_attr_name_attached_body(
+                _py,
+                effective_val_bits,
+                name_bits,
+                value_bits,
+            );
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, value_bits);
             if !obj_from_bits(result).is_none() {
@@ -786,8 +825,12 @@ pub(super) unsafe fn after_module_metadata_set(
                 return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let value_bits =
-                molt_getattr_builtin(effective_val_bits, name_bits, MoltObject::none().bits());
+            let value_bits = molt_getattr_builtin_attached_body(
+                _py,
+                effective_val_bits,
+                name_bits,
+                MoltObject::none().bits(),
+            );
             dec_ref_bits(_py, name_bits);
             if exception_pending(_py) {
                 if !obj_from_bits(value_bits).is_none() {
@@ -828,7 +871,7 @@ fn pending_exception_is(_py: &PyToken<'_>, expected: crate::BuiltinExc) -> bool 
     if !exception_pending(_py) {
         return false;
     }
-    let exc_bits = molt_exception_last_pending();
+    let exc_bits = molt_exception_last_pending_attached_body(_py);
     let matches = crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, expected);
     if !obj_from_bits(exc_bits).is_none() {
         dec_ref_bits(_py, exc_bits);

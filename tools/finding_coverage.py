@@ -273,20 +273,15 @@ def dependency_order_problems(
     return problems
 
 
-RATCHET_PATH = Path("bench/primitive_ratchet.json")
-
-
-def ratchet_axis_problems(
-    status: finding_status.FindingStatus, ratchet: Mapping[str, object]
+def per_op_axis_problems(
+    status: finding_status.FindingStatus, axes: Iterable[str]
 ) -> list[str]:
-    """Every per-op ratchet axis names at least one engine family that owns its cost.
+    """Every per-op instruction axis names at least one engine family that owns its cost.
 
     Startup axes all measure process start, which the family owning
     ``empty/startup`` owns; per-op axes each measure one primitive's cost.
+    The axes come from the one registry, tools/perf_primitives.py.
     """
-    axes = ratchet.get("axes")
-    if not isinstance(axes, Mapping):
-        return [f"{RATCHET_PATH} has no axes table"]
     owned = {
         axis
         for family in status.dependency_families
@@ -294,21 +289,21 @@ def ratchet_axis_problems(
         for axis in family.axes
     }
     return [
-        f"ratchet axis {axis} has no engine family; name it in one family's HF-459 axes"
+        f"instruction axis {axis} has no engine family; name it in one family's HF-459 axes"
         for axis in sorted(axes)
         if axis.endswith("/per_op") and axis not in owned
     ]
 
 
 def ledger_problems(root: Path, status: finding_status.FindingStatus) -> list[str]:
-    """The family graph, its prior art and its ratchet-axis ownership, read from ``root``."""
+    """The family graph, its prior art and its instruction-axis ownership, read from ``root``."""
+    from tools.perf_primitives import per_op_axes
+
     return [
         *dependency_order_problems(
             status, (root / PRIOR_ART_PATH).read_text(encoding="utf-8")
         ),
-        *ratchet_axis_problems(
-            status, json.loads((root / RATCHET_PATH).read_text(encoding="utf-8"))
-        ),
+        *per_op_axis_problems(status, per_op_axes()),
     ]
 
 

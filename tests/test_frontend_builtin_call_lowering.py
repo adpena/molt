@@ -2023,9 +2023,10 @@ def test_module_chunking_starts_new_chunk_before_large_multiline_assignment() ->
 
 
 def test_module_chunk_failure_cleanup_is_not_success_fallthrough() -> None:
+    # An imported module owns failure cleanup; the entry retracts nothing.
     gen = SimpleTIRGenerator(
         module_name="chunk_cleanup",
-        module_execution_kind="module",
+        module_execution_kind="imported",
         module_chunking=True,
         module_chunk_max_ops=1,
     )
@@ -2048,6 +2049,29 @@ def test_module_chunk_failure_cleanup_is_not_success_fallthrough() -> None:
             op.get("kind") != "exception_last_pending"
             for op in ops[ret_void_index + 1 : cache_del_index]
         ), func["name"]
+
+
+def test_entry_failure_keeps_main_published_and_imports_retract_themselves() -> None:
+    """CPython keeps sys.modules["__main__"] after a failing script or -m run
+    (shutdown then clears its namespace); a failed import retracts itself."""
+    expected = {
+        ("__main__", "script"): set(),
+        ("entry_app", "module"): set(),
+        ("lib", "imported"): {"lib"},
+    }
+    for (module_name, kind), retracted in expected.items():
+        gen = SimpleTIRGenerator(module_name=module_name, module_execution_kind=kind)
+        gen.visit(ast.parse("value = 1\nraise ValueError(value)\n"))
+        main = next(f for f in gen.to_json()["functions"] if f["name"] == "molt_main")
+        strings = {
+            op["out"]: op["s_value"] for op in main["ops"] if op["kind"] == "const_str"
+        }
+        deleted = {
+            strings[op["args"][0]]
+            for op in main["ops"]
+            if op["kind"] == "module_cache_del"
+        }
+        assert deleted == retracted, (module_name, kind, deleted)
 
 
 def test_function_metadata_uses_runtime_helper_instead_of_attr_storm() -> None:
@@ -2942,6 +2966,7 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
             "fields": {},
             "size": 24,
             "dynamic": False,
+            "definition_exposed": False,
             "static": True,
             "methods": {
                 "__init__": {
@@ -3025,6 +3050,7 @@ def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
             "fields": {},
             "size": 0,
             "dynamic": False,
+            "definition_exposed": False,
             "static": True,
             "methods": {},
             "mro": (
@@ -3169,8 +3195,12 @@ def test_imported_known_vararg_function_call_uses_live_published_value() -> None
     imported_typevar_loads = {
         op["out"]
         for op in main_ops
-        if op.get("kind") == "module_get_global" and op["args"] == [module, key]
+        if op.get("kind") == "module_get_global"
+        and op["args"][0] == module
+        and const_str.get(op["args"][1]) == const_str[key]
     }
+    # Equal source keys need not share a frontend SSA literal: Rust GVN owns
+    # literal sharing. The live binding still belongs to this exact module.
     assert imported_typevar_loads, (
         "calls must observe the live published module binding"
     )

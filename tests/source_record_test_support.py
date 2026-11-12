@@ -7,7 +7,11 @@ import sqlite3
 from contextlib import closing
 from typing import Any
 
-from molt.cli.source_record_store import RecordKind, shared_source_records
+from molt.cli.source_record_store import (
+    RecordKind,
+    SourceRecordStore,
+    shared_source_records,
+)
 from molt.cli.function_records import (
     decode_function_records,
     decode_lowering_record,
@@ -15,9 +19,20 @@ from molt.cli.function_records import (
 )
 
 
+def _saved_store() -> SourceRecordStore:
+    """The shared store after this process's queued records are saved.
+
+    Inside a frontend operation a put is queued; the database holds it only
+    after a save, so raw inspection saves first.
+    """
+    store = shared_source_records()
+    store.save_pending(final=True)
+    return store
+
+
 def source_records(kind: RecordKind) -> dict[str, dict[str, Any]]:
     """Every stored ``kind`` record in the caller's isolated shared cache."""
-    path = shared_source_records().path
+    path = _saved_store().path
     if not path.exists():
         return {}
     with closing(sqlite3.connect(path)) as connection:
@@ -39,7 +54,7 @@ def source_records(kind: RecordKind) -> dict[str, dict[str, Any]]:
 
 def replace_source_record(kind: RecordKind, key: str, payload: dict[str, Any]) -> None:
     """Replace one record through its producer, preserving its generation."""
-    store = shared_source_records()
+    store = _saved_store()
     with closing(sqlite3.connect(store.path)) as connection:
         row = connection.execute(
             "SELECT generation FROM records WHERE kind = ? AND key = ?", (kind, key)
@@ -64,7 +79,7 @@ def replace_source_record(kind: RecordKind, key: str, payload: dict[str, Any]) -
 def delete_source_record(kind: RecordKind, key: str) -> None:
     """Remove one stored record, as an evicted or never-published one."""
     with (
-        closing(sqlite3.connect(shared_source_records().path)) as connection,
+        closing(sqlite3.connect(_saved_store().path)) as connection,
         connection,
     ):
         deleted = connection.execute(

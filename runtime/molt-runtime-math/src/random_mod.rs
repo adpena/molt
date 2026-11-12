@@ -318,7 +318,9 @@ unsafe extern "C" fn random_runtime_state_init() -> *mut u8 {
     Box::into_raw(Box::new(RandomRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn random_runtime_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn random_runtime_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
@@ -336,8 +338,9 @@ unsafe extern "C" fn random_runtime_state_drop(ptr: *mut u8) {
     }
 }
 
-fn random_state() -> &'static RandomRuntimeState {
+fn random_state(py: &molt_runtime_core::PyToken) -> &'static RandomRuntimeState {
     let ptr = crate::bridge::runtime_state_get_or_init(
+        py,
         b"molt-runtime-math/random/v1",
         random_runtime_state_init,
         random_runtime_state_clear,
@@ -350,12 +353,14 @@ fn random_state() -> &'static RandomRuntimeState {
     unsafe { &*(ptr as *const RandomRuntimeState) }
 }
 
-fn random_registry() -> &'static Mutex<HashMap<i64, MersenneTwisterRng>> {
-    &random_state().registry
+fn random_registry(
+    py: &molt_runtime_core::PyToken,
+) -> &'static Mutex<HashMap<i64, MersenneTwisterRng>> {
+    &random_state(py).registry
 }
 
-fn next_random_handle() -> i64 {
-    random_state().next_handle.fetch_add(1, Ordering::Relaxed)
+fn next_random_handle(py: &molt_runtime_core::PyToken) -> i64 {
+    random_state(py).next_handle.fetch_add(1, Ordering::Relaxed)
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -440,7 +445,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
 
     // float → hash it
     if seed_obj.as_float().is_some() {
-        let hash_bits = molt_hash_builtin(seed_bits);
+        let hash_bits = molt_hash_builtin(_py, seed_bits);
         if exception_pending(_py) {
             return None;
         }
@@ -558,16 +563,15 @@ fn alloc_list_bits(_py: &PyToken, elems: &[u64]) -> Result<u64, u64> {
 // ─── Public intrinsics ────────────────────────────────────────────────────────
 
 /// Create a new MT RNG seeded from OS randomness. Returns integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_new() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let key = match seed_from_os(_py) {
             Some(k) => k,
             None => return MoltObject::none().bits(),
         };
         let rng = MersenneTwisterRng::new_from_seed_key(&key);
-        let id = next_random_handle();
-        random_registry().lock().unwrap().insert(id, rng);
+        let id = next_random_handle(_py);
+        random_registry(_py).lock().unwrap().insert(id, rng);
         MoltObject::from_int(id).bits()
     })
 }
@@ -578,9 +582,13 @@ pub extern "C" fn molt_random_new() -> u64 {
 ///                  str/bytes, matching CPython 3.2+).
 /// `seed_bits`    — None, int, float, str, bytes, or bytearray.
 ///                  None → re-seed from OS.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_seed(handle_bits: u64, seed_bits: u64, _version_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_seed_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    seed_bits: u64,
+    _version_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -606,7 +614,7 @@ pub extern "C" fn molt_random_seed(handle_bits: u64, seed_bits: u64, _version_bi
         };
 
         let new_rng = MersenneTwisterRng::new_from_seed_key(&key);
-        if let Some(entry) = random_registry().lock().unwrap().get_mut(&id) {
+        if let Some(entry) = random_registry(_py).lock().unwrap().get_mut(&id) {
             *entry = new_rng;
         }
         MoltObject::none().bits()
@@ -614,13 +622,12 @@ pub extern "C" fn molt_random_seed(handle_bits: u64, seed_bits: u64, _version_bi
 }
 
 /// Return a random float in [0.0, 1.0).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_random(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_random_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -629,9 +636,12 @@ pub extern "C" fn molt_random_random(handle_bits: u64) -> u64 {
 }
 
 /// Return a Python int with k random bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_getrandbits_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    k_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -658,7 +668,7 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
             return int_bits_from_i64(_py, 0);
         }
         let big = {
-            let mut reg = random_registry().lock().unwrap();
+            let mut reg = random_registry(_py).lock().unwrap();
             let Some(rng) = reg.get_mut(&id) else {
                 return raise_exception::<u64>(
                     _py,
@@ -680,9 +690,12 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
 
 /// Return a random integer in [0, n) via rejection sampling.
 /// `n_bits` must be a Python int.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_randbelow_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    n_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -701,7 +714,7 @@ pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
         }
 
         let result = {
-            let mut reg = random_registry().lock().unwrap();
+            let mut reg = random_registry(_py).lock().unwrap();
             let Some(rng) = reg.get_mut(&id) else {
                 return raise_exception::<u64>(
                     _py,
@@ -723,15 +736,17 @@ pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
 /// Get the internal MT state as a Python tuple:
 ///   (version=3, internalstate_tuple, gauss_next_or_None)
 /// where internalstate_tuple is a 625-element tuple of u32 words (624 MT state + index).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_getstate(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_getstate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
 
         let (mt_words, index, gauss_next) = {
-            let reg = random_registry().lock().unwrap();
+            let reg = random_registry(_py).lock().unwrap();
             let Some(rng) = reg.get(&id) else {
                 return raise_exception::<u64>(
                     _py,
@@ -775,9 +790,12 @@ pub extern "C" fn molt_random_getstate(handle_bits: u64) -> u64 {
 
 /// Restore the MT state from a tuple produced by getstate().
 /// Expected format: (version, internalstate_tuple, gauss_next_or_None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_setstate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    state_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -791,7 +809,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "state must be a tuple");
         }
 
-        let Some(outer_elems) = (unsafe { seq_snapshot(state_ptr) }) else {
+        let Some(outer_elems) = (unsafe { seq_snapshot(_py, state_ptr) }) else {
             return MoltObject::none().bits();
         };
         if outer_elems.len() < 3 {
@@ -820,7 +838,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
                 "internalstate must be a tuple",
             );
         }
-        let Some(inner_elems) = (unsafe { seq_snapshot(inner_ptr) }) else {
+        let Some(inner_elems) = (unsafe { seq_snapshot(_py, inner_ptr) }) else {
             return MoltObject::none().bits();
         };
         if inner_elems.len() != MT_N + 1 {
@@ -861,7 +879,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
         };
 
         {
-            let mut reg = random_registry().lock().unwrap();
+            let mut reg = random_registry(_py).lock().unwrap();
             let Some(rng) = reg.get_mut(&id) else {
                 return raise_exception::<u64>(
                     _py,
@@ -880,9 +898,12 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
 
 /// Fisher-Yates in-place shuffle of a Molt list.
 /// `list_bits` must be a mutable list object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_shuffle_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    list_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -904,7 +925,7 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
         // We need mutable access to the list's Vec and the RNG simultaneously.
         // Do rejection sampling outside the lock, then apply inside — but since
         // the GIL serializes us, we can just lock once and work.
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -929,7 +950,7 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
                 };
                 idx_32 as usize
             };
-            if !list_swap(list_bits, i, j) {
+            if !list_swap(_py, list_bits, i, j) {
                 return MoltObject::none().bits();
             }
         }
@@ -940,9 +961,13 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
 
 /// Box-Muller Gaussian variate with caching.
 /// `mu_bits`, `sigma_bits` — floats or ints.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_gauss(handle_bits: u64, mu_bits: u64, sigma_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_gauss_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    mu_bits: u64,
+    sigma_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -952,7 +977,7 @@ pub extern "C" fn molt_random_gauss(handle_bits: u64, mu_bits: u64, sigma_bits: 
         let Some(sigma) = f64_from_bits(_py, sigma_bits, "sigma") else {
             return MoltObject::none().bits();
         };
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -961,9 +986,13 @@ pub extern "C" fn molt_random_gauss(handle_bits: u64, mu_bits: u64, sigma_bits: 
 }
 
 /// Uniform distribution: a + (b - a) * random().
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_uniform(handle_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_uniform_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -973,7 +1002,7 @@ pub extern "C" fn molt_random_uniform(handle_bits: u64, a_bits: u64, b_bits: u64
         let Some(b) = f64_from_bits(_py, b_bits, "b") else {
             return MoltObject::none().bits();
         };
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -985,14 +1014,14 @@ pub extern "C" fn molt_random_uniform(handle_bits: u64, a_bits: u64, b_bits: u64
 /// `low_bits`, `high_bits`, `mode_bits` — float/int or None for mode.
 ///
 /// If mode is None, uses (low + high) / 2.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_triangular(
+pub fn molt_random_triangular_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     low_bits: u64,
     high_bits: u64,
     mode_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1017,7 +1046,7 @@ pub extern "C" fn molt_random_triangular(
             }
         };
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1032,9 +1061,12 @@ pub extern "C" fn molt_random_triangular(
 }
 
 /// Exponential distribution: -log(random()) / lambd.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_expovariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    lambd_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1048,7 +1080,7 @@ pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> 
                 "lambd must not be zero",
             );
         }
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1064,13 +1096,13 @@ pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> 
 }
 
 /// Normal variate using Kinderman-Monahan (CPython random.normalvariate).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_normalvariate(
+pub fn molt_random_normalvariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1080,7 +1112,7 @@ pub extern "C" fn molt_random_normalvariate(
         let Some(sigma) = f64_from_bits(_py, sigma_bits, "sigma") else {
             return MoltObject::none().bits();
         };
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1089,13 +1121,13 @@ pub extern "C" fn molt_random_normalvariate(
 }
 
 /// Log-normal variate: exp(normalvariate(mu, sigma)).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_lognormvariate(
+pub fn molt_random_lognormvariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1105,7 +1137,7 @@ pub extern "C" fn molt_random_lognormvariate(
         let Some(sigma) = f64_from_bits(_py, sigma_bits, "sigma") else {
             return MoltObject::none().bits();
         };
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1115,13 +1147,13 @@ pub extern "C" fn molt_random_lognormvariate(
 }
 
 /// Von Mises variate (CPython random.vonmisesvariate).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_vonmisesvariate(
+pub fn molt_random_vonmisesvariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     mu_bits: u64,
     kappa_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1132,7 +1164,7 @@ pub extern "C" fn molt_random_vonmisesvariate(
             return MoltObject::none().bits();
         };
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1169,16 +1201,19 @@ pub extern "C" fn molt_random_vonmisesvariate(
 }
 
 /// Pareto distribution: 1.0 / pow(random(), 1.0 / alpha).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_paretovariate(handle_bits: u64, alpha_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_paretovariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    alpha_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let Some(alpha) = f64_from_bits(_py, alpha_bits, "alpha") else {
             return MoltObject::none().bits();
         };
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1193,13 +1228,13 @@ pub extern "C" fn molt_random_paretovariate(handle_bits: u64, alpha_bits: u64) -
 }
 
 /// Weibull distribution.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_weibullvariate(
+pub fn molt_random_weibullvariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1209,7 +1244,7 @@ pub extern "C" fn molt_random_weibullvariate(
         let Some(beta) = f64_from_bits(_py, beta_bits, "beta") else {
             return MoltObject::none().bits();
         };
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1225,13 +1260,13 @@ pub extern "C" fn molt_random_weibullvariate(
 
 /// Gamma variate (CPython random.gammavariate).
 /// alpha > 0, beta > 0.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_gammavariate(
+pub fn molt_random_gammavariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1250,7 +1285,7 @@ pub extern "C" fn molt_random_gammavariate(
             );
         }
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1299,13 +1334,13 @@ fn gamma_marsaglia(rng: &mut MersenneTwisterRng, alpha: f64) -> f64 {
 
 /// Beta variate using two gamma variates (CPython random.betavariate).
 /// alpha > 0, beta > 0.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_betavariate(
+pub fn molt_random_betavariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     alpha_bits: u64,
     beta_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1324,7 +1359,7 @@ pub extern "C" fn molt_random_betavariate(
             );
         }
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1353,14 +1388,14 @@ pub extern "C" fn molt_random_betavariate(
 /// `k_bits` — integer count.
 ///
 /// Returns a new list of k elements.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_choices(
+pub fn molt_random_choices_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     population_bits: u64,
     cum_weights_bits: u64,
     k_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1381,7 +1416,7 @@ pub extern "C" fn molt_random_choices(
                 "population must be a list or tuple",
             );
         }
-        let Some(pop_elems) = (unsafe { seq_snapshot(pop_ptr) }) else {
+        let Some(pop_elems) = (unsafe { seq_snapshot(_py, pop_ptr) }) else {
             return MoltObject::none().bits();
         };
         let pop_len = pop_elems.len();
@@ -1423,7 +1458,7 @@ pub extern "C" fn molt_random_choices(
                     "cum_weights must be a list or tuple",
                 );
             }
-            let Some(cw_elems) = (unsafe { seq_snapshot(cw_ptr) }) else {
+            let Some(cw_elems) = (unsafe { seq_snapshot(_py, cw_ptr) }) else {
                 return MoltObject::none().bits();
             };
             if cw_elems.len() != pop_len {
@@ -1443,7 +1478,7 @@ pub extern "C" fn molt_random_choices(
             Some(weights)
         };
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1486,9 +1521,13 @@ pub extern "C" fn molt_random_choices(
 /// `k_bits` — integer count.
 ///
 /// Returns a new list of k distinct elements (by position).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_sample_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    population_bits: u64,
+    k_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1509,7 +1548,7 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
                 "population must be a list or tuple",
             );
         }
-        let Some(pop_elems) = (unsafe { seq_snapshot(pop_ptr) }) else {
+        let Some(pop_elems) = (unsafe { seq_snapshot(_py, pop_ptr) }) else {
             return MoltObject::none().bits();
         };
         let n = pop_elems.len();
@@ -1534,7 +1573,7 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
             );
         }
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1595,9 +1634,13 @@ fn rng_lgamma(x: f64) -> f64 {
 
 /// Mirrors CPython random.Random.binomialvariate exactly.
 /// Parameters: handle, n (int), p (float).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_binomialvariate(handle_bits: u64, n_bits: u64, p_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_binomialvariate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    n_bits: u64,
+    p_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -1629,7 +1672,7 @@ pub extern "C" fn molt_random_binomialvariate(handle_bits: u64, n_bits: u64, p_b
             );
         }
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1710,14 +1753,14 @@ fn binomialvariate_impl(rng: &mut MersenneTwisterRng, n: i64, p: f64) -> i64 {
 
 /// randrange(start, stop, step) -> int
 /// All validation and range arithmetic done in Rust.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_randrange(
+pub fn molt_random_randrange_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     start_bits: u64,
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -1739,7 +1782,7 @@ pub extern "C" fn molt_random_randrange(
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1809,9 +1852,12 @@ pub extern "C" fn molt_random_randrange(
 }
 
 /// randbytes(n) -> generates n random bytes
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_random_randbytes_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    n_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -1831,7 +1877,7 @@ pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
         }
         let n = n as usize;
 
-        let mut reg = random_registry().lock().unwrap();
+        let mut reg = random_registry(_py).lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
@@ -1851,6 +1897,8 @@ pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
+
+include!("attached_exports_generated/random_mod.rs");
 
 #[cfg(test)]
 mod seed_parity_tests {

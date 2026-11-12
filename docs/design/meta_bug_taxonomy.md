@@ -33,7 +33,7 @@ verdict is computed from anything but that authority.
 - **Green-on-red via missing prerequisite** (a gate runs without proving its upstream succeeded — pytest atop a NameError-ing compiler; continue-on-error masking a crash). Fix: a blocking build-success tier-1 prerequisite; stderr-aware conftest.
 
 ## Fix queue (priority order; meta-bugs first)
-1. **[DONE, superseded by controlled measurement authority]** Run the canonical perf gate on explicit/weekly controlled workers and make `check_perf_gate_wiring.py` fail closed on push/PR allocation, active-run cancellation, or a non-blocking scoreboard. The earlier main-push design was measured to cancel repeatedly before producing authority; fast candidate regression proof belongs in a separate paired PR plane.
+1. **[DONE, superseded by the instruction signal]** The weekly controlled perf-gate board never finished inside its runner budget (HF-222) and is retired; main is watched in instructions retired on the farm (`tools/perf_instructions.py`). `check_perf_gate_wiring.py` keeps the explicit-dispatch candidate-cost job blocking and uncancelled. The earlier main-push design was measured to cancel repeatedly before producing authority.
 2. **[DONE] Ratio-direction canonicalization** —
    `molt.metric_ratios.signed_ratio` / `signed_ratio_value` are the sole
    wall-clock ratio implementation authority (`tools/perf_authority.py`

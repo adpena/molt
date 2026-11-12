@@ -59,7 +59,10 @@ from molt.cli.runtime_c_resources import (
     _C_SEARCH_ENVIRONMENTS,
     _resolve_c_build_resources,
 )
-from molt.cli.wasm_link_args import wasi_external_libc_rustflags
+from molt.cli.wasm_link_args import (
+    wasi_external_libc_rustflags,
+    wasm_undefined_allowlist_path,
+)
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     WasiSdkInstallation,
@@ -259,6 +262,32 @@ def _resolve_rust_flag_resources(
             original = (key, value)
             if key in {"-C", "-Z"}:
                 option, separator, operand = value.partition("=")
+                allowlist = (
+                    wasm_undefined_allowlist_path(operand)
+                    if option == "link-arg"
+                    else None
+                )
+                if allowlist is not None:
+                    path = local_path(
+                        allowlist,
+                        label="WASM undefined-symbol allowlist",
+                        directory=False,
+                    )
+                    resource = CargoResourceRoot(
+                        f"rust/undefined-allowlist/{name}/{len(link_resources) + len(resources)}",
+                        path,
+                    )
+                    (resources if name == "dependencies" else link_resources).append(
+                        resource
+                    )
+                    entries.append(
+                        (
+                            "",
+                            "",
+                            (key, "link-arg=--allow-undefined-file=" + os.fspath(path)),
+                        )
+                    )
+                    continue
                 if option in {"link-arg", "link-args"} and "@" in operand:
                     if option != "link-arg" or not operand.startswith("@"):
                         raise ValueError(
@@ -892,8 +921,30 @@ class RuntimeCargoPlan:
             for item in (*self.rust_resources.files, *self.link_resources.files)
             if item.label.startswith("rust/link-response/")
         }
+        allowlists = {
+            item.entrypoint: item
+            for item in (*self.rust_resources.files, *self.link_resources.files)
+            if item.label.startswith("rust/undefined-allowlist/")
+        }
         result: list[str] = []
         for token in arguments:
+            operand = token.removeprefix("-Clink-arg=").removeprefix("link-arg=")
+            allowlist = wasm_undefined_allowlist_path(operand)
+            if allowlist is not None:
+                path = Path(allowlist)
+                if not path.is_absolute():
+                    path = self.project_root / path
+                selected = allowlists.get(Path(os.path.abspath(path)))
+                if selected is None:
+                    raise ValueError(
+                        "WASM undefined-symbol allowlist has no captured Cargo custody"
+                    )
+                selected.verify()
+                prefix = token[: -len(operand)]
+                result.append(
+                    f"{prefix}--allow-undefined-file=allowlist:sha256={selected.identity.sha256}:size={selected.identity.size}"
+                )
+                continue
             if "@" not in token:
                 result.append(token)
                 continue

@@ -143,12 +143,13 @@ collection, under the same guarded SSH owner. Its worker runs under its own
 `wsl.exe` client ([WSL instance lifetime](#wsl-instance-lifetime)); the declared
 `vmIdleTimeout=-1` must already match before provisioning.
 
-The inventory declares the WSL VHDX's C: identity, 80 GiB disk budget, 24 GiB
+The inventory declares the WSL VHDX's C: identity, 120 GiB disk budget, 24 GiB
 memory, 4 GiB swap and a minimum 20 GiB proof-build headroom. Admission verifies
 the distribution's registered VHDX path and reads free space through `/mnt/c`,
 never the virtual ext4 free-space report. A mismatched Windows profile stops
 before installation. Under the owner's 2026-11-02 approval, `provision` caps
-`molt-gate` at 80 GiB, trims its filesystem and compacts its VHDX. Root used bytes
+`molt-gate` at 120 GiB (raised from 80 GiB on 2026-11-09 for the runtime release-output
+cell, under the owner's HF-706 approval), trims its filesystem and compacts its VHDX. Root used bytes
 (including Cargo/uv caches) plus 20 GiB build headroom must fit the cap. Only
 `molt-gate` is stopped. With the correct block-device size a subsequent run
 performs no disk mutation; `run` admits but never changes the cap. The declared
@@ -350,6 +351,26 @@ retains original bytes and hashes in
 `<artifact-root>/evidence/trunk-loop/<commit>/<host>/<cell>/<run>/`, preserving
 older results. Recoverable records name exact remote allocations. Nothing
 deletes resources while process closure is unknown.
+
+The run checkout is retired after collection and the archive holds only
+`stage/<cell>/`, so the worker copies each command's declared evidence outputs
+(the paths in the receipt's evidence snapshot) into `stage/<cell>/evidence/`
+before it publishes the archive; the snapshot digests verify the copies.
+
+### Periodic cells and `--if-idle`
+
+A farm family (`executor = "farm"` in `tools/proof_plan.toml`) names no GitHub
+workflow, job or runner: trunk_loop's stage archive and `collect` are its
+evidence transport. The instruction signal (`instruction_signal`,
+`tools/PERF_AUTHORITY.md`) is the first. Its driver is the blocking
+`trunk_loop.py run --host molt-gate --commit HEAD --cell
+performance.instructions --if-idle`, issued from the clean main checkout after a
+fetch (`--no-wait` never collects or retires). `--if-idle` reads the host's
+`trunk-worker.lock` with the disk-maintenance probe (`flock -n "$lock" true`)
+before it retires earlier runs or stages anything; a held lock prints "busy;
+nothing staged, not measured" and exits 0. A lock race lost after the probe is an
+ordinary run that ends `INFRASTRUCTURE`. Landings never wait for or read a
+periodic cell. Automating the trigger is a follow-up (HF-222, F1).
 
 Run-record schema v2 removes the inventory interpreter field. Schema v3 adds
 the acknowledged worker identity. A retained record stays with the exact

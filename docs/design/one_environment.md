@@ -7,6 +7,11 @@ and a small fixed landing suite, in staged deletions.
 
 ## Problem (measured 2026-11-07)
 
+- Development images accumulate until stage 3 lands: the retired HF-694 retention branch's
+  inventory counted 174 images (26.47 GiB) on one host, all under 30 days old, because
+  custody_layout.py keeps them `Regenerable(month)`. Stage 3's single synced environment per
+  key removes the pile-up; until then the cheap lever is that one retention age, not a new
+  cleaner.
 - One checkout had five Python environments (checkout `.venv`, content-keyed development image,
   pinned controller `.venv`, CI's bare provisioned `python3`, each farm host's image). They drifted
   the same day: `.venv` stayed on 3.12.15 after the pin moved to 3.12.16; CI's proof executor had
@@ -24,7 +29,7 @@ and a small fixed landing suite, in staged deletions.
 | Development environment (pin + `dev` and `bench` groups) | every tool, gate, landing | the environment of the default key |
 | One environment per target CPython (3.12, 3.13, 3.14) | `tests/molt_diff.py:247-253`, `tools/compat/backends.py:742-756`, `tools/dev.py:483-499`, CI target-pythons | key `(python=X, groups=default)` |
 | One environment per dependency group (pact-witness, source-build-numpy, source-build-scipy) | `src/molt/cli/source_extension_producer.py:2347`, `tools/proof_queue_pkg/pact.py:171,603`, `command_admission.py:1386-1409` | key `(python=pin, groups=G)` |
-| Interpreter identity probe | `molt compare` (`script_commands.py:1061-1067`), `startup_bench.py:228`, `perf_scoreboard_primitives.py:501`, `cli/deps.py:35`, `python_interpreter.py` | one small module, moved out of the deleted layer |
+| Interpreter identity probe | `molt compare` (`script_commands.py:1061-1067`), `startup_bench.py:228`, `perf_instructions._resolve_cpython`, `cli/deps.py:35`, `python_interpreter.py` | one small module, moved out of the deleted layer |
 | Release interpreter provenance | `tools/release/verify_consumer.py:61-63`, `python_capture.py:54-61` | recorded from the identity probe plus `uv.lock` (already in the release payload, `compiler_payload.py:53,70`) |
 | Receipt identity for gates | `tools/proof_queue_pkg/command_identity.py:34,48,670-724` | `uv.lock` digest plus interpreter version |
 | Non-uv checkout inputs: Acorn, edgebox-typescript, Git hooks | `checkout_provisioning.py:59-61`, `ci.yml:59`, `molt-wasm-ci.yml:66` | plain idempotent install checks with their owners |

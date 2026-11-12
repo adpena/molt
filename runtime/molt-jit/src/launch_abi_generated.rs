@@ -14,7 +14,7 @@ pub(crate) const ALLOCATOR_RESTART_FLAG: &str = "--allocator-restarted";
 /// What the runner writes to its start receipt right before the program starts.
 pub(crate) const START_RECEIPT: &str = "{\"schema\":\"molt.jit-start.v1\"}\n";
 /// The second line of a JIT image starts with this marker.
-pub(crate) const IMAGE_MARKER: &str = "#molt.jit-image.v3";
+pub(crate) const IMAGE_MARKER: &str = "#molt.jit-image.v4";
 
 /// The runtime entry points a native program's launch calls, in the order
 /// `runtime/native_launch_abi.toml` declares, with the C signatures the AOT
@@ -27,6 +27,9 @@ pub(crate) struct RuntimeLaunchApi {
     pub(crate) molt_runtime_init: unsafe extern "C" fn() -> u64,
     pub(crate) molt_runtime_ensure_gil: unsafe extern "C" fn(),
     pub(crate) molt_set_argv: unsafe extern "C" fn(i32, *const *const std::ffi::c_char),
+    pub(crate) molt_attached_context: unsafe extern "C" fn() -> u64,
+    pub(crate) molt_compiled_execution_enter: unsafe extern "C" fn(u64) -> u64,
+    pub(crate) molt_compiled_execution_leave: unsafe extern "C" fn(u64, u64),
     pub(crate) molt_main_exit_status: unsafe extern "C" fn() -> u64,
     pub(crate) molt_runtime_exit: unsafe extern "C" fn(u64) -> u64,
 }
@@ -76,6 +79,21 @@ impl RuntimeLaunchApi {
                     *const u8,
                     unsafe extern "C" fn(i32, *const *const std::ffi::c_char),
                 >(entry("molt_set_argv")?)
+            },
+            molt_attached_context: unsafe {
+                std::mem::transmute::<*const u8, unsafe extern "C" fn() -> u64>(entry(
+                    "molt_attached_context",
+                )?)
+            },
+            molt_compiled_execution_enter: unsafe {
+                std::mem::transmute::<*const u8, unsafe extern "C" fn(u64) -> u64>(entry(
+                    "molt_compiled_execution_enter",
+                )?)
+            },
+            molt_compiled_execution_leave: unsafe {
+                std::mem::transmute::<*const u8, unsafe extern "C" fn(u64, u64)>(entry(
+                    "molt_compiled_execution_leave",
+                )?)
             },
             molt_main_exit_status: unsafe {
                 std::mem::transmute::<*const u8, unsafe extern "C" fn() -> u64>(entry(

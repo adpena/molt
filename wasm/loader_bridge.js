@@ -20,6 +20,25 @@
   const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE = callableTableAbi.active_element_role;
   const CALLABLE_TABLE_VALUE_TYPE_FORMAT = callableTableAbi.value_type_format;
   const UTF8_DECODER = new TextDecoder('utf-8');
+  const executionContextAbi = callableTableAbi.execution_context_abi;
+  if (!executionContextAbi || typeof executionContextAbi.suffix !== 'string') {
+    throw new Error('generated attached execution ABI authority is unavailable');
+  }
+  const compiledExecutionSymbol = logical => logical + executionContextAbi.suffix;
+  // Heap RC, invocation handoff, exception bytes and execution-context headers
+  // all address runtime objects through compiled memory zero. Byte-copy host
+  // bridges do not establish that Python execution invariant.
+  const requireSharedExecutionMemory = (runtimeMemory, appMemory) => {
+    if (!(runtimeMemory instanceof WebAssembly.Memory) || appMemory !== runtimeMemory) {
+      throw new Error('attached compiled execution requires shared app/runtime linear memory');
+    }
+  };
+  const requireSharedExecutionMemoryImport = module => {
+    const memories = WebAssembly.Module.imports(module).filter(entry => entry.kind === 'memory');
+    if (memories.length !== 1 || memories[0].module !== 'env' || memories[0].name !== 'memory') {
+      throw new Error('attached split application must import the shared env.memory');
+    }
+  };
 
   // Resolve the exact generated identities once, before application startup.
   // Adaptation belongs to each host's memory/representation bridge, not to
@@ -45,18 +64,55 @@
     return imports;
   };
 
-  // Canonical runtime ABI: molt_exception_pending is () -> u64 raw 0/1.
+  // Detached status observes the exception byte without initializing or
+  // entering Python execution; attached compiled readers have another ABI.
   // A missing/wrong-shaped export is never evidence of successful execution.
   const runtimeExceptionPending = (instance) => {
-    const pending = instance?.exports?.molt_exception_pending;
+    const pending = instance?.exports?.molt_exception_pending_detached;
     if (typeof pending !== 'function' || pending.length !== 0) {
-      throw new Error('missing or malformed molt_exception_pending startup status export');
+      throw new Error('missing or malformed molt_exception_pending_detached startup status export');
     }
     const status = pending();
     if (status !== 0n && status !== 1n) {
       throw new Error('malformed molt_exception_pending status: expected i64 raw 0 or 1');
     }
     return status === 1n;
+  };
+
+  const requireAppExecutionAbi = (module, generated) => {
+    const schema = generated?.execution_context_abi;
+    if (!schema || typeof schema.section !== 'string' || typeof schema.suffix !== 'string' ||
+        typeof schema.fingerprint !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(schema.fingerprint)) {
+      throw new Error('missing or malformed generated attached execution ABI');
+    }
+    for (const key of ['fingerprint', 'section', 'suffix', 'thread_record_offset']) {
+      if (schema[key] !== executionContextAbi[key]) {
+        throw new Error('attached execution ABI mismatch between manifest and generated host');
+      }
+    }
+    const required = BigInt(schema.fingerprint);
+    if (required < 0n || required > (1n << 64n) - 1n) {
+      throw new Error('malformed attached execution ABI fingerprint');
+    }
+    const sections = WebAssembly.Module.customSections(module, schema.section);
+    if (sections.length !== 1 || sections[0].byteLength !== 8) {
+      throw new Error('application missing exact attached execution ABI section');
+    }
+    const app = new DataView(sections[0]).getBigUint64(0, true);
+    if (app !== required) throw new Error('attached execution ABI mismatch between app and host');
+    return required;
+  };
+  const requireAttachedExecutionAbi = (module, runtimeInstance, generated) => {
+    const required = requireAppExecutionAbi(module, generated);
+    const getter = runtimeInstance?.exports?.molt_attached_context_abi_fingerprint;
+    if (typeof getter !== 'function' || getter.length !== 0) {
+      throw new Error('runtime missing attached execution ABI fingerprint export');
+    }
+    const offered = getter();
+    if (typeof offered !== 'bigint' || BigInt.asUintN(64, offered) !== required) {
+      throw new Error('attached execution ABI mismatch between app, runtime, and host');
+    }
+    return generated.execution_context_abi;
   };
 
   const readVarUint = (view, offset) => {
@@ -739,11 +795,12 @@
 
 
   const callIsolateImportExport = (fn, args) => {
-    if (args.length !== 1) {
-      throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
+    if (args.length !== 2) {
+      throw new TypeError(`molt_isolate_import expects context and one i64 handle, got ${args.length}`);
     }
-    const handle = normalizeI64BridgeValue(args[0], 'molt_isolate_import handle');
-    return normalizeI64BridgeValue(fn(handle), 'molt_isolate_import result');
+    const context = normalizeI64BridgeValue(args[0], 'molt_isolate_import context');
+    const handle = normalizeI64BridgeValue(args[1], 'molt_isolate_import handle');
+    return normalizeI64BridgeValue(fn(context, handle), 'molt_isolate_import result');
   };
 
   const callWithWasmSignature = (fn, signature, args) => {
@@ -761,8 +818,11 @@
   };
 
   const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {
-    const match = /^molt_call_indirect(\d+)$/.exec(name);
-    if (!match) {
+    const logical = typeof name === 'string' && name.endsWith(executionContextAbi.suffix)
+      ? name.slice(0, -executionContextAbi.suffix.length) : '';
+    const match = /^molt_call_indirect(\d+)$/.exec(logical);
+    const execution = callableTableAbi.runtime_execution_abis?.[logical];
+    if (!match || execution?.context !== 'Attached' || execution.physical_symbol !== name) {
       return null;
     }
     const arity = Number(match[1]);
@@ -770,9 +830,16 @@
       return null;
     }
     return {
-      params: Array.from({ length: arity + (includeIndex ? 1 : 0) }, () => 'i64'),
+      params: Array.from({ length: arity + 1 + (includeIndex ? 1 : 0) }, () => 'i64'),
       result: 'i64',
     };
+  };
+
+  const requireCallIndirectImportName = (name) => {
+    if (!callIndirectObjectSignature(name, {includeIndex: true})) {
+      throw new Error(`obsolete or unknown call_indirect execution ABI: ${String(name)}`);
+    }
+    return name;
   };
 
   const runtimeImportByteSpanOutNames = new Set([
@@ -829,7 +896,7 @@
     if (!runtime || !runtimeMemory || !appMemory || appMemory === runtimeMemory) {
       return fn(...args);
     }
-    const [ptrRaw, lenRaw, outRaw] = args;
+    const [context, ptrRaw, lenRaw, outRaw] = args;
     const len = Number(lenRaw);
     if (!Number.isFinite(len) || len < 0) {
       throw new Error(`runtime import ${name} received invalid byte length ${String(lenRaw)}`);
@@ -839,6 +906,7 @@
     const tempOut = allocRuntimeTempBytes(runtime, runtimeMemory, new Uint8Array(8));
     try {
       const result = fn(
+        context,
         Number(tempBytes.payloadPtr),
         BigInt(payload.length),
         Number(tempOut.payloadPtr),
@@ -863,13 +931,14 @@
     allocRuntimeTempBytes,
     freeRuntimeTempBytes,
   }) => {
-    const dispatchArgs = normalizeRuntimeObjectArrayArgImportArgs(args, name);
+    const context = normalizeI64BridgeValue(args[0], `${name} context`);
+    const dispatchArgs = normalizeRuntimeObjectArrayArgImportArgs(args.slice(1), name);
     if (!runtime || !runtimeMemory || !appMemory || appMemory === runtimeMemory) {
-      return fn(...dispatchArgs);
+      return fn(context, ...dispatchArgs);
     }
     const byteLength = objectArrayByteLength(dispatchArgs[2] ?? 0, name);
     if (byteLength === 0) {
-      return fn(...dispatchArgs);
+      return fn(context, ...dispatchArgs);
     }
     const ptr = Number(dispatchArgs[1]);
     if (!Number.isInteger(ptr) || ptr <= 0) {
@@ -883,7 +952,7 @@
     try {
       const bridgedArgs = [...dispatchArgs];
       bridgedArgs[1] = tempArgs.payloadPtr;
-      return fn(...bridgedArgs);
+      return fn(context, ...bridgedArgs);
     } finally {
       freeRuntimeTempBytes(runtime, tempArgs);
     }
@@ -1009,10 +1078,14 @@
     manifestModuleUrl,
     verifyManifestModuleBytes,
     CALLABLE_TABLE_SECTION_NAME,
+    compiledExecutionSymbol,
+    requireSharedExecutionMemory,
+    requireSharedExecutionMemoryImport,
     bindRuntimeFunctionImports,
     callableTableFromModule,
     callableTableSignature,
     callIndirectObjectSignature,
+    requireCallIndirectImportName,
     callIsolateImportExport,
     callRuntimeByteSpanOutImport,
     callRuntimeObjectArrayArgImport,
@@ -1027,6 +1100,8 @@
     readCallableTableAttestation,
     requireWasmCallableTable,
     runtimeExceptionPending,
+    requireAttachedExecutionAbi,
+    requireAppExecutionAbi,
     runtimeImportByteSpanOutNames,
     runtimeImportObjectArrayArgNames,
     verifyCallableTableEntries,

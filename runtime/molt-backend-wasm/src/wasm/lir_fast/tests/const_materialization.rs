@@ -30,7 +30,7 @@ fn trivial_const_return() {
     let func = make_const_return_func(42);
     let output = lower_tir_to_wasm(&func).test_view();
 
-    assert_eq!(output.param_types, vec![]);
+    assert_eq!(output.param_types, vec![ValType::I64]);
     assert_eq!(output.result_types, vec![ValType::I64]);
 
     // Should contain i64.const 42 somewhere.
@@ -191,6 +191,7 @@ fn lir_literal_const_without_result_fails_closed() {
     attrs.insert("s_value".into(), AttrValue::Str("orphan".into()));
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -215,6 +216,7 @@ fn binding_alias_copy_retains_before_forwarding_bits() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: Some(molt_ir::OpKind::BindingAlias),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![ValueId(0)],

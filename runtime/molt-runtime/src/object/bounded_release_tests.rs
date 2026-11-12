@@ -7,8 +7,16 @@ thread_local! {
     static SCOPED_FINALIZERS: Cell<usize> = const { Cell::new(0) };
 }
 
-extern "C" fn drop_scoped_during_finalizer(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn drop_scoped_during_finalizer(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let active = crate::state::execution_tls().terminal_release.get();
         assert!(!active.is_null());
         // This finalizer runs on the last allowed heap frame. A nested scoped
@@ -24,7 +32,14 @@ extern "C" fn drop_scoped_during_finalizer(_self_bits: u64) -> u64 {
             })
         };
         let ptr = obj_from_bits(scoped).as_ptr().unwrap();
-        unsafe { crate::object::accessors::molt_object_field_init(scoped, 0, survivor_bits) };
+        unsafe {
+            crate::object::accessors::molt_object_field_init_attached_body(
+                py,
+                scoped,
+                0,
+                survivor_bits,
+            )
+        };
         assert_eq!(
             unsafe { (*header_from_obj_ptr(survivor)).ref_count_snapshot() },
             2
@@ -43,7 +58,7 @@ extern "C" fn drop_scoped_during_finalizer(_self_bits: u64) -> u64 {
         dec_ref_bits(py, survivor_bits);
         SCOPED_FINALIZERS.with(|count| count.set(count.get() + 1));
         MoltObject::none().bits()
-    })
+    }
 }
 
 #[test]
@@ -55,7 +70,7 @@ fn finalizer_retires_scoped_storage_before_returning_at_the_heap_depth_bound() {
         // this fixture adds no interned-name lookup site.
         let name = MoltObject::from_ptr(crate::alloc_string(py, b"ScopedReleaseFinalizer")).bits();
         let del = MoltObject::from_ptr(crate::alloc_string(py, b"__del__")).bits();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         let callback = crate::builtins::functions::alloc_runtime_function_obj(
             py,
             crate::builtins::functions::runtime_fn_addr(
@@ -65,8 +80,8 @@ fn finalizer_retires_scoped_storage_before_returning_at_the_heap_depth_bound() {
             1,
         );
         let callback = MoltObject::from_ptr(callback).bits();
-        crate::molt_set_attr_name(class, del, callback);
-        let mut chain = crate::molt_object_new_bound(class);
+        crate::molt_set_attr_name_attached_body(py, class, del, callback);
+        let mut chain = crate::molt_object_new_bound_attached_body(py, class);
         // Cross several segments, then reach the finalizer exactly at the
         // bound. None of the loop temporaries retains a chain owner.
         for _ in 0..(RELEASE_DEPTH_LIMIT * 3 - 1) {

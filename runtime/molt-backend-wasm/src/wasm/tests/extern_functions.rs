@@ -126,8 +126,8 @@ fn full_compile_pipeline_preserves_extern_signature_metadata() {
         value_signatures.len()
     );
     let signatures = wasm_type_section_signatures(&wasm);
-    assert_eq!(signatures[import_types["stdlib_void"] as usize], (0, 0));
-    assert_eq!(signatures[import_types["stdlib_value"] as usize], (2, 1));
+    assert_eq!(signatures[import_types["stdlib_void"] as usize], (1, 0));
+    assert_eq!(signatures[import_types["stdlib_value"] as usize], (3, 1));
 }
 
 #[test]
@@ -188,8 +188,8 @@ fn extern_declarations_are_typed_imports_and_direct_calls_use_import_indices() {
     let value_index = imports["stdlib_value"];
     assert_eq!(modules["stdlib_void"], "env");
     assert_eq!(modules["stdlib_value"], "env");
-    assert_eq!(signatures[import_types["stdlib_void"] as usize], (0, 0));
-    assert_eq!(signatures[import_types["stdlib_value"] as usize], (2, 1));
+    assert_eq!(signatures[import_types["stdlib_void"] as usize], (1, 0));
+    assert_eq!(signatures[import_types["stdlib_value"] as usize], (3, 1));
 
     let exports = wasm_function_export_indices(&wasm);
     assert!(!exports.contains_key("stdlib_void"));
@@ -280,7 +280,8 @@ fn extern_declarations_survive_relocatable_symbol_and_table_emission() {
     )
     .wasm;
 
-    for symbol in ["stdlib_void", "stdlib_value"] {
+    for logical in ["stdlib_void", "stdlib_value"] {
+        let symbol = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(logical);
         assert!(
             wasm.windows(symbol.len())
                 .any(|bytes| bytes == symbol.as_bytes()),

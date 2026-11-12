@@ -182,13 +182,13 @@ fn parse_root(
 // ---------------------------------------------------------------------------
 
 /// Returns normalized pathlib parts using the same root provider as splitroot.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_parts(
+pub fn molt_pathlib_parts_attached_body(
+    _py: &molt_runtime_core::PyToken,
     path_bits: u64,
     posix_bits: u64,
     windows_utf16_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let posix = is_truthy(_py, obj_from_bits(posix_bits));
         let windows_utf16 = is_truthy(_py, obj_from_bits(windows_utf16_bits));
         let mut parsed = match parse_root(_py, path_bits, posix, windows_utf16) {
@@ -235,14 +235,14 @@ pub extern "C" fn molt_pathlib_parts(
 }
 
 /// Split original separator spelling; pathlib normalizes its own input first.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_splitroot(
+pub fn molt_path_splitroot_attached_body(
+    _py: &molt_runtime_core::PyToken,
     path_bits: u64,
     posix_bits: u64,
     windows_utf16_bits: u64,
     pathlib_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let posix = is_truthy(_py, obj_from_bits(posix_bits));
         let windows_utf16 = is_truthy(_py, obj_from_bits(windows_utf16_bits));
         let mut parsed = match parse_root(_py, path_bits, posix, windows_utf16) {
@@ -295,9 +295,8 @@ pub extern "C" fn molt_path_splitroot(
 // ---------------------------------------------------------------------------
 
 /// `Path.cwd()` -> str
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_cwd() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_cwd_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         match std::env::current_dir() {
             Ok(p) => path_result(_py, &p, false),
             Err(err) => raise_os_error::<u64>(_py, err, "cwd"),
@@ -306,9 +305,8 @@ pub extern "C" fn molt_pathlib_cwd() -> u64 {
 }
 
 /// `path.resolve()` -> str  (absolute, normalized path)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_resolve(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_resolve_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.resolve", audit_path_arg(path_bits)) {
             return error;
         }
@@ -335,9 +333,11 @@ pub extern "C" fn molt_pathlib_resolve(path_bits: u64) -> u64 {
 }
 
 /// `path.is_mount()` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_is_mount_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -379,9 +379,8 @@ pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
 }
 
 /// `path.iterdir()` -> list[str]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_iterdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.iterdir", audit_path_arg(path_bits)) {
             return error;
         }
@@ -405,9 +404,12 @@ pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
 }
 
 /// `path.touch(exist_ok=True)` -> None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_touch_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    exist_ok_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.touch", audit_path_arg(path_bits)) {
             return error;
         }
@@ -439,9 +441,12 @@ pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 
 
 /// `path.hardlink_to(target)` -> None
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_hardlink_to(path_bits: u64, target_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_hardlink_to_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    target_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.hardlink_to", audit_path_arg(path_bits))
         {
             return error;
@@ -462,17 +467,22 @@ pub extern "C" fn molt_pathlib_hardlink_to(path_bits: u64, target_bits: u64) -> 
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_hardlink_to(_path_bits: u64, _target_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_hardlink_to_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _path_bits: u64,
+    _target_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "hardlink_to")
     })
 }
 
 /// `path.read_bytes()` -> bytes
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_read_bytes_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.read_bytes", audit_path_arg(path_bits))
         {
             return error;
@@ -496,9 +506,12 @@ pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
 }
 
 /// `path.write_bytes(data)` -> int
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_write_bytes_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.write_bytes", audit_path_arg(path_bits))
         {
             return error;
@@ -529,9 +542,8 @@ pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u6
 }
 
 /// `path.owner()` -> str (Unix only)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_owner_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -588,9 +600,8 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
 }
 
 /// `path.group()` -> str (Unix only)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_group_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
@@ -649,9 +660,12 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
 }
 
 /// `path.samefile(other_path)` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_pathlib_samefile_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let left = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -663,6 +677,8 @@ pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 
         paths_same_file(_py, &left, &right, OperationId::PathlibSamefile)
     })
 }
+
+include!("attached_exports_generated/pathlib.rs");
 
 #[cfg(test)]
 mod root_projection_tests {

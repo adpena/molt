@@ -54,6 +54,7 @@ fn live_shape_function() -> TirFunction {
         attrs.insert("value".into(), AttrValue::Int(value));
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -64,6 +65,7 @@ fn live_shape_function() -> TirFunction {
     };
     let op = |opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>| TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -308,6 +310,7 @@ fn exception_handler_function_refuses() {
         .ops
         .push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -333,6 +336,7 @@ fn impure_body_refuses() {
         {
             block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -514,6 +518,7 @@ fn preserved_mapping_mutation_is_not_a_replay_safe_marker() {
         0,
         TirOp {
             origin: Some(molt_ir::OpKind::DictUpdateMissing),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![mapping, mapping],

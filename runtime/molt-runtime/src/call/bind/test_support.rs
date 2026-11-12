@@ -2,7 +2,14 @@
 
 pub(super) static RELEASED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
-pub(super) extern "C" fn record_release(self_bits: u64) -> u64 {
+pub(super) extern "C" fn record_release(__context: u64, self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     RELEASED.lock().unwrap().push(self_bits);
     MoltObject::none().bits()
 }
@@ -28,7 +35,8 @@ impl ReleaseProbes {
         let attrs = [del_bits, finalizer_bits];
         let bases = [crate::builtin_classes(py).object];
         let class_bits = unsafe {
-            crate::object::ops::molt_guarded_class_def(
+            crate::object::ops::molt_guarded_class_def_attached_body(
+                py,
                 name_bits,
                 crate::provenance::abi::expose_address(bases.as_ptr()),
                 bases.len() as u64,
@@ -125,7 +133,7 @@ pub(super) unsafe fn metadata_function(
     }
     let bits = MoltObject::from_ptr(function).bits();
     if builtin {
-        let _ = crate::molt_function_set_builtin(bits);
+        let _ = crate::molt_function_set_builtin_attached_body(py, bits);
         assert!(!crate::exception_pending(py));
     }
     bits
@@ -141,17 +149,21 @@ pub(super) unsafe fn last_owner_call(
 ) -> u64 {
     let (positional_count, keyword_count) = (positional.len() as u64, keywords.len() as u64);
     let builder = match form {
-        super::CallForm::Stack => super::molt_callargs_new(positional_count, keyword_count),
-        super::CallForm::Expanded => {
-            super::arguments::molt_callargs_new_expanded(positional_count, keyword_count)
+        super::CallForm::Stack => {
+            super::molt_callargs_new_attached_body(py, positional_count, keyword_count)
         }
+        super::CallForm::Expanded => super::arguments::molt_callargs_new_expanded_attached_body(
+            py,
+            positional_count,
+            keyword_count,
+        ),
     };
     assert_ne!(builder, 0);
     for &bits in positional {
-        unsafe { super::molt_callargs_push_pos(builder, bits) };
+        unsafe { super::molt_callargs_push_pos_attached_body(py, builder, bits) };
     }
     for &(name, value) in keywords {
-        unsafe { super::molt_callargs_push_kw(builder, name, value) };
+        unsafe { super::molt_callargs_push_kw_attached_body(py, builder, name, value) };
     }
     assert!(!crate::exception_pending(py));
     for &bits in positional
@@ -164,42 +176,96 @@ pub(super) unsafe fn last_owner_call(
     builder
 }
 
-pub(super) extern "C" fn none_of_four(_a: u64, _b: u64, _c: u64, _d: u64) -> i64 {
+pub(super) extern "C" fn none_of_four(__context: u64, _a: u64, _b: u64, _c: u64, _d: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits() as i64
 }
 
-pub(super) extern "C" fn none_of_two(_a: u64, _b: u64) -> i64 {
+pub(super) extern "C" fn none_of_two(__context: u64, _a: u64, _b: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits() as i64
 }
 
-pub(super) extern "C" fn none_of_one(_a: u64) -> i64 {
+pub(super) extern "C" fn none_of_one(__context: u64, _a: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits() as i64
 }
 
-pub(super) extern "C" fn none_of_none() -> i64 {
+pub(super) extern "C" fn none_of_none(__context: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits() as i64
 }
 
 use crate::{dec_ref_bits, obj_from_bits, runtime_state};
 use molt_obj_model::MoltObject;
 
-pub(super) extern "C" fn compiled_init_borrows_self_for_type_call_ic(self_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(super) extern "C" fn compiled_init_borrows_self_for_type_call_ic(
+    __context: u64,
+    self_bits: u64,
+) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    ({
+        let _py = __py;
         assert!(!obj_from_bits(self_bits).is_none());
         MoltObject::none().bits()
     }) as i64
 }
 
-pub(super) extern "C" fn compiled_identity_returns_owned_arg(arg_bits: u64) -> i64 {
-    crate::molt_inc_ref_obj(arg_bits);
+pub(super) extern "C" fn compiled_identity_returns_owned_arg(__context: u64, arg_bits: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_inc_ref_obj_attached_body(__py, arg_bits);
     arg_bits as i64
 }
 
 pub(super) extern "C" fn compiled_second_arg_returns_owned_arg(
+    __context: u64,
     _first_bits: u64,
     second_bits: u64,
 ) -> i64 {
-    crate::molt_inc_ref_obj(second_bits);
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_inc_ref_obj_attached_body(__py, second_bits);
     second_bits as i64
 }
 

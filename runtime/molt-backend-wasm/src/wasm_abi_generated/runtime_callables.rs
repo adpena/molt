@@ -599,7 +599,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_class_frame_exit",
         import: WasmRuntimeImport::ClassFrameExit,
-        arity: 0,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_frame_class_locals_set",
@@ -755,16 +755,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_code_slots_init",
         import: WasmRuntimeImport::CodeSlotsInit,
         arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_trace_enter_slot",
-        import: WasmRuntimeImport::TraceEnterSlot,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_trace_exit",
-        import: WasmRuntimeImport::TraceExit,
-        arity: 0,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_trace_set_line",
@@ -12213,8 +12203,8 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
     },
     ReservedRuntimeCallableSpec {
         index: 22,
-        runtime_name: "molt_cpython_abi_cext_call_trampoline",
-        import: WasmRuntimeImport::CpythonAbiCextCallTrampoline,
+        runtime_name: "molt_cpython_abi_cext_call_trampoline_admitted",
+        import: WasmRuntimeImport::CpythonAbiCextCallTrampolineAdmitted,
         arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::CallFrame,
     },
@@ -12740,8 +12730,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_code_new" => Some(WasmRuntimeImport::CodeNew),
         "molt_code_slot_set" => Some(WasmRuntimeImport::CodeSlotSet),
         "molt_code_slots_init" => Some(WasmRuntimeImport::CodeSlotsInit),
-        "molt_trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
-        "molt_trace_exit" => Some(WasmRuntimeImport::TraceExit),
         "molt_trace_set_line" => Some(WasmRuntimeImport::TraceSetLine),
         "molt_sys_set_version_info" => Some(WasmRuntimeImport::SysSetVersionInfo),
         "molt_print_builtin" => Some(WasmRuntimeImport::PrintBuiltin),
@@ -15414,8 +15402,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_types_prepare_class" => Some(WasmRuntimeImport::TypesPrepareClass),
         "molt_types_resolve_bases" => Some(WasmRuntimeImport::TypesResolveBases),
         "molt_types_new_class" => Some(WasmRuntimeImport::TypesNewClass),
-        "molt_cpython_abi_cext_call_trampoline" => {
-            Some(WasmRuntimeImport::CpythonAbiCextCallTrampoline)
+        "molt_cpython_abi_cext_call_trampoline_admitted" => {
+            Some(WasmRuntimeImport::CpythonAbiCextCallTrampolineAdmitted)
         }
         "molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction),
         "molt_importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),

@@ -644,9 +644,13 @@ fn format_int_underscored(i: i64) -> String {
 // ─── public intrinsics ──────────────────────────────────────────────────────
 
 /// Generate a safe repr with depth and width limits. Returns a string.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pprint_safe_repr(obj_bits: u64, max_depth: u64, max_width: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pprint_safe_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    max_depth: u64,
+    max_width: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let depth = i64_from_bits_default(max_depth, -1);
         let width = i64_from_bits_default(max_width, -1);
         let mut seen = HashSet::new();
@@ -656,15 +660,15 @@ pub extern "C" fn molt_pprint_safe_repr(obj_bits: u64, max_depth: u64, max_width
 }
 
 /// Format an object for pretty-printing. Returns a formatted string.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pprint_format(
+pub(crate) fn molt_pprint_format_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     indent: u64,
     width: u64,
     depth: u64,
     compact: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let indent_val = i64_from_bits_default(indent, 1);
         let width_val = i64_from_bits_default(width, 80);
         let depth_val = i64_from_bits_default(depth, -1);
@@ -686,9 +690,8 @@ pub extern "C" fn molt_pprint_format(
 }
 
 /// Check if repr of an object is readable (can be eval'd back). Returns a boolean.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pprint_isreadable(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pprint_isreadable_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut seen = HashSet::new();
         let (_repr, readable, recursive) = safe_repr_inner(_py, obj_bits, &mut seen, 0, -1, -1);
         let result = readable && !recursive;
@@ -697,9 +700,11 @@ pub extern "C" fn molt_pprint_isreadable(obj_bits: u64) -> u64 {
 }
 
 /// Check if an object contains recursive references. Returns a boolean.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pprint_isrecursive(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pprint_isrecursive_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut seen = HashSet::new();
         let (_repr, _, recursive) = safe_repr_inner(_py, obj_bits, &mut seen, 0, -1, -1);
         MoltObject::from_int(if recursive { 1 } else { 0 }).bits()
@@ -707,8 +712,12 @@ pub extern "C" fn molt_pprint_isrecursive(obj_bits: u64) -> u64 {
 }
 
 /// Full pformat with all options. Returns a formatted string.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pprint_pformat(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub(crate) fn molt_pprint_pformat_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     indent: u64,
     width: u64,
@@ -717,7 +726,7 @@ pub extern "C" fn molt_pprint_pformat(
     sort_dicts: u64,
     underscore_numbers: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let indent_val = i64_from_bits_default(indent, 1);
         let width_val = i64_from_bits_default(width, 80);
         let depth_val = i64_from_bits_default(depth, -1);
@@ -739,3 +748,5 @@ pub extern "C" fn molt_pprint_pformat(
         alloc_string_result(_py, &result)
     })
 }
+
+include!("../attached_exports_generated/builtins/pprint_ext.rs");

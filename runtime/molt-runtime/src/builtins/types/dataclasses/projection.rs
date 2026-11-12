@@ -231,7 +231,8 @@ fn dataclasses_asdict_inner(
         };
         let mut item_bits: Vec<u64> = Vec::with_capacity(field_objs.len());
         for field_obj_bits in field_objs.iter() {
-            let name_bits = molt_getattr_builtin(field_obj_bits, name_name_bits, missing);
+            let name_bits =
+                molt_getattr_builtin_attached_body(_py, field_obj_bits, name_name_bits, missing);
             if exception_pending(_py) || name_bits == missing {
                 dec_ref_bits(_py, name_name_bits);
                 for bits in item_bits {
@@ -239,7 +240,8 @@ fn dataclasses_asdict_inner(
                 }
                 return MoltObject::none().bits();
             }
-            let field_val_bits = molt_getattr_builtin(value_bits, name_bits, missing);
+            let field_val_bits =
+                molt_getattr_builtin_attached_body(_py, value_bits, name_bits, missing);
             if exception_pending(_py) || field_val_bits == missing {
                 dec_ref_bits(_py, name_name_bits);
                 for bits in item_bits {
@@ -378,7 +380,8 @@ fn dataclasses_astuple_inner(
         };
         let mut values: Vec<u64> = Vec::with_capacity(field_objs.len());
         for field_obj_bits in field_objs.iter() {
-            let name_bits = molt_getattr_builtin(field_obj_bits, name_name_bits, missing);
+            let name_bits =
+                molt_getattr_builtin_attached_body(_py, field_obj_bits, name_name_bits, missing);
             if exception_pending(_py) || name_bits == missing {
                 dec_ref_bits(_py, name_name_bits);
                 for bits in values {
@@ -386,7 +389,8 @@ fn dataclasses_astuple_inner(
                 }
                 return MoltObject::none().bits();
             }
-            let field_val_bits = molt_getattr_builtin(value_bits, name_bits, missing);
+            let field_val_bits =
+                molt_getattr_builtin_attached_body(_py, value_bits, name_bits, missing);
             if exception_pending(_py) || field_val_bits == missing {
                 dec_ref_bits(_py, name_name_bits);
                 for bits in values {
@@ -494,9 +498,11 @@ fn dataclasses_astuple_inner(
     dataclasses_deepcopy(_py, value_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_is_dataclass(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dataclasses_is_dataclass_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cls_bits = dataclasses_class_bits(_py, obj_bits);
         let Some(cls_ptr) = obj_from_bits(cls_bits).as_ptr() else {
             return MoltObject::from_bool(false).bits();
@@ -543,9 +549,12 @@ pub extern "C" fn molt_dataclasses_is_dataclass(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_fields(class_or_instance_bits: u64, field_tag_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dataclasses_fields_attached_body(
+    _py: &crate::PyToken<'_>,
+    class_or_instance_bits: u64,
+    field_tag_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
         let cls_bits = dataclasses_class_bits(_py, class_or_instance_bits);
         let Some(fields_dict_bits) = dataclasses_fields_dict_bits(_py, cls_bits, missing) else {
@@ -569,13 +578,13 @@ pub extern "C" fn molt_dataclasses_fields(class_or_instance_bits: u64, field_tag
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_asdict(
+pub(crate) fn molt_dataclasses_asdict_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     dict_factory_bits: u64,
     field_tag_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
         if !dataclasses_is_dataclass_instance(_py, obj_bits, missing) {
             return raise_exception::<_>(
@@ -588,13 +597,13 @@ pub extern "C" fn molt_dataclasses_asdict(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_astuple(
+pub(crate) fn molt_dataclasses_astuple_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     tuple_factory_bits: u64,
     field_tag_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
         if !dataclasses_is_dataclass_instance(_py, obj_bits, missing) {
             return raise_exception::<_>(
@@ -632,7 +641,7 @@ fn dataclasses_replace_impl(
     }
     let fields = dc_attr(py, obj_bits, crate::NameId::DunderDataclassFields)?;
     let fields = dc_dict_fields(py, fields.bits)?;
-    let changes = dc_result(py, molt_dict_from_obj(changes_bits))?;
+    let changes = dc_result(py, molt_dict_from_obj_attached_body(py, changes_bits))?;
     let changes_ptr = obj_from_bits(changes.bits).as_ptr().ok_or(())?;
     for pair in fields.as_chunks::<2>().0 {
         let field = pair[1];
@@ -669,7 +678,7 @@ fn dataclasses_replace_impl(
         }
         let value = dc_result(
             py,
-            crate::builtins::attributes::molt_get_attr_name(obj_bits, name.bits),
+            crate::builtins::attributes::molt_get_attr_name_attached_body(py, obj_bits, name.bits),
         )?;
         if !unsafe { dict_set_in_place(py, changes_ptr, name.bits, value.bits) } {
             return Err(());
@@ -679,15 +688,15 @@ fn dataclasses_replace_impl(
     dc_result(py, call_with_kwargs(py, cls.bits, &[], changes.bits)).map(DcValue::into_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_replace(
+pub(crate) fn molt_dataclasses_replace_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     changes_bits: u64,
     field_tag_bits: u64,
     initvar_tag_bits: u64,
     missing_default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         dataclasses_replace_impl(
             py,
             obj_bits,
@@ -699,3 +708,5 @@ pub extern "C" fn molt_dataclasses_replace(
         .unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
+
+include!("../../../attached_exports_generated/builtins/types/dataclasses/projection.rs");

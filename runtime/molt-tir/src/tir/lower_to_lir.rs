@@ -638,6 +638,7 @@ fn materialize_value_for_type(
         ops.push(LirOp {
             tir_op: TirOp {
                 origin: None,
+                runtime: None,
                 dialect: super::ops::Dialect::Molt,
                 opcode: OpCode::BoxVal,
                 operands: vec![value_id],
@@ -678,6 +679,7 @@ fn materialize_branch_condition(
     ops.push(LirOp {
         tir_op: TirOp {
             origin: None,
+            runtime: None,
             dialect: super::ops::Dialect::Molt,
             opcode: OpCode::Bool,
             operands: vec![cond],
@@ -720,6 +722,7 @@ mod tests {
     fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -737,6 +740,7 @@ mod tests {
     ) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

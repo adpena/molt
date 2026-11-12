@@ -38,6 +38,7 @@ impl TirPass for LicmOnlyPass {
 fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -54,6 +55,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
 fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -109,6 +111,7 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
             }],
             ops: vec![TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![cond_input],
@@ -410,6 +413,7 @@ fn function_parameter_operand_can_hoist() {
         .ops
         .push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![parameter],
@@ -445,6 +449,7 @@ fn loop_block_argument_operand_cannot_hoist() {
         .ops
         .push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![loop_shape.loop_arg],
@@ -483,6 +488,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![entry_cond_input],
@@ -513,6 +519,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
         .ops
         .push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![sibling_value],
@@ -716,6 +723,7 @@ fn fallback_semantic_copy_is_not_hoisted() {
             args: vec![],
             ops: vec![TirOp {
                 origin: Some(molt_ir::OpKind::ModuleGetAttr),
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![module, attr_name],

@@ -130,6 +130,7 @@ mod tests {
             attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
             block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -141,6 +142,7 @@ mod tests {
         for v in extra_vals {
             block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstNone,
                 operands: vec![],

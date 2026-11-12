@@ -203,7 +203,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
     },
     ReservedRuntimeCallableInfo {
         index: 22,
-        runtime_name: "molt_cpython_abi_cext_call_trampoline",
+        runtime_name: "molt_cpython_abi_cext_call_trampoline_admitted",
     },
     ReservedRuntimeCallableInfo {
         index: 23,
@@ -544,7 +544,7 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         19 => Some(molt_types_prepare_class as *const ()),
         20 => Some(molt_types_resolve_bases as *const ()),
         21 => Some(molt_types_new_class as *const ()),
-        22 => Some(molt_cpython_abi_cext_call_trampoline as *const ()),
+        22 => Some(molt_cpython_abi_cext_call_trampoline_admitted as *const ()),
         23 => Some(molt_importlib_import_transaction as *const ()),
         24 => Some(molt_importlib_module_spec_init as *const ()),
         25 => Some(molt_importlib_compiled_loader_create_module as *const ()),
@@ -1399,7 +1399,7 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     assert_runtime_symbol_key(fn_key!(molt_types_prepare_class), RUNTIME_CALLABLE_KEY_BASE, 19, molt_types_prepare_class as *const ());
     assert_runtime_symbol_key(fn_key!(molt_types_resolve_bases), RUNTIME_CALLABLE_KEY_BASE, 20, molt_types_resolve_bases as *const ());
     assert_runtime_symbol_key(fn_key!(molt_types_new_class), RUNTIME_CALLABLE_KEY_BASE, 21, molt_types_new_class as *const ());
-    assert_runtime_symbol_key(fn_key!(molt_cpython_abi_cext_call_trampoline), RUNTIME_CALLABLE_KEY_BASE, 22, molt_cpython_abi_cext_call_trampoline as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_cpython_abi_cext_call_trampoline_admitted), RUNTIME_CALLABLE_KEY_BASE, 22, molt_cpython_abi_cext_call_trampoline_admitted as *const ());
     assert_runtime_symbol_key(fn_key!(molt_importlib_import_transaction), RUNTIME_CALLABLE_KEY_BASE, 23, molt_importlib_import_transaction as *const ());
     assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_init), RUNTIME_CALLABLE_KEY_BASE, 24, molt_importlib_module_spec_init as *const ());
     assert_runtime_symbol_key(fn_key!(molt_importlib_compiled_loader_create_module), RUNTIME_CALLABLE_KEY_BASE, 25, molt_importlib_compiled_loader_create_module as *const ());

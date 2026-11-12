@@ -1,7 +1,8 @@
 use super::add_reloc_sections;
-use super::symbols::is_manifest_call_indirect_import_name;
+use super::symbols::is_manifest_call_indirect_export_symbol;
 use crate::wasm::test_execution::wasm_ld_path;
 use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE};
+use crate::wasm_binary::Function;
 use crate::wasm_binary::{emit_call_indirect, encode_u32_leb128_padded, strip_unused_imports};
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_table::{
@@ -12,10 +13,10 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
+use wasm_encoder::FunctionSection;
 use wasm_encoder::{
-    CodeSection, CustomSection, Encode, EntityType, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, Instruction, Module, RawSection, RefType, TableType,
-    TypeSection,
+    CodeSection, CustomSection, Encode, EntityType, ExportKind, ExportSection, ImportSection,
+    Instruction, Module, RawSection, RefType, TableType, TypeSection,
 };
 use wasmparser::{Parser, Payload};
 
@@ -123,39 +124,130 @@ fn reloc_code_entries(wasm: &[u8], requested_type: u8) -> Vec<(u32, u32)> {
 
 #[test]
 fn call_indirect_symbol_preservation_uses_manifest_membership() {
-    assert!(is_manifest_call_indirect_import_name("molt_call_indirect0"));
-    assert!(is_manifest_call_indirect_import_name(
-        "molt_call_indirect13"
+    assert!(!is_manifest_call_indirect_export_symbol(
+        "molt_call_indirect0"
     ));
-    assert!(!is_manifest_call_indirect_import_name(
+    assert!(!is_manifest_call_indirect_export_symbol(
         "molt_call_indirect99"
     ));
-    assert!(!is_manifest_call_indirect_import_name("molt_call_indirect"));
+    assert!(!is_manifest_call_indirect_export_symbol(
+        "molt_call_indirect"
+    ));
+    for spec in crate::wasm_abi::CALL_INDIRECT_IMPORTS {
+        assert!(is_manifest_call_indirect_export_symbol(
+            &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(spec.import_name)
+        ));
+    }
+}
+
+#[test]
+fn attached_python_export_does_not_alias_a_runtime_linker_symbol() {
+    use molt_ir::runtime_callable_abi_generated::CompiledExecutionEntry;
+    let runtime_import = crate::wasm_abi_generated::WasmRuntimeImport::TypesBootstrap;
+    let public_name = runtime_import.execution_abi().physical_symbol;
+    let mut types = TypeSection::new();
+    types
+        .ty()
+        .function([wasm_encoder::ValType::I64], [wasm_encoder::ValType::I64]);
+    let mut imports = ImportSection::new();
+    imports.import(
+        RUNTIME_IMPORT_MODULE,
+        runtime_import.name(),
+        EntityType::Function(0),
+    );
+    let mut funcs = FunctionSection::new();
+    for _ in 0..=CompiledExecutionEntry::ALL.len() {
+        funcs.function(0);
+    }
+    let mut exports = ExportSection::new();
+    exports.export(public_name, ExportKind::Func, 1);
+    for (index, entry) in CompiledExecutionEntry::ALL.iter().enumerate() {
+        exports.export(entry.physical_symbol(), ExportKind::Func, index as u32 + 2);
+    }
+    let mut code = CodeSection::new();
+    for _ in 0..=CompiledExecutionEntry::ALL.len() {
+        let mut body = Function::new([]);
+        body.instruction(&Instruction::LocalGet(0));
+        crate::wasm_binary::emit_call(&mut body, true, 0);
+        body.instruction(&Instruction::End);
+        code.function(&body);
+    }
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&imports);
+    module.section(&funcs);
+    module.section(&exports);
+    module.section(&code);
+    let object = add_reloc_sections(module.finish(), &[], &[], &[]);
+
+    let temp = std::env::temp_dir().join(format!(
+        "molt-wasm-symbol-collision-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir(&temp).expect("create symbol collision test directory");
+    struct RemoveTemp(std::path::PathBuf);
+    impl Drop for RemoveTemp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _remove_temp = RemoveTemp(temp.clone());
+    let input = temp.join("input.wasm");
+    fs::write(&input, object).expect("write symbol collision object");
+    let output = Command::new(wasm_ld_path())
+        .arg("--no-entry")
+        .arg("--allow-undefined")
+        .args(
+            CompiledExecutionEntry::ALL
+                .iter()
+                .map(|entry| format!("--export={}", entry.physical_symbol())),
+        )
+        .arg("-o")
+        .arg(temp.join("linked.wasm"))
+        .arg(&input)
+        .output()
+        .expect("run wasm-ld for distinct application and runtime symbols");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
 fn reloc_symbol_table_preserves_native_callable_import_symbols() {
     let mut types = TypeSection::new();
-    types.ty().function([], []);
+    types.ty().function([wasm_encoder::ValType::I64], []);
+    types
+        .ty()
+        .function([wasm_encoder::ValType::I64], [wasm_encoder::ValType::I64]);
+    types.ty().function([], [wasm_encoder::ValType::I32]);
 
     let mut imports = ImportSection::new();
     imports.import(
         RUNTIME_IMPORT_MODULE,
         "types_bootstrap",
-        EntityType::Function(0),
+        EntityType::Function(1),
     );
     imports.import(
         NATIVE_CALLABLE_IMPORT_MODULE,
         "PyInit__nd_image",
-        EntityType::Function(0),
+        EntityType::Function(2),
     );
 
     let mut funcs = FunctionSection::new();
     funcs.function(0);
 
     let mut body = Function::new([]);
+    body.instruction(&Instruction::LocalGet(0));
     body.instruction(&Instruction::Call(0));
+    body.instruction(&Instruction::Drop);
     body.instruction(&Instruction::Call(1));
+    body.instruction(&Instruction::Drop);
     body.instruction(&Instruction::End);
     let mut codes = CodeSection::new();
     codes.function(&body);
@@ -167,6 +259,12 @@ fn reloc_symbol_table_preserves_native_callable_import_symbols() {
     module.section(&codes);
 
     let relocated = add_reloc_sections(module.finish(), &[], &[], &[]);
+    assert!(bytes_contain_ascii(
+        &relocated,
+        crate::wasm_abi_generated::WasmRuntimeImport::TypesBootstrap
+            .execution_abi()
+            .physical_symbol
+    ));
     assert!(
         bytes_contain_ascii(&relocated, "PyInit__nd_image"),
         "native callable import symbol must be preserved for object-closure linking"
@@ -176,15 +274,18 @@ fn reloc_symbol_table_preserves_native_callable_import_symbols() {
 #[test]
 fn reloc_symbol_table_preserves_user_function_import_symbols() {
     let mut types = TypeSection::new();
-    types.ty().function([], []);
+    types.ty().function([wasm_encoder::ValType::I64], []);
 
     let mut imports = ImportSection::new();
-    imports.import("env", "stdlib_external", EntityType::Function(0));
+    let physical =
+        molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("stdlib_external");
+    imports.import("env", &physical, EntityType::Function(0));
 
     let mut funcs = FunctionSection::new();
     funcs.function(0);
 
     let mut body = Function::new([]);
+    body.instruction(&Instruction::LocalGet(0));
     body.instruction(&Instruction::Call(0));
     body.instruction(&Instruction::End);
     let mut codes = CodeSection::new();
@@ -198,7 +299,7 @@ fn reloc_symbol_table_preserves_user_function_import_symbols() {
 
     let relocated = add_reloc_sections(module.finish(), &[], &[], &[]);
     assert!(
-        bytes_contain_ascii(&relocated, "stdlib_external"),
+        bytes_contain_ascii(&relocated, &physical),
         "canonical env user-function import symbol must survive relocatable emission"
     );
 }

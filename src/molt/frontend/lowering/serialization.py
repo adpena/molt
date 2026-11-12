@@ -517,28 +517,9 @@ class SerializationMixin(
         ops: list[MoltOp],
         *,
         function_name: str | None = None,
-        run_midend: bool = True,
         module_init_symbol: str | None = None,
     ) -> list[SimpleIROp]:
-        if function_name is not None:
-            self._active_midend_function_name = function_name
-        else:
-            self._active_midend_function_name = "<direct>"
         diagnostic_function = function_name or "<direct>"
-        for op in ops:
-            validate_frontend_kind(op.kind, diagnostic_function)
-        if run_midend:
-            input_op_count = len(ops)
-            counter_baseline = dict(self.midend_stats)
-            # A second serialization is a new invocation, not a continuation of
-            # a previous body's outcome. Internal retries retain their losses.
-            self.midend_policy_outcomes_by_function.pop(diagnostic_function, None)
-            ops = self._run_ir_midend_passes(ops)
-            self._record_midend_coverage(
-                input_ops=input_op_count,
-                output_ops=len(ops),
-                counter_baseline=counter_baseline,
-            )
         json_ops: list[SimpleIROp] = []
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         function_owns_frame = self._function_needs_frame_trace(function_name)
@@ -668,11 +649,8 @@ class SerializationMixin(
     def to_json(
         self,
         *,
-        midend_stage: Literal["pre-midend", "post-midend"] = "post-midend",
         scope: Literal["program", "module"] = "program",
     ) -> dict[str, Any]:
-        if midend_stage not in {"pre-midend", "post-midend"}:
-            raise ValueError(f"unsupported IR serialization stage: {midend_stage}")
         if scope not in {"program", "module"}:
             raise ValueError(f"unsupported IR serialization scope: {scope}")
         module_init_symbol = (
@@ -687,7 +665,6 @@ class SerializationMixin(
             json_ops = self.map_ops_to_json(
                 data["ops"],
                 function_name=name,
-                run_midend=midend_stage == "post-midend",
                 module_init_symbol=module_init_symbol,
             )
             func_entry: dict[str, Any] = {
@@ -759,7 +736,6 @@ class SerializationMixin(
             funcs_json.append(func_entry)
             if metadata:
                 function_metadata[func_entry["name"]] = metadata
-        self._maybe_report_midend_stats()
         from molt.frontend.lowering.frame_locations import publish_frame_locations
 
         publication_anchors = {

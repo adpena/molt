@@ -38,9 +38,9 @@ use crate::state::runtime_state::{
     StatefulLocalSlot, StatefulLocalsLayout, StatefulLocalsLease, release_stateful_locals_layout,
 };
 use crate::{
-    FRAME_STACK, PyToken, TYPE_ID_GENERATOR, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs,
-    dec_ref_bits, exception_pending, inc_ref_bits, is_missing_bits, missing_bits, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, to_i64,
+    PyToken, TYPE_ID_GENERATOR, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs, dec_ref_bits,
+    exception_pending, inc_ref_bits, is_missing_bits, missing_bits, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, to_i64,
 };
 
 /// Edges retained across an allocation that may run finalizers. Released
@@ -180,13 +180,13 @@ fn parse_layout(
 }
 
 /// Publish the compiler's immutable locals layout for one exact poll target.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stateful_locals_register(
+pub(crate) fn molt_stateful_locals_register_attached_body(
+    _py: &crate::PyToken<'_>,
     fn_ptr: u64,
     names_bits: u64,
     layout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if fn_ptr == 0 {
             return MoltObject::none().bits();
         }
@@ -875,9 +875,9 @@ pub(crate) unsafe fn activation_frame_clear(
             || (task, None),
             || {
                 let result = if generator {
-                    crate::async_rt::generators::molt_generator_close(task)
+                    crate::async_rt::generators::molt_generator_close_attached_body(py, task)
                 } else {
-                    crate::async_rt::awaitable::molt_coroutine_close_method(task)
+                    crate::async_rt::awaitable::molt_coroutine_close_method_attached_body(py, task)
                 };
                 dec_ref_bits(py, result);
             },
@@ -899,7 +899,7 @@ pub(crate) unsafe fn activation_frame_clear(
 /// consume, and no user code runs.
 pub(crate) struct ActivationFrameScope<'a, 'py> {
     py: &'a PyToken<'py>,
-    depth: Option<usize>,
+    record: Option<super::records::FrameRecord>,
 }
 
 impl<'a, 'py> ActivationFrameScope<'a, 'py> {
@@ -913,38 +913,45 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
             crate::object::aux_header::object_frame_context_bits(ptr);
         if code_bits == 0 {
             // Runtime-native tasks own no Python frame to report.
-            return Ok(Self { py, depth: None });
+            return Ok(Self { py, record: None });
         }
         match admit_compiled_namespace(py, code_bits, globals_bits) {
             Err(()) => return Err(()),
-            Ok(None) => return Ok(Self { py, depth: None }),
+            Ok(None) => return Ok(Self { py, record: None }),
             Ok(Some(_)) => {}
         }
         let task = MoltObject::from_ptr(ptr).bits();
         for bits in [code_bits, globals_bits, builtins_bits, task] {
             inc_ref_bits(py, bits);
         }
-        super::frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, task);
-        if !super::frame_stack_enter_homes(py, super::FramePlan::default()) {
+        if !super::frame_stack_enter(
+            py,
+            code_bits,
+            globals_bits,
+            builtins_bits,
+            task,
+            super::FramePlan::default(),
+        ) {
             super::frame_stack_pop(py);
             crate::record_memory_error_without_allocation(py);
             return Err(());
         }
-        let depth = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
         Ok(Self {
             py,
-            depth: Some(depth),
+            record: super::records::top(),
         })
     }
 }
 
 impl Drop for ActivationFrameScope<'_, '_> {
     fn drop(&mut self) {
-        let Some(depth) = self.depth else {
+        if self.record.is_none() {
             return;
-        };
-        let len = FRAME_STACK.with(|stack| stack.borrow().len());
-        assert_eq!(len, depth + 1, "activation frame custody is not LIFO");
+        }
+        assert!(
+            super::records::top() == self.record,
+            "activation frame custody is not LIFO"
+        );
         super::frame_stack_pop(self.py);
     }
 }
@@ -974,9 +981,8 @@ fn active_locals_layout<'a, 'py>(
 /// reenter Python. Constructor arguments and captured free cells remain intact.
 /// A prefix a frame proxy initialized before the body started (writing a body
 /// local of the created activation) is adopted as it stands.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_begin() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_locals_begin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some((owner, layout)) = active_locals_layout(py) else {
             return MoltObject::none().bits();
         };
@@ -1002,9 +1008,12 @@ pub extern "C" fn molt_frame_locals_begin() -> u64 {
 
 /// Atomically publish one prologue cell and its interpretation before releasing
 /// a displaced argument. The immutable ordinal validates publication order.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_cell_publish(offset_bits: u64, cell_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_frame_cell_publish_attached_body(
+    _py: &crate::PyToken<'_>,
+    offset_bits: u64,
+    cell_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some((owner, layout)) = active_locals_layout(py) else {
             return MoltObject::none().bits();
         };
@@ -1048,3 +1057,5 @@ pub extern "C" fn molt_frame_cell_publish(offset_bits: u64, cell_bits: u64) -> u
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/builtins/frames/activation.rs");

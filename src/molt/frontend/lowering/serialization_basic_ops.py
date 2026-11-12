@@ -487,12 +487,18 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 d["end_col_offset"] = op.end_col_offset
             ctx.json_ops.append(d)
         elif op.kind == FrontendKinds.TRACE_ENTER_SLOT:
-            ctx.json_ops.append(
-                {
-                    "kind": "trace_enter_slot",
-                    "s_value": ctx.code_owner_symbol(op.args[0]),
-                }
-            )
+            symbol = ctx.code_owner_symbol(op.args[0])
+            if len(op.args) > 1:
+                # A synchronous frame's home count and clear order.
+                ctx.json_ops.append(
+                    {
+                        "kind": "trace_enter_slot",
+                        "s_value": symbol,
+                        "value": op.args[1],
+                    }
+                )
+            else:
+                ctx.json_ops.append({"kind": "trace_enter_slot", "s_value": symbol})
         elif op.kind == FrontendKinds.TRACE_EXIT:
             ctx.json_ops.append({"kind": "trace_exit"})
         elif op.kind in _SERIALIZE_BASIC_OP_KINDS_11:

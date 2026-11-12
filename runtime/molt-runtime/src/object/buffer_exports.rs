@@ -81,7 +81,7 @@ pub(crate) fn acquire_owner(py: &PyToken<'_>, source: u64) -> Result<u64, ()> {
         if let Some(ptr) = crate::obj_from_bits(source).as_ptr() {
             match crate::object_type_id(ptr) {
                 crate::TYPE_ID_FOREIGN => {
-                    let view = super::ops_memoryview::molt_memoryview_new(source);
+                    let view = super::ops_memoryview::molt_memoryview_new_attached_body(py, source);
                     if crate::exception_pending(py) {
                         return Err(());
                     }
@@ -201,7 +201,7 @@ impl<'scope> CallbackMemoryView<'scope> {
             return Err(crate::MoltObject::none().bits());
         }
         let format_bits = crate::MoltObject::from_ptr(format).bits();
-        let _format = crate::PtrDropGuard::new(format);
+        let _format = crate::PtrDropGuard::new(py, format);
         let Some(mut storage) = super::memoryview::TypedStridedStorage::one_dim(
             data,
             matches!(access, CallbackMemoryViewAccess::ReadOnly),
@@ -326,7 +326,8 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
             }
         }
         let mut export = super::memoryview::MoltBufferView::default();
-        if unsafe { crate::c_api::molt_buffer_acquire(source, &mut export) } != 0 {
+        if unsafe { crate::c_api::molt_buffer_acquire_attached_body(py, source, &mut export) } != 0
+        {
             return Err(if crate::exception_pending(py) {
                 BufferAccessError::Pending
             } else {
@@ -510,7 +511,7 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
 impl Drop for ScopedBuffer<'_, '_> {
     fn drop(&mut self) {
         if self.lease.is_none() {
-            unsafe { crate::c_api::molt_buffer_release(&mut self.export) };
+            unsafe { crate::c_api::molt_buffer_release_attached_body(self.py, &mut self.export) };
         }
     }
 }

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -50,7 +52,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let pair = self
                 .backend
                 .builder
-                .build_call(decl, &[lhs.into(), rhs.into()], "checked_add")
+                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_add")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -72,7 +74,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // branch condition (no truthiness call, no NaN-box round-trip).
             self.value_types.insert(flag_id, TirType::Bool);
         } else {
-            let sum = self.emit_boxed_binary_fallback("molt_add", lhs_id, rhs_id);
+            let sum = self.emit_boxed_binary_fallback(RuntimeFn::Add, lhs_id, rhs_id);
             self.values.insert(sum_id, sum);
             self.value_types.insert(sum_id, TirType::DynBox);
             let false_flag = self.backend.context.bool_type().const_zero();
@@ -130,7 +132,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let pair = self
                 .backend
                 .builder
-                .build_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
+                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -152,7 +154,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // branch condition (no truthiness call, no NaN-box round-trip).
             self.value_types.insert(flag_id, TirType::Bool);
         } else {
-            let prod = self.emit_boxed_binary_fallback("molt_mul", lhs_id, rhs_id);
+            let prod = self.emit_boxed_binary_fallback(RuntimeFn::Mul, lhs_id, rhs_id);
             self.values.insert(prod_id, prod);
             self.value_types.insert(prod_id, TirType::DynBox);
             let false_flag = self.backend.context.bool_type().const_zero();
@@ -335,14 +337,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         // ── Slow path: divisor == 0 ⇒ boxed runtime raises ZeroDivisionError. ──
         self.backend.builder.position_at_end(slow_bb);
-        let rt_name = match name {
-            OpKind::Div => "molt_div",
-            OpKind::Floordiv => "molt_floordiv",
-            OpKind::Mod => "molt_mod",
-            other => unreachable!("emit_i64_divrem_zero_guarded called with {other:?}"),
-        };
         let boxed = self
-            .emit_boxed_binary_fallback(rt_name, op.operands[0], op.operands[1])
+            .emit_boxed_binary_fallback(Self::numeric_runtime(name), op.operands[0], op.operands[1])
             .into_int_value();
         // The runtime raised; this value is unreachable-but-typed. Convert the
         // DynBox bits to the fast lane's carrier so the phi types line up.
@@ -486,13 +482,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap();
         let fast_pred = self.backend.builder.get_insert_block().unwrap();
         self.backend.builder.position_at_end(slow);
-        let runtime_name = if name == OpKind::Div {
-            "molt_div"
-        } else {
-            "molt_mod"
-        };
         let boxed = self
-            .emit_boxed_binary_fallback(runtime_name, op.operands[0], op.operands[1])
+            .emit_boxed_binary_fallback(Self::numeric_runtime(name), op.operands[0], op.operands[1])
             .into_int_value();
         // Zero dispatch raises; the dead value still has the phi's carrier type.
         let slow_value = self
@@ -551,12 +542,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // `molt_mul`), which is BigInt-correct, mirroring the native and WASM
         // backends.
         let int_inline_safe = self.repr_facts.is_inline_safe_int(result_id);
+        // The sum or difference of two inline-safe operands is exact in i64
+        // (HF-821): when the plan carries it as the full-range raw tier, the
+        // machine instruction is exact and cannot wrap, and the result boxes
+        // through the full-range path. Mul never takes this lane.
+        let exact_sum = matches!(name, OpKind::Add | OpKind::Sub)
+            && self.repr_facts.is_full_deopt_int(result_id)
+            && self.repr_facts.is_inline_safe_int(lhs_id)
+            && self.repr_facts.is_inline_safe_int(rhs_id);
+        let nsw = nsw || exact_sum;
 
         let (val, out_ty) = match (&lhs_ty, &rhs_ty, name) {
             // I64 + I64 -> I64 (direct machine instruction).
             // When `nsw` is set, use build_int_nsw_add to tell LLVM the
             // result is guaranteed not to overflow as a signed i64.
-            (TirType::I64, TirType::I64, OpKind::Add) if int_inline_safe => {
+            (TirType::I64, TirType::I64, OpKind::Add) if int_inline_safe || exact_sum => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -567,7 +567,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, OpKind::Sub) if int_inline_safe => {
+            (TirType::I64, TirType::I64, OpKind::Sub) if int_inline_safe || exact_sum => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -662,43 +662,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // above stay on the binary instruction because builtin numerics have
             // no in-place dunder (so the result is byte-identical there).
             _ => {
-                let is_inplace = opcode_uses_boxed_runtime_inplace_dispatch_table(op.opcode)
-                    || op.origin.is_some_and(|k| {
-                        matches!(
-                            k,
-                            OpKind::InplaceAdd
-                                | OpKind::InplaceBitAnd
-                                | OpKind::InplaceBitOr
-                                | OpKind::InplaceBitXor
-                                | OpKind::InplaceDiv
-                                | OpKind::InplaceFloordiv
-                                | OpKind::InplaceLshift
-                                | OpKind::InplaceMatmul
-                                | OpKind::InplaceMod
-                                | OpKind::InplaceMul
-                                | OpKind::InplacePow
-                                | OpKind::InplaceRshift
-                                | OpKind::InplaceSub
-                        )
-                    });
-                let rt_name = match (name, is_inplace) {
-                    (OpKind::Add, false) => "molt_add",
-                    (OpKind::Add, true) => "molt_inplace_add",
-                    (OpKind::Sub, false) => "molt_sub",
-                    (OpKind::Sub, true) => "molt_inplace_sub",
-                    (OpKind::Mul, false) => "molt_mul",
-                    (OpKind::Mul, true) => "molt_inplace_mul",
-                    (OpKind::Div, false) => "molt_div",
-                    (OpKind::Div, true) => "molt_inplace_div",
-                    (OpKind::Floordiv, false) => "molt_floordiv",
-                    (OpKind::Floordiv, true) => "molt_inplace_floordiv",
-                    (OpKind::Mod, false) => "molt_mod",
-                    (OpKind::Mod, true) => "molt_inplace_mod",
-                    (OpKind::Pow, false) => "molt_pow",
-                    (OpKind::Pow, true) => "molt_inplace_pow",
-                    _ => unreachable!("unknown arith op: {}", name),
-                };
-                let v = self.emit_boxed_binary_fallback(rt_name, lhs_id, rhs_id);
+                let v = self.emit_boxed_binary_fallback(
+                    Self::boxed_numeric_runtime(op, name),
+                    lhs_id,
+                    rhs_id,
+                );
                 (v, TirType::DynBox)
             }
         };
@@ -754,7 +722,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 use inkwell::FloatPredicate;
                 let pred = match name {
                     OpKind::Eq => FloatPredicate::OEQ,
-                    OpKind::Ne => FloatPredicate::ONE,
+                    // Python: `nan != nan` is True, so Ne is unordered-or-unequal.
+                    OpKind::Ne => FloatPredicate::UNE,
                     OpKind::Lt => FloatPredicate::OLT,
                     OpKind::Le => FloatPredicate::OLE,
                     OpKind::Gt => FloatPredicate::OGT,
@@ -774,16 +743,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 (v.into(), TirType::Bool)
             }
             _ => {
-                let rt_name = match name {
-                    OpKind::Eq => "molt_eq",
-                    OpKind::Ne => "molt_ne",
-                    OpKind::Lt => "molt_lt",
-                    OpKind::Le => "molt_le",
-                    OpKind::Gt => "molt_gt",
-                    OpKind::Ge => "molt_ge",
-                    _ => unreachable!(),
-                };
-                let v = self.emit_boxed_binary_fallback(rt_name, lhs_id, rhs_id);
+                let v =
+                    self.emit_boxed_binary_fallback(Self::numeric_runtime(name), lhs_id, rhs_id);
                 (v, TirType::DynBox)
             }
         };
@@ -796,32 +757,40 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_identity(&mut self, op: &crate::tir::ops::TirOp) {
         let result_id = op.results[0];
-        let negate = op.opcode == OpCode::IsNot;
-        // Identity compares Python words, not machine carriers: a raw false
-        // is zero, while a boxed False has the boolean tag. Use the same
-        // operation-local materialization/custody as every borrowing consumer.
+        let invert = op.opcode == OpCode::IsNot;
+        let i64_ty = self.backend.context.i64_type();
+        // Identity consumes object words, not raw register payloads: a boxed
+        // False and a raw i1 zero denote the same singleton. The shared operand
+        // custody also boxes each full-width integer once and retires its owner.
         let word = self
-            .with_borrowed_boxed_operands(&op.operands, "identity", |this, words, _| {
-                let equal = this
+            .with_borrowed_boxed_operands(&op.operands, "identity", |this, words, name| {
+                let cmp = this
                     .backend
                     .builder
                     .build_int_compare(inkwell::IntPredicate::EQ, words[0], words[1], "is")
                     .unwrap();
-                let result = if negate {
-                    this.backend.builder.build_not(equal, "is_not").unwrap()
+                let flag = if invert {
+                    this.backend.builder.build_not(cmp, "is_not").unwrap()
                 } else {
-                    equal
+                    cmp
                 };
                 this.backend
                     .builder
-                    .build_int_z_extend(result, this.backend.context.i64_type(), "identity_word")
+                    .build_int_z_extend(flag, i64_ty, name)
                     .unwrap()
             })
             .into_int_value();
+        // Failed materialization returns None with the first error pending.
+        // Only a committed machine 1 is true, including for `is not`.
         let val = self
             .backend
             .builder
-            .build_int_truncate(word, self.backend.context.bool_type(), "identity_bool")
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                word,
+                i64_ty.const_int(1, false),
+                "identity_bool",
+            )
             .unwrap();
         self.values.insert(result_id, val.into());
         self.value_types.insert(result_id, TirType::Bool);
@@ -865,7 +834,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let truthy = self
             .backend
             .builder
-            .build_call(truthy_fn, &[val.into()], "truthy")
+            .build_execution_call(truthy_fn, &[val.into()], "truthy")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
@@ -893,19 +862,33 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// through one custody, and the owned result is the operator's value.
     fn emit_boxed_binary_fallback(
         &mut self,
-        symbol: &str,
+        function: RuntimeFn,
         lhs: ValueId,
         rhs: ValueId,
     ) -> BasicValueEnum<'ctx> {
-        let callee = self.ensure_runtime_i64_fn(symbol, 2);
+        let callee = self.ensure_runtime_import(function);
         self.borrowed_runtime_call_value(
             callee,
             &[RuntimeArg::Operand(lhs), RuntimeArg::Operand(rhs)],
             false,
             "binary",
-            symbol,
+            function.symbol(),
         )
         .into()
+    }
+
+    /// The runtime entry of a numeric op `name`, from the one generated table.
+    fn numeric_runtime(name: OpKind) -> RuntimeFn {
+        molt_ir::runtime_fn_generated::numeric_runtime_fn(name)
+            .unwrap_or_else(|| unreachable!("{name} has no numeric runtime entry"))
+    }
+
+    /// The runtime entry that implements `op` on boxed operands
+    /// (`TirOp::numeric_runtime`), else the entry of the binary `name` a
+    /// preserved carrier was routed by.
+    fn boxed_numeric_runtime(op: &TirOp, name: OpKind) -> RuntimeFn {
+        op.numeric_runtime()
+            .unwrap_or_else(|| Self::numeric_runtime(name))
     }
 
     // ── Boolean selection (and / or) ──
@@ -1049,7 +1032,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let truthy = self
                     .backend
                     .builder
-                    .build_call(truthy_fn, &[bits.into()], "truthy")
+                    .build_execution_call(truthy_fn, &[bits.into()], "truthy")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()
@@ -1148,29 +1131,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // path to `molt_inplace_<op>` so `__ilshift__`/`__ior__`/… is
                 // tried before the binary `__op__`/`__rop__` chain. The fast int
                 // lane above is unchanged (builtin int has no in-place dunder).
-                let is_inplace = op.origin.is_some_and(|k| {
-                    matches!(
-                        k,
-                        OpKind::InplaceAdd
-                            | OpKind::InplaceBitAnd
-                            | OpKind::InplaceBitOr
-                            | OpKind::InplaceBitXor
-                            | OpKind::InplaceDiv
-                            | OpKind::InplaceFloordiv
-                            | OpKind::InplaceLshift
-                            | OpKind::InplaceMatmul
-                            | OpKind::InplaceMod
-                            | OpKind::InplaceMul
-                            | OpKind::InplacePow
-                            | OpKind::InplaceRshift
-                            | OpKind::InplaceSub
-                    )
-                });
-                let rt_name = if is_inplace {
-                    format!("molt_inplace_{}", name)
-                } else {
-                    format!("molt_{}", name)
-                };
                 // The runtime bitwise entries take NaN-BOXED operands. A raw
                 // `TirType::I64` operand (e.g. the `4` in `x <<= 4`) must be boxed
                 // as a borrowed operand, NOT passed through `ensure_i64`
@@ -1179,7 +1139,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // `emit_binary_arith`'s boxed fallback; using `ensure_i64` here
                 // was a latent miscompile of `<<`/`>>`/bitwise on a raw-int
                 // operand, now exposed by the `<<=`/`>>=` in-place dunder path.
-                let v = self.emit_boxed_binary_fallback(&rt_name, lhs_id, rhs_id);
+                let v = self.emit_boxed_binary_fallback(
+                    Self::boxed_numeric_runtime(op, name),
+                    lhs_id,
+                    rhs_id,
+                );
                 (v, TirType::DynBox)
             }
         };
@@ -1252,17 +1216,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 (v.into(), TirType::I64)
             }
             _ => {
-                let rt_name = match name {
-                    OpKind::Neg => "molt_neg",
-                    OpKind::Pos => "molt_pos",
-                    OpKind::Not => "molt_not",
-                    OpKind::Invert => "molt_invert",
-                    _ => unreachable!(),
+                let function = match name {
+                    OpKind::Not => RuntimeFn::Not,
+                    numeric => Self::numeric_runtime(numeric),
                 };
                 // Runtime unary entries borrow boxed objects, not widened
                 // machine bits. In particular, ~bool needs its Bool tag for
                 // both integer semantics and the runtime deprecation warning.
-                let func = self.ensure_runtime_i64_fn(rt_name, 1);
+                let func = self.ensure_runtime_import(function);
                 let v = self.borrowed_runtime_call_value(
                     func,
                     &[RuntimeArg::Operand(operand_id)],
@@ -1300,6 +1261,7 @@ mod numeric_family_tests {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],

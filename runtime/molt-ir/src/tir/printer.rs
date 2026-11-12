@@ -154,6 +154,10 @@ fn print_op(op: &TirOp) -> String {
         Some(origin) => format!(" origin={origin}{attrs_str}"),
         None => attrs_str,
     };
+    let attrs_str = match op.runtime {
+        Some(runtime) => format!(" runtime={}{attrs_str}", runtime.symbol()),
+        None => attrs_str,
+    };
 
     // Source span.
     let span_str = if let Some((lo, hi)) = op.source_span {
@@ -296,6 +300,16 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::BoxVal => "box_val",
         OpCode::UnboxVal => "unbox_val",
         OpCode::TypeGuard => "type_guard",
+        OpCode::IsInlineInt => "is_inline_int",
+        OpCode::UnboxInlineInt => "unbox_inline_int",
+        OpCode::IsBoolWord => "is_bool_word",
+        OpCode::IsFloatWord => "is_float_word",
+        OpCode::UnboxFloatWord => "unbox_float_word",
+        OpCode::UnboxBoolWord => "unbox_bool_word",
+        OpCode::BoxInlineInt => "box_inline_int",
+        OpCode::CodeIs => "code_is",
+        OpCode::DirectCall => "direct_call",
+        OpCode::CallRuntime => "call_runtime",
         OpCode::IncRef => "inc_ref",
         OpCode::DecRef => "dec_ref",
         OpCode::DelBoundary => "del_boundary",
@@ -326,6 +340,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::Raise => "raise",
         OpCode::CheckException => "check_exception",
         OpCode::ExceptionPending => "exception_pending",
+        OpCode::AsyncWorkPending => "async_work_pending",
         OpCode::FunctionDefaultsVersion => "function_defaults_version",
         OpCode::TryStart => "try_start",
         OpCode::TryEnd => "try_end",
@@ -546,6 +561,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -666,6 +682,7 @@ mod tests {
     fn print_op_with_attrs() {
         let op = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],

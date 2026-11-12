@@ -31,78 +31,6 @@
 extern "C" {
 #endif
 
-// Direct runtime intrinsics for zero-overhead C API dispatch
-extern uint64_t molt_add(uint64_t, uint64_t);
-extern uint64_t molt_sub(uint64_t, uint64_t);
-extern uint64_t molt_mul(uint64_t, uint64_t);
-extern uint64_t molt_mod(uint64_t, uint64_t);
-extern uint64_t molt_pow(uint64_t, uint64_t);
-extern uint64_t molt_div(uint64_t, uint64_t);
-extern uint64_t molt_floordiv(uint64_t, uint64_t);
-extern uint64_t molt_neg(uint64_t);
-extern uint64_t molt_invert(uint64_t);
-extern uint64_t molt_abs_builtin(uint64_t);
-extern uint64_t molt_lshift(uint64_t, uint64_t);
-extern uint64_t molt_rshift(uint64_t, uint64_t);
-extern uint64_t molt_bit_and(uint64_t, uint64_t);
-extern uint64_t molt_bit_or(uint64_t, uint64_t);
-extern uint64_t molt_bit_xor(uint64_t, uint64_t);
-extern uint64_t molt_matmul(uint64_t, uint64_t);
-extern uint64_t molt_lt(uint64_t, uint64_t);
-extern uint64_t molt_contains(uint64_t, uint64_t);
-extern uint64_t molt_divmod_builtin(uint64_t, uint64_t);
-extern uint64_t molt_inplace_add(uint64_t, uint64_t);
-extern uint64_t molt_inplace_sub(uint64_t, uint64_t);
-extern uint64_t molt_inplace_mul(uint64_t, uint64_t);
-extern uint64_t molt_inplace_div(uint64_t, uint64_t);
-extern uint64_t molt_inplace_floordiv(uint64_t, uint64_t);
-extern uint64_t molt_inplace_mod(uint64_t, uint64_t);
-extern uint64_t molt_inplace_lshift(uint64_t, uint64_t);
-extern uint64_t molt_inplace_rshift(uint64_t, uint64_t);
-extern uint64_t molt_inplace_bit_and(uint64_t, uint64_t);
-extern uint64_t molt_inplace_bit_or(uint64_t, uint64_t);
-extern uint64_t molt_inplace_bit_xor(uint64_t, uint64_t);
-extern uint64_t molt_inplace_matmul(uint64_t, uint64_t);
-// Borrowed reference API (zero refcount overhead)
-extern uint64_t molt_list_getitem_borrowed(uint64_t, uint64_t);
-extern uint64_t molt_tuple_getitem_borrowed(uint64_t, uint64_t);
-
-#ifdef MOLT_EXTENSION_HOST_ABI
-#define molt_add ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_add"))
-#define molt_sub ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_sub"))
-#define molt_mul ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_mul"))
-#define molt_mod ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_mod"))
-#define molt_pow ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_pow"))
-#define molt_div ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_div"))
-#define molt_floordiv ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_floordiv"))
-#define molt_neg ((uint64_t (*)(uint64_t))_molt_host_abi_symbol("molt_neg"))
-#define molt_invert ((uint64_t (*)(uint64_t))_molt_host_abi_symbol("molt_invert"))
-#define molt_abs_builtin ((uint64_t (*)(uint64_t))_molt_host_abi_symbol("molt_abs_builtin"))
-#define molt_lshift ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_lshift"))
-#define molt_rshift ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_rshift"))
-#define molt_bit_and ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_bit_and"))
-#define molt_bit_or ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_bit_or"))
-#define molt_bit_xor ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_bit_xor"))
-#define molt_matmul ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_matmul"))
-#define molt_lt ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_lt"))
-#define molt_contains ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_contains"))
-#define molt_divmod_builtin ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_divmod_builtin"))
-#define molt_inplace_add ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_add"))
-#define molt_inplace_sub ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_sub"))
-#define molt_inplace_mul ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_mul"))
-#define molt_inplace_div ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_div"))
-#define molt_inplace_floordiv ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_floordiv"))
-#define molt_inplace_mod ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_mod"))
-#define molt_inplace_lshift ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_lshift"))
-#define molt_inplace_rshift ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_rshift"))
-#define molt_inplace_bit_and ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_bit_and"))
-#define molt_inplace_bit_or ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_bit_or"))
-#define molt_inplace_bit_xor ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_bit_xor"))
-#define molt_inplace_matmul ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_matmul"))
-#define molt_list_getitem_borrowed ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_list_getitem_borrowed"))
-#define molt_tuple_getitem_borrowed ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_tuple_getitem_borrowed"))
-#endif
-
 typedef intptr_t Py_ssize_t;
 typedef Py_ssize_t Py_hash_t;
 typedef intptr_t Py_intptr_t;
@@ -2295,7 +2223,7 @@ static inline void PyBytes_Concat(PyObject **bytes, PyObject *newpart) {
     PyObject *result;
     if (bytes == NULL || *bytes == NULL) return;
     if (newpart == NULL) { Py_CLEAR(*bytes); return; }
-    result = _molt_pyobject_from_result(molt_add(_molt_py_handle(*bytes), _molt_py_handle(newpart)));
+    result = _molt_pyobject_from_result(molt_number_add(_molt_py_handle(*bytes), _molt_py_handle(newpart)));
     Py_DECREF(*bytes);
     *bytes = result;
 }

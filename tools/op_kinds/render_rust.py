@@ -39,6 +39,7 @@ from .render_rust_analysis import (
     _render_range_devirt_role,
     _render_repr_projectable_result_rules,
     _render_residual_tir_semantic_roles,
+    _render_negated_predicate,
     _render_sccp_constant_eval_rule,
     _render_sccp_constant_seed_rule,
     _render_type_refine_attr_result_type_rule,
@@ -47,6 +48,7 @@ from .render_rust_analysis import (
     _render_value_range_const_fold_rule,
     _render_value_range_container_length_rule,
     _render_value_range_transfer_rule,
+    _render_fast_path_expansion_rule,
     _render_vectorize_opcode_facts,
 )
 from .render_rust_common import (
@@ -329,7 +331,11 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
     out.append(_render_sccp_constant_eval_rule(opcodes, data))
     out.append("\n")
+    out.append(_render_negated_predicate(opcodes, data))
+    out.append("\n")
     out.append(_render_value_range_transfer_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_fast_path_expansion_rule(opcodes, data))
     out.append("\n")
     out.append(_render_value_range_const_fold_rule(opcodes, data))
     out.append("\n")
@@ -608,23 +614,6 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, i64_checked_overflow_triples))
-    out.append("    }\n}\n\n")
-
-    boxed_runtime_inplace_dispatch = list(
-        data.get("boxed_runtime_inplace_dispatch_opcodes", [])
-    )
-    out.append(
-        "/// Whether a first-class opcode's boxed arithmetic runtime fallback must\n"
-        "/// dispatch through `molt_inplace_*`, trying `__i<op>__` before the binary\n"
-        "/// / reflected dunder chain. Preserved-Copy `inplace_*` spellings are\n"
-        "/// wire facts carried by typed `origin`; this table owns OpCode facts.\n"
-        "/// EXHAUSTIVE over OpCode so augmented-assignment dunder routing cannot\n"
-        "/// drift behind newly added first-class in-place opcodes.\n"
-        "#[inline]\n"
-        "pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, boxed_runtime_inplace_dispatch))
     out.append("    }\n}\n\n")
 
     i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))
@@ -1410,6 +1399,7 @@ def _render_observation_kind_predicates(data: dict) -> str:
         _wire.boolean(data, name, data.get(table, []))
         for name, table in (
             ("copy_kind_is_callback_free_table", "callback_free_copy_kinds"),
+            ("copy_kind_is_nothrow_table", "nothrow_copy_kinds"),
             ("copy_kind_is_binding_release_table", "binding_release_copy_kinds"),
             ("copy_kind_has_exact_int_result_table", "exact_int_result_copy_kinds"),
             (
@@ -1881,8 +1871,8 @@ def _render_gvn_numbering_role(opcodes: list[dict], data: dict) -> str:
     lines = [
         "/// GVN numbering role by opcode. `Always` joins the scoped dominator\n",
         "/// value table directly; `TypeGated` requires primitive operand proof at\n",
-        "/// the use site; `ValueKeyedConstant` receives same-block local value\n",
-        "/// numbers only; `Never` is not numbered. EXHAUSTIVE over OpCode.\n",
+        "/// the use site; `ValueKeyedConstant` uses exact payload identity and\n",
+        "/// owned-literal admission; `Never` is not numbered. EXHAUSTIVE over OpCode.\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
         "pub enum GvnNumberingRole {\n",
         "    Never,\n",

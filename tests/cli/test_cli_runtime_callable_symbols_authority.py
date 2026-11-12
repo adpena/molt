@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 from molt.compilation_target import admit_target
 
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
@@ -55,10 +57,10 @@ def test_native_callable_symbol_stage_excludes_raw_borrowed_intrinsics(
         assert "molt_dict_getitem_borrowed" in requirement.excluded_functions
         symbols = frozenset(
             {
-                "molt_len",
-                "molt_dict_getitem_borrowed",
-                "molt_list_getitem_borrowed",
-                "molt_tuple_getitem_borrowed",
+                compiled_execution_symbol("molt_len"),
+                compiled_execution_symbol("molt_dict_getitem_borrowed"),
+                compiled_execution_symbol("molt_list_getitem_borrowed"),
+                compiled_execution_symbol("molt_tuple_getitem_borrowed"),
             }
         )
         return native_symbol_inspection._NativeGlobalSymbolFacts(
@@ -75,7 +77,7 @@ def test_native_callable_symbol_stage_excludes_raw_borrowed_intrinsics(
 
     assert failure is None
     assert symbols_file is not None
-    assert ".callable_symbols.v3." in symbols_file.identity.path.name
+    assert ".callable_symbols.v4." in symbols_file.identity.path.name
     assert symbols_file.identity.path.read_bytes() == b"molt_len\n"
     assert symbols_file.identity.sha256 == hashlib.sha256(b"molt_len\n").hexdigest()
 
@@ -104,7 +106,7 @@ def test_a_projection_never_recreates_an_evicted_generation(
 
     def inspect_archive(path, *, target_triple, identity, requirement):
         shutil.rmtree(entry)
-        symbols = frozenset({"molt_len"})
+        symbols = frozenset({compiled_execution_symbol("molt_len")})
         return native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
         )
@@ -126,7 +128,9 @@ def test_callable_projection_cannot_reuse_same_size_restored_mtime(
     stamp = runtime_lib.stat()
 
     def inspect_archive(path, *, target_triple, identity, requirement):
-        symbol = "molt_" + path.read_text(encoding="utf-8")
+        symbol = compiled_execution_symbol(
+            "molt_len" if path.read_text(encoding="utf-8") == "first" else "molt_add"
+        )
         symbols = frozenset({symbol})
         return native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
@@ -146,7 +150,7 @@ def test_callable_projection_cannot_reuse_same_size_restored_mtime(
     )
     assert failure is None and second is not None
     assert second.identity.path != first.identity.path
-    assert second.identity.path.read_text(encoding="utf-8") == "molt_later\n"
+    assert second.identity.path.read_text(encoding="utf-8") == "molt_add\n"
     second.identity.path.write_text("corrupt\n", encoding="utf-8")
     rejected, failure = runtime_callable_symbols._runtime_callable_symbols_file(
         runtime_lib,
@@ -166,7 +170,7 @@ def test_callable_projection_concurrent_creators_preserve_winner_generation(
     runtime_lib = tmp_path / "runtime.a"
     runtime_lib.write_bytes(b"runtime")
     identity = native_symbol_inspection._native_symbol_artifact_identity(runtime_lib)
-    symbols = frozenset({"molt_len"})
+    symbols = frozenset({compiled_execution_symbol("molt_len")})
     stub_native_symbol_admission(
         monkeypatch,
         lambda *_args, **_kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
@@ -362,7 +366,7 @@ def test_source_codegen_future_pins_original_generation_with_fresh_capture(
 
     def inspect_archive(_path, **kwargs):
         assert kwargs["identity"] == generation.members[0][1]
-        symbols = frozenset({"molt_fixture"})
+        symbols = frozenset({compiled_execution_symbol("molt_len")})
         return native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=kwargs["identity"].sha256
         )
@@ -538,7 +542,7 @@ def test_async_runtime_completion_is_bound_before_codegen(
     future = Future()
     future.set_result(True)
     state.runtime_lib_ready_future = future
-    symbols = frozenset({"molt_async_fixture"})
+    symbols = frozenset({compiled_execution_symbol("molt_len")})
     stub_native_symbol_admission(
         monkeypatch,
         lambda _path, **kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
@@ -560,14 +564,8 @@ def test_async_runtime_completion_is_bound_before_codegen(
     assert state.runtime_lib_ready_future is None
     binding = state.native_runtime_codegen_binding
     assert binding is not None and binding.build_identity == identity
-    assert (
-        binding.callable_symbols.path.read_text(encoding="utf-8")
-        == "molt_async_fixture\n"
-    )
-    assert (
-        binding.callable_symbols.sha256
-        == hashlib.sha256(b"molt_async_fixture\n").hexdigest()
-    )
+    assert binding.callable_symbols.path.read_text(encoding="utf-8") == "molt_len\n"
+    assert binding.callable_symbols.sha256 == hashlib.sha256(b"molt_len\n").hexdigest()
     assert os.environ["MOLT_RUNTIME_CALLABLE_SYMBOLS"] == "another-operation"
     assert os.environ["MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256"] == "another-operation-sha"
     captures = []
@@ -967,8 +965,6 @@ def test_native_object_output_rejects_runtime_generation_drift(
         pgo_profile_path=None,
         runtime_feedback_summary=None,
         runtime_feedback_path=None,
-        pgo_hot_function_names=set(),
-        pgo_hot_function_names_sorted=(),
         pgo_profile_payload=None,
         runtime_feedback_payload=None,
         cargo_timeout=None,
@@ -991,7 +987,6 @@ def test_native_object_output_rejects_runtime_generation_drift(
         prepared_build_preamble=NS(
             diagnostics_enabled=False,
             phase_starts={},
-            midend_policy_outcomes_by_function={},
             resolved_diagnostics_verbosity="quiet",
         ),
         prepared_build_roots=NS(molt_root=tmp_path),
@@ -1060,7 +1055,7 @@ def test_callable_projection_cannot_admit_bytes_disconnected_from_archive(
     ready.set_result(True)
     state.runtime_lib_ready_future = ready
     state.native_runtime_codegen_binding = None
-    symbols = frozenset({"molt_allowed"})
+    symbols = frozenset({compiled_execution_symbol("molt_len")})
     stub_native_symbol_admission(
         monkeypatch,
         lambda _path, **kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
@@ -1072,14 +1067,14 @@ def test_callable_projection_cannot_admit_bytes_disconnected_from_archive(
     def mutate(path):
         # Wrong bytes have the same size and restored mtime; the path's
         # archive-derived filename still claims the allowed symbol set.
-        assert path.read_bytes() == b"molt_allowed\n"
+        assert path.read_bytes() == b"molt_len\n"
         stamp = path.stat()
         if mutation == "replace":
             replacement = path.with_name(path.name + ".replacement")
-            replacement.write_bytes(b"molt_hostile\n")
+            replacement.write_bytes(b"molt_add\n")
             replacement.replace(path)
         else:
-            path.write_bytes(b"molt_hostile\n")
+            path.write_bytes(b"molt_add\n")
         os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         mutations.append(path)
 
@@ -1100,8 +1095,7 @@ def test_callable_projection_cannot_admit_bytes_disconnected_from_archive(
             projection, failure = project(*args, **kwargs)
             assert projection is not None and failure is None
             assert (
-                projection.identity.sha256
-                == hashlib.sha256(b"molt_allowed\n").hexdigest()
+                projection.identity.sha256 == hashlib.sha256(b"molt_len\n").hexdigest()
             )
             mutate(projection.identity.path)
             return projection, failure

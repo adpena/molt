@@ -252,7 +252,11 @@ def _inject_app_export_adapters(
             )
         params = tuple(bytes(value) for value in function_type["params"])
         results = tuple(bytes(value) for value in function_type["results"])
-        if any(param != b"\x7e" for param in params) or results != (b"\x7e",):
+        if (
+            not params
+            or any(param != b"\x7e" for param in params)
+            or results != (b"\x7e",)
+        ):
             raise ValueError(
                 f"contract app export {public_name!r} must have canonical "
                 "(i64...) -> i64 signature"
@@ -423,7 +427,7 @@ def _forward_owned_result_adapter_call(
     params, results = _function_type_for_index(
         data, function_index, facts_provider=facts_provider
     )
-    if any(param != b"\x7e" for param in params) or results != (b"\x7e",):
+    if not params or any(param != b"\x7e" for param in params) or results != (b"\x7e",):
         raise ValueError(
             "app export adapter must have canonical (i64...) -> i64 signature"
         )

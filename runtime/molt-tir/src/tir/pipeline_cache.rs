@@ -198,6 +198,9 @@ pub struct TirOwnedModulePipelineOptions<'a> {
     pub non_inlinable: &'a HashSet<String>,
     pub missing_tir_context: &'a str,
     pub mode: TirOwnedModulePipelineMode,
+    /// The program's linkage rows, for backends that consume final TIR; the
+    /// late lowering stage admits guarded direct calls against them.
+    pub linkage: Option<&'a molt_ir::linkage_abi::FunctionSignatures>,
 }
 
 struct PreparedTirFunction {
@@ -291,6 +294,11 @@ pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
         cpython_float_divmod,
         cpython_power,
     } = supported_numeric_semantics;
+    let super::target_info::SimpleIrLoweringFeatures {
+        non_escaping_tuple_scalarization,
+        cold_origin_frame_location,
+        final_lowering,
+    } = lowering;
     let hot_functions = profile_data.as_ref().map_or_else(
         || "none".to_string(),
         |super::target_info::ProfileData { hot_functions }| {
@@ -306,7 +314,7 @@ pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
         concat!(
             "target={};profile={:?};extern={};",
             "numeric_bigint={};numeric_literal={:?};numeric_divmod={};numeric_power={};",
-            "runtime_requirements={};lowering_tuple_scalarization={};lowering_cold_origin_location={};",
+            "runtime_requirements={};lowering_tuple_scalarization={};lowering_cold_origin_location={};lowering_final={};",
             "pgo_hot_functions={};",
             "int_binop={};branch_mispredict={};call_overhead={};",
             "inline={};inline_hot={};pgo_hot={};",
@@ -323,8 +331,9 @@ pub fn tir_pipeline_target_fingerprint(target_info: &TargetInfo) -> String {
         cpython_float_divmod,
         cpython_power,
         supported_runtime_semantics.bits(),
-        lowering.non_escaping_tuple_scalarization,
-        lowering.cold_origin_frame_location,
+        non_escaping_tuple_scalarization,
+        cold_origin_frame_location,
+        final_lowering.as_str(),
         hot_functions,
         int_binop_cost,
         branch_mispredict_cost,
@@ -857,6 +866,7 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
         &mut module,
         options.target_info,
         options.non_inlinable,
+        None,
     );
     if let Some(start) = module_pipeline_start {
         emit_simple_ir_module_stage(
@@ -936,6 +946,7 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
                 &mut module,
                 options.target_info,
                 options.non_inlinable,
+                options.linkage,
             );
             tir_functions = Vec::with_capacity(externs.len() + module.functions.len());
             tir_functions.extend(externs.into_iter().map(|func| (true, func)));
@@ -944,8 +955,11 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
         TirOwnedModulePipelineMode::TerminalDropsOnly => {
             for (is_extern, tir_func) in tir_functions.iter_mut() {
                 if !*is_extern {
-                    let _ =
-                        super::drop_phase::finalize_function_drops(tir_func, options.target_info);
+                    let _ = super::drop_phase::finalize_function_drops(
+                        tir_func,
+                        options.target_info,
+                        options.linkage,
+                    );
                 }
             }
         }
@@ -1430,6 +1444,7 @@ mod tests {
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "owned source test",
                 mode,
+                linkage: None,
             };
             let borrowed =
                 run_owned_module_pipeline_from_cached_tir(&functions, &mut cache(), options());
@@ -2269,6 +2284,7 @@ mod tests {
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "source-file test",
                 mode: TirOwnedModulePipelineMode::TerminalDropsOnly,
+                linkage: None,
             },
         );
 

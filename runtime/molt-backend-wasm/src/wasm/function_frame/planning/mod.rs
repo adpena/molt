@@ -11,6 +11,7 @@ use crate::wasm::frame_locals::{
 };
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use crate::wasm::state_dispatch::NonLinearControlPlan;
+use crate::wasm_binary::Function;
 use debug::emit_seed_debug;
 use local_alloc::FrameLocalAllocator;
 use molt_tir::tir::simple_def_use::{
@@ -19,7 +20,7 @@ use molt_tir::tir::simple_def_use::{
 use requirements::FrameRuntimeRequirements;
 pub(super) use seeds::FrameConstAnchor;
 use seeds::FrameConstSeedPlan;
-use wasm_encoder::{Function, ValType};
+use wasm_encoder::ValType;
 
 impl WasmFunctionFramePlan {
     #[cfg(test)]
@@ -52,11 +53,11 @@ impl WasmFunctionFramePlan {
             .as_ref()
             .is_some_and(NonLinearControlPlan::needs_dispatch);
         let mut locals = WasmFrameLocals::new();
-        let mut local_count = 0;
+        let mut local_count = 1;
         let mut local_types = Vec::new();
 
         for (idx, name) in func_ir.params.iter().enumerate() {
-            locals.insert(name.clone(), idx as u32);
+            locals.insert(name.clone(), idx as u32 + 1);
             local_count += 1;
         }
 
@@ -197,7 +198,7 @@ impl WasmFunctionFramePlan {
                     })
                     .then_some(-1)
             })
-            .map(|slot| {
+            .map(|_| {
                 let local = local_count;
                 local_types.push(ValType::I32);
                 local_types.push(ValType::I64);
@@ -205,7 +206,6 @@ impl WasmFunctionFramePlan {
                 super::WasmFrameHomes {
                     local,
                     displaced: local + 1,
-                    slots: slot + 1,
                     at_entry: !func_ir
                         .ops
                         .iter()
@@ -260,6 +260,12 @@ impl WasmFunctionFramePlan {
                 control_plan,
                 tail_call_eligible: tail_call_eligible && const_anchors.is_empty(),
                 owned_frame_attempt,
+                frame_shape: func_ir
+                    .ops
+                    .iter()
+                    .find(|op| op.kind == molt_ir::OpKind::TraceEnterSlot)
+                    .and_then(|op| op.value)
+                    .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value),
                 frame_homes,
                 python_eh_boundary: false,
                 dispatch_locals,

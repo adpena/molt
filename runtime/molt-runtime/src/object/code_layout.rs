@@ -91,5 +91,29 @@ pub(crate) unsafe fn code_slots(code_ptr: *mut u8) -> Result<CodeSlots, &'static
     }
 }
 
+/// The position of the free variable `name` among the code's free variables,
+/// with their count: its localsplus slot is that far into the trailing free
+/// slots ([`code_slots`]).
+///
+/// # Safety
+/// As [`code_slots`].
+pub(crate) unsafe fn code_free_variable(
+    code_ptr: *mut u8,
+    name: &[u8],
+) -> Result<Option<(usize, usize)>, &'static str> {
+    unsafe {
+        crate::gil_assert();
+        if object_type_id(code_ptr) != TYPE_ID_CODE {
+            return Err("frame binding layout requires a code object");
+        }
+        let freevars = str_items(code_freevars_bits(code_ptr))?;
+        let position = freevars.iter().position(|&bits| {
+            let ptr = obj_from_bits(bits).as_ptr().expect("validated code name");
+            std::slice::from_raw_parts(super::string_bytes(ptr), super::string_len(ptr)) == name
+        });
+        Ok(position.map(|position| (position, freevars.len())))
+    }
+}
+
 #[cfg(test)]
 mod tests;

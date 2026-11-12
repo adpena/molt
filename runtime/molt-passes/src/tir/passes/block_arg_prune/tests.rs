@@ -13,6 +13,7 @@ fn arg(id: ValueId, ty: TirType) -> TirValue {
 fn copy(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
@@ -27,6 +28,7 @@ fn check_exception(label: i64, operands: Vec<ValueId>) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(label));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands,
@@ -41,6 +43,7 @@ fn try_start(label: i64, operands: Vec<ValueId>) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(label));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TryStart,
         operands,

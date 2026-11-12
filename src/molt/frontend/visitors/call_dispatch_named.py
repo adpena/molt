@@ -20,6 +20,7 @@ from molt.frontend._types import (
     MoltValue,
     TypeHint,
     _intrinsic_arity_exact,
+    class_namespace_closed,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -894,7 +895,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 constructor_fold_safe = bool(class_info.get("constructor_fold_safe"))
                 if (
                     constructor_fold_safe
-                    and not class_info.get("dynamic")
+                    and class_namespace_closed(class_info)
                     and not class_info.get("dataclass")
                     and not class_info.get("custom_metaclass")
                     and not node.keywords
@@ -913,9 +914,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         # Carry static payload extent for typed-field analysis.
                         # The runtime owns physical class layout and allocation;
                         # layout metadata is not a placement or lifetime proof.
-                        class_size_bytes = (
-                            class_info.get("size", 0) if class_info else 0
-                        )
+                        class_size_bytes = class_info.get("size", 0)
                         self.emit(
                             MoltOp(
                                 kind="OBJECT_NEW_BOUND",
@@ -977,11 +976,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                             # size in bytes carried via
                                             # metadata for the stack-alloc
                                             # lowering.
-                                            class_size_bytes = (
-                                                class_info.get("size", 0)
-                                                if class_info
-                                                else 0
-                                            )
+                                            class_size_bytes = class_info.get("size", 0)
                                             self.emit(
                                                 MoltOp(
                                                     kind="OBJECT_NEW_BOUND",

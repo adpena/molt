@@ -59,10 +59,12 @@ const MODULE_FLAG_KNOWN_MASK: u8 = MODULE_FLAG_REINIT_RESURRECT
     | MODULE_FLAG_HAS_LOCATION
     | MODULE_FLAG_STDLIB_PROVIDER;
 
+// The application supplies this physical definition at static link time;
+// this is not a separately namespaced host import.
 #[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    fn molt_isolate_import(module_id: u64) -> u64;
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_isolate_import")]
+    fn molt_isolate_import(context: u64, module_id: u64) -> u64;
 }
 
 // ─── Module state machine (design §4.1) ─────────────────────────────────────
@@ -165,6 +167,14 @@ impl ModuleRegistry {
         };
         // UTF-8 validity is checked once at install; fail closed on decode.
         std::str::from_utf8(bytes).expect("module registry names validated at install")
+    }
+
+    /// Whether `id` is the program entry. CPython runs exactly one module as
+    /// `__main__` (a script or `-m`) and identifies it by that name; the compiler
+    /// registers the entry under it. Unlike an import, a failing entry is never
+    /// retracted from `sys.modules`: `PyRun` keeps `sys.modules["__main__"]`.
+    pub(crate) fn is_program_entry(&self, id: u32) -> bool {
+        self.name_of(id) == "__main__"
     }
 
     pub(crate) fn origin_of(&self, id: u32) -> &'static str {
@@ -653,7 +663,7 @@ pub(crate) fn publish_interpreter_sys_for_test(py: &PyToken<'_>, bits: u64) -> u
     let prior_spec = table.initialization().specs[index].swap(0, Ordering::AcqRel);
     table.initialization().states[index].store(STATE_INITIALIZING, Ordering::Release);
     let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
-    let result = crate::builtins::modules::molt_module_cache_set(name, bits);
+    let result = crate::builtins::modules::molt_module_cache_set_attached_body(py, name, bits);
     dec_ref_bits(py, name);
     table.initialization().states[index].store(STATE_READY, Ordering::Release);
     let completed = table.initialization().slots[index].swap(0, Ordering::AcqRel);
@@ -1277,14 +1287,14 @@ fn publication_for_test(py: &PyToken<'_>, name: &str) -> Option<u64> {
 #[cfg(test)]
 fn publish_for_test(py: &PyToken<'_>, name: &str, bits: u64) {
     let name_bits = crate::dynamic_attr_name_bits(py, name.as_bytes()).unwrap();
-    let _ = crate::builtins::modules::molt_module_cache_set(name_bits, bits);
+    let _ = crate::builtins::modules::molt_module_cache_set_attached_body(py, name_bits, bits);
     dec_ref_bits(py, name_bits);
 }
 
 #[cfg(test)]
 fn remove_for_test(py: &PyToken<'_>, name: &str) {
     let name_bits = crate::dynamic_attr_name_bits(py, name.as_bytes()).unwrap();
-    let _ = crate::builtins::modules::molt_module_cache_del(name_bits);
+    let _ = crate::builtins::modules::molt_module_cache_del_attached_body(py, name_bits);
     dec_ref_bits(py, name_bits);
 }
 
@@ -1702,9 +1712,12 @@ pub(crate) fn set_spec_initializing(py: &PyToken<'_>, spec: u64, initializing: b
 /// The compiler explicitly supplies the actual spec SSA value. Ordinary
 /// setattr cannot acquire this transaction role. Metadata assignment and its
 /// existing explicit-loader overrides remain owned by module_set_attr.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_initialization_spec(module: u64, spec: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_initialization_spec_attached_body(
+    _py: &crate::PyToken<'_>,
+    module: u64,
+    spec: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if exception_pending(py) {
             return none_bits();
         }
@@ -1744,7 +1757,7 @@ pub extern "C" fn molt_module_initialization_spec(module: u64, spec: u64) -> u64
         let Some(key) = crate::NameId::DunderSpec.owned_bits(py) else {
             return none_bits();
         };
-        crate::builtins::modules::molt_module_set_attr(module, key, spec.bits());
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, module, key, spec.bits());
         dec_ref_bits(py, key);
         if let Some(id) = ordinary
             && !exception_pending(py)
@@ -1856,7 +1869,8 @@ pub(crate) fn complete_publication(
         PublicationName::Key(_) => None,
     };
     let pop_key = name.read(py)?;
-    let final_bits = crate::object::ops_dict::molt_dict_pop(
+    let final_bits = crate::object::ops_dict::molt_dict_pop_attached_body(
+        py,
         dictionary,
         pop_key.bits(),
         none_bits(),
@@ -2053,9 +2067,8 @@ pub(crate) fn module_execution_owns_initializing_globals(
 /// arguments are boxed values, the same convention as every other `call`
 /// op); the constant is boxed at the emit site.  Returns an owned module
 /// reference, or none-bits with the pending exception set.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_ensure(id_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_module_ensure_attached_body(_py: &crate::PyToken<'_>, id_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = crate::to_i64(obj_from_bits(id_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -2303,7 +2316,7 @@ fn ensure_parent_ready(_py: &PyToken<'_>, row: &RegistryRow) -> bool {
         else {
             return false;
         };
-        let bits = crate::builtins::modules::molt_module_import(name);
+        let bits = crate::builtins::modules::molt_module_import_attached_body(_py, name);
         dec_ref_bits(_py, name);
         bits
     } else {
@@ -2406,12 +2419,13 @@ fn dispatch_module_body(_py: &PyToken<'_>, _registry: &ModuleRegistry, id: u32, 
                 &format!("module '{name}' has a null initializer"),
             );
         }
-        let init: unsafe extern "C" fn() -> u64 = unsafe { std::mem::transmute(init_target) };
-        let _ = unsafe { init() };
+        let init: unsafe extern "C" fn(u64) -> u64 = unsafe { std::mem::transmute(init_target) };
+        let _scope = crate::concurrency::execution::CompiledScopeGuard::enter(_py);
+        let _ = unsafe { init(_py.attached_context()) };
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = unsafe { molt_isolate_import(u64::from(id)) };
+        let _ = unsafe { molt_isolate_import(_py.attached_context(), u64::from(id)) };
     }
 }
 
@@ -2434,6 +2448,14 @@ fn run_init_transaction_body(
     let unwind = |_py: &PyToken<'_>| {
         let previous = table.initialization().slots[idx].swap(0, Ordering::AcqRel);
         if previous != 0 {
+            // The program entry stays published after it fails, as in CPython;
+            // shutdown's module retirement clears its namespace. Retracting it
+            // here left its globals outside retirement, so their native owners
+            // survived into class retirement (HF-12).
+            if registry.is_program_entry(id) {
+                dec_ref_bits(_py, previous);
+                return;
+            }
             if let Some(key) = crate::dynamic_attr_name_bits(_py, name.as_bytes()) {
                 // This is the ordinary import-body failure boundary, matching
                 // _load_unlocked's name deletion even after nested publication.
@@ -2530,7 +2552,7 @@ fn bind_parent_attr(
     };
     let _parent_owner = obj_from_bits(parent_bits)
         .as_ptr()
-        .map(crate::PtrDropGuard::new);
+        .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
     let name = registry.name_of(id);
     let leaf = name.rsplit('.').next().unwrap_or(name);
     crate::builtins::modules::publish_import_child(
@@ -2599,3 +2621,5 @@ mod catalog_tests;
 #[cfg(test)]
 #[path = "module_table/tests.rs"]
 pub(crate) mod tests;
+
+include!("../attached_exports_generated/builtins/module_table.rs");

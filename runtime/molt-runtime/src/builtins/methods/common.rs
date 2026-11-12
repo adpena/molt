@@ -501,11 +501,19 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    extern "C" fn identity(value: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn identity(__context: u64, value: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, value);
             value
-        })
+        }
     }
 
     #[test]
@@ -604,11 +612,11 @@ mod tests {
                 );
                 assert!(exception_pending(py));
                 assert_eq!(function_slot.load(Ordering::Acquire), 0);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
                 assert_eq!(crate::NameId::DunderDefaults.bits(py), name);
                 assert!(!exception_pending(py));
                 drop(reset);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
                 assert_ne!(
                     builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
                     0

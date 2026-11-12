@@ -72,7 +72,7 @@ const WASI_WHENCE_SET = 0;
 const WASI_WHENCE_CUR = 1;
 const WASI_WHENCE_END = 2;
 
-const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, runtimeExport, combinedError } = globalThis.MoltRuntimeLifecycle;
 const runtimeLifetimes = new WeakMap();
 const runtimeLifetime = (runtimeInstance, runtimeImportAbi) => {
   let lifetime = runtimeLifetimes.get(runtimeInstance);
@@ -84,7 +84,7 @@ const runtimeLifetime = (runtimeInstance, runtimeImportAbi) => {
         throw new Error(detail ||
           'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
       }
-    });
+    }, runtimeImportAbi);
     runtimeLifetimes.set(runtimeInstance, lifetime);
   }
   return lifetime;
@@ -95,10 +95,10 @@ const withRuntimeExecution = (runtimeInstance, runtimeImportAbi, operation) =>
 // (CPython's PyErr_Print, through sys.excepthook and sys.stderr) and returns
 // the program's exit status, as the native main stub does.
 const mainExitStatus = (runtimeInstance) => {
-  if (typeof runtimeInstance.exports.molt_main_exit_status !== 'function') {
+  if (typeof runtimeExport(runtimeInstance, 'molt_main_exit_status') !== 'function') {
     throw new Error('runtime missing molt_main_exit_status export');
   }
-  return Number(runtimeInstance.exports.molt_main_exit_status());
+  return Number(runtimeExport(runtimeInstance, 'molt_main_exit_status')());
 };
 // A nonzero status rejects `run()`; the report itself already went to stderr.
 const throwOnExitStatus = (exitStatus) => {
@@ -169,10 +169,16 @@ const {
   callRuntimeByteSpanOutImport,
   callRuntimeObjectArrayArgImport,
   callWithWasmSignature,
+  compiledExecutionSymbol,
   installWasmTagImports,
   normalizeValueForKind,
   parseWasmImports,
   readCallableTableAttestation,
+  requireAppExecutionAbi,
+  requireAttachedExecutionAbi,
+  requireCallIndirectImportName,
+  requireSharedExecutionMemory,
+  requireSharedExecutionMemoryImport,
   requireWasmCallableTable,
   callableTableSignature,
   runtimeExceptionPending,
@@ -297,11 +303,11 @@ const allocRuntimeTempBytes = (runtime, memory, bytes) => {
   if (!runtime || !memory) {
     throw new Error('runtime not initialized');
   }
-  if (typeof runtime.exports?.molt_scratch_alloc !== 'function') {
+  if (typeof runtimeExport(runtime, 'molt_scratch_alloc') !== 'function') {
     throw new Error('runtime is missing required export: molt_scratch_alloc');
   }
   const size = bytes.length;
-  const ptr = runtime.exports.molt_scratch_alloc(BigInt(size));
+  const ptr = runtimeExport(runtime, 'molt_scratch_alloc')(BigInt(size));
   if (!ptr || ptr === 0n) {
     throw new Error('molt_scratch_alloc failed');
   }
@@ -314,7 +320,7 @@ const freeRuntimeTempBytes = (runtime, temp) => {
   if (
     !runtime ||
     !runtime.exports ||
-    typeof runtime.exports.molt_scratch_free !== 'function' ||
+    typeof runtimeExport(runtime, 'molt_scratch_free') !== 'function' ||
     !temp ||
     temp.allocPtr === null ||
     temp.allocPtr === undefined ||
@@ -323,7 +329,7 @@ const freeRuntimeTempBytes = (runtime, temp) => {
   ) {
     return;
   }
-  runtime.exports.molt_scratch_free(temp.allocPtr, BigInt(temp.size ?? 0));
+  runtimeExport(runtime, 'molt_scratch_free')(temp.allocPtr, BigInt(temp.size ?? 0));
 };
 
 const readRuntimeStringBits = (runtime, memory, stringBits) => {
@@ -332,8 +338,8 @@ const readRuntimeStringBits = (runtime, memory, stringBits) => {
     !memory ||
     !stringBits ||
     stringBits === 0n ||
-    typeof runtime.exports?.molt_string_as_ptr !== 'function' ||
-    typeof runtime.exports?.molt_dec_ref_obj !== 'function'
+    typeof runtimeExport(runtime, 'molt_string_as_ptr') !== 'function' ||
+    typeof runtimeExport(runtime, 'molt_dec_ref_obj') !== 'function'
   ) {
     return null;
   }
@@ -341,7 +347,7 @@ const readRuntimeStringBits = (runtime, memory, stringBits) => {
   try {
     let ptr;
     try {
-      ptr = runtime.exports.molt_string_as_ptr(stringBits, Number(temp.payloadPtr));
+      ptr = runtimeExport(runtime, 'molt_string_as_ptr')(stringBits, Number(temp.payloadPtr));
     } catch {
       return null;
     }
@@ -362,17 +368,17 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
   if (!runtimeExceptionPending(runtime)) return null;
   // Diagnostics observe the raised owner. Optional C API exports must not
   // change pending state or the ownership of the acquired diagnostic reference.
-  const excBits = typeof runtime.exports.molt_exception_last_pending === 'function'
-    ? runtime.exports.molt_exception_last_pending() : 0n;
+  const excBits = typeof runtimeExport(runtime, 'molt_exception_last_pending') === 'function'
+    ? runtimeExport(runtime, 'molt_exception_last_pending')() : 0n;
   try {
     if (!excBits || excBits === 0n) {
       return 'Unhandled Molt exception (diagnostic object unavailable)';
     }
     if (
-      typeof runtime.exports.molt_object_repr === 'function' &&
-      typeof runtime.exports.molt_dec_ref_obj === 'function'
+      typeof runtimeExport(runtime, 'molt_object_repr') === 'function' &&
+      typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function'
     ) {
-      const reprBits = runtime.exports.molt_object_repr(excBits);
+      const reprBits = runtimeExport(runtime, 'molt_object_repr')(excBits);
       if (reprBits && reprBits !== 0n) {
         try {
           const repr = readRuntimeStringBits(runtime, memory, reprBits);
@@ -383,18 +389,18 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
             return `Unhandled Molt exception: ${repr}`;
           }
         } finally {
-          runtime.exports.molt_dec_ref_obj(reprBits);
+          runtimeExport(runtime, 'molt_dec_ref_obj')(reprBits);
         }
       }
     }
     if (
-      typeof runtime.exports.molt_exception_kind === 'function' &&
-      typeof runtime.exports.molt_exception_message === 'function'
+      typeof runtimeExport(runtime, 'molt_exception_kind') === 'function' &&
+      typeof runtimeExport(runtime, 'molt_exception_message') === 'function'
     ) {
-      const kindBits = runtime.exports.molt_exception_kind(excBits);
+      const kindBits = runtimeExport(runtime, 'molt_exception_kind')(excBits);
       let messageBits = 0n;
       try {
-        messageBits = runtime.exports.molt_exception_message(excBits);
+        messageBits = runtimeExport(runtime, 'molt_exception_message')(excBits);
         const kind = kindBits ? readRuntimeStringBits(runtime, memory, kindBits) : null;
         const message = messageBits ? readRuntimeStringBits(runtime, memory, messageBits) : null;
         if (kind && message) {
@@ -407,24 +413,24 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
         if (
           kindBits &&
           kindBits !== 0n &&
-          typeof runtime.exports.molt_dec_ref_obj === 'function'
+          typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function'
         ) {
-          runtime.exports.molt_dec_ref_obj(kindBits);
+          runtimeExport(runtime, 'molt_dec_ref_obj')(kindBits);
         }
         if (
           messageBits &&
           messageBits !== 0n &&
-          typeof runtime.exports.molt_dec_ref_obj === 'function'
+          typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function'
         ) {
-          runtime.exports.molt_dec_ref_obj(messageBits);
+          runtimeExport(runtime, 'molt_dec_ref_obj')(messageBits);
         }
       }
     }
     if (
-      typeof runtime.exports.molt_traceback_format_exc === 'function' &&
-      typeof runtime.exports.molt_dec_ref_obj === 'function'
+      typeof runtimeExport(runtime, 'molt_traceback_format_exc') === 'function' &&
+      typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function'
     ) {
-      const tbBits = runtime.exports.molt_traceback_format_exc(0n);
+      const tbBits = runtimeExport(runtime, 'molt_traceback_format_exc')(0n);
       if (tbBits && tbBits !== 0n) {
         try {
           const formatted = readRuntimeStringBits(runtime, memory, tbBits);
@@ -435,7 +441,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
             }
           }
         } finally {
-          runtime.exports.molt_dec_ref_obj(tbBits);
+          runtimeExport(runtime, 'molt_dec_ref_obj')(tbBits);
         }
       }
     }
@@ -444,9 +450,9 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
     if (
       excBits &&
       excBits !== 0n &&
-      typeof runtime.exports.molt_dec_ref_obj === 'function'
+      typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function'
     ) {
-      runtime.exports.molt_dec_ref_obj(excBits);
+      runtimeExport(runtime, 'molt_dec_ref_obj')(excBits);
     }
   }
 };
@@ -455,13 +461,13 @@ const decRefMaybeWithRuntime = (runtime, bits) => {
   if (
     runtime &&
     runtime.exports &&
-    typeof runtime.exports.molt_dec_ref_obj === 'function' &&
+    typeof runtimeExport(runtime, 'molt_dec_ref_obj') === 'function' &&
     bits !== null &&
     bits !== undefined &&
     bits !== 0n &&
     bits !== 0
   ) {
-    runtime.exports.molt_dec_ref_obj(bits);
+    runtimeExport(runtime, 'molt_dec_ref_obj')(bits);
   }
 };
 
@@ -473,7 +479,7 @@ const makeBytesObjectWithRuntime = (runtime, memory, bytes) => {
   const tempBytes = allocRuntimeTempBytes(runtime, memory, payload);
   const tempOut = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const status = runtime.exports.molt_bytes_from_bytes(
+    const status = runtimeExport(runtime, 'molt_bytes_from_bytes')(
       Number(tempBytes.payloadPtr),
       BigInt(payload.length),
       Number(tempOut.payloadPtr),
@@ -494,7 +500,7 @@ const readRuntimeBytesBits = (runtime, memory, bits) => {
     !memory ||
     !bits ||
     bits === 0n ||
-    typeof runtime.exports?.molt_bytes_as_ptr !== 'function'
+    typeof runtimeExport(runtime, 'molt_bytes_as_ptr') !== 'function'
   ) {
     return null;
   }
@@ -502,7 +508,7 @@ const readRuntimeBytesBits = (runtime, memory, bits) => {
   try {
     let ptr;
     try {
-      ptr = runtime.exports.molt_bytes_as_ptr(bits, Number(temp.payloadPtr));
+      ptr = runtimeExport(runtime, 'molt_bytes_as_ptr')(bits, Number(temp.payloadPtr));
     } catch {
       return null;
     }
@@ -527,7 +533,7 @@ const makeStringObjectWithRuntime = (runtime, memory, text) => {
   const tempBytes = allocRuntimeTempBytes(runtime, memory, payload);
   const tempOut = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const status = runtime.exports.molt_string_from_bytes(
+    const status = runtimeExport(runtime, 'molt_string_from_bytes')(
       Number(tempBytes.payloadPtr),
       BigInt(payload.length),
       Number(tempOut.payloadPtr),
@@ -545,10 +551,10 @@ const makeStringObjectWithRuntime = (runtime, memory, text) => {
 const makeListIntObjectWithRuntime = (runtime, values) => makeRuntimeIntList(runtime, values);
 
 const reprObjectBitsWithRuntime = (runtime, memory, bits) => {
-  if (!runtime || !runtime.exports || typeof runtime.exports.molt_object_repr !== 'function') {
+  if (!runtime || !runtime.exports || typeof runtimeExport(runtime, 'molt_object_repr') !== 'function') {
     return null;
   }
-  const reprBits = runtime.exports.molt_object_repr(bits);
+  const reprBits = runtimeExport(runtime, 'molt_object_repr')(bits);
   if (!reprBits || reprBits === 0n) {
     return null;
   }
@@ -572,12 +578,12 @@ export const tryDecodeListIntBits = (runtime, memory, bits) => {
   if (
     !runtime ||
     !runtime.exports ||
-    typeof runtime.exports.molt_len !== 'function' ||
-    typeof runtime.exports.molt_index !== 'function'
+    typeof runtimeExport(runtime, 'molt_len') !== 'function' ||
+    typeof runtimeExport(runtime, 'molt_index') !== 'function'
   ) {
     return null;
   }
-  const lenBits = runtime.exports.molt_len(bits);
+  const lenBits = runtimeExport(runtime, 'molt_len')(bits);
   const lenPending = pendingRuntimeExceptionMessage(runtime, memory);
   if (lenPending) {
     throw new Error(lenPending);
@@ -592,7 +598,7 @@ export const tryDecodeListIntBits = (runtime, memory, bits) => {
   const out = [];
   for (let i = 0; i < len; i += 1) {
     const itemBits = withRuntimeOwnedValues(runtime, [i],
-      value => boxRuntimeInt(runtime, value), ([indexBits]) => runtime.exports.molt_index(bits, indexBits), true);
+      value => boxRuntimeInt(runtime, value), ([indexBits]) => runtimeExport(runtime, 'molt_index')(bits, indexBits), true);
     try {
       const indexPending = pendingRuntimeExceptionMessage(runtime, memory);
       if (indexPending) {
@@ -615,7 +621,7 @@ const runtimeTypeTagOfBits = (runtime, bits) => {
   if (
     !runtime ||
     !runtime.exports ||
-    typeof runtime.exports.molt_type_tag_of_bits !== 'function' ||
+    typeof runtimeExport(runtime, 'molt_type_tag_of_bits') !== 'function' ||
     bits === null ||
     bits === undefined ||
     bits === 0n ||
@@ -623,7 +629,7 @@ const runtimeTypeTagOfBits = (runtime, bits) => {
   ) {
     return TYPE_TAG_ANY;
   }
-  const raw = runtime.exports.molt_type_tag_of_bits(bits);
+  const raw = runtimeExport(runtime, 'molt_type_tag_of_bits')(bits);
   const tag = typeof raw === 'bigint' ? Number(raw) : Number(raw);
   return Number.isFinite(tag) ? tag : TYPE_TAG_ANY;
 };
@@ -1381,12 +1387,12 @@ const createBrowserDbHost = (state, options) => {
     if (!runtime) return false;
     const payload = bytes || new Uint8Array(0);
     if (payload.length === 0) {
-      const res = runtime.exports.molt_stream_send(streamHandle, 0n, 0n);
+      const res = runtimeExport(runtime, 'molt_stream_send')(streamHandle, 0n, 0n);
       return res === 0n;
     }
     const temp = allocTempBytes(payload);
     try {
-      const res = runtime.exports.molt_stream_send(
+      const res = runtimeExport(runtime, 'molt_stream_send')(
         streamHandle,
         temp.payloadPtr,
         BigInt(payload.length),
@@ -1409,7 +1415,7 @@ const createBrowserDbHost = (state, options) => {
     sendStreamHeader(streamHandle, header);
     const runtime = getRuntime();
     if (runtime) {
-      runtime.exports.molt_stream_close(streamHandle);
+      runtimeExport(runtime, 'molt_stream_close')(streamHandle);
     }
   };
 
@@ -1449,7 +1455,7 @@ const createBrowserDbHost = (state, options) => {
     if (status !== 'ok') {
       header.error = response.error || response.status || 'internal error';
       sendStreamHeader(streamHandle, header);
-      runtime.exports.molt_stream_close(streamHandle);
+      runtimeExport(runtime, 'molt_stream_close')(streamHandle);
       return;
     }
     if (header.codec === 'arrow_ipc') {
@@ -1461,7 +1467,7 @@ const createBrowserDbHost = (state, options) => {
       header.payload = response.payload || new Uint8Array(0);
       sendStreamHeader(streamHandle, header);
     }
-    runtime.exports.molt_stream_close(streamHandle);
+    runtimeExport(runtime, 'molt_stream_close')(streamHandle);
   };
 
   const queueResponse = (requestId, response) => {
@@ -1607,7 +1613,7 @@ const createBrowserDbHost = (state, options) => {
       pending.delete(requestId);
       deliverResponse(pendingEntry.streamHandle, response);
     }
-    if (!runtime.exports.molt_cancel_token_is_cancelled) {
+    if (!runtimeExport(runtime, 'molt_cancel_token_is_cancelled')) {
       return 0;
     }
     const now =
@@ -1621,7 +1627,7 @@ const createBrowserDbHost = (state, options) => {
       try {
         const result = withRuntimeOwnedValues(runtime, [entry.tokenId],
           value => boxRuntimeInt(runtime, value), ([tokenBits]) =>
-            runtime.exports.molt_cancel_token_is_cancelled(tokenBits));
+            runtimeExport(runtime, 'molt_cancel_token_is_cancelled')(tokenBits));
         if (typeof result === 'bigint' && isBoolBits(result) && unboxBool(result)) {
           entry.controller.abort();
           queueResponse(requestId, {
@@ -3491,11 +3497,11 @@ export const loadMoltWasm = async (options = {}) => {
     if (errors.length) throw combinedError(errors);
   };
   let hostExportsInitialized = false;
-  const ensureHostExportsInitialized = (appInstance) => {
+  const ensureHostExportsInitialized = (appInstance, context) => {
     if (hostExportsInitialized) {
       return;
     }
-    const hostInit = appInstance?.exports?.molt_host_init;
+    const hostInit = appInstance?.exports?.[compiledExecutionSymbol('molt_host_init')];
     if (typeof hostInit !== 'function') {
       throw new Error('molt_host_init export missing for host-export initialization');
     }
@@ -3503,7 +3509,7 @@ export const loadMoltWasm = async (options = {}) => {
       throw new Error(pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory) ||
         'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
     }
-    hostInit();
+    hostInit(context);
     const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
     if (pending) {
       throw new Error(pending);
@@ -3519,9 +3525,10 @@ export const loadMoltWasm = async (options = {}) => {
     if (!runtime || !memory) {
       throw new Error('runtime not initialized');
     }
-    return withRuntimeExecution(runtime, runtimeImportAbi, () => {
-      ensureHostExportsInitialized(appInstance);
-      const fn = appInstance.exports[exportName];
+    return withRuntimeExecution(runtime, runtimeImportAbi, (context) => {
+      ensureHostExportsInitialized(appInstance, context);
+      const suffix = runtimeImportAbi.execution_context_abi.suffix;
+      const fn = appInstance.exports[exportName.endsWith(suffix) ? exportName : compiledExecutionSymbol(exportName)];
       if (typeof fn !== 'function') {
         throw new Error(`app export missing: ${exportName}`);
       }
@@ -3614,6 +3621,7 @@ export const loadMoltWasm = async (options = {}) => {
         throw new Error('linked browser module still imports molt_runtime');
       }
       const linkedModule = await WebAssembly.compile(linkedBytes);
+      requireAppExecutionAbi(linkedModule, runtimeImportAbi);
       const linkedFunctionExports = new Set(
         WebAssembly.Module.exports(linkedModule)
           .filter((entry) => entry.kind === 'function')
@@ -3639,7 +3647,7 @@ export const loadMoltWasm = async (options = {}) => {
       }
       const linkedCallIndirectNames = linkedImports.funcImports
         .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
-        .map((imp) => imp.name);
+        .map((imp) => requireCallIndirectImportName(imp.name));
       const linkedCallIndirectFns = {};
       const memory = makeMemory(linkedImports.memory);
       const table = makeTable(linkedImports.table);
@@ -3666,6 +3674,7 @@ export const loadMoltWasm = async (options = {}) => {
       const importObject = { env, wasi_snapshot_preview1: buildOwnedWasiStub(state) };
       installWasmTagImports(importObject, linkedImports);
       linkedInstance = await WebAssembly.instantiate(linkedModule, importObject);
+      requireAttachedExecutionAbi(linkedModule, linkedInstance, runtimeImportAbi);
       const instance = linkedInstance;
       state.runtimeInstance = instance;
       state.memory = instance.exports.molt_memory || instance.exports.memory || memory || env.memory || null;
@@ -3692,11 +3701,11 @@ export const loadMoltWasm = async (options = {}) => {
         invokeExport: makeExportInvoker(instance),
         dispose,
         run: () => {
-          throwOnExitStatus(withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
-            if (typeof instance.exports.molt_main !== 'function') {
+          throwOnExitStatus(withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, (context) => {
+            if (typeof instance.exports[compiledExecutionSymbol('molt_main')] !== 'function') {
               throw new Error('molt_main export missing');
             }
-            instance.exports.molt_main();
+            instance.exports[compiledExecutionSymbol('molt_main')](context);
             const exitStatus = mainExitStatus(state.runtimeInstance);
             flushOwnedStdio();
             if (exitStatus === 0) hostExportsInitialized = true;
@@ -3760,14 +3769,14 @@ export const loadMoltWasm = async (options = {}) => {
     let outputInstance = null;
     const callIndirectNames = runtimeImports.funcImports
       .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
-      .map((imp) => imp.name);
+      .map((imp) => requireCallIndirectImportName(imp.name));
     const callIndirect = {};
     const traceCallIndirect =
       typeof process !== 'undefined' &&
       process?.env?.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
     for (const name of callIndirectNames) {
       callIndirect[name] = (...args) => {
-        const rawIdx = args[0];
+        const rawIdx = args[1];
         const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
         // Runtime callables are keys the runtime resolves itself, so every
         // index here is a slot of the shared table (HF-699 K1, K3).
@@ -3790,14 +3799,14 @@ export const loadMoltWasm = async (options = {}) => {
         return callWithWasmSignature(
           fn,
           directSignature,
-          args.slice(1),
+          [args[0], ...args.slice(2)],
         );
       };
     }
     const env = buildEnv(memory, table, callIndirect, logFn, overrides);
-    env.molt_isolate_import = makeDeferredLinkedSelfImportBridge(
+    env[compiledExecutionSymbol('molt_isolate_import')] = makeDeferredLinkedSelfImportBridge(
       () => outputInstance,
-      'molt_isolate_import',
+      compiledExecutionSymbol('molt_isolate_import'),
       'output',
     );
     const runtimeImportObject = {
@@ -3822,9 +3831,13 @@ export const loadMoltWasm = async (options = {}) => {
       wasi_snapshot_preview1: buildOwnedWasiStub(appState),
     };
     installWasmTagImports(outputImportObject, outputImports);
-    const outputModule = await WebAssembly.instantiate(wasmBytes, outputImportObject);
+    const outputCompiledModule = await WebAssembly.compile(wasmBytes);
+    requireAttachedExecutionAbi(outputCompiledModule, runtimeInstance, runtimeImportAbi);
+    requireSharedExecutionMemoryImport(outputCompiledModule);
+    const outputModule = {instance: await WebAssembly.instantiate(outputCompiledModule, outputImportObject)};
     outputInstance = outputModule.instance;
     appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
+    requireSharedExecutionMemory(runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory || memory, appState.memory);
 
     verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
     verifyCallableTableEntries(appCallableTable, table, 'app wasm');
@@ -3839,11 +3852,11 @@ export const loadMoltWasm = async (options = {}) => {
       invokeExport: makeExportInvoker(outputModule.instance),
       dispose,
       run: () => {
-        throwOnExitStatus(withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
-          if (typeof outputModule.instance.exports.molt_main !== 'function') {
+        throwOnExitStatus(withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, (context) => {
+          if (typeof outputModule.instance.exports[compiledExecutionSymbol('molt_main')] !== 'function') {
             throw new Error('molt_main export missing');
           }
-          outputModule.instance.exports.molt_main();
+          outputModule.instance.exports[compiledExecutionSymbol('molt_main')](context);
           const exitStatus = mainExitStatus(state.runtimeInstance);
           flushOwnedStdio();
           if (exitStatus === 0) hostExportsInitialized = true;

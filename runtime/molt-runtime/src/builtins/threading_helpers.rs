@@ -30,9 +30,8 @@ fn make_string_bits(py: &PyToken<'_>, s: &str) -> u64 {
 }
 
 /// Returns the next thread name as a NaN-boxed string: "Thread-N".
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_next_name() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_threading_next_name_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let n = THREAD_NAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let name = format!("Thread-{}", n);
         make_string_bits(py, &name)
@@ -40,9 +39,8 @@ pub extern "C" fn molt_threading_next_name() -> u64 {
 }
 
 /// Returns the next thread token as a NaN-boxed integer.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_next_token() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_threading_next_token_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let n = THREAD_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         int_bits_from_i64(py, n as i64)
     })
@@ -69,8 +67,7 @@ const THREAD_TIMEOUT_MAX_MICROS: i64 = (u32::MAX as i64 - 1) * 1_000;
 #[cfg(not(target_os = "windows"))]
 const THREAD_TIMEOUT_MAX_MICROS: i64 = i64::MAX / 1_000;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_timeout_max() -> u64 {
+pub(crate) fn molt_thread_timeout_max_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_float((THREAD_TIMEOUT_MAX_MICROS / 1_000_000) as f64).bits()
 }
 
@@ -140,7 +137,7 @@ fn positive_timeout_duration(py: &PyToken<'_>, nanos: i64) -> Result<std::time::
 }
 
 fn timeout_comparison(py: &PyToken<'_>, left: u64, right: u64) -> Result<bool, u64> {
-    let compared = crate::molt_gt(left, right);
+    let compared = crate::molt_gt_attached_body(py, left, right);
     if crate::exception_pending(py) {
         crate::dec_ref_bits(py, compared);
         return Err(MoltObject::none().bits());
@@ -201,10 +198,13 @@ pub(crate) fn parse_thread_timeout(
 /// Invokes trace and profile hooks stored as NaN-boxed callables.
 /// `trace_bits`: the trace hook callable bits (or None).
 /// `profile_bits`: the profile hook callable bits (or None).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_threading_invoke_hooks(trace_bits: u64, profile_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_threading_invoke_hooks_attached_body(
+    _py: &crate::PyToken<'_>,
+    trace_bits: u64,
+    profile_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(py, {
+        crate::with_attached_entry_nopanic!(_py, py, {
             let trace_obj = obj_from_bits(trace_bits);
             if !trace_obj.is_none() {
                 let none_bits = MoltObject::none().bits();
@@ -235,9 +235,11 @@ pub unsafe extern "C" fn molt_threading_invoke_hooks(trace_bits: u64, profile_bi
 /// Parses a thread registry record tuple into a validated tuple.
 /// Returns the record as-is if valid (the Python side extracts fields).
 /// Raises RuntimeError if the record is malformed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_threading_parse_registry_record(record_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_threading_parse_registry_record_attached_body(
+    _py: &crate::PyToken<'_>,
+    record_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(record_bits);
         if obj.is_none() {
             return raise_exception::<u64>(
@@ -253,10 +255,13 @@ pub unsafe extern "C" fn molt_threading_parse_registry_record(record_bits: u64) 
 
 /// Bootstraps the main thread registry entry.
 /// Delegates to molt_thread_registry_set_main.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_threading_bootstrap_main(name_bits: u64, daemon_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_threading_bootstrap_main_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    daemon_bits: u64,
+) -> u64 {
     unsafe {
-        crate::molt_thread_registry_set_main(name_bits, daemon_bits);
+        crate::molt_thread_registry_set_main_attached_body(_py, name_bits, daemon_bits);
     }
     MoltObject::none().bits()
 }
@@ -265,15 +270,15 @@ pub unsafe extern "C" fn molt_threading_bootstrap_main(name_bits: u64, daemon_bi
 /// `name_bits`, `daemon_bits`, `ident_bits`, `native_id_bits`, `alive_bits` -
 /// individual field bits already extracted from the record.
 /// Returns a 5-tuple for the Python side.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_threading_registry_record_tuple(
+pub(crate) unsafe fn molt_threading_registry_record_tuple_attached_body(
+    _py: &crate::PyToken<'_>,
     name_bits: u64,
     daemon_bits: u64,
     ident_bits: u64,
     native_id_bits: u64,
     alive_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let ptr = alloc_tuple(
             py,
             &[
@@ -297,16 +302,18 @@ pub unsafe extern "C" fn molt_threading_registry_record_tuple(
 // `molt_lock_*` intrinsics in `concurrency/locks.rs`.
 
 /// Create a new Lock. Returns a NaN-boxed handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_lock_new() -> u64 {
-    unsafe { crate::molt_lock_new() }
+pub(crate) fn molt_threading_lock_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    unsafe { crate::molt_lock_new_attached_body(_py) }
 }
 
 /// Acquire the lock. Always succeeds (single-threaded). Returns True.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_lock_acquire(lock_bits: u64) -> u64 {
+pub(crate) fn molt_threading_lock_acquire_attached_body(
+    _py: &crate::PyToken<'_>,
+    lock_bits: u64,
+) -> u64 {
     unsafe {
-        crate::molt_lock_acquire(
+        crate::molt_lock_acquire_attached_body(
+            _py,
             lock_bits,
             MoltObject::from_bool(true).bits(),
             MoltObject::none().bits(),
@@ -315,36 +322,45 @@ pub extern "C" fn molt_threading_lock_acquire(lock_bits: u64) -> u64 {
 }
 
 /// Release the lock. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_lock_release(lock_bits: u64) -> u64 {
-    unsafe { crate::molt_lock_release(lock_bits) }
+pub(crate) fn molt_threading_lock_release_attached_body(
+    _py: &crate::PyToken<'_>,
+    lock_bits: u64,
+) -> u64 {
+    unsafe { crate::molt_lock_release_attached_body(_py, lock_bits) }
 }
 
 // ── Threading Event wrappers ─────────────────────────────────────────────
 
 /// Create a new Event. Returns a NaN-boxed handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_event_new() -> u64 {
-    unsafe { crate::molt_event_new() }
+pub(crate) fn molt_threading_event_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    unsafe { crate::molt_event_new_attached_body(_py) }
 }
 
 /// Set the event flag.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_event_set(event_bits: u64) -> u64 {
-    unsafe { crate::molt_event_set(event_bits) }
+pub(crate) fn molt_threading_event_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    event_bits: u64,
+) -> u64 {
+    unsafe { crate::molt_event_set_attached_body(_py, event_bits) }
 }
 
 /// Check if the event is set. Returns NaN-boxed bool.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_event_is_set(event_bits: u64) -> u64 {
-    unsafe { crate::molt_event_is_set(event_bits) }
+pub(crate) fn molt_threading_event_is_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    event_bits: u64,
+) -> u64 {
+    unsafe { crate::molt_event_is_set_attached_body(_py, event_bits) }
 }
 
 /// Wait for the event (no-op in single-threaded mode: returns immediately).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_event_wait(event_bits: u64) -> u64 {
-    unsafe { crate::molt_event_wait(event_bits, MoltObject::none().bits()) }
+pub(crate) fn molt_threading_event_wait_attached_body(
+    _py: &crate::PyToken<'_>,
+    event_bits: u64,
+) -> u64 {
+    unsafe { crate::molt_event_wait_attached_body(_py, event_bits, MoltObject::none().bits()) }
 }
+
+include!("../attached_exports_generated/builtins/threading_helpers.rs");
 
 #[cfg(test)]
 mod timeout_tests {
@@ -358,7 +374,7 @@ mod timeout_tests {
         name: crate::BuiltinExc,
     ) {
         assert!(parse_thread_timeout(py, bits, policy).is_err());
-        let pending = crate::molt_exception_last_pending();
+        let pending = crate::molt_exception_last_pending_attached_body(py);
         let ptr = obj_from_bits(pending).as_ptr().expect("pending exception");
         let class = crate::builtins::exceptions::exception_class_bits(py, name);
         assert_eq!(unsafe { crate::object_class_bits(ptr) }, class);
@@ -447,7 +463,8 @@ mod timeout_tests {
                 ThreadTimeoutPolicy::Lock { blocking: true },
                 crate::BuiltinExc::OverflowError,
             );
-            let max_seconds = crate::to_f64(obj_from_bits(molt_thread_timeout_max())).unwrap();
+            let max_seconds =
+                crate::to_f64(obj_from_bits(molt_thread_timeout_max_attached_body(py))).unwrap();
             #[cfg(target_os = "windows")]
             assert_eq!(max_seconds, 4_294_967.0);
             #[cfg(not(target_os = "windows"))]

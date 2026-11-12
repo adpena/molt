@@ -196,6 +196,7 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::ExceptionNew
         | OpKind::ExceptionNewFromClass
         | OpKind::ExceptionPending
+        | OpKind::AsyncWorkPending
         | OpKind::ExceptionRegionDropsInserted
         | OpKind::ExceptionSetLast
         | OpKind::ExceptionStackExit
@@ -555,11 +556,8 @@ mod tests {
                 "fixed boxed call `{kind}` must reach generated runtime ABI dispatch",
             );
             assert!(
-                molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(
-                    &format!("molt_{kind}"),
-                    arity,
-                )
-                .is_some(),
+                molt_ir::runtime_fn_generated::runtime_boxed_abi(&format!("molt_{kind}"), arity,)
+                    .is_some(),
                 "deleted handler `{kind}` must have an exact generated boxed ABI",
             );
         }
@@ -584,7 +582,7 @@ mod tests {
 
     #[test]
     fn vector_reductions_use_the_shared_owned_boxed_abi() {
-        use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+        use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
 
         for kind in [
             OpKind::VecSum,
@@ -653,11 +651,8 @@ mod tests {
                 "exact runtime kind `{kind}` must reach the admitted boxed-call route",
             );
             assert!(
-                molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(
-                    &format!("molt_{kind}"),
-                    arity,
-                )
-                .is_some(),
+                molt_ir::runtime_fn_generated::runtime_boxed_abi(&format!("molt_{kind}"), arity,)
+                    .is_some(),
                 "retired handler `{kind}` must have an exact generated boxed ABI",
             );
         }

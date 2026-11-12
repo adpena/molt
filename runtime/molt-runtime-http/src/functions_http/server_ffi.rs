@@ -1,9 +1,11 @@
 use super::*;
 use molt_runtime_core::BuiltinExc;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_register(server_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_socketserver_register_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut runtime = socketserver_runtime()
             .lock()
             .expect("socketserver runtime poisoned");
@@ -13,9 +15,11 @@ pub extern "C" fn molt_socketserver_register(server_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_unregister(server_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_socketserver_unregister_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut runtime = socketserver_runtime()
             .lock()
             .expect("socketserver runtime poisoned");
@@ -30,9 +34,12 @@ pub extern "C" fn molt_socketserver_unregister(server_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_dispatch_begin(server_bits: u64, request_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_socketserver_dispatch_begin_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+    request_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let request = match socketserver_extract_bytes(_py, request_bits, "request payload") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -62,9 +69,12 @@ pub extern "C" fn molt_socketserver_dispatch_begin(server_bits: u64, request_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_dispatch_poll(server_bits: u64, request_id_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_socketserver_dispatch_poll_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+    request_id_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -99,9 +109,12 @@ pub extern "C" fn molt_socketserver_dispatch_poll(server_bits: u64, request_id_b
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_dispatch_cancel(server_bits: u64, request_id_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_socketserver_dispatch_cancel_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+    request_id_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -118,9 +131,11 @@ pub extern "C" fn molt_socketserver_dispatch_cancel(server_bits: u64, request_id
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_get_request_poll(server_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_socketserver_get_request_poll_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut runtime = socketserver_runtime()
             .lock()
             .expect("socketserver runtime poisoned");
@@ -152,12 +167,12 @@ pub extern "C" fn molt_socketserver_get_request_poll(server_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_serve_forever(
+pub fn molt_socketserver_serve_forever_attached_body(
+    _py: &molt_runtime_core::PyToken,
     server_bits: u64,
     poll_interval_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let poll_interval = to_f64(obj_from_bits(poll_interval_bits))
             .unwrap_or(0.5)
             .max(0.0);
@@ -174,7 +189,7 @@ pub extern "C" fn molt_socketserver_serve_forever(
                 return MoltObject::none().bits();
             };
             let missing = missing_bits(_py);
-            let handle_request_bits = molt_getattr_builtin(server_bits, name_bits, missing);
+            let handle_request_bits = molt_getattr_builtin(_py, server_bits, name_bits, missing);
             dec_ref_bits(_py, name_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -268,7 +283,7 @@ fn socketserver_complete_request(
 ) -> Result<(), u64> {
     with_saved_exception(py, || {
         if let Some(method) = attr_optional(py, server_bits, b"close_request")? {
-            if molt_is_callable(method) {
+            if molt_is_callable(py, method) {
                 let result = call_callable1(py, method, request_bits);
                 dec_ref_bits(py, result);
             }
@@ -283,7 +298,7 @@ fn socketserver_complete_request(
         let Some(method) = attr_optional(py, request_bits, b"response_bytes")? else {
             return Ok(());
         };
-        if !molt_is_callable(method) {
+        if !molt_is_callable(py, method) {
             dec_ref_bits(py, method);
             return Ok(());
         }
@@ -320,9 +335,11 @@ fn socketserver_complete_request(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(py, {
+pub fn molt_socketserver_handle_request_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         let get_request = match attr_optional(py, server_bits, b"get_request") {
             Ok(Some(method)) => method,
             Ok(None) => {
@@ -334,7 +351,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
             }
             Err(bits) => return bits,
         };
-        if !molt_is_callable(get_request) {
+        if !molt_is_callable(py, get_request) {
             dec_ref_bits(py, get_request);
             return raise_exception::<_>(
                 py,
@@ -356,7 +373,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                 socketserver_extract_handle_request_tuple(py, request_tuple_bits)?;
             let mut should_process = true;
             if let Some(method) = attr_optional(py, server_bits, b"verify_request")? {
-                if !molt_is_callable(method) {
+                if !molt_is_callable(py, method) {
                     dec_ref_bits(py, method);
                     return Err(raise_exception::<u64>(
                         py,
@@ -389,7 +406,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                         "socketserver server is missing process_request",
                     ));
                 };
-                if !molt_is_callable(method) {
+                if !molt_is_callable(py, method) {
                     dec_ref_bits(py, method);
                     return Err(raise_exception::<u64>(
                         py,
@@ -433,9 +450,11 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_shutdown(server_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_socketserver_shutdown_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    server_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if !urllib_request_set_attr(
             _py,
             server_bits,
@@ -627,9 +646,11 @@ pub(super) fn http_server_compute_close_connection_impl(
     Ok(request_version != HTTP_SERVER_HTTP11)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_handle_one_request(handler_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_server_handle_one_request_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handler_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         match http_server_handle_one_request_impl(_py, handler_bits) {
             Ok(keep_running) => MoltObject::from_bool(keep_running).bits(),
             Err(bits) => bits,
@@ -637,13 +658,13 @@ pub extern "C" fn molt_http_server_handle_one_request(handler_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_response(
+pub fn molt_http_server_send_response_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handler_bits: u64,
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "code must be int");
         };
@@ -663,13 +684,13 @@ pub extern "C" fn molt_http_server_send_response(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_response_only(
+pub fn molt_http_server_send_response_only_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handler_bits: u64,
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "code must be int");
         };
@@ -689,13 +710,13 @@ pub extern "C" fn molt_http_server_send_response_only(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_header(
+pub fn molt_http_server_send_header_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handler_bits: u64,
     keyword_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(keyword) = crate::bridge::format_obj_str(_py, obj_from_bits(keyword_bits)) else {
             return MoltObject::none().bits();
         };
@@ -709,9 +730,11 @@ pub extern "C" fn molt_http_server_send_header(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_end_headers(handler_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_server_end_headers_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handler_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         match http_server_end_headers_impl(_py, handler_bits) {
             Ok(()) => MoltObject::none().bits(),
             Err(bits) => bits,
@@ -719,13 +742,13 @@ pub extern "C" fn molt_http_server_end_headers(handler_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_error(
+pub fn molt_http_server_send_error_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handler_bits: u64,
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "code must be int");
         };
@@ -745,12 +768,12 @@ pub extern "C" fn molt_http_server_send_error(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_version_string(
+pub fn molt_http_server_version_string_attached_body(
+    _py: &molt_runtime_core::PyToken,
     server_version_bits: u64,
     sys_version_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(server_version) =
             crate::bridge::format_obj_str(_py, obj_from_bits(server_version_bits))
         else {
@@ -773,9 +796,11 @@ pub extern "C" fn molt_http_server_version_string(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_date_time_string(timestamp_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_server_date_time_string_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    timestamp_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let out = match http_server_date_time_string_from_bits(_py, timestamp_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -787,9 +812,11 @@ pub extern "C" fn molt_http_server_date_time_string(timestamp_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_status_reason(code_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_status_reason_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    code_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "status code must be int");
         };
@@ -802,9 +829,8 @@ pub extern "C" fn molt_http_status_reason(code_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_status_constants() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_status_constants_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let entries = http_status_constants();
         let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
         let mut owned_bits: Vec<u64> = Vec::with_capacity(entries.len() * 2);
@@ -834,9 +860,8 @@ pub extern "C" fn molt_http_status_constants() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_status_responses() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_status_responses_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let entries = http_status_constants();
         let mut seen_codes: HashSet<i64> = HashSet::new();
         let mut pairs: Vec<u64> = Vec::new();
@@ -869,3 +894,5 @@ pub extern "C" fn molt_http_status_responses() -> u64 {
         MoltObject::from_ptr(dict_ptr).bits()
     })
 }
+
+include!("../attached_exports_generated/functions_http/server_ffi.rs");

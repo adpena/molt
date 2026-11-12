@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! #!<runner> --image
-//! #molt.jit-image.v3 <header bytes> <program bytes>
+//! #molt.jit-image.v4 <header bytes> <program bytes>
 //! <header: JSON>
 //! <program: backend IR, MessagePack>
 //! ```
@@ -215,7 +215,11 @@ mod tests {
                 "marker",
             ),
             (
-                b"#!/runner --image\n#molt.jit-image.v3 2\n{}".to_vec(),
+                b"#!/runner --image\n#molt.jit-image.v3 2 0\n{}".to_vec(),
+                "marker",
+            ),
+            (
+                format!("#!/runner --image\n{IMAGE_MARKER} 2\n{{}}").into_bytes(),
                 "program length",
             ),
         ] {

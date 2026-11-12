@@ -30,6 +30,7 @@ use crate::tir::values::TirValue;
 fn tir_op(opcode: TirOpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

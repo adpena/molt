@@ -1261,15 +1261,25 @@ def test_operation_pins_one_store_and_releases_on_all_exits(
     )
     connections = []
     owner = None
+    # Outside an operation a put is saved at once.
+    assert records.shared_source_records().put(
+        "import-scan", "k", b"body", generation="g"
+    )
     try:
         with scope():
             store = records.shared_source_records()
             owner = weakref.ref(store)
-            assert store.put("import-scan", "k", b"body", generation="g")
             observation = store.get("import-scan", "k", generation="g", max_bytes=16)
+            # Inside an operation a put is queued; the operation reads it back,
+            # and the queued record has no revision to renew.
+            assert store.put("import-scan", "q", b"queued", generation="g")
+            queued = store.get("import-scan", "q", generation="g", max_bytes=16)
+            assert queued is not None and queued.payload == b"queued"
+            assert queued.revision is None
             clock[0] += 301 * 1_000_000_000
             assert observation.refresh()
-            del observation
+            assert not queued.refresh()
+            del observation, queued
             connection = store._connect()
             connections.append(connection)
             del store
@@ -1280,8 +1290,9 @@ def test_operation_pins_one_store_and_releases_on_all_exits(
             with _fresh_compiler_identity_inputs():
                 assert records.shared_source_records() is owner()
                 assert records.shared_source_records()._connect() is connection
+            # Both nested boundaries borrow the outer owner: neither flushes its
+            # queued record or its queued renewal.
             assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
-            # Both nested boundaries borrow the outer owner: neither flushes it.
             assert connection.execute("SELECT used_ns FROM recency").fetchall() == [
                 (100 * _DAY,)
             ]
@@ -1289,8 +1300,12 @@ def test_operation_pins_one_store_and_releases_on_all_exits(
                 raise RuntimeError("operation failed")
     except RuntimeError as exc:
         assert fail and str(exc) == "operation failed"
+    # The outer boundary saves on every explicit exit: the queued record with a
+    # save-time stamp, then the renewal.
     with closing(sqlite3.connect(tmp_path / records.STORE_RELATIVE_PATH)) as peer:
-        assert peer.execute("SELECT used_ns FROM recency").fetchall() == [(clock[0],)]
+        assert peer.execute(
+            "SELECT key, used_ns FROM recency ORDER BY key"
+        ).fetchall() == [("k", clock[0]), ("q", clock[0])]
     gc.collect()
     assert owner is not None and owner() is None
     for connection in connections:
@@ -1929,16 +1944,24 @@ def test_abandoned_operation_drops_renewals_without_entering_save(
         if boundary == "operation"
         else fingerprints._fresh_compiler_identity_inputs
     )
+    # Saved at once: no operation owns the store yet.
+    assert records.shared_source_records().put(
+        "import-scan", "k", b"body", generation="g"
+    )
     context = scope()
     context.__enter__()
     store = records.shared_source_records()
-    assert store.put("import-scan", "k", b"body", generation="g")
     observation = store.get("import-scan", "k", generation="g", max_bytes=16)
+    assert store.put("import-scan", "q", b"queued", generation="g")
     clock[0] += 301 * 1_000_000_000
     assert observation.refresh()
     saves = []
     original = store.save_renewals
+    original_pending = store.save_pending
     monkeypatch.setattr(store, "save_renewals", lambda: saves.append("unexpected save"))
+    monkeypatch.setattr(
+        store, "save_pending", lambda *, final: saves.append("unexpected record save")
+    )
     with store._lock:
         if cleanup_replaces_exit:
             # close() injects the same GeneratorExit as GC, while exposing the
@@ -1952,10 +1975,12 @@ def test_abandoned_operation_drops_renewals_without_entering_save(
         gc.collect()
     assert saves == []
     assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
-    assert store._connect().execute("SELECT used_ns FROM recency").fetchall() == [
-        (100 * _DAY,)
+    # Neither the queued record nor the queued renewal reached the database.
+    assert store._connect().execute("SELECT key, used_ns FROM recency").fetchall() == [
+        ("k", 100 * _DAY)
     ]
     monkeypatch.setattr(store, "save_renewals", original)
+    monkeypatch.setattr(store, "save_pending", original_pending)
     store.close()
 
 
@@ -1987,3 +2012,109 @@ def test_record_and_recency_writes_roll_back_together(tmp_path, monkeypatch, ope
         assert peer.execute(query).fetchall() == original
         assert store._connection_resources is None
         assert not store._renewals
+
+
+# ---------------------------------------------------------------------------
+# Puts inside a frontend operation are queued and saved in chunks (HF-773).
+# Each test separates the queued contract from the per-record write it
+# replaced: a held write lock, a stale shadowed row, a mid-operation chunk.
+# ---------------------------------------------------------------------------
+
+
+def _peer_keys(tmp_path: Path) -> list[str]:
+    with closing(sqlite3.connect(tmp_path / records.STORE_RELATIVE_PATH)) as peer:
+        return [row[0] for row in peer.execute("SELECT key FROM records ORDER BY key")]
+
+
+def test_queued_put_does_not_wait_for_a_held_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+
+    monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    assert records.shared_source_records().put("import-scan", "a", b"x", generation="g")
+    writer = sqlite3.connect(
+        tmp_path / records.STORE_RELATIVE_PATH, isolation_level=None
+    )
+    writer.execute("BEGIN IMMEDIATE")
+    with _source_tree_fingerprint_transaction():
+        store = records.shared_source_records()
+        started = time.monotonic()
+        assert store.put("import-scan", "b", b"y", generation="g")
+        assert time.monotonic() - started < 1.0
+        assert store.pending_count() == 1
+        writer.execute("COMMIT")
+        writer.close()
+    assert _peer_keys(tmp_path) == ["a", "b"]
+
+
+def test_queued_record_shadows_the_older_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+
+    monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    assert records.shared_source_records().put(
+        "import-scan", "k", b"old", generation="g1"
+    )
+    with _source_tree_fingerprint_transaction():
+        store = records.shared_source_records()
+        assert store.put("import-scan", "k", b"newer", generation="g2")
+        assert store.get("import-scan", "k", generation="g1", max_bytes=None) is None
+        assert store.get("import-scan", "k", generation="g2", max_bytes=2) is None
+        record = store.get("import-scan", "k", generation="g2", max_bytes=None)
+        assert record is not None and record.payload == b"newer"
+    with closing(sqlite3.connect(tmp_path / records.STORE_RELATIVE_PATH)) as peer:
+        assert peer.execute("SELECT generation, payload FROM records").fetchall() == [
+            ("g2", b"newer")
+        ]
+
+
+def test_a_full_chunk_is_saved_inside_the_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+
+    monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    monkeypatch.setattr(records, "SOURCE_RECORD_BATCH_MAX_RECORDS", 2)
+    with _source_tree_fingerprint_transaction():
+        store = records.shared_source_records()
+        assert store.put("import-scan", "a", b"x", generation="g")
+        assert store.pending_count() == 1
+        assert store.put("import-scan", "b", b"y", generation="g")
+        # Other builds see a full chunk before this operation ends.
+        assert store.pending_count() == 0
+        assert _peer_keys(tmp_path) == ["a", "b"]
+        assert store.put("import-scan", "c", b"z", generation="g")
+        assert _peer_keys(tmp_path) == ["a", "b"]
+    assert _peer_keys(tmp_path) == ["a", "b", "c"]
+
+
+def test_queue_past_its_byte_limit_drops_the_largest_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+
+    monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    monkeypatch.setattr(records, "_PENDING_BYTES_LIMIT", 10)
+    monkeypatch.setattr(records, "SOURCE_RECORD_BATCH_MAX_BYTES", 1 << 20)
+    with _source_tree_fingerprint_transaction():
+        store = records.shared_source_records()
+        assert store.put("import-scan", "small", b"abc", generation="g")
+        assert store.put("module-lowering", "large", b"0123456789", generation="g")
+        assert store.get("import-scan", "small", generation="g", max_bytes=None)
+        assert (
+            store.get("module-lowering", "large", generation="g", max_bytes=None)
+            is None
+        )
+    assert _peer_keys(tmp_path) == ["small"]
+
+
+def test_every_connection_bounds_the_wal_it_leaves(tmp_path: Path) -> None:
+    store = records.source_record_store(tmp_path)
+    assert store.put("import-scan", "k", b"x", generation="g")
+    connection = store._connect()
+    assert connection.execute("PRAGMA journal_size_limit").fetchone() == (
+        records._JOURNAL_SIZE_LIMIT_BYTES,
+    )
+    store.close()

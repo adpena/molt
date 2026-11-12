@@ -16,8 +16,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 459 |
-| Local path rules | 35 | 84 |
+| Hashed executable authority inputs | 1 | 455 |
+| Local path rules | 35 | 85 |
 | Unique local commands | 73 | 84 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 247 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 246 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 55 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -61,9 +61,9 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 ## Scheduled families
 
-Scheduled workflows consume the same typed command DAG and receipt executor without entering changed-path CI admission.
+Scheduled workflows and farm runs consume the same typed command DAG and receipt executor without entering changed-path CI admission. A farm family runs through tools/trunk_loop.py.
 
-| Family | Workflow job | Timeout | Commands | Reserve | Headroom | Resource | Partitions |
+| Family | Workflow job or executor | Timeout | Commands | Reserve | Headroom | Resource | Partitions |
 |---|---|---:|---:|---:|---:|---|---:|
 | `nightly_shard_prepare` | `nightly-prepare` | 3600 s | 3300 s | 300 s | 0 s | `scheduled-suite` | 1 |
 | `nightly_conformance` | `conformance-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
@@ -72,12 +72,12 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | 0 s | `scheduled-suite` | 1 |
 | `nightly_determinism` | `determinism-sweep` | 5700 s | 5400 s | 300 s | 0 s | `scheduled-suite` | 5 |
 | `nightly_verification_t3` | `verification-gate-t3` | 6300 s | 4800 s | 600 s | 900 s | `scheduled-suite` | 6 |
-| `primitive_instructions` | `primitive-instructions` | 9600 s | 9000 s | 600 s | 0 s | `compiler-build-resource` | 1 |
+| `instruction_signal` | `farm` | 3000 s | 3000 s | 0 s | 0 s | `compiler-build-resource` | 2 |
 | `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | 0 s | `compiler-build-resource` | 1 |
 
 ## Matrix cells
 
-`github-matrix` families project these cells directly into the workflow strategy. The runner is therefore generated policy, not a second handwritten OS list. Each matrix family has its own classifier output, `<family>_matrix`, so a matrix job never receives another family's cells.
+`github-matrix` families project these cells directly into the workflow strategy. The runner is therefore generated policy, not a second handwritten OS list. Each matrix family has its own classifier output, `<family>_matrix`, so a matrix job never receives another family's cells. A farm-only cell runs on an inventoried farm host (`tools/cross_hosts.toml`), not a runner.
 
 | Cell | Runner | OS | Architecture | Python | Backend | Target | Profile |
 |---|---|---|---|---|---|---|---|
@@ -106,7 +106,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `macos-arm64-py312-queue-portability` | `macos-14` | `macos` | `aarch64` | `3.12` | `proof-queue` | `host` | `portability` |
 | `macos-arm64-py312-rust-native-dev` | `macos-14` | `macos` | `aarch64` | `3.12` | `rust` | `aarch64-apple-darwin` | `dev` |
 | `windows-x86_64-py312-queue-portability` | `windows-2022` | `windows` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
-| `macos-arm64-py312-native-release-output` | `macos-14` | `macos` | `aarch64` | `3.12` | `native` | `native` | `release-output` |
+| `linux-x86_64-py312-native-release-output` | `farm` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `release-output` |
 | `linux-x86_64-rust-native-release` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release` |
 
 ## Toolchain contracts
@@ -237,7 +237,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.perf-gate-wiring` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.ratio-direction` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.subagent-contract` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
-| `repository.perf-plane-gate` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.test-ownership` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.environment-registry` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
@@ -344,7 +343,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 1 |
 | `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 1200 s | `formal-tools` | 0 |
 | `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 0 |
-| `performance.primitive-instructions` | `primitive_instructions` | `macos-arm64-py312-native-release-output` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
+| `performance.instructions` | `instruction_signal` | `linux-x86_64-py312-native-release-output` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `performance.instructions-nightly` | `instruction_signal` | `linux-x86_64-py312-native-release-output` | `suite` | 1800 s | `compiler-build-resource` | 0 |
 | `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
@@ -403,9 +403,10 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `native-toolchain-transfer` | 40 | 0 |
 | `proof-plan-tests` | 1 | 0 |
 | `ci-wiring` | 51 | 0 |
+| `typed-facts-gate` | 2 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
-| `performance-measurement` | 39 | 1 |
+| `performance-measurement` | 35 | 1 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 14 | 2 |
 | `import-symbol-gate` | 2 | 1 |

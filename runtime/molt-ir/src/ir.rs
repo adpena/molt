@@ -899,8 +899,7 @@ fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
             let arity = op.args.as_ref().map_or(0, Vec::len);
             let Some(target) = targets.get(symbol) else {
                 if op.argument_custody.is_some()
-                    && crate::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, arity)
-                        .is_some()
+                    && crate::runtime_fn_generated::runtime_boxed_abi(symbol, arity).is_some()
                 {
                     return Err(format!(
                         "function `{}` op#{op_index}: runtime entry `{symbol}` borrows its operands; argument_custody names a source call",
@@ -1355,6 +1354,12 @@ impl OpIR {
     /// through the role-preserving observer marker.
     pub fn is_async_work_poll(&self) -> bool {
         self.async_work_poll || self.kind.is_async_work_poll()
+    }
+
+    /// Whether lowering this operation reads the thread's pending-work word:
+    /// a poll, or the `async_work_pending` test.
+    pub fn reads_pending_work_word(&self) -> bool {
+        self.is_async_work_poll() || self.kind == crate::OpKind::AsyncWorkPending
     }
 
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
@@ -1947,7 +1952,8 @@ mod json_parse_tests {
                 "without a program binding",
             ),
             (0, 1, "value", serde_json::json!(0), "forbids numeric"),
-            (1, 0, "value", serde_json::json!(0), "forbids numeric"),
+            // A frame entry's value is its frame shape, never an identity.
+            (1, 0, "value", serde_json::json!(-1), "nonnegative integer"),
             (0, 2, "value", serde_json::json!(0), "forbids numeric"),
             (
                 0,

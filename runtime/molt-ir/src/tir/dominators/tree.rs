@@ -233,6 +233,7 @@ mod tests {
             attrs.insert("value".into(), AttrValue::Int(7));
             func.blocks.get_mut(&ids[1]).unwrap().ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],

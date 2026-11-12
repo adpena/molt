@@ -415,7 +415,49 @@ def rust_comment_segments(text: str) -> list[tuple[int, str]]:
 
 # Test scope and file-module ownership share the lexer with all source probes.
 # The projections below retain byte/character offsets and physical LF lines.
-_RUST_TEST_CFG_RE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+def _rust_cfg_requires_test(attribute: str) -> bool:
+    """Prove cfg false outside tests, leaving all other predicates unknown."""
+    tokens = [token.text for token in rust_source_tokens(attribute)]
+    if tokens[:4] != ["#", "[", "cfg", "("]:
+        return False
+
+    def predicate(index: int) -> tuple[bool | None, int]:
+        name = tokens[index]
+        index += 1
+        if tokens[index] == "=":
+            return None, index + 2
+        if tokens[index] != "(":
+            return (False if name == "test" else None), index
+        index += 1
+        children = []
+        while tokens[index] != ")":
+            value, index = predicate(index)
+            children.append(value)
+            if tokens[index] != ",":
+                break
+            index += 1
+        if tokens[index] != ")":
+            raise ValueError("invalid cfg predicate")
+        index += 1
+        if name == "all":
+            return (
+                False if False in children else None if None in children else True
+            ), index
+        if name == "any":
+            return (
+                True if True in children else None if None in children else False
+            ), index
+        if name == "not" and len(children) == 1:
+            return (None if children[0] is None else not children[0]), index
+        return None, index
+
+    try:
+        value, end = predicate(4)
+        return value is False and tokens[end:] == [")", "]"]
+    except (IndexError, ValueError):
+        return False
+
+
 _RUST_MODULE_OR_SCOPE_RE = re.compile(
     r"(?P<attribute>#\s*!?\s*\[)|"
     r"\b(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?mod\s+"
@@ -477,9 +519,7 @@ def _rust_item_prefixes(
         while True:
             attr_start = tokens[index].start
             attr_end = ends[tokens[opening].start]
-            test_only |= (
-                _RUST_TEST_CFG_RE.fullmatch(code, attr_start, attr_end) is not None
-            )
+            test_only |= _rust_cfg_requires_test(trivia[attr_start:attr_end])
             if path_attr := _RUST_PATH_ATTR_RE.fullmatch(trivia, attr_start, attr_end):
                 path = path_attr.group("path")
             while index < len(tokens) and tokens[index].start < attr_end:

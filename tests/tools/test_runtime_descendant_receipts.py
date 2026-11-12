@@ -79,6 +79,10 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         ([support.THREAD_ADMISSION], 21),
         ([support.ABI_MALFORMED_HOOKS], 1),
         ([support.ABI_MISSING_TEXT], 1),
+        ([support.IO_CUSTODY], 8),
+        ([support.FOREIGN_CUSTODY], 1),
+        ([support.ROOT_CUSTODY], 7),
+        ([support.EXIT_CUSTODY], 1),
     ],
     ids=[
         "parallel-trap-cold",
@@ -92,6 +96,10 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         "native-thread-admission",
         "abi-malformed-first-hooks",
         "abi-missing-text-allocators",
+        "io-return-custody",
+        "foreign-return-custody",
+        "root-foreign-custody",
+        "exit-compiled-custody",
     ],
 )
 def test_completed_owners_with_bound_children_verify(tmp_path, owners, children):
@@ -743,6 +751,35 @@ def test_mode_specific_proof_matches_each_literal_child_contract():
     )
     expected.update(
         {(owner, f"{owner}_child"): ((), ()) for owner in support.RESOURCE_OWNERS}
+    )
+    for transport in ("stream", "websocket"):
+        for operation in ("send", "recv"):
+            expected[(support.IO_CUSTODY, f"{transport}:{operation}:restore")] = (
+                (),
+                (
+                    "native IO callback restored\n",
+                    "native IO callback public return reached\n",
+                    "native IO callback owners retired\n",
+                ),
+            )
+            expected[(support.IO_CUSTODY, f"{transport}:{operation}:detached")] = (
+                (),
+                ("foreign callback returned with invalid execution custody",),
+            )
+    expected[(support.FOREIGN_CUSTODY, "missing-restore")] = ((), ())
+    for mode in (
+        "pyinit",
+        "module-traverse",
+        "module-clear",
+        "module-free",
+        "heap-export",
+        "heap-release",
+        "heap-invalid-view-release",
+    ):
+        expected[(support.ROOT_CUSTODY, mode)] = ((), ())
+    expected[(support.EXIT_CUSTODY, "compiled-callback")] = (
+        ("process-exit compiled callback completed\n",),
+        (),
     )
     assert set(expected) == set(support.CONTRACT)
     assert set(expected) == {

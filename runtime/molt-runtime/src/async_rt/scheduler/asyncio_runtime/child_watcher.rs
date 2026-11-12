@@ -161,35 +161,45 @@ fn asyncio_child_watcher_pop_impl(_py: &PyToken<'_>, callbacks_bits: u64, pid_bi
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_child_watcher_add(
+pub(crate) fn molt_asyncio_child_watcher_add_attached_body(
+    _py: &crate::PyToken<'_>,
     callbacks_bits: u64,
     pid_bits: u64,
     callback_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_child_watcher_add_impl(_py, callbacks_bits, pid_bits, callback_bits, args_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_child_watcher_remove(callbacks_bits: u64, pid_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_child_watcher_remove_attached_body(
+    _py: &crate::PyToken<'_>,
+    callbacks_bits: u64,
+    pid_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_child_watcher_remove_impl(_py, callbacks_bits, pid_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_child_watcher_clear(callbacks_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_child_watcher_clear_attached_body(
+    _py: &crate::PyToken<'_>,
+    callbacks_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_child_watcher_clear_impl(_py, callbacks_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_child_watcher_pop(callbacks_bits: u64, pid_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_child_watcher_pop_attached_body(
+    _py: &crate::PyToken<'_>,
+    callbacks_bits: u64,
+    pid_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_child_watcher_pop_impl(_py, callbacks_bits, pid_bits)
     })
 }
+
+include!("../../../attached_exports_generated/async_rt/scheduler/asyncio_runtime/child_watcher.rs");

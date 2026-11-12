@@ -43,7 +43,8 @@ fn publish(py: &PyToken<'_>, major: i64, minor: i64, micro: i64, release: &str, 
         MoltObject::from_ptr(alloc_string(py, release.as_bytes())).bits(),
     );
     assert!(obj_from_bits(release.bits()).as_ptr().is_some());
-    let result = molt_sys_set_version_info(
+    let result = molt_sys_set_version_info_attached_body(
+        py,
         MoltObject::from_int(major).bits(),
         MoltObject::from_int(minor).bits(),
         MoltObject::from_int(micro).bits(),
@@ -54,7 +55,7 @@ fn publish(py: &PyToken<'_>, major: i64, minor: i64, micro: i64, release: &str, 
 }
 
 fn assert_display(py: &PyToken<'_>, expected: &str) {
-    let version = ExceptionValue::adopt(py, molt_sys_version());
+    let version = ExceptionValue::adopt(py, molt_sys_version_attached_body(py));
     assert!(!exception_pending(py));
     assert_eq!(
         string_obj_to_owned(obj_from_bits(version.bits())).as_deref(),
@@ -104,7 +105,7 @@ fn compiled_target_ignores_retired_environment_before_and_after_publication() {
                     assert_eq!((info.major, info.minor, info.micro), (3, minor, 0));
                     assert_eq!((info.releaselevel.as_str(), info.serial), ("final", 0));
                     assert_display(py, &format!("3.{minor}.0 (molt)"));
-                    let hexversion = molt_sys_hexversion();
+                    let hexversion = molt_sys_hexversion_attached_body(py);
                     assert_eq!(
                         to_i64(obj_from_bits(hexversion)),
                         Some((3 << 24) | (minor << 16) | 0xf0)

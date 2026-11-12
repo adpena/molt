@@ -168,7 +168,8 @@ fn propagate_boxed_immortal_carriers(func: &TirFunction, repr: &mut HashMap<Valu
             if op.results.len() != 1 {
                 continue;
             }
-            if op.opcode == OpCode::BoxVal && op.operands.len() == 1 {
+            if matches!(op.opcode, OpCode::BoxVal | OpCode::BoxInlineInt) && op.operands.len() == 1
+            {
                 add(op.results[0], Rule::Box(op.operands[0]));
             } else if op.operands.len() == 1
                 && (op.opcode == OpCode::IncRef
@@ -495,6 +496,18 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         OpCode::Not | OpCode::Bool => (unary, false),
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => (binary_result, true),
         OpCode::Pos | OpCode::BitNot => (unary_result, true),
+        // Late-TIR primitives read their operands as boxed words. UnboxInlineInt
+        // produces a raw word by construction, independent of operand carriers.
+        OpCode::IsInlineInt
+        | OpCode::UnboxInlineInt
+        | OpCode::IsBoolWord
+        | OpCode::IsFloatWord
+        | OpCode::UnboxFloatWord
+        | OpCode::UnboxBoolWord
+        | OpCode::BoxInlineInt
+        | OpCode::CodeIs
+        | OpCode::DirectCall
+        | OpCode::CallRuntime => (IntegerOperandObservation::Always, false),
         OpCode::Add
         | OpCode::InplaceAdd
         | OpCode::Sub
@@ -561,6 +574,7 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::Raise
         | OpCode::CheckException
         | OpCode::ExceptionPending
+        | OpCode::AsyncWorkPending
         | OpCode::FunctionDefaultsVersion
         | OpCode::TryStart
         | OpCode::TryEnd
@@ -710,9 +724,30 @@ fn raw_i64_full_deopt_values_for_with_types(
     value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
     let mut seed = std::collections::HashSet::new();
+    let inline_payloads: std::collections::HashSet<ValueId> = tir_func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::UnboxInlineInt)
+        .flat_map(|op| op.results.iter().copied())
+        .collect();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
             match opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode) {
+                // Two values in the inline window sum exactly in i64; the result
+                // may leave the window, so it boxes through the full-range path.
+                // At least one operand is a late-stage payload, so only the
+                // stage's fast arms take this rule (HF-821).
+                ReprRawI64FullDeoptSeedRule::ExactSumOfInlinePayloads
+                    if let [lhs, rhs] = op.operands[..]
+                        && let [result] = op.results[..]
+                        && inline_safe_values.contains(&lhs)
+                        && inline_safe_values.contains(&rhs)
+                        && (inline_payloads.contains(&lhs) || inline_payloads.contains(&rhs))
+                        && !inline_safe_values.contains(&result) =>
+                {
+                    seed.insert(result);
+                }
                 ReprRawI64FullDeoptSeedRule::CheckedResultZero
                     if let Some(&result) = op.results.first()
                         && is_raw_i64_semantic_candidate(value_types, result) =>
@@ -815,6 +850,18 @@ fn raw_i64_safe_value_seed(
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
+            // The late lowering stage proved these results before it split
+            // blocks. A fresh range analysis cannot see the loop through the
+            // split, and a value's range does not change when its block does.
+            if op.has_inline_int_proof() {
+                seed.extend(
+                    op.results
+                        .iter()
+                        .copied()
+                        .filter(|&result| is_raw_i64_semantic_candidate(value_types, result)),
+                );
+                continue;
+            }
             // CheckedAdd/CheckedMul are full-range overflow-peel carriers.
             // They are seeded as RawI64FullDeopt, never as RawI64Safe.
             // A `Shl`/`Shr` result is a sound raw-i64 carrier only when its

@@ -16,7 +16,6 @@ frontend_integration = importlib.import_module("molt.cli.frontend_integration")
 frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 
 _FRONTEND_INTEGRATION_NAMES = (
-    "_accumulate_midend_diagnostics_with_state",
     "_integrate_module_frontend_result_with_state",
     "_register_global_code_id_with_state",
     "_plan_module_code_slots",
@@ -169,7 +168,8 @@ def test_module_integration_rejects_stale_or_foreign_owners_without_rewriting(
     elif defect == "foreign-slot":
         op["s_value"] = "foreign"
     else:
-        op["value"] = 0
+        # A frame entry's value is a frame shape, never a numeric identity.
+        op["value"] = -1
     before = deepcopy(function)
     state = _FrontendIntegrationState(functions=[], known_classes={})
     issue = frontend_integration._integrate_module_frontend_result_with_state(

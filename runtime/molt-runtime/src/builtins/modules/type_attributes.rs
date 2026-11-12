@@ -19,9 +19,12 @@ fn module_receiver(py: &PyToken<'_>, bits: u64, method: &str) -> Option<*mut u8>
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_getattribute(module: u64, name: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_getattribute_attached_body(
+    _py: &crate::PyToken<'_>,
+    module: u64,
+    name: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = module_receiver(py, module, "__getattribute__") else {
             return MoltObject::none().bits();
         };
@@ -138,7 +141,7 @@ fn spec_lists_uninitialized_submodule(py: &PyToken<'_>, spec: u64, name: u64) ->
     let Some(submodules) = value.map_err(|_| ())? else {
         return Ok(false);
     };
-    let contains = crate::molt_contains(submodules, name);
+    let contains = crate::molt_contains_attached_body(py, submodules, name);
     dec_ref_bits(py, submodules);
     if exception_pending(py) {
         return Err(());
@@ -146,9 +149,13 @@ fn spec_lists_uninitialized_submodule(py: &PyToken<'_>, spec: u64, name: u64) ->
     Ok(obj_from_bits(contains).as_bool().unwrap_or(false))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_setattr(module: u64, name: u64, value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_setattr_attached_body(
+    _py: &crate::PyToken<'_>,
+    module: u64,
+    name: u64,
+    value: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if module_receiver(py, module, "__setattr__").is_none() {
             return MoltObject::none().bits();
         }
@@ -157,9 +164,12 @@ pub extern "C" fn molt_module_setattr(module: u64, name: u64, value: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_delattr(module: u64, name: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_delattr_attached_body(
+    _py: &crate::PyToken<'_>,
+    module: u64,
+    name: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if module_receiver(py, module, "__delattr__").is_none() {
             return MoltObject::none().bits();
         }
@@ -168,9 +178,8 @@ pub extern "C" fn molt_module_delattr(module: u64, name: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_dir(module: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_dir_attached_body(_py: &crate::PyToken<'_>, module: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = module_receiver(py, module, "__dir__") else {
             return MoltObject::none().bits();
         };
@@ -215,9 +224,8 @@ pub extern "C" fn molt_module_dir(module: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_repr(module: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_repr_attached_body(_py: &crate::PyToken<'_>, module: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = module_receiver(py, module, "__repr__") else {
             return MoltObject::none().bits();
         };
@@ -225,3 +233,5 @@ pub extern "C" fn molt_module_repr(module: u64) -> u64 {
         text.into_bits(py)
     })
 }
+
+include!("../../attached_exports_generated/builtins/modules/type_attributes.rs");

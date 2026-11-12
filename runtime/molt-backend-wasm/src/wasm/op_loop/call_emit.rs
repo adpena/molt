@@ -2,9 +2,10 @@ use super::result_sink::{discard_runtime_result, store_runtime_result};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::{OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, WasmRuntimeImport};
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 #[derive(Clone, Copy)]
 pub(super) struct OpLoopRuntimeCallContext<'a> {
@@ -20,10 +21,10 @@ pub(super) fn emit_op_loop_runtime_call(
     op: &OpIR,
     call: OpLoopRuntimeCallSpec,
 ) {
-    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind) {
+    if let Some(abi) = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(op.kind) {
         assert_eq!(
             op.args.as_deref().unwrap_or(&[]).len(),
-            abi.arity,
+            abi.arity(),
             "{} boxed-call arity",
             op.kind,
         );

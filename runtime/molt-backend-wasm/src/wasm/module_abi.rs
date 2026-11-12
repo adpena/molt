@@ -67,6 +67,7 @@ impl WasmBackend {
         // Every function body calls these, and the table layout below derives
         // user function indices from `func_count`, so they are emitted here.
         super::refcount::emit_refcount_bodies(&mut self, reloc_enabled);
+        super::frame_record::emit_frame_bodies(&mut self, reloc_enabled);
 
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.
@@ -85,6 +86,15 @@ impl WasmBackend {
             &host_surface.intrinsic_manifest_names,
         );
         callable_table.validate_ir_call_target_closure(ir);
+        for function in &ir.functions {
+            let index = callable_table
+                .function_index(&function.name)
+                .unwrap_or_else(|| panic!("missing compiled WASM call ABI for {}", function.name));
+            std::rc::Rc::make_mut(&mut self.execution_call_abis).register_attached(
+                index,
+                &vec![wasm_encoder::ValType::I64; function.params.len()],
+            );
+        }
 
         // The tables above own all cross-function metadata. Audits retain only
         // the original module shape, so emitted bodies can be retired at once.

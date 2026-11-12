@@ -433,7 +433,9 @@ fn megafn_call_family_codegen_snapshot() {
         );
         let symbols = native_object_symbols(&output.bytes);
         assert!(
-            symbols.defined.contains(&entry),
+            symbols.defined.contains(
+                &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(&entry)
+            ),
             "program {name} discarded caller {entry}"
         );
         for target in match name {
@@ -442,23 +444,28 @@ fn megafn_call_family_codegen_snapshot() {
             _ => &[],
         } {
             assert!(
-                symbols.defined.contains(*target),
+                symbols.defined.contains(
+                    &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(target)
+                ),
                 "program {name} lost call boundary {target}"
             );
         }
         if name == "call_guarded" {
             assert!(
-                symbols.undefined.contains("molt_call_bind_ic"),
+                symbols
+                    .undefined
+                    .contains(physical_runtime_symbol("molt_call_bind_ic")),
                 "non-exact guarded ABI must enter the Python binder"
             );
         }
         if name == "call_func_inline_probe" {
-            for required in ["molt_function_direct_call_eligible", "molt_thread_record"] {
-                assert!(
-                    symbols.undefined.contains(required),
-                    "inline calls must consume {required}"
-                );
-            }
+            assert!(
+                symbols.undefined.contains(physical_runtime_symbol(
+                    "molt_function_direct_call_eligible"
+                )),
+                "inline calls must consume molt_function_direct_call_eligible"
+            );
+            assert!(!symbols.undefined.contains("molt_thread_record"));
             // The handoff is a store into the thread record, not a runtime call.
             for removed in ["molt_frame_invocation_enter", "molt_frame_invocation_exit"] {
                 assert!(

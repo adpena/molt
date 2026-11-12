@@ -2,9 +2,9 @@ use super::super::call_emit::OpLoopRuntimeCallContext;
 use super::super::out_param::WasmOutParam;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR};
-use wasm_encoder::Function;
 
 #[path = "aggregate_ops/callargs_ops.rs"]
 mod callargs_ops;

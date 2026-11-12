@@ -44,7 +44,7 @@ impl WasmBackend {
             let function_index = self.func_count;
             self.imports.import(
                 USER_FUNCTION_IMPORT_MODULE,
-                &function.name,
+                &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(&function.name),
                 EntityType::Function(type_layout.type_idx_for_function(function)),
             );
             if imports

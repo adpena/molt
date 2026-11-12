@@ -29,6 +29,10 @@ const BOOTSTRAP_VALUE: i64 = 0x6a17;
 
 fn fake_runtime_source() -> String {
     let witness = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL;
+    let suffix = molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX;
+    let bootstrap_symbol = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+        "molt_isolate_bootstrap",
+    );
     format!(
         r#"
 use std::io::Write;
@@ -46,7 +50,8 @@ fn log(line: &str) {{
 }}
 
 unsafe extern "C" {{
-    fn molt_isolate_bootstrap() -> u64;
+    #[link_name = "{bootstrap_symbol}"]
+    fn molt_isolate_bootstrap(context: u64) -> u64;
     fn signal(signal: i32, handler: usize) -> usize;
     fn sigaltstack(new: *const u8, old: *mut AltStack) -> i32;
     fn sigpending(set: *mut u64) -> i32;
@@ -98,6 +103,12 @@ fn threads() -> usize {{
 #[unsafe(no_mangle)]
 pub static {witness}: u8 = 0;
 static EXCEPTION_PENDING: u8 = 0;
+#[repr(C)]
+struct ContextHeader {{ thread_record: &'static u8 }}
+static HEADER: ContextHeader = ContextHeader {{ thread_record: &EXCEPTION_PENDING }};
+static SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn context() -> u64 {{ std::ptr::addr_of!(HEADER) as u64 }}
+fn assert_context(actual: u64) {{ assert_eq!(actual, context(), "wrong execution context"); }}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_register_compiled_sources(_paths: *const *const u8, count: u64) {{
@@ -118,7 +129,7 @@ pub extern "C" fn molt_module_registry_install(blob: *const u8) -> u64 {{
 pub extern "C" fn molt_runtime_init() -> u64 {{
     let receipt = std::env::var_os("FAKE_RUNTIME_RECEIPT").expect("FAKE_RUNTIME_RECEIPT");
     let started = std::path::Path::new(&receipt).exists();
-    let bootstrap = unsafe {{ molt_isolate_bootstrap() }};
+    let bootstrap = unsafe {{ molt_isolate_bootstrap(context()) }};
     log(&format!("molt_runtime_init receipt={{started}} bootstrap={{bootstrap:#x}}"));
     // A shell between the caller and the runner would set PWD and SHLVL; the
     // runner's allocator restart must leave no variable of its own behind.
@@ -161,31 +172,49 @@ pub extern "C" fn molt_set_argv(argc: i32, argv: *const *const std::ffi::c_char)
     log(&format!("molt_set_argv {{}}", arguments.join(" ")));
 }}
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_attached_context() -> u64 {{
+    log("molt_attached_context");
+    context()
+}}
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compiled_execution_enter(actual: u64) -> u64 {{
+    assert_context(actual);
+    assert_eq!(SCOPE.swap(0x670, std::sync::atomic::Ordering::SeqCst), 0);
+    log("molt_compiled_execution_enter");
+    0x670
+}}
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compiled_execution_leave(actual: u64, scope: u64) {{
+    assert_context(actual);
+    assert_eq!(scope, 0x670);
+    assert_eq!(SCOPE.swap(0, std::sync::atomic::Ordering::SeqCst), scope);
+    log("molt_compiled_execution_leave");
+}}
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_main_exit_status() -> u64 {{
+    assert_eq!(SCOPE.load(std::sync::atomic::Ordering::SeqCst), 0);
     log("molt_main_exit_status");
     0
 }}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dec_ref_obj(_bits: u64) {{}}
+#[unsafe(export_name = "molt_dec_ref_obj{suffix}")]
+pub extern "C" fn molt_dec_ref_obj(actual: u64, _bits: u64) {{ assert_context(actual); }}
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_exit(code: u64) -> u64 {{
     log(&format!("molt_runtime_exit {{code}}"));
     std::process::exit(code as i32)
 }}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dec_ref(_bits: u64) {{}}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inc_ref_obj(_bits: u64) {{}}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending_fast() -> u64 {{
+#[unsafe(export_name = "molt_dec_ref{suffix}")]
+pub extern "C" fn molt_dec_ref(actual: u64, _bits: u64) {{ assert_context(actual); }}
+#[unsafe(export_name = "molt_inc_ref_obj{suffix}")]
+pub extern "C" fn molt_inc_ref_obj(actual: u64, _bits: u64) {{ assert_context(actual); }}
+#[unsafe(export_name = "molt_exception_pending_fast{suffix}")]
+pub extern "C" fn molt_exception_pending_fast(actual: u64) -> u64 {{
+    assert_context(actual);
     0
 }}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_record() -> u64 {{
-    std::ptr::addr_of!(EXCEPTION_PENDING) as u64
-}}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{
+#[unsafe(export_name = "molt_async_work_poll_and_exception_pending{suffix}")]
+pub extern "C" fn molt_async_work_poll_and_exception_pending(actual: u64) -> u64 {{
+    assert_context(actual);
     0
 }}
 "#
@@ -219,7 +248,12 @@ fn fake_runtime(artifacts: &CargoTestArtifacts) -> PathBuf {
         .arg(artifacts.argument("", &image).unwrap());
     if cfg!(target_os = "macos") {
         // The runner, not the image, defines `molt_isolate_bootstrap`.
-        command.arg("-Clink-arg=-Wl,-U,_molt_isolate_bootstrap");
+        command.arg(format!(
+            "-Clink-arg=-Wl,-U,_{}",
+            molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                "molt_isolate_bootstrap"
+            )
+        ));
     }
     let output = command.output().expect("run rustc");
     assert!(
@@ -264,6 +298,10 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
             "molt_isolate_bootstrap",
             true,
             vec![
+                OpIR {
+                    s_value: Some("molt_async_work_poll_and_exception_pending".into()),
+                    ..op(molt_ir::OpKind::Call)
+                },
                 OpIR {
                     out: Some("value".to_string()),
                     value: Some(BOOTSTRAP_VALUE),
@@ -441,12 +479,12 @@ fn runner_protocol(key: &str) -> String {
         .to_string()
 }
 
-/// The `start` entries of the launch ABI's one source, in declared order.
-fn declared_start_sequence() -> Vec<String> {
+/// One phase of the launch ABI's source, in declared order.
+fn declared_sequence(phase: &str) -> Vec<String> {
     let document = launch_abi();
-    document["start"]
+    document[phase]
         .as_array()
-        .expect("start entries")
+        .expect("launch phase entries")
         .iter()
         .map(|entry| entry["name"].as_str().expect("entry name").to_string())
         .collect()
@@ -464,10 +502,11 @@ fn the_runner_starts_a_program_in_the_aot_stub_order() {
         .map(|line| line.split(' ').next().unwrap_or_default())
         .filter(|name| !matches!(*name, "process" | "env" | "pending"))
         .collect();
-    // The declared start sequence, then the program's own exit: a program
-    // leaves through `molt_runtime_exit` from its entry.
-    let mut expected = declared_start_sequence();
-    expected.push("molt_runtime_exit".to_string());
+    // The host owns scope acquisition and exact retirement around the
+    // compiled main, then reports its status through the declared finish.
+    let mut expected = declared_sequence("start");
+    expected.extend(declared_sequence("execution"));
+    expected.extend(declared_sequence("finish"));
     assert_eq!(called, expected, "{}", run.stderr);
     let line = |name: &str| {
         run.log

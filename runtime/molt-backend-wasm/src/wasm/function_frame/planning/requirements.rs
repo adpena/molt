@@ -19,7 +19,7 @@ pub(super) struct FrameRuntimeRequirements {
 
 impl FrameRuntimeRequirements {
     pub(super) fn observe_op(&mut self, scalar_plan: &ScalarRepresentationPlan, op: &OpIR) {
-        self.needs_async_poll |= op.is_async_work_poll();
+        self.needs_async_poll |= op.reads_pending_work_word();
         if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
             self.fast_int_count += 1;
         }

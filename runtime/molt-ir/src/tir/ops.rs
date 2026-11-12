@@ -193,6 +193,17 @@ pub enum OpCode {
     BoxVal,
     UnboxVal,
     TypeGuard,
+    // Late-TIR representation primitives and the cold runtime edge (HF-821)
+    IsInlineInt,
+    UnboxInlineInt,
+    IsBoolWord,
+    IsFloatWord,
+    UnboxFloatWord,
+    UnboxBoolWord,
+    BoxInlineInt,
+    CodeIs,
+    DirectCall,
+    CallRuntime,
     // Refcount
     IncRef,
     DecRef,
@@ -261,6 +272,13 @@ pub enum OpCode {
     /// Used as the condition of the `loop_break_if_exception` CondBranch that
     /// exits an iterator-consumer loop on a mid-iteration raise.
     ExceptionPending,
+    /// Read the thread's pending-work word as a boolean: true when a signal
+    /// handler, a pending call or a scheduler request waits for the next
+    /// async-work poll. It runs no work and cannot raise. The word is set
+    /// from other threads and from signal context, so the read is pinned at
+    /// its program point. A promoted module-level loop branches on it to the
+    /// unpromoted loop, whose poll services the work.
+    AsyncWorkPending,
     /// Read a function object's `__defaults__`/`__kwdefaults__` mutation version
     /// stamp (`molt_function_defaults_version_slot`).  Takes one arg (the
     /// function object) and yields the version as an inline int.  Side-effecting
@@ -459,6 +477,10 @@ pub struct TirOp {
     /// Preserved wire identity, separate from untyped payload attributes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<crate::OpKind>,
+    /// The runtime entry a `CallRuntime` op calls. The verifier requires it on
+    /// `CallRuntime` and forbids it on every other op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
     /// Dialect this operation belongs to.
     pub dialect: Dialect,
     /// The operation code.
@@ -499,6 +521,20 @@ pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
 /// LocationId that an Origin check's cold edge stores before capture
 /// (call_anatomy.md, "Location publication cost", M1).
 pub const FRAME_LOCATION_ATTR: &str = "frame_location";
+/// Proof carried into final TIR: every integer result of this op fits the
+/// inline-int47 window. The late lowering stage records it before it splits
+/// blocks, because the range analysis that found the proof reads loop shape
+/// and the split hides that shape from a later run.
+pub const INLINE_INT_PROOF_ATTR: &str = "inline_int_proof";
+/// Proof carried into final TIR: this op cannot raise. The late lowering
+/// stage records it on the ops that replace an op which could not raise (an
+/// add of two exact ints), whose exception check is already gone.
+pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
+/// Proof carried into final TIR: the exact scalar type of this op's result,
+/// as a closed tag (`exact_result_proof`). The late lowering stage records it
+/// on the runtime call that replaces an op whose result type was exact; the
+/// call's own contract says only "an object".
+pub const EXACT_RESULT_PROOF_ATTR: &str = "exact_result_proof";
 
 /// Attribute projection of a call's typed per-operand custody: the
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with
@@ -611,6 +647,20 @@ pub fn builtin_call_view<'a, T>(
 }
 
 impl TirOp {
+    /// A Molt-dialect op with no attributes, origin, runtime entry or span.
+    pub fn new(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Self {
+        Self {
+            origin: None,
+            runtime: None,
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results,
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
     pub fn exception_source_kind(&self) -> Option<super::op_kinds_generated::ExceptionEdgeKind> {
         match self.attrs.get("exception_source") {
             Some(AttrValue::Int(tag)) => {
@@ -648,6 +698,20 @@ impl TirOp {
     pub fn with_origin(mut self, origin: crate::OpKind) -> Self {
         self.origin = Some(origin);
         self
+    }
+
+    /// The runtime entry that implements this numeric op on boxed operands:
+    /// the entry of its wire identity (its origin, else its opcode's canonical
+    /// kind). An in-place opcode or origin thus selects `molt_inplace_*`, which
+    /// tries `__i<op>__` before the binary chain, as CPython requires; alias
+    /// spellings (`shl`, `unary_neg`) share their entry. One rule for every
+    /// backend and the late lowering stage.
+    pub fn numeric_runtime(&self) -> Option<crate::runtime_fn_generated::RuntimeFn> {
+        use crate::runtime_fn_generated::numeric_runtime_fn;
+        self.origin.and_then(numeric_runtime_fn).or_else(|| {
+            super::op_kinds_generated::opcode_canonical_kind_table(self.opcode)
+                .and_then(numeric_runtime_fn)
+        })
     }
 
     pub fn builtin_call(&self) -> Option<BuiltinCallView<'_, ValueId>> {
@@ -793,6 +857,23 @@ impl TirOp {
         }
     }
 
+    /// Whether this op carries the late stage's proof that its integer results
+    /// fit the inline-int47 window.
+    #[inline]
+    pub fn has_inline_int_proof(&self) -> bool {
+        matches!(
+            self.attrs.get(INLINE_INT_PROOF_ATTR),
+            Some(AttrValue::Bool(true))
+        )
+    }
+
+    /// Record that every integer result of this op fits the inline-int47
+    /// window. Only the late lowering stage may call it, with the proof in hand.
+    pub fn mark_inline_int_proof(&mut self) {
+        self.attrs
+            .insert(INLINE_INT_PROOF_ATTR.into(), AttrValue::Bool(true));
+    }
+
     /// Whether this operation is also the canonical pending-call/eval-breaker
     /// observation. Ordinary boundaries fuse the poll with CheckException;
     /// generated `finally` arbitration fuses it with the pending-object observer
@@ -803,6 +884,55 @@ impl TirOp {
             self.attrs.get(ASYNC_WORK_POLL_ATTR),
             Some(AttrValue::Bool(true))
         )
+    }
+
+    /// Whether this op carries the late stage's proof that it cannot raise.
+    #[inline]
+    pub fn has_nothrow_proof(&self) -> bool {
+        matches!(
+            self.attrs.get(NOTHROW_PROOF_ATTR),
+            Some(AttrValue::Bool(true))
+        )
+    }
+
+    /// Record that this op cannot raise. Only the late lowering stage may
+    /// call it, on an op that replaces one which could not raise.
+    pub fn mark_nothrow_proof(&mut self) {
+        self.attrs
+            .insert(NOTHROW_PROOF_ATTR.into(), AttrValue::Bool(true));
+    }
+
+    /// The exact scalar type the late stage proved for this op's result.
+    pub fn exact_result_proof(&self) -> Option<TirType> {
+        match self.attrs.get(EXACT_RESULT_PROOF_ATTR) {
+            Some(AttrValue::Int(0)) => Some(TirType::I64),
+            Some(AttrValue::Int(1)) => Some(TirType::BigInt),
+            Some(AttrValue::Int(2)) => Some(TirType::Bool),
+            Some(AttrValue::Int(3)) => Some(TirType::F64),
+            _ => None,
+        }
+    }
+
+    /// Record the exact scalar type of this op's result. Returns false, and
+    /// records nothing, for a type that is not an exact scalar.
+    pub fn mark_exact_result_proof(&mut self, ty: &TirType) -> bool {
+        let tag = match ty {
+            TirType::I64 => 0,
+            TirType::BigInt => 1,
+            TirType::Bool => 2,
+            TirType::F64 => 3,
+            _ => return false,
+        };
+        self.attrs
+            .insert(EXACT_RESULT_PROOF_ATTR.into(), AttrValue::Int(tag));
+        true
+    }
+
+    /// Whether lowering this operation reads the thread's pending-work word:
+    /// a poll, or the `AsyncWorkPending` test. A function with such an
+    /// operation materializes the word's address once, at entry.
+    pub fn reads_pending_work_word(&self) -> bool {
+        self.is_async_work_poll() || self.opcode == OpCode::AsyncWorkPending
     }
 
     /// Whether this operation role can fuse an asynchronous-work poll without
@@ -900,6 +1030,7 @@ pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
     };
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: Vec::new(),
@@ -1032,6 +1163,7 @@ mod tests {
     fn retiring_poll_role_preserves_exception_payload_and_source() {
         let original = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![ValueId(7), ValueId(8)],

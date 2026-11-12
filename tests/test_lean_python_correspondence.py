@@ -48,17 +48,19 @@ def _read(path: Path) -> str:
 
 
 def _generated_python_effect_classes() -> dict[str, set[str]]:
-    from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS
+    from molt.frontend.lowering.op_kinds_generated import (
+        FRONTEND_EFFECT_PURE_KINDS,
+        FRONTEND_EFFECT_CONTROL_KINDS,
+        FRONTEND_REGISTERED_KINDS,
+    )
 
-    classes: dict[str, set[str]] = {
-        "pure": set(),
-        "reads_heap": set(),
-        "writes_heap": set(),
-        "control": set(),
+    return {
+        "pure": set(FRONTEND_EFFECT_PURE_KINDS),
+        "control": set(FRONTEND_EFFECT_CONTROL_KINDS),
+        "barrier": set(FRONTEND_REGISTERED_KINDS)
+        - FRONTEND_EFFECT_PURE_KINDS
+        - FRONTEND_EFFECT_CONTROL_KINDS,
     }
-    for kind, effect in FRONTEND_EFFECT_CLASS.items():
-        classes[effect].add(kind)
-    return classes
 
 
 def _lean_binop_python_name(name: str) -> str | None:
@@ -100,41 +102,21 @@ class TestEffectClassification:
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         assert len(python_effect_classes["pure"]) > 0, (
-            "No pure ops found in FRONTEND_EFFECT_CLASS"
-        )
-
-    def test_reads_heap_nonempty(
-        self, python_effect_classes: dict[str, set[str]]
-    ) -> None:
-        assert len(python_effect_classes["reads_heap"]) > 0, (
-            "No reads_heap ops found in FRONTEND_EFFECT_CLASS"
-        )
-
-    def test_writes_heap_nonempty(
-        self, python_effect_classes: dict[str, set[str]]
-    ) -> None:
-        assert len(python_effect_classes["writes_heap"]) > 0, (
-            "No writes_heap ops found in FRONTEND_EFFECT_CLASS"
+            "No pure ops found in frontend location effect sets"
         )
 
     def test_control_ops_nonempty(
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         assert len(python_effect_classes["control"]) > 0, (
-            "No control ops found in FRONTEND_EFFECT_CLASS"
+            "No control ops found in frontend location effect sets"
         )
 
-    def test_no_overlap_pure_writes(
+    def test_no_overlap_pure_control(
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
-        overlap = python_effect_classes["pure"] & python_effect_classes["writes_heap"]
-        assert not overlap, f"Ops classified as both pure and writes_heap: {overlap}"
-
-    def test_no_overlap_pure_reads(
-        self, python_effect_classes: dict[str, set[str]]
-    ) -> None:
-        overlap = python_effect_classes["pure"] & python_effect_classes["reads_heap"]
-        assert not overlap, f"Ops classified as both pure and reads_heap: {overlap}"
+        overlap = python_effect_classes["pure"] & python_effect_classes["control"]
+        assert not overlap, f"Ops classified as both pure and control: {overlap}"
 
 
 class TestFrontendEffectAlignment:
@@ -189,7 +171,7 @@ class TestFrontendEffectAlignment:
         for op in barrier_ops & lean_binops:
             upper = _lean_binop_python_name(op)
             assert upper is not None
-            assert upper in python_effect_classes["writes_heap"], (
+            assert upper in python_effect_classes["barrier"], (
                 f"Lean BinOp.{op} frontend op {upper} must be a may-raise barrier"
             )
 
@@ -206,7 +188,7 @@ class TestFrontendEffectAlignment:
         lean_binops = set(parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
         lean_unops = set(parse_lean_inductive_variants(lean_syntax_text, "UnOp"))
         pure_ops = python_effect_classes["pure"]
-        barrier_ops = python_effect_classes["writes_heap"]
+        barrier_ops = python_effect_classes["barrier"]
 
         for op in {"is", "is_not"} & lean_binops:
             upper = _lean_binop_python_name(op)
@@ -246,7 +228,7 @@ class TestFrontendEffectAlignment:
         )
         for op in sorted(checked):
             upper = op.upper()
-            assert upper in python_effect_classes["writes_heap"], (
+            assert upper in python_effect_classes["barrier"], (
                 f"Lean UnOp.{op} frontend op {upper} must be a may-raise barrier"
             )
 

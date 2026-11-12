@@ -162,6 +162,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         hoists.release_anchors(&mut builder, pointer_type, release_site);
         let result = builder.block_params(exit)[0];
         builder.ins().return_(&[result]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))
@@ -183,7 +184,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         .flat_map(|block| function.layout.block_insts(block))
         .filter_map(|inst| match function.dfg.insts[inst] {
             InstructionData::Call { func_ref, .. } => {
-                Some((func_ref, function.dfg.inst_args(inst).to_vec()))
+                Some((func_ref, attached_arguments(&function, inst).to_vec()))
             }
             _ => None,
         })
@@ -312,7 +313,11 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
             assert!(
                 native_object_symbols(&emit_direct_object(backend))
                     .defined
-                    .contains("integer_literal_contract")
+                    .contains(
+                        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                            "integer_literal_contract"
+                        )
+                    )
             );
         }
     }

@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 struct FieldAbi {
     pointer: bool,
-    get: unsafe extern "C" fn(u64, u64) -> u64,
-    set: unsafe extern "C" fn(u64, u64, u64) -> u64,
-    init: unsafe extern "C" fn(u64, u64, u64) -> u64,
+    get: unsafe extern "C" fn(u64, u64, u64) -> u64,
+    set: unsafe extern "C" fn(u64, u64, u64, u64) -> u64,
+    init: unsafe extern "C" fn(u64, u64, u64, u64) -> u64,
 }
 
 impl FieldAbi {
@@ -39,15 +39,15 @@ const FIELD_ABIS: [FieldAbi; 2] = [
 fn field_object(_py: &PyToken<'_>) -> (u64, u64) {
     let name = dynamic_attr_name_bits(_py, b"FieldOwner").unwrap();
     let field = dynamic_attr_name_bits(_py, b"field").unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(_py, name);
     assert!(obj_from_bits(class).as_ptr().is_some());
     let offsets_key = dynamic_attr_name_bits(_py, b"__molt_field_offsets__").unwrap();
     let size_key = dynamic_attr_name_bits(_py, b"__molt_layout_size__").unwrap();
     let offsets = crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(0).bits()]);
     assert!(!offsets.is_null());
     let offsets_bits = MoltObject::from_ptr(offsets).bits();
-    crate::molt_set_attr_name(class, offsets_key, offsets_bits);
-    crate::molt_set_attr_name(class, size_key, MoltObject::from_int(16).bits());
+    crate::molt_set_attr_name_attached_body(_py, class, offsets_key, offsets_bits);
+    crate::molt_set_attr_name_attached_body(_py, class, size_key, MoltObject::from_int(16).bits());
     assert!(!exception_pending(_py));
     unsafe { crate::object::class_finish_definition(_py, obj_from_bits(class).as_ptr().unwrap()) }
         .expect("seal field fixture");
@@ -62,7 +62,7 @@ fn field_object(_py: &PyToken<'_>) -> (u64, u64) {
 
 fn materialize_dict(_py: &PyToken<'_>, object: u64) -> u64 {
     let key = dynamic_attr_name_bits(_py, b"__dict__").unwrap();
-    let dict = crate::molt_get_attr_name(object, key);
+    let dict = crate::molt_get_attr_name_attached_body(_py, object, key);
     dec_ref_bits(_py, key);
     assert!(obj_from_bits(dict).as_ptr().is_some());
     assert!(!exception_pending(_py));
@@ -109,11 +109,19 @@ fn empty_fields_and_both_float_zeros_remain_distinct_across_backing_transitions(
                         vec![class],
                         "empty metadata is not a Python referent"
                     );
-                    crate::molt_set_attr_name(class, field, MoltObject::from_int(7).bits());
-                    assert_eq!((abi.get)(handle, 0), MoltObject::from_int(7).bits());
-                    (abi.init)(handle, 0, value);
+                    crate::molt_set_attr_name_attached_body(
+                        _py,
+                        class,
+                        field,
+                        MoltObject::from_int(7).bits(),
+                    );
                     assert_eq!(
-                        (abi.get)(handle, 0),
+                        (abi.get)(_py.attached_context(), handle, 0),
+                        MoltObject::from_int(7).bits()
+                    );
+                    (abi.init)(_py.attached_context(), handle, 0, value);
+                    assert_eq!(
+                        (abi.get)(_py.attached_context(), handle, 0),
                         value,
                         "inline float preserves its sign bit"
                     );
@@ -135,14 +143,17 @@ fn empty_fields_and_both_float_zeros_remain_distinct_across_backing_transitions(
                         dict_get_in_place(_py, dict_ptr, field).unwrap(),
                         Some(value)
                     );
-                    assert_eq!((abi.get)(handle, 0), value);
+                    assert_eq!((abi.get)(_py.attached_context(), handle, 0), value);
                     assert!(is_missing_bits(_py, *ptr.cast::<u64>()));
                     assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
                     assert!(!object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
-                    assert_eq!((abi.get)(handle, 0), MoltObject::from_int(7).bits());
+                    assert_eq!(
+                        (abi.get)(_py.attached_context(), handle, 0),
+                        MoltObject::from_int(7).bits()
+                    );
                     field_storage::replace_dictionary(_py, ptr, None).unwrap();
-                    (abi.set)(handle, 0, value);
-                    assert_eq!((abi.get)(handle, 0), value);
+                    (abi.set)(_py.attached_context(), handle, 0, value);
+                    assert_eq!((abi.get)(_py.attached_context(), handle, 0), value);
                     assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
                     let empty = materialize_dict(_py, object);
                     assert_eq!(
@@ -172,7 +183,12 @@ fn stack_constructor_shares_empty_field_and_payload_extent_authority() {
         let class_owners = refcount(class);
         let mut storage = [0u64; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let stack = unsafe {
-            crate::object::molt_object_init_stack(storage.as_mut_ptr().cast(), class, 16)
+            crate::object::molt_object_init_stack_attached_body(
+                _py,
+                storage.as_mut_ptr().cast(),
+                class,
+                16,
+            )
         };
         assert_eq!(refcount(class), class_owners + 1, "frame owns its class");
         let ptr = obj_from_bits(stack).as_ptr().unwrap();
@@ -183,8 +199,8 @@ fn stack_constructor_shares_empty_field_and_payload_extent_authority() {
             assert!(is_missing_bits(_py, *ptr.cast::<u64>()));
             assert_eq!(instance_dict_bits(ptr), 0);
             assert!(!(*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_PTRS));
-            molt_object_field_init(stack, 0, MoltObject::from_float(0.0).bits());
-            assert_eq!(molt_object_field_get(stack, 0), 0);
+            molt_object_field_init_attached_body(_py, stack, 0, MoltObject::from_float(0.0).bits());
+            assert_eq!(molt_object_field_get_attached_body(_py, stack, 0), 0);
             assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
             assert!(is_missing_bits(_py, *ptr.cast::<u64>()));
         }
@@ -224,11 +240,16 @@ fn frame_storage_collects_inline_and_dictionary_cycles_before_scope_exit() {
             let class_owners = refcount(class);
             let mut storage = [0u64; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
             let stack = unsafe {
-                crate::object::molt_object_init_stack(storage.as_mut_ptr().cast(), class, 16)
+                crate::object::molt_object_init_stack_attached_body(
+                    _py,
+                    storage.as_mut_ptr().cast(),
+                    class,
+                    16,
+                )
             };
             let ptr = obj_from_bits(stack).as_ptr().unwrap();
             unsafe {
-                molt_object_field_set(stack, 0, stack);
+                molt_object_field_set_attached_body(_py, stack, 0, stack);
                 if dictionary_backed {
                     let dictionary = materialize_dict(_py, stack);
                     dec_ref_bits(_py, dictionary);
@@ -266,8 +287,14 @@ fn frame_candidate_with_different_sealed_extent_returns_owned_heap_storage() {
         let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
         let class_owners = refcount(class);
         let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 8) / 8];
-        let result =
-            unsafe { crate::object::molt_object_init_stack(storage.as_mut_ptr().cast(), class, 8) };
+        let result = unsafe {
+            crate::object::molt_object_init_stack_attached_body(
+                _py,
+                storage.as_mut_ptr().cast(),
+                class,
+                8,
+            )
+        };
         let ptr = obj_from_bits(result).as_ptr().unwrap();
         unsafe {
             assert!(!(*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_SCOPED));
@@ -289,12 +316,20 @@ fn frame_candidate_with_different_sealed_extent_returns_owned_heap_storage() {
 
 static RESURRECTED_FRAME_CANDIDATE: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn resurrect_frame_candidate(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn resurrect_frame_candidate(__context: u64, bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         inc_ref_bits(_py, bits);
         RESURRECTED_FRAME_CANDIDATE.store(bits, Ordering::SeqCst);
         MoltObject::none().bits()
-    })
+    }
 }
 
 #[test]
@@ -308,17 +343,22 @@ fn mutable_frame_candidate_survives_late_finalizer_resurrection_on_heap() {
         dec_ref_bits(_py, heap);
         let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
-            crate::object::molt_object_init_stack(storage.as_mut_ptr().cast(), class, 16)
+            crate::object::molt_object_init_stack_attached_body(
+                _py,
+                storage.as_mut_ptr().cast(),
+                class,
+                16,
+            )
         };
         let ptr = obj_from_bits(result).as_ptr().unwrap();
         unsafe {
             assert!(!(*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_SCOPED));
-            molt_object_field_set(result, 0, MoltObject::from_int(73).bits());
+            molt_object_field_set_attached_body(_py, result, 0, MoltObject::from_int(73).bits());
         }
         assert!(storage.iter().all(|&word| word == u64::MAX));
         let name = dynamic_attr_name_bits(_py, b"__del__").unwrap();
         let finalizer = callable(_py, "resurrect_frame_candidate", resurrect_frame_candidate);
-        crate::molt_set_attr_name(class, name, finalizer);
+        crate::molt_set_attr_name_attached_body(_py, class, name, finalizer);
         assert!(!exception_pending(_py));
         dec_ref_bits(_py, result);
         let resurrected = RESURRECTED_FRAME_CANDIDATE.swap(0, Ordering::SeqCst);
@@ -327,7 +367,7 @@ fn mutable_frame_candidate_survives_late_finalizer_resurrection_on_heap() {
             "late finalizer retains the actual receiver"
         );
         assert_eq!(
-            unsafe { molt_object_field_get(resurrected, 0) },
+            unsafe { molt_object_field_get_attached_body(_py, resurrected, 0) },
             MoltObject::from_int(73).bits()
         );
         dec_ref_bits(_py, resurrected);
@@ -347,14 +387,19 @@ fn immutable_finalizing_class_still_requires_heap_storage() {
         let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
         let name = dynamic_attr_name_bits(_py, b"__del__").unwrap();
         let finalizer = callable(_py, "frame_finalizer_payload", callable_payload);
-        crate::molt_set_attr_name(class, name, finalizer);
+        crate::molt_set_attr_name_attached_body(_py, class, name, finalizer);
         assert!(!exception_pending(_py));
         assert!(unsafe {
             crate::object::class_set_immutable(_py, obj_from_bits(class).as_ptr().unwrap())
         });
         let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
-            crate::object::molt_object_init_stack(storage.as_mut_ptr().cast(), class, 16)
+            crate::object::molt_object_init_stack_attached_body(
+                _py,
+                storage.as_mut_ptr().cast(),
+                class,
+                16,
+            )
         };
         let ptr = obj_from_bits(result).as_ptr().unwrap();
         assert!(!unsafe {
@@ -375,8 +420,8 @@ fn immutable_frame_candidate_with_mutable_base_remains_heap_owned() {
         let (parent_object, field) = field_object(_py);
         let parent = unsafe { object_class_bits(obj_from_bits(parent_object).as_ptr().unwrap()) };
         let name = dynamic_attr_name_bits(_py, b"ImmutableChild").unwrap();
-        let class = crate::molt_class_new(name);
-        crate::molt_class_set_base(class, parent);
+        let class = crate::molt_class_new_attached_body(_py, name);
+        crate::molt_class_set_base_attached_body(_py, class, parent);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         unsafe {
             crate::object::class_finish_definition(_py, class_ptr).expect("seal child layout");
@@ -388,7 +433,12 @@ fn immutable_frame_candidate_with_mutable_base_remains_heap_owned() {
         }
         let mut storage = [u64::MAX; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
-            crate::object::molt_object_init_stack(storage.as_mut_ptr().cast(), class, 16)
+            crate::object::molt_object_init_stack_attached_body(
+                _py,
+                storage.as_mut_ptr().cast(),
+                class,
+                16,
+            )
         };
         let ptr = obj_from_bits(result).as_ptr().unwrap();
         assert!(!unsafe {
@@ -413,14 +463,20 @@ fn scoped_class_replacement_preserves_lifetime_admission_atomically() {
             unsafe { object_class_bits(obj_from_bits(mutable_heap).as_ptr().unwrap()) };
         let mut storage = [0u64; (std::mem::size_of::<crate::MoltHeader>() + 16) / 8];
         let result = unsafe {
-            crate::object::molt_object_init_stack(storage.as_mut_ptr().cast(), class, 16)
+            crate::object::molt_object_init_stack_attached_body(
+                _py,
+                storage.as_mut_ptr().cast(),
+                class,
+                16,
+            )
         };
         let ptr = obj_from_bits(result).as_ptr().unwrap();
         let class_owners = refcount(class);
         let mutable_owners = refcount(mutable_class);
         unsafe {
             assert!((*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_SCOPED));
-            crate::molt_object_set_class(
+            crate::molt_object_set_class_attached_body(
+                _py,
                 crate::provenance::abi::expose_address(ptr),
                 mutable_class,
             );
@@ -429,7 +485,7 @@ fn scoped_class_replacement_preserves_lifetime_admission_atomically() {
             assert_eq!(refcount(class), class_owners);
             assert_eq!(refcount(mutable_class), mutable_owners);
         }
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         for bits in [result, heap, field, mutable_heap, mutable_field] {
             dec_ref_bits(_py, bits);
         }
@@ -447,13 +503,16 @@ fn field_abis_share_initialization_read_and_replacement_ownership() {
             let before = refcount(value);
             let handle = abi.handle(object);
             unsafe {
-                assert_eq!((abi.init)(handle, 0, value), MoltObject::none().bits());
+                assert_eq!(
+                    (abi.init)(_py.attached_context(), handle, 0, value),
+                    MoltObject::none().bits()
+                );
                 assert_eq!(
                     refcount(value),
                     before + 1,
                     "field initialization owns its value"
                 );
-                let read = (abi.get)(handle, 0);
+                let read = (abi.get)(_py.attached_context(), handle, 0);
                 assert_eq!(read, value);
                 assert_eq!(
                     refcount(value),
@@ -461,13 +520,13 @@ fn field_abis_share_initialization_read_and_replacement_ownership() {
                     "field read returns an owned reference"
                 );
                 dec_ref_bits(_py, read);
-                (abi.set)(handle, 0, value);
+                (abi.set)(_py.attached_context(), handle, 0, value);
                 assert_eq!(
                     refcount(value),
                     before + 1,
                     "self assignment preserves ownership"
                 );
-                (abi.set)(handle, 0, MoltObject::none().bits());
+                (abi.set)(_py.attached_context(), handle, 0, MoltObject::none().bits());
                 assert_eq!(
                     refcount(value),
                     before,
@@ -490,7 +549,14 @@ fn field_abis_share_dictionary_storage_without_an_inline_mirror() {
             let (object, field) = field_object(_py);
             let value = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
             let handle = abi.handle(object);
-            unsafe { (abi.init)(handle, 0, MoltObject::from_int(1).bits()) };
+            unsafe {
+                (abi.init)(
+                    _py.attached_context(),
+                    handle,
+                    0,
+                    MoltObject::from_int(1).bits(),
+                )
+            };
             let dict = materialize_dict(_py, object);
             let dict_ptr = obj_from_bits(dict).as_ptr().unwrap();
             unsafe {
@@ -498,7 +564,7 @@ fn field_abis_share_dictionary_storage_without_an_inline_mirror() {
                     _py,
                     *obj_from_bits(object).as_ptr().unwrap().cast::<u64>()
                 ));
-                (abi.set)(handle, 0, value);
+                (abi.set)(_py.attached_context(), handle, 0, value);
                 assert_eq!(
                     dict_get_in_place(_py, dict_ptr, field).unwrap(),
                     Some(value)
@@ -510,18 +576,21 @@ fn field_abis_share_dictionary_storage_without_an_inline_mirror() {
                     field,
                     MoltObject::from_int(9).bits()
                 ));
-                assert_eq!((abi.get)(handle, 0), MoltObject::from_int(9).bits());
+                assert_eq!(
+                    (abi.get)(_py.attached_context(), handle, 0),
+                    MoltObject::from_int(9).bits()
+                );
                 assert_eq!(
                     refcount(value),
                     1,
                     "no hidden inline owner survives dictionary replacement"
                 );
-                (abi.set)(handle, 0, value);
+                (abi.set)(_py.attached_context(), handle, 0, value);
                 assert_eq!(
                     dict_get_in_place(_py, dict_ptr, field).unwrap(),
                     Some(value)
                 );
-                (abi.set)(handle, 0, MoltObject::none().bits());
+                (abi.set)(_py.attached_context(), handle, 0, MoltObject::none().bits());
                 assert_eq!(
                     dict_get_in_place(_py, dict_ptr, field).unwrap(),
                     Some(MoltObject::none().bits())
@@ -543,16 +612,16 @@ fn field_abis_share_dictionary_storage_without_an_inline_mirror() {
 fn classless_payload_tail_is_a_field_not_an_instance_dictionary() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let object = crate::molt_alloc(16);
+        let object = crate::molt_alloc_attached_body(_py, 16);
         let value = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
         unsafe {
-            molt_object_field_init(object, 8, MoltObject::from_int(7).bits());
-            molt_object_field_init(object, 0, value);
-            let read = molt_object_field_get(object, 0);
+            molt_object_field_init_attached_body(_py, object, 8, MoltObject::from_int(7).bits());
+            molt_object_field_init_attached_body(_py, object, 0, value);
+            let read = molt_object_field_get_attached_body(_py, object, 0);
             assert_eq!(read, value);
             dec_ref_bits(_py, read);
             assert_eq!(
-                molt_object_field_get(object, 8),
+                molt_object_field_get_attached_body(_py, object, 8),
                 MoltObject::from_int(7).bits()
             );
             assert_eq!(
@@ -578,7 +647,7 @@ fn classless_payload_tail_is_a_field_not_an_instance_dictionary() {
 fn task_capture_layout_excludes_nonowning_field_fast_paths_before_payload_writes() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let task = crate::molt_task_new(0, 16, crate::TASK_KIND_FUTURE);
+        let task = crate::molt_task_new_attached_body(_py, 0, 16, crate::TASK_KIND_FUTURE);
         let ptr = obj_from_bits(task).as_ptr().unwrap();
         assert!(unsafe {
             (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_PTRS)
@@ -597,7 +666,7 @@ fn dictionary_materialization_moves_one_owner_and_preserves_none_and_deletions()
             let ptr = obj_from_bits(object).as_ptr().unwrap();
             let value = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
             let handle = abi.handle(object);
-            unsafe { (abi.init)(handle, 0, value) };
+            unsafe { (abi.init)(_py.attached_context(), handle, 0, value) };
             assert_eq!(refcount(value), 2);
             let dict = materialize_dict(_py, object);
             let dict_ptr = obj_from_bits(dict).as_ptr().unwrap();
@@ -620,12 +689,15 @@ fn dictionary_materialization_moves_one_owner_and_preserves_none_and_deletions()
                 let again = materialize_dict(_py, object);
                 assert_eq!(dict_get_in_place(_py, dict_ptr, field).unwrap(), None);
                 dec_ref_bits(_py, again);
-                (abi.set)(handle, 0, MoltObject::none().bits());
+                (abi.set)(_py.attached_context(), handle, 0, MoltObject::none().bits());
                 assert_eq!(
                     dict_get_in_place(_py, dict_ptr, field).unwrap(),
                     Some(MoltObject::none().bits())
                 );
-                assert_eq!((abi.get)(handle, 0), MoltObject::none().bits());
+                assert_eq!(
+                    (abi.get)(_py.attached_context(), handle, 0),
+                    MoltObject::none().bits()
+                );
                 assert!(object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
                 assert!(!object_field_delete_ptr_raw(_py, ptr, 0).unwrap());
             }
@@ -650,12 +722,12 @@ fn replacing_and_resetting_dictionary_never_reacquires_retired_inline_owners() {
         ))
         .bits();
         unsafe {
-            molt_object_field_init(object, 0, old);
+            molt_object_field_init_attached_body(_py, object, 0, old);
             field_storage::replace_dictionary(_py, ptr, Some(replacement)).unwrap();
             assert_eq!(refcount(old), 1);
             assert!(is_missing_bits(_py, *ptr.cast::<u64>()));
             assert_eq!(
-                molt_object_field_get(object, 0),
+                molt_object_field_get_attached_body(_py, object, 0),
                 MoltObject::from_int(8).bits()
             );
             field_storage::replace_dictionary(_py, ptr, None).unwrap();
@@ -687,16 +759,31 @@ static CALLBACK_FIELD: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_SEEN_SLOT: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_SEEN_DICT: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn callable_payload(_value: u64) -> u64 {
+extern "C" fn callable_payload(__context: u64, _value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits()
 }
 
-extern "C" fn observe_and_replace_field(_weak: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn observe_and_replace_field(__context: u64, _weak: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         let object = CALLBACK_OBJECT.load(Ordering::SeqCst);
         let field = CALLBACK_FIELD.load(Ordering::SeqCst);
         unsafe {
-            let read = molt_object_field_get(object, 0);
+            let read = molt_object_field_get_attached_body(_py, object, 0);
             CALLBACK_SEEN_SLOT.store(read, Ordering::SeqCst);
             dec_ref_bits(_py, read);
             let ptr = obj_from_bits(object).as_ptr().unwrap();
@@ -705,12 +792,12 @@ extern "C" fn observe_and_replace_field(_weak: u64) -> u64 {
                 dict_get_in_place(_py, dict, field).unwrap().unwrap(),
                 Ordering::SeqCst,
             );
-            molt_object_field_set(object, 0, MoltObject::from_int(77).bits())
+            molt_object_field_set_attached_body(_py, object, 0, MoltObject::from_int(77).bits())
         }
-    })
+    }
 }
 
-fn callable(_py: &PyToken<'_>, name: &str, target: extern "C" fn(u64) -> u64) -> u64 {
+fn callable(_py: &PyToken<'_>, name: &str, target: extern "C" fn(u64, u64) -> u64) -> u64 {
     let ptr = alloc_runtime_function_obj(_py, runtime_fn_addr(name, target as *const ()), 1);
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
@@ -724,27 +811,35 @@ fn field_abis_publish_before_release_and_preserve_reentrant_replacement() {
             let (object, field) = field_object(_py);
             let old = callable(_py, "field_callable_payload", callable_payload);
             let callback = callable(_py, "observe_and_replace_field", observe_and_replace_field);
-            let weak_type = crate::molt_weakref_reference_type();
-            let weak = crate::molt_weakref_new(weak_type, old, callback);
+            let weak_type =
+                crate::builtins::weakref_type::molt_weakref_reference_type_attached_body(_py);
+            let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                _py, weak_type, old, callback,
+            );
             dec_ref_bits(_py, weak_type);
             assert!(obj_from_bits(weak).as_ptr().is_some());
             let incoming = MoltObject::from_ptr(crate::alloc_list(_py, &[])).bits();
             let handle = abi.handle(object);
-            unsafe { (abi.init)(handle, 0, old) };
+            unsafe { (abi.init)(_py.attached_context(), handle, 0, old) };
             let dict = materialize_dict(_py, object);
             dec_ref_bits(_py, old);
             CALLBACK_OBJECT.store(object, Ordering::SeqCst);
             CALLBACK_FIELD.store(field, Ordering::SeqCst);
             CALLBACK_SEEN_SLOT.store(0, Ordering::SeqCst);
             CALLBACK_SEEN_DICT.store(0, Ordering::SeqCst);
-            unsafe { (abi.set)(handle, 0, incoming) };
+            unsafe { (abi.set)(_py.attached_context(), handle, 0, incoming) };
             assert_eq!(CALLBACK_SEEN_SLOT.load(Ordering::SeqCst), incoming);
             assert_eq!(CALLBACK_SEEN_DICT.load(Ordering::SeqCst), incoming);
             assert_eq!(
-                unsafe { (abi.get)(handle, 0) },
+                unsafe { (abi.get)(_py.attached_context(), handle, 0) },
                 MoltObject::from_int(77).bits()
             );
-            assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+            assert!(
+                obj_from_bits(
+                    crate::builtins::weakref_type::molt_weakref_call_attached_body(_py, weak)
+                )
+                .is_none()
+            );
             CALLBACK_OBJECT.store(0, Ordering::SeqCst);
             CALLBACK_FIELD.store(0, Ordering::SeqCst);
             for bits in [dict, object, field, incoming, weak, callback] {
@@ -773,8 +868,11 @@ fn null_receiver_is_a_layout_guard_miss_without_header_access() {
 
 fn assert_and_clear_attribute_error(_py: &PyToken<'_>) {
     assert!(exception_pending(_py));
-    assert_eq!(crate::builtins::exceptions::molt_exception_pending(), 1);
-    let error = crate::builtins::exceptions::molt_exception_last_pending();
+    assert_eq!(
+        crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+        1
+    );
+    let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         _py,
         error,
@@ -782,7 +880,10 @@ fn assert_and_clear_attribute_error(_py: &PyToken<'_>) {
     ));
     crate::clear_exception(_py);
     dec_ref_bits(_py, error);
-    assert_eq!(crate::builtins::exceptions::molt_exception_pending(), 0);
+    assert_eq!(
+        crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+        0
+    );
 }
 
 #[test]
@@ -805,19 +906,25 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             ("None", MoltObject::none().bits(), builtins.none_type),
         ] {
             assert_eq!(
-                unsafe { molt_guard_layout(scalar, definition_slot, version) },
+                unsafe { molt_guard_layout_attached_body(_py, scalar, definition_slot, version) },
                 MoltObject::from_bool(false).bits(),
                 "{name} layout guard"
             );
             assert!(!exception_pending(_py), "{name} layout guard");
 
             let generic_class = unsafe {
-                crate::molt_get_attr_object(scalar, class_attr.as_ptr(), class_attr.len() as u64)
+                crate::molt_get_attr_object_attached_body(
+                    _py,
+                    scalar,
+                    class_attr.as_ptr(),
+                    class_attr.len() as u64,
+                )
             };
             assert_eq!(generic_class, class, "{name} generic class lookup");
             assert!(!exception_pending(_py));
             let guarded_class = unsafe {
-                molt_guarded_field_get(
+                molt_guarded_field_get_attached_body(
+                    _py,
                     scalar,
                     definition_slot,
                     version,
@@ -835,7 +942,8 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             // The generated exception predicate distinguishes failure from a
             // successful None result; raw zero instead represents float +0.0.
             let generic_get = unsafe {
-                crate::molt_get_attr_object(
+                crate::molt_get_attr_object_attached_body(
+                    _py,
                     scalar,
                     missing_attr.as_ptr(),
                     missing_attr.len() as u64,
@@ -848,7 +956,8 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             );
             assert_and_clear_attribute_error(_py);
             let result = unsafe {
-                molt_guarded_field_get(
+                molt_guarded_field_get_attached_body(
+                    _py,
                     scalar,
                     definition_slot,
                     version,
@@ -861,7 +970,8 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             assert_and_clear_attribute_error(_py);
 
             let generic_set = unsafe {
-                crate::molt_set_attr_object(
+                crate::molt_set_attr_object_attached_body(
+                    _py,
                     scalar,
                     missing_attr.as_ptr(),
                     missing_attr.len() as u64,
@@ -875,7 +985,8 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             );
             assert_and_clear_attribute_error(_py);
             let result = unsafe {
-                molt_guarded_field_set(
+                molt_guarded_field_set_attached_body(
+                    _py,
                     scalar,
                     definition_slot,
                     version,
@@ -894,7 +1005,7 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
 
 fn assert_and_clear_system_error(_py: &PyToken<'_>) {
     assert!(exception_pending(_py));
-    let error = crate::builtins::exceptions::molt_exception_last_pending();
+    let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         _py,
         error,
@@ -937,16 +1048,21 @@ fn layout_guard_admits_exactly_the_stamped_class_statement() {
         ] {
             let class = MoltObject::from_ptr(class_ptr(object)).bits();
             assert_eq!(
-                crate::builtins::types::molt_class_set_definition(class, slot),
+                crate::builtins::types::molt_class_set_definition_attached_body(_py, class, slot),
                 MoltObject::none().bits()
             );
             assert!(!exception_pending(_py));
         }
         // A class keeps the identity of the statement that created it.
         let first_class = MoltObject::from_ptr(class_ptr(first)).bits();
-        crate::builtins::types::molt_class_set_definition(first_class, OTHER_STATEMENT);
+        crate::builtins::types::molt_class_set_definition_attached_body(
+            _py,
+            first_class,
+            OTHER_STATEMENT,
+        );
         assert_and_clear_system_error(_py);
-        crate::builtins::types::molt_class_set_definition(
+        crate::builtins::types::molt_class_set_definition_attached_body(
+            _py,
             MoltObject::from_int(1).bits(),
             STATEMENT,
         );
@@ -1006,5 +1122,72 @@ fn layout_guard_admits_exactly_the_stamped_class_statement() {
         ] {
             dec_ref_bits(_py, bits);
         }
+    });
+}
+
+/// HF-812: a subclass's inferred field depends on its whole MRO. A data
+/// descriptor added to a base must make the subclass's guard miss, although
+/// the guard reads only the receiver class's own layout version.
+#[test]
+fn layout_guard_misses_after_a_base_class_mutation() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        const STATEMENT: u64 = 5;
+        let base_name = dynamic_attr_name_bits(_py, b"GuardBase").unwrap();
+        let child_name = dynamic_attr_name_bits(_py, b"GuardChild").unwrap();
+        let field = dynamic_attr_name_bits(_py, b"field").unwrap();
+        let offsets_key = crate::NameId::DunderMoltFieldOffsets
+            .owned_bits(_py)
+            .unwrap();
+        let size_key = crate::NameId::DunderMoltLayoutSize.owned_bits(_py).unwrap();
+        let base = crate::molt_class_new_attached_body(_py, base_name);
+        crate::molt_class_set_base_attached_body(_py, base, crate::builtin_classes(_py).object);
+        let child = crate::molt_class_new_attached_body(_py, child_name);
+        crate::molt_class_set_base_attached_body(_py, child, base);
+        let offsets = crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(0).bits()]);
+        assert!(!offsets.is_null());
+        let offsets = MoltObject::from_ptr(offsets).bits();
+        crate::molt_set_attr_name_attached_body(_py, child, offsets_key, offsets);
+        crate::molt_set_attr_name_attached_body(
+            _py,
+            child,
+            size_key,
+            MoltObject::from_int(16).bits(),
+        );
+        let child_ptr = obj_from_bits(child).as_ptr().unwrap();
+        unsafe { crate::object::class_finish_definition(_py, child_ptr) }.expect("seal child");
+        assert_eq!(
+            crate::builtins::types::molt_class_set_definition_attached_body(_py, child, STATEMENT),
+            MoltObject::none().bits()
+        );
+        let object = alloc_class_instance(_py, 16, child);
+        let object_ptr = obj_from_bits(object).as_ptr().unwrap();
+        unsafe { crate::object::gc::gc_publish_initialized(_py, object_ptr) };
+        assert!(!exception_pending(_py));
+        let version =
+            MoltObject::from_int(unsafe { class_layout_version_bits(child_ptr) } as i64).bits();
+        assert!(unsafe { guard_layout_match(_py, object_ptr, STATEMENT, version) });
+
+        // `type(obj).__bases__[0].field = ...`: only the base is written.
+        crate::molt_set_attr_name_attached_body(_py, base, field, MoltObject::from_int(99).bits());
+        assert!(!exception_pending(_py));
+        assert!(
+            !unsafe { guard_layout_match(_py, object_ptr, STATEMENT, version) },
+            "a base mutation must invalidate the subclass's layout facts"
+        );
+        for bits in [
+            object,
+            offsets,
+            child,
+            base,
+            size_key,
+            offsets_key,
+            field,
+            child_name,
+            base_name,
+        ] {
+            dec_ref_bits(_py, bits);
+        }
+        assert!(!exception_pending(_py));
     });
 }

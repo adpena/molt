@@ -1523,6 +1523,29 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
     assert failure.detail == "batch_server_response_timeout"
 
 
+def test_host_capacity_refusal_is_infrastructure_not_a_build_failure() -> None:
+    """A build the host cannot hold says nothing about the program."""
+    refused = bench_tool._classified_molt_failure(
+        phase="build",
+        returncode=2,
+        stderr="error: build capacity admission rejected: /t has 1 bytes available",
+        elapsed_s=0.1,
+        default_status="build_failed",
+    )
+    assert (refused.status, refused.detail) == (
+        "infrastructure_error",
+        bench_tool.HOST_CAPACITY_REJECTED,
+    )
+    compile_error = bench_tool._classified_molt_failure(
+        phase="build",
+        returncode=1,
+        stderr="error: unsupported construct at line 3",
+        elapsed_s=0.1,
+        default_status="build_failed",
+    )
+    assert compile_error.status == "build_failed"
+
+
 def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
     monkeypatch, tmp_path: Path
 ) -> None:

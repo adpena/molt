@@ -209,7 +209,7 @@ machine-readable summaries.
 Currently wired commands:
 
 - `molt debug repro <source.py> [--compare]`
-- `molt debug ir <source.py> --stage pre-midend|post-midend|all`
+- `molt debug ir <source.py> [--function NAME]`
 - `molt debug verify`
 - `molt debug trace <source.py> [--family callargs|call_bind_ic|function_bind_meta|backend_timing|compile_func] [--assert-no-pending-on-success]`
 - `molt debug reduce <source.py|manifest.json> --oracle-json <oracle> [--eval-command <cmd>] [--eval-timeout <sec>]`
@@ -1035,11 +1035,6 @@ claims; exhaustive typing rejects classes without placement/retention policy.
     resolved under the build artifacts directory).
   - Example:
     `uv run python -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
-  - Midend diagnostics now carry tier-promotion telemetry (`tier_base_summary`,
-    `promoted_functions`, `promotion_source_summary`,
-    `promotion_hotspots_top`) to verify PGO-guided promotion decisions.
-  - For deterministic control experiments, set
-    `MOLT_MIDEND_HOT_TIER_PROMOTION=0` to disable hot-function tier promotion.
 
 ## Weekly Stdlib Scoreboard
 Update this table at least weekly during lowering burn-down.
@@ -1312,6 +1307,20 @@ fail closed; the inventory itself makes no claim about current file bytes.
   builds across a whole differential run.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
+- `TIR_OPT_STATS=1` (or `MOLT_EMIT_PASS_DELTA=1`) also appends SCCP's call
+  census to `<MOLT_DEBUG_ARTIFACT_DIR>/tir/call_census.jsonl`. Use a fresh
+  debug directory per measured compilation. Each solve records supplied
+  positional argument facts, guarded candidate symbols, consumed-builder
+  calls, and conservative parameter-to-undecided-branch dependencies.
+  Annotation effects are read-only nullness counterfactuals; the separate
+  `entry_tag_guard` field records tag hints in the entry block, not an admission
+  proof: the current runtime returns the original value on a tag mismatch.
+  Class/range decisions and unresolved binding remain unknown. Join exact emitted symbols
+  and declared parameter indices to frontend signatures to count omitted
+  defaults; neither an arity gap nor a candidate symbol proves a default or
+  callable identity. Repeated solves are observations, not additional sites.
+  This observer changes no IR and leaves the existing pass-delta JSONL schema
+  and its readers unchanged.
 - Import scans, intrinsic source facts, module analyses and binary module
   lowerings share `<schema digest>/records.sqlite`, named by the DDL digest,
   under `<Molt cache>/toolchain_source_records`
@@ -1355,11 +1364,20 @@ fail closed; the inventory itself makes no claim about current file bytes.
   process-local lock or SQLite writer. It does not reopen a closed store solely
   for advisory recency. A flush saves, temporarily disables, then restores
   the existing connection busy timeout under its lock: three constant metadata
-  statements replace up to 60 seconds of writer-lock waiting. Ordinary reads,
-  publication and initialization retain their policies. This bounds contention
-  admission, not I/O latency; checkpoint sync can still block. WAL uses
-  synchronous NORMAL and default automatic
-  checkpointing, so sync cost remains possible. Row deletion uses bounded
+  statements replace up to 60 seconds of writer-lock waiting. Publication inside
+  a frontend operation queues records and saves them in chunks (256 records or
+  1 MiB, or once the oldest waited 2 s) without waiting for the writer; the
+  operation's explicit exit saves the rest once, waiting up to the 60-second busy
+  timeout, then saves recency stamps. A queued record answers this process's
+  reads (a different generation or an oversized payload is a miss, never an older
+  row) and has no revision to renew. Past 64 MiB queued, the largest records are
+  dropped. Abandoned operations drop queued records and stamps. Publication
+  outside an operation, ordinary reads and initialization retain their policies.
+  This bounds contention admission, not I/O latency. Every connection sets
+  `journal_size_limit` to 64 MiB. WAL uses synchronous NORMAL and default
+  automatic checkpointing, now once per chunk instead of once per record, so sync
+  cost remains possible, and overlapping readers can still starve a checkpoint
+  until maintenance's TRUNCATE succeeds. Row deletion uses bounded
   transactions (256 rows/1 MiB, with one oversized row allowed), and later sweeps
   continue bounded vacuum work even when no new rows are removed. BUSY deferral
   is reported separately from maintenance failure. Dry-run never changes rows,

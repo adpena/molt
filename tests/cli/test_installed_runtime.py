@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 from molt.native_target import resolve_native_target_spec
 
 from contextlib import contextmanager
@@ -75,7 +77,7 @@ def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-_PROJECTION_SYMBOLS = ("molt_len", "molt_test_intrinsic")
+_PROJECTION_SYMBOLS = ("molt_add", "molt_len")
 
 
 _CUSTODY_INPUT = b"custodied static dependency object"
@@ -823,7 +825,9 @@ def test_release_native_cell_stages_the_canonical_projection(
         return True
 
     def facts(_path, *, identity, **_kwargs):
-        symbols = frozenset(_PROJECTION_SYMBOLS)
+        symbols = frozenset(
+            compiled_execution_symbol(name) for name in _PROJECTION_SYMBOLS
+        )
         return native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
         )

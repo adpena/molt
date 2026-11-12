@@ -40,14 +40,13 @@ use crate::object::utf8_cache::{
 };
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
-    CURRENT_TOKEN, EXCEPTION_STACK, FRAME_STACK, GENERATOR_RAISE, GilGuard, GilReleaseGuard,
-    MoltObject, PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT,
-    TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string, builtin_classes_retire_identities,
-    builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_type_cache,
-    clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
-    dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
-    exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush, obj_from_bits,
-    object_type_id, reset_ptr_registry, runtime_state,
+    CURRENT_TOKEN, EXCEPTION_STACK, GENERATOR_RAISE, GilGuard, GilReleaseGuard, MoltObject,
+    PARSE_ARENA, TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
+    alloc_string, builtin_classes_retire_identities, builtin_classes_shutdown, call_callable0,
+    clear_exception, clear_exception_type_cache, clear_thread_exception_for_teardown, dec_ref_bits,
+    default_cancel_tokens, dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
+    exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush_attached_body,
+    obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
 };
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -55,6 +54,18 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 pub(crate) static THREAD_LOCAL_DROP_TEST_TRACE: std::sync::Mutex<
     Option<(std::thread::ThreadId, std::sync::mpsc::Sender<&'static str>)>,
 > = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) struct ThreadStateDropTestGate {
+    pub(crate) owner: std::thread::ThreadId,
+    pub(crate) entered: std::sync::mpsc::Sender<()>,
+    pub(crate) release: std::sync::Arc<std::sync::Barrier>,
+    pub(crate) completion: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+pub(crate) static THREAD_STATE_DROP_TEST_GATE: std::sync::Mutex<Option<ThreadStateDropTestGate>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(test)]
 fn trace_thread_local_drop(stage: &'static str) {
@@ -87,36 +98,13 @@ impl Drop for ThreadLocalGuard {
     fn drop(&mut self) {
         #[cfg(test)]
         trace_thread_local_drop("enter");
-        // After `molt_runtime_shutdown` the RuntimeState has been freed and
-        // both the ready-state publication and `TLS_RUNTIME_STATE` are null.
-        // Attempting GIL acquisition + cleanup here would either:
-        //   (a) dereference a dangling TLS pointer (use-after-free), or
-        //   (b) trigger `molt_runtime_init` to re-allocate a new RuntimeState
-        //       just to tear it down again.
-        // Both are incorrect.  The shutdown path already called
-        // `clear_thread_local_state`, so there is nothing left to clean up.
-        //
-        // HOWEVER: we must still release heap-backed TLS caches NOW, while the
-        // global allocator (mimalloc) is still alive. If we leave them for
-        // Rust's TLS destructor phase, deallocation can race with mimalloc's
-        // own thread-local cleanup (registered via pthread_key_create).
-        let gil = GilGuard::new();
+        // The C lifetime sentinel was armed last and has already drained both
+        // managed ownership domains under its exact origin. Never resurrect
+        // that record or substitute a Ready runtime during allocator cleanup.
+        // These buffers must retire before mimalloc's native TLS teardown.
+        drain_heap_tls();
         #[cfg(test)]
-        trace_thread_local_drop("gil_acquired");
-        if crate::state::runtime_state::runtime_state_for_gil().is_none() {
-            #[cfg(test)]
-            trace_thread_local_drop("runtime_absent");
-            drop(gil);
-            #[cfg(test)]
-            trace_thread_local_drop("gil_released");
-            drain_heap_tls();
-            #[cfg(test)]
-            trace_thread_local_drop("drained");
-            return;
-        }
-        clear_thread_local_state_without_ref_owning_ic(&gil.token());
-        #[cfg(test)]
-        trace_thread_local_drop("cleared");
+        trace_thread_local_drop("drained");
     }
 }
 
@@ -143,9 +131,8 @@ fn order_destructor_thread_locals(touched: &std::cell::Cell<bool>) {
     let _ = PARSE_ARENA.try_with(|_| {});
     let _ = crate::REPR_SET.try_with(|_| {});
     // The guard's teardown exits every frame the thread still has, which
-    // releases the bindings their homes own: the frame stack and the home
-    // arena must outlive it.
-    let _ = FRAME_STACK.try_with(|_| {});
+    // releases the bindings their homes own: the frame arena, which holds
+    // the frame records and the homes, must outlive it.
     crate::builtins::frames::touch_frame_home_tls_lifetime();
     let _ = TLS_GUARD.try_with(|_| {});
     // This sentinel is deliberately initialized last. Rust destroys TLS in
@@ -301,7 +288,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         }
     }
     trace_shutdown("drain_process_registry");
-    state.process_registry.drain_for_teardown();
+    state.process_registry.drain_for_teardown(_py);
     if mode == RuntimeTeardownMode::ProcessExit {
         crate::object::ops::profile_dump_with_gil(_py);
         // Pre-teardown peak-live canary, not the post-teardown true-leak gauge.
@@ -509,7 +496,7 @@ fn clear_runtime_callback_roots(
     changed |= clear_thread_context(py);
     changed |= sys_ext_clear_state(py, state);
     changed |= c_api_module_clear_state(py, state);
-    changed |= runtime_extension_states_clear_and_drop(state);
+    changed |= runtime_extension_states_clear_and_drop(py, state);
     changed |= modules.drain(state);
     changed |= modules_clear_runtime_state(py, state);
     changed |= crate::object::builders::clear_class_builder(py, state);
@@ -624,27 +611,39 @@ fn clear_thread_local_state(_py: &PyToken<'_>) -> bool {
 fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     crate::gil_assert();
     let exception = take_thread_exception_for_teardown(_py);
+    #[cfg(test)]
+    let test_completion = {
+        let mut slot = THREAD_STATE_DROP_TEST_GATE.lock().unwrap();
+        let gate = if slot
+            .as_ref()
+            .is_some_and(|gate| gate.owner == std::thread::current().id() && exception.is_some())
+        {
+            slot.take()
+        } else {
+            None
+        };
+        drop(slot);
+        if let Some(gate) = &gate {
+            gate.entered.send(()).unwrap();
+            gate.release.wait();
+        }
+        gate.map(|gate| gate.completion)
+    };
     let mut changed =
         exception.is_some() | clear_thread_asyncgen_hooks(_py) | clear_thread_context(_py);
     crate::builtins::exceptions::exception_pending_flag().set(false);
     let contexts = CONTEXT_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
-    let frames = FRAME_STACK
-        .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
-        .unwrap_or_default();
+    // Copy the abandoned frames out and unlink them; nothing reads a record
+    // of this thread again.
+    let frames = crate::builtins::frames::records::abandon_all();
     // A handoff is borrowed from its invoker, which no longer runs.
     super::execution_tls().pending_invocation.set(0);
-    let _ = TRACE_FRAME_PUSH_STACK.try_with(|stack| {
-        let _ = std::mem::take(&mut *stack.borrow_mut());
-    });
     let active = ACTIVE_EXCEPTION_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
-    let _ = ACTIVE_EXCEPTION_FALLBACK.try_with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let _ = std::mem::take(&mut *stack);
-    });
+    let fallback = ACTIVE_EXCEPTION_FALLBACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
     let _ = EXCEPTION_STACK.try_with(|stack| {
         let mut stack = stack.borrow_mut();
         let _ = std::mem::take(&mut *stack);
@@ -659,24 +658,54 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // Every TLS owner and execution marker is detached before Python can run.
     // In particular no RefCell borrow survives a decref that can repopulate the
     // same context/exception stack from a finalizer.
-    changed |= !contexts.is_empty() || !frames.is_empty() || !active.is_empty();
+    changed |=
+        !contexts.is_empty() || !frames.is_empty() || !active.is_empty() || !fallback.is_empty();
     if let Some(bits) = exception {
         dec_ref_bits(_py, bits);
     }
+    #[cfg(test)]
+    if let Some(completion) = test_completion {
+        completion.send(()).unwrap();
+    }
     for bits in contexts.into_iter().chain(active) {
         dec_ref_bits(_py, bits);
+    }
+    for entry in fallback {
+        if entry.owned {
+            dec_ref_bits(_py, entry.bits);
+        }
     }
     // Every abandoned entry exits as a return would, innermost first: a frame
     // object that shares its bindings takes them over, otherwise they are
     // released in the target's order, and its homes go back only after those
     // releases finish. The stack is already unlinked above.
-    for frame in frames.into_iter().rev() {
-        frame.exit(_py);
-    }
-    let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
+    frames.exit(_py);
+    changed |= crate::builtins::exceptions::clear_thread_unraisable_state(_py);
+    crate::concurrency::execution::retire_idle_compiled_scope_storage();
+    crate::builtins::frames::clear_frame_home_tls_storage();
+    crate::async_rt::awaitable::clear_python_resume_tls_storage();
+    crate::builtins::modules::clear_module_execution_tls_storage();
+    PARSE_ARENA.with(|arena| arena.borrow_mut().drain());
+    crate::REPR_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        assert!(stack.is_empty(), "retiring an active repr stack");
+        *stack = Vec::new();
+    });
+    crate::REPR_SET.with(|set| {
+        let mut set = set.borrow_mut();
+        assert!(set.is_empty(), "retiring an active repr set");
+        *set = std::collections::HashSet::new();
+    });
     changed |= clear_attr_tls_caches(_py);
     changed |= clear_const_data_literal_caches(_py);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        changed |= crate::concurrency::locks::clear_thread_locals(_py);
+    }
     clear_utf8_count_tls();
+    if molt_cpython_abi::api::object::runtime_thread_state_lifetime_is_retired() {
+        crate::cpython_abi_hooks::clear_abi_gil_tls_storage();
+    }
     changed
 }
 
@@ -1064,7 +1093,7 @@ pub(crate) fn run_runtime_worker<R>(
             );
         molt_cpython_abi::api::object::detach_runtime_execution_thread();
         molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| {
-            clear_worker_thread_state(&gil.token())
+            clear_worker_thread_state(gil.token())
         });
     }));
     match (outcome, cleanup) {
@@ -1360,7 +1389,7 @@ fn flush_stdio_target(_py: &PyToken<'_>, target_bits: u64) {
     if let Some(ptr) = target_obj.as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
-                let _ = molt_file_flush(target_bits);
+                let _ = molt_file_flush_attached_body(_py, target_bits);
                 if exception_pending(_py) {
                     clear_exception(_py);
                 }
@@ -1491,24 +1520,31 @@ pub(crate) mod tests {
                     "open test descriptor: {}",
                     std::io::Error::last_os_error()
                 );
-                crate::async_rt::event_loop::molt_pipe_transport_new(
+                crate::async_rt::event_loop::molt_pipe_transport_new_attached_body(
+                    py,
                     MoltObject::from_int(i64::from(fd)).bits(),
                     MoltObject::from_bool(true).bits(),
                 )
             };
             let token = unsafe {
-                crate::async_rt::cancellation::molt_cancel_token_new(MoltObject::none().bits())
+                crate::async_rt::cancellation::molt_cancel_token_new_attached_body(
+                    py,
+                    MoltObject::none().bits(),
+                )
             };
-            let event_loop = crate::async_rt::event_loop::molt_event_loop_new();
+            let event_loop = crate::async_rt::event_loop::molt_event_loop_new_attached_body(py);
             #[cfg(not(target_arch = "wasm32"))]
             let pipe = new_pipe();
             assert!(!crate::exception_pending(py));
             assert!(super::clear_task_state(py, state));
             assert!(!super::clear_task_state(py, state));
             let next_token = unsafe {
-                crate::async_rt::cancellation::molt_cancel_token_new(MoltObject::none().bits())
+                crate::async_rt::cancellation::molt_cancel_token_new_attached_body(
+                    py,
+                    MoltObject::none().bits(),
+                )
             };
-            let next_loop = crate::async_rt::event_loop::molt_event_loop_new();
+            let next_loop = crate::async_rt::event_loop::molt_event_loop_new_attached_body(py);
             assert!(
                 crate::obj_from_bits(next_token).as_int().unwrap()
                     > crate::obj_from_bits(token).as_int().unwrap()
@@ -1567,7 +1603,7 @@ pub(crate) mod tests {
                 let work =
                     crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
                         .unwrap();
-                assert_eq!(runtime_state(&work.token()).identity(), origin.identity());
+                assert_eq!(runtime_state(work.token()).identity(), origin.identity());
                 assert_eq!(origin.state().thread_borrow_count(), 1);
                 assert!(
                     crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
@@ -1578,10 +1614,10 @@ pub(crate) mod tests {
             {
                 let entry = crate::concurrency::RuntimeExecutionGuard::enter();
                 let py = entry.token();
-                let class = reentrant_context_class(&py);
+                let class = reentrant_context_class(py);
                 REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
-                publish_context_binding(&py, class);
-                crate::dec_ref_bits(&py, class);
+                publish_context_binding(py, class);
+                crate::dec_ref_bits(py, class);
                 // Production per-work entry retires its C record. Preserve a
                 // runtime TLS owner only, so the ordinary foreign-C-owner
                 // shutdown refusal cannot mask terminal service cleanup.
@@ -1642,7 +1678,14 @@ pub(crate) mod tests {
         crate::dec_ref_bits(py, value);
     }
 
-    extern "C" fn repopulate_context_binding(_self: u64) -> u64 {
+    extern "C" fn repopulate_context_binding(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         #[cfg(not(target_arch = "wasm32"))]
         if JOINED_SERVICE_ORIGIN.load(Ordering::SeqCst) != 0 {
             assert!(crate::concurrency::execution::current_thread_holds_shutdown_drain_custody());
@@ -1654,7 +1697,8 @@ pub(crate) mod tests {
                 JOINED_SERVICE_ORIGIN.load(Ordering::SeqCst)
             );
         }
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = __py;
             if REENTRANT_CONTEXT_RELEASES.fetch_add(1, Ordering::SeqCst) == 0 {
                 if REENTRANT_CONTEXT_PUBLISH_C.load(Ordering::SeqCst) {
                     if !molt_cpython_abi::api::object::current_thread_has_retained_runtime_state() {
@@ -1675,14 +1719,14 @@ pub(crate) mod tests {
                 publish_context_binding(py, REENTRANT_CONTEXT_CLASS.load(Ordering::SeqCst));
             }
             MoltObject::none().bits()
-        })
+        }
     }
 
     fn reentrant_context_class(py: &crate::PyToken<'_>) -> u64 {
         let name = crate::dynamic_attr_name_bits(py, b"ReentrantContextDefault").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         crate::dec_ref_bits(py, name);
-        crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
         let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
         unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
         let method = crate::builtins::functions::alloc_runtime_function_obj(
@@ -1696,7 +1740,7 @@ pub(crate) mod tests {
         assert!(!method.is_null());
         let key = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let method = MoltObject::from_ptr(method).bits();
-        crate::molt_set_attr_name(class, key, method);
+        crate::molt_set_attr_name_attached_body(py, class, key, method);
         crate::dec_ref_bits(py, key);
         crate::dec_ref_bits(py, method);
         assert!(!crate::exception_pending(py));
@@ -1750,12 +1794,12 @@ pub(crate) mod tests {
                 std::thread::spawn(move || {
                     let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                     let py = entry.token();
-                    let class = reentrant_context_class(&py);
+                    let class = reentrant_context_class(py);
                     REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
                     REENTRANT_CONTEXT_RELEASES.store(0, Ordering::SeqCst);
                     REENTRANT_CONTEXT_C_PUBLICATIONS.store(0, Ordering::SeqCst);
                     REENTRANT_CONTEXT_PUBLISH_C.store(publish_c, Ordering::SeqCst);
-                    publish_context_binding(&py, class);
+                    publish_context_binding(py, class);
                     if !initial_c_record {
                         // Remove only the empty C domain. The real runtime
                         // finalizers below still require repeated TLS cleanup.
@@ -1772,8 +1816,8 @@ pub(crate) mod tests {
                     assert!(crate::CONTEXT_STACK.with(|stack| stack.borrow().is_empty()));
                     let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                     let py = entry.token();
-                    assert!(!crate::builtins::contextvars::clear_thread_context(&py));
-                    crate::dec_ref_bits(&py, class);
+                    assert!(!crate::builtins::contextvars::clear_thread_context(py));
+                    crate::dec_ref_bits(py, class);
                     REENTRANT_CONTEXT_CLASS.store(0, Ordering::SeqCst);
                     REENTRANT_CONTEXT_PUBLISH_C.store(false, Ordering::SeqCst);
                 }).join().unwrap();
@@ -1782,7 +1826,14 @@ pub(crate) mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    extern "C" fn worker_cached_method(_self: u64) -> u64 {
+    extern "C" fn worker_cached_method(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
 
@@ -1797,9 +1848,9 @@ pub(crate) mod tests {
     impl WorkerIcWitness {
         fn new(py: &crate::PyToken<'_>) -> Self {
             let name = crate::dynamic_attr_name_bits(py, b"WorkerIcOwner").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             crate::dec_ref_bits(py, name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
             unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
             let method = crate::builtins::functions::alloc_runtime_function_obj(
@@ -1813,7 +1864,7 @@ pub(crate) mod tests {
             assert!(!method.is_null());
             let method = MoltObject::from_ptr(method).bits();
             let name = crate::dynamic_attr_name_bits(py, b"cached").unwrap();
-            crate::molt_set_attr_name(class, name, method);
+            crate::molt_set_attr_name_attached_body(py, class, name, method);
             crate::dec_ref_bits(py, name);
             let receiver = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
             assert!(crate::obj_from_bits(receiver).as_ptr().is_some());
@@ -1869,7 +1920,8 @@ pub(crate) mod tests {
                 super::run_runtime_worker(origin, || {
                     crate::with_gil_entry_nopanic!(py, {
                         let mut self_or_null = molt_codegen_abi::loaded_method_null_bits() as u64;
-                        let callable = crate::call::bind::molt_load_method(
+                        let callable = crate::call::bind::molt_load_method_attached_body(
+                            py,
                             MoltObject::from_int(819).bits(),
                             receiver,
                             b"cached".as_ptr(),
@@ -1877,8 +1929,11 @@ pub(crate) mod tests {
                             (&raw mut self_or_null) as usize as u64,
                         );
                         // The load owns both words; the call adopts them.
-                        let result =
-                            crate::call::bind::molt_call_loaded_method0(callable, self_or_null);
+                        let result = crate::call::bind::molt_call_loaded_method0_attached_body(
+                            py,
+                            callable,
+                            self_or_null,
+                        );
                         assert_eq!(result, MoltObject::none().bits());
                         crate::dec_ref_bits(py, result);
                         assert!(!crate::exception_pending(py));

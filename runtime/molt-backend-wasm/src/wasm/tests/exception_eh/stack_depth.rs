@@ -50,10 +50,10 @@ fn wasm_compiles_exception_stack_depth_bookkeeping_family() {
     let import_types = wasm_function_import_type_indices(&wasm);
     let sigs = wasm_type_section_signatures(&wasm);
     for (name, expected_sig) in [
-        ("exception_stack_enter", (0usize, 1usize)),
-        ("exception_stack_depth", (0, 1)),
-        ("exception_stack_exit", (1, 1)),
-        ("exception_stack_set_depth", (1, 1)),
+        ("exception_stack_enter", (1usize, 1usize)),
+        ("exception_stack_depth", (1, 1)),
+        ("exception_stack_exit", (2, 1)),
+        ("exception_stack_set_depth", (2, 1)),
     ] {
         let type_idx = *import_types.get(name).unwrap_or_else(|| {
             panic!("{name} runtime import must be registered; imports={import_types:?}")

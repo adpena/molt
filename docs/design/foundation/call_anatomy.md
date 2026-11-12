@@ -2,9 +2,148 @@
 
 Status: accepted design, 2026-10-29, for ledger family J (runtime execution context), with I
 (frames and exceptions), A (runtime-call ABI) and P (mid-end facts). Ledger rows: HF-185 (frame
-cost, staged here), HF-561 (raise and catch) and the exception `__init__` descriptor row. Stage 1
-is the next implementation step. Section 9 holds the programs and the method to reproduce every
-number.
+cost, staged here), HF-561 (raise and catch) and the exception `__init__` descriptor row. Section 9
+holds the programs and the method to reproduce every number.
+
+This document is Molt's performance anchor. Read the stage status below before any performance
+analysis, benchmark interpretation, work ordering or speed claim; the session digest prints its
+summary line. A change that lands a stage or moves a measurement updates this table in the same
+change.
+
+## Stage status
+
+Summary: 2026-11-09, release native, macOS arm64, user time against the managed CPython 3.12.16 (-I): Molt runs at 0.26x CPython (geomean of 27 benchmarks measurable on both sides); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+
+| stage | state | landed | in flight | rows |
+|---|---|---|---|---|
+| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
+| 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a) | guarded call promotion design (HF-773 slice D) | HF-507, HF-79, HF-200 |
+| 4 inline caches | not started | - | - | HF-202, HF-206 |
+| 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
+| 6 unboxed loop carriers | not started | - | - | HF-229 |
+| 7 TIR inlining | not started | - | - | HF-773 |
+
+Outside the call path, contained runtime-library costs dominate some of the worst cells (measured
+2026-11-09 against the same baseline, symbolized `sample` profiles; each attribution checked against
+the benchmark's source and a self-time breakdown by module):
+
+- The cycle collector tracks containers in sharded, address-keyed `HashMap`s behind mutexes
+  (`object/gc.rs`). Every container allocation and free takes a shard lock and a hash insert or
+  remove (`gc_admit_membership`, `gc_untrack`). In `bench_struct`, a `Point(0, 0)` construction
+  loop at 0.09x, the `gc` module holds 11% of self samples and mutex lock/unlock another 10%
+  (callers not yet attributed); allocation and release hold about 30%. Every young collection
+  copies the whole registry to filter by generation (`snapshot_registry`: most of `gc_pressure`,
+  0.03x). HF-816 (b5e597ede) now keeps each generation's exact member list beside the registry,
+  as CPython keeps one list per generation: `bench_gc_pressure` 12.8-13.6 s to 3.5-4.1 s
+  (interleaved A/B, user time); the rest is the collection itself (HF-671). The per-allocation
+  shard lock and hash remain.
+- `weakref_native` (0.05x) is not a registry cost: its symbolized profile spends 19% of self
+  samples in native-call binding (`call::bind`) plus descriptor binding, thread-local reads and an
+  allocation per call; the global weak-reference registry is under 4%. It belongs to stages 3 and 4.
+  HF-817.
+- The `struct` module re-parses its format and converts integers through the C-API bridge on
+  every call (`molt-runtime-serial/src/structs.rs`; `struct.pack("<ii", i, i + 1)` costs 44,669
+  instructions against 1,627, section 0); CPython caches compiled formats. HF-818.
+
+The collector and `struct` costs need their own fixes and wait for no stage. Inside the call path the same profiles show frame
+push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top of method-heavy
+code (stage 1) and traceback location decoding (`LocationRows`) at the top of `exception_heavy`
+(stage 5).
+
+## Why Molt is slow: five causes and their owners (2026-11-09)
+
+1. Generated code is call-threaded: every operation enters the runtime. Stages 1-7 below.
+2. Correctness and custody hardening made each runtime entry heavier before inline fast paths
+   existed to skip it. Stages 2-5 (HF-198, HF-205).
+3. Three backends hand-write the same fast paths, so each stage costs three implementations and
+   the backends drift. Shared fast-path lowering, below (HF-821).
+4. Effort went to process: in one measured week, 82 of 656 commits touched the compiler, runtime
+   or differential tests. Family S owns presubmit cost (HF-801 and the consumer gate).
+5. Nothing tracked performance per landing, so regressions such as the cycle collector's landed
+   unseen. Family E (HF-222, HF-185, HF-616).
+
+## Backend lowering: what is shared, what is not, and the order to fix it
+
+The TIR, the SimpleIR passes, the module phase, the runtime, the refcount algorithm and the
+generated ABI tables are shared. Op lowering is not: Cranelift (57k lines) and WASM (100k) lower a
+SimpleIR copy rebuilt from TIR; LLVM (27k) lowers TIR. Each writes its own guarded call, NaN-box
+integer helpers, truthiness, poll, exception check, frame enter and location store. On the
+2026-11-09 survey LLVM had no guarded direct call and no tag-check integer lane, so it ran 17-28%
+slower than Cranelift on calls (`bench_fib` 0.30 against 0.235 s, interleaved, release, macOS
+arm64); the late stage now gives LLVM the integer lane (status below). Evidence:
+logs/agents/backend-sharing-survey.md; design: logs/agents/shared-lowering/design.md; row HF-821.
+
+End state (2026-11-09 re-plan, owner: engineer for the optimal end state, no transitional debt):
+final typed TIR is every backend's input (doc 77 section B). A late lowering stage of TIR itself, in
+the same graph, is the single place that chooses representation (stage 6) and expands every fast
+path (stages 1-5) into typed primitive ops plus cold `CallRuntime(RuntimeFn)` edges, so SCCP and
+value facts remove repeated tag tests and hoist invariant checks. Each backend only selects
+instructions; NaN-box primitives come from one shared primitive generator in molt-codegen-abi. The
+SimpleIR rebuild, the re-lift sites and the name-keyed representation plan that Cranelift and the
+WASM op loop read are deleted as each backend moves.
+
+Order: (0) typed runtime calls: one generated `RuntimeFn` per runtime entry (landed 3cbf168b9);
+(A) land the finished slices; (B) design the late lowering stage of TIR (settled 2026-11-10);
+(C) the integer lane through late TIR on LLVM and WASM, measured; (D) the remaining fast paths as
+late-TIR expansions, deleting backend copies, with Cranelift moving to final TIR; (E) stages 4, 6
+and 7 on TIR only.
+
+Status (2026-11-10): C1 landed (229180b0b): one set of NaN-box word generators in molt-codegen-abi
+(`word.rs`, `boxed_word.rs`), LLVM's copies deleted. C2 landed (077d6de6b): the stage
+(`run_late_lowering`, spec 0100) expands integer `+`/`-` on boxed words for LLVM; LLVM's seven
+string runtime-name matches for numeric fallbacks are deleted. `bench_fib`, LLVM release, macOS
+arm64: 8.77 to 8.53 billion instructions retired (-2.7%, VERIFIED, three interleaved runs per
+binary, output identical); molt_diff on 13 integer programs passes native 13/13, LLVM 13/13, WASM
+12/13 (the one failure was HF-826, fixed on main). C3 landed (8763d0b60): truthiness of bool and
+inline-int words without a runtime call. C2b and C4 (HF-821 lane): a boxed operand with a literal
+(`n - 1`) tests only the boxed word; `==`, `!=`, `<`, `<=`, `>`, `>=` compare inline payloads; the
+fifth primitive `BoxInlineInt` boxes a window value without raising; the stage now runs after the
+terminal type refinement, so an expanded int keeps its `I64` type. `bench_fib`, LLVM release,
+macOS arm64, against C3: 8.40 to 7.57 billion instructions retired (-9.9%, VERIFIED, three
+interleaved runs per binary, output identical); user time 0.25 to 0.23 s, below Cranelift's 0.235 s
+(row above). Next: C5 `Mul` with a cheap exact test; list index and store fast paths (fannkuch's hot
+path); WASM moves once the stage covers its lane parity checklist.
+
+## Whole-pipeline structure (mapped 2026-11-10)
+
+The backend view above understates the problem. One function passes through these stages
+(VERIFIED by file:line reading; the evidence map is in logs/agents/pipeline-map/):
+
+    Python: discover (parse 1) -> parse 2 -> sema -> visit -> Python mid-end -> serialize to
+      SimpleIR (identity = variable-name strings) -> msgpack lease
+    Rust:   9 SimpleIR passes -> lift to TIR -> 27 TIR passes -> module phase ->
+      project back to SimpleIR (Cranelift, WASM, Luau) | TIR (LLVM) | SimpleIR only, no TIR (Rust)
+
+Structural defects, each with its owner:
+1. Three optimizers for one fact family: the Python mid-end, nine Rust SimpleIR passes and the
+   TIR passes. Constants fold in four places, check_exception is removed in three, megafunctions
+   split in Python and twice in Rust. Owner HF-773 (retire the Python mid-end, then the SimpleIR
+   passes into TIR).
+2. Round trips instead of one IR: TIR is lowered back to SimpleIR at four sites and re-lifted at
+   three; the representation plan lifts again and reruns the whole TIR pipeline on a clone
+   (representation_plan.rs:360-383), so a function with a try block is optimized twice. Owner
+   HF-821: final TIR as every backend's input deletes the projections.
+3. Identity spelled as strings: a value is its variable name on the wire and in the Python
+   mid-end; TIR ops carry `_simple_out`, `_var` and `_type_hint` string attrs; the representation
+   plan is keyed by name and drops a fact when two values share one; the WASM LIR lane is chosen by
+   a function-name substring; Cranelift names 380 runtime entries by string (329 already in
+   RuntimeFn). Owners: HF-822 (front end emits TIR with typed ids), HF-821 (backends on final TIR).
+4. Build choices do not reach codegen: `TargetInfo.profile` is always ReleaseFast
+   (target_info.rs:349); LLVM is always O3; the Cranelift opt-level branch that the profile should
+   select can never run; `molt run` defaults to dev while `molt build` defaults to release; choices
+   cross into Rust as environment variables (757 of 765 registered variables affect output). Owner:
+   a typed build plan carried to every consumer (new row).
+5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only Luau and Rust use the
+   early, diagnosed target admission. Owner: one admission for every backend (new row).
+6. Facts lost between stages: Python's exact_class is never serialized; escape analysis's
+   stack_eligible is set before the lift and the Cranelift reader sees the projected op (INFERRED
+   lost; verify). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
+
+What an Astral-grade design does instead, and where Molt is going: parse once (Ruff), one semantic
+model (ty), emit typed IR with dense typed ids, optimize once in Rust, and lower once to machine
+code without a round trip. Every row above retires a piece of the current chain; none adds a
+stage.
 
 ## 0. Summary
 
@@ -102,8 +241,8 @@ parallel lanes; stages 2 and 3 follow stage 1; stage 7 follows stage 3.
   function and loop), `objdump` with resolved callees (`disasm_sym.py`), and a sampler
   (`profile_calls.py`) that charges each `sample` call-graph node whose parent is compiled code to
   that runtime entry point (inclusive time of each runtime call that compiled code makes).
-- IR: `molt debug ir --stage post-midend --format json --profile release` (SimpleIR after the
-  mid-end; the native backend consumes this form).
+- IR: `molt debug ir <source.py> --format json` (the frontend serialization boundary;
+  backends lift this wire form into typed SSA before optimization).
 
 Dynamic per-call-site counts with `lldb` were blocked: a launched process did not progress within
 120 s (likely a debugger authorization prompt on this host), so runtime calls per unit come from reading the hot
@@ -235,7 +374,7 @@ constructor/namespace gap. The cell below compares source `ca1cdefc68c1` with
 release-output runtime, Rust 1.99.1 and Valgrind 3.22.0. It counts Callgrind
 instruction reads (`Ir`); hardware retired instructions are a separate cell.
 
-Compile each program from `tools/perf_scoreboard_primitives.py` once with
+Compile each program from `tools/perf_instructions.py` once with
 `MOLT_KEEP_SYMBOLS=1`. Capture that same executable with Callgrind at N=0 and
 10,000/20,000 actual operations (`new_and_update` receives N=100,000/200,000).
 Subtract N=0 function costs and divide by operations; loop/control work stays in
@@ -508,6 +647,54 @@ both modes (the "reference meaning" rule of HF-485). `Proven` sites carry the pr
 identity; the premise checker refuses the build when a write to the slot appears.
 
 ### 4.3 Frame records and lazy frame objects
+
+Settled 2026-11-10 and landed in two steps: records live in the per-thread frame arena, not in
+the native stack frame (stable addresses, the same on every backend). The record chain headed by
+`ThreadRecord.frame_top` is the runtime's one frame authority
+(`molt-runtime/src/builtins/frames/records.rs`). A record is six header words (`prev`, `function`,
+`code`, `flags`, `observer`, `location`; `molt-codegen-abi` `FRAME_RECORD_*`) followed by the
+frame's homes; its base is the homes base compiled code already addressed.
+
+- A **synchronous function** pushes and pops its record inline. One generator per transition
+  (`molt-codegen-abi/src/frame_record.rs`: `generate_frame_push`, `generate_frame_pop`) serves
+  Cranelift (inline), LLVM (an always-inlined body per frame shape) and WASM (one push body and
+  one pop body per module). The push takes the handed function from
+  `ThreadRecord.pending_invocation` when its code owns this slot and the arena chunk has room
+  (`arena_top`, `arena_limit`); the record retains its function and code, as CPython 3.12 holds
+  `f_funcobj` and `f_code` strong, and reads globals and builtins from the function. The pop
+  unlinks, releases the homes in the target's clear order (the `trace_enter_slot` value carries
+  the home count and that order), releases function and code, and returns the arena top.
+- **Every other frame** (a module or class body, a stateful activation, a runtime-implemented
+  Python body, an entry with no handed function or no room in the chunk) is linked by the runtime
+  (`molt_frame_record_enter`) as an owned record whose namespace block sits below its header.
+- A pop enters the runtime (`molt_frame_record_exit`) only when the record's flags word is not
+  zero: an observer attached a frame payload, the runtime owns the record, or it opened an arena
+  chunk.
+- Zero-argument `super()` reads a synchronous frame as CPython's `super_init_without_args` does:
+  "no arguments" is `co_argcount == 0`, argument zero is home 0 and the class cell is the home of
+  the code's `__class__` free variable. Such a frame publishes no context
+  (`molt_frame_context_set` remains for stateful and class-body frames).
+
+`molt_trace_enter_slot`, `molt_trace_exit`, `molt_frame_homes`, `FRAME_STACK` and
+`TRACE_FRAME_PUSH_STACK` are deleted. The original sketch follows the slice-2 notes.
+
+**Slice 2 (not started; state at 077e117176).** A stateful activation (generator, coroutine,
+async poll) still enters through `molt_frame_record_enter`: the runtime links an owned record
+whose namespace block holds the task as `activation_bits`, restores the task's saved location
+word, and `molt_frame_record_exit` saves it back (`FrameEntry::exit`). Its entry carries no
+frame shape (no `trace_enter_slot` value), and its frame still publishes `FRAME_CONTEXT_SET` on
+entry and after each resume (`function_lifecycle.py`, `async_gen.py`). Slice 2 keeps the record
+in the task payload, as CPython keeps `gi_iframe` in the generator: resume links it to
+`frame_top` and suspend unlinks it, both through new `frame_record` generators, so no backend
+hand-writes them. It then reads `super()` from the payload's slots, as synchronous frames read
+their homes, and removes `FRAME_CONTEXT_SET` from stateful frames (class bodies keep it). The
+flags word uses bits 0-2 (`FRAME_RECORD_OBSERVED`, `OWNED`, `CHUNK_FIRST`); a `STATEFUL` bit is
+free. Slice 2 must carry the differential cells `frame_record_observed_frames` (a suspended
+`gi_frame`) and `sys_exception_across_resume`. Its measurement adds a generator loop and an async
+call loop to the programs of section 9.
+Two step-2 measurements are also still open: WASM instruction rows (WASM runs the differential
+cells but has no instruction row) and atomic-refcount builds, where the record's two retains and
+each home release are runtime calls.
 
 A function whose frame can be observed keeps a `FrameRecord` in its own native stack frame (on
 WASM, in the shadow stack):
@@ -1093,6 +1280,32 @@ layout, and the tests. The replaced lane is deleted in the same stage.
 **Goal.** Replace the runtime-owned frame stack with records in compiled frames. Locations become
 plain stores into the record. Frame objects materialize on observation.
 
+**As built (2026-11-11).** Section 4.3 describes the landed design. It differs from the work list
+below in four ways: records live in the per-thread frame arena, not in a native stack slot; the
+record retains its function and code; the existing `trace_enter_slot` and `trace_exit` ops stay
+(the entry's value now carries the frame's home count and clear order) and the shared generators
+in `molt-codegen-abi` are their instruction selection on all three backends; and
+`frame_context_set` stays for stateful and class-body frames only. The work list is kept as the
+record of the original plan.
+
+Measured (VERIFIED: macOS arm64, release, instructions retired from `/usr/bin/time -l`, median of
+5 runs, identical output; base is main at 57c433cc8, head adds the inline push and pop):
+
+| program | backend | base | head | change |
+|---|---|---:|---:|---:|
+| p8 call loop, 10 M calls | Cranelift | 21,007 M | 9,790 M | -53.4% (2,091 to 969 per iteration) |
+| p8 call loop, 10 M calls | LLVM | 22,811 M | 11,005 M | -51.8% |
+| `fib(32)`, 7.05 M calls | Cranelift | 16,031 M | 8,263 M | -48.5% (2,260 to 1,158 per call) |
+| `fib(32)` | LLVM | 14,243 M | 6,116 M | -57.1% |
+| `bench_method_default_binding` | Cranelift | 17,698 M | 11,708 M | -33.8% |
+| `bench_method_default_binding` | LLVM | 17,884 M | 11,634 M | -34.9% |
+| `bench_exception_heavy` | Cranelift | 24,358 M | 24,315 M | -0.2% |
+| `bench_exception_heavy` | LLVM | 24,548 M | 24,508 M | -0.2% |
+
+The LLVM rows include the guarded direct call (HF-821 D4) on both sides. Not measured: WASM (it
+runs the differential cells, with no instruction row yet) and atomic-refcount builds, where the
+record's two retains and each home release are runtime calls.
+
 **Work.**
 
 1. `molt-codegen-abi`: add `FRAME_RECORD_*` layout constants (prev, code, function, location,
@@ -1120,6 +1333,16 @@ plain stores into the record. Frame objects materialize on observation.
 6. Keep runtime-called Python frames (the generic entry, `call_function_with_arguments`) on the
    same record type: the generic entry pushes a record for the native body it calls, so one chain
    holds both.
+
+**Settled phasing (2026-11-09).** Phase 1a: the `line` op stops costing a runtime call on native,
+LLVM and WASM and stays a zero-cost statement marker. It keeps its other roles until a typed
+statement-start payload replaces it: the megafunction split boundary
+(`molt-tir/src/passes/megafunction_split.rs`), the native RC cleanup point (`fc/funcobj.rs`), the
+SSA source-site fallback (`molt-ir/src/tir/ssa.rs`) and the markers the rewrites preserve. Phase
+1b deletes `molt_trace_set_line`, its `MOLT_TRACE_LINE*` flags and its WASM manifest row after
+HF-699 E2 releases the WASM ABI. Phase 2 makes the frame-home stores exception-free: the TIR
+representation facts decide where a raw integer's view must be boxed, and a TIR pass inserts
+`frame_home_box` with its exception check there.
 
 **Measurable target.** Call loop (p8) from 3,623 to at most 1,900 instructions per iteration;
 `fib` from 4,346 to at most 2,300 per call; method loop from 4,697 to at most 3,000. These budgets

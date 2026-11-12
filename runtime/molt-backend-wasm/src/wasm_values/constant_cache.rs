@@ -1,8 +1,9 @@
+use crate::wasm_binary::Function;
 use crate::wasm_values::box_none;
 use molt_codegen_abi::{
     INT_MAX_INLINE, INT_MIN_INLINE, INT_SHIFT, QNAN_TAG_MASK_I64, QNAN_TAG_PTR_I64,
 };
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 /// Cache of WASM local indices holding frequently-used i64 constants.
 /// When a function body contains 3+ integer fast-path operations, these locals are

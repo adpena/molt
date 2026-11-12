@@ -1,8 +1,9 @@
 use crate::FunctionIR;
 use crate::wasm::control_flow::ControlKind;
 use crate::wasm::op_loop::WasmFunctionEmitContext;
+use crate::wasm_binary::Function;
 use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 pub(super) fn emit_plain_function_body(
     func_ir: &FunctionIR,

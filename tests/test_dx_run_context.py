@@ -2731,7 +2731,7 @@ def test_capsule_selected_session_records_only_its_canonical_checkout_state(
     assert not (foreign / checkout_state.OWNER_RECORD).exists()
 
 
-@pytest.mark.parametrize("writer", ["transpiler", "tv", "proof"])
+@pytest.mark.parametrize("writer", ["transpiler", "proof"])
 def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, writer):
     from molt.checkout_state import read_checkout_owner
 
@@ -2744,7 +2744,6 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
         "TMPDIR",
         "TMP",
         "TEMP",
-        "MOLT_TV_DIR",
         "MOLT_PROOF_SCRATCH_ROOT",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -2756,17 +2755,6 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
 
         monkeypatch.setattr(check_transpiler_determinism, "_repo_root", lambda: source)
         assert check_transpiler_determinism._tmp_root() == selected
-    elif writer == "tv":
-        from molt.frontend import tv_hooks
-
-        monkeypatch.setattr(tv_hooks, "_REPO_ROOT", source)
-        tv_hooks.reset()
-        try:
-            assert tv_hooks._temp_root(environment) == selected
-            assert not selected.exists(), "a projection must remain read-only"
-            assert tv_hooks.tv_dump_dir().parent == selected
-        finally:
-            tv_hooks.reset()
     else:
         assert dx.proof_scratch_root(source, environment) == selected
         assert not selected.exists(), "a projection must remain read-only"

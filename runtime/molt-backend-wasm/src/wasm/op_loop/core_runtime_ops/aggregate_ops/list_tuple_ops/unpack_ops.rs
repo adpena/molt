@@ -3,9 +3,10 @@ use super::super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use molt_codegen_abi::box_none_bits;
-use wasm_encoder::{BlockType, Function, Instruction, MemArg};
+use wasm_encoder::{BlockType, Instruction, MemArg};
 
 const I64_ALIGN_EXPONENT: u32 = 3;
 

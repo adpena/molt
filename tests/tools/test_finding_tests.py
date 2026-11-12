@@ -476,14 +476,14 @@ _DAG_LEDGER = """# Ledger
 _PRIOR_ART = "# Prior art\n\n## A. Typed ABI\n\ntext\n\n## B. Binding flow\n\ntext\n"
 
 
-def test_every_per_op_ratchet_axis_has_an_engine_family() -> None:
+def test_every_per_op_instruction_axis_has_an_engine_family() -> None:
     """A measured per-op cost with no owning engine family is a coverage gap."""
     from tools import finding_status
 
     status = finding_status.project(_DAG_LEDGER.format(b_rows="HF-3"))
-    owned = {"axes": {"loop/per_op": {}, "empty/startup": {}, "loop/startup": {}}}
+    owned = ("loop/per_op", "empty/startup", "loop/startup")
     # Startup axes all measure process start; only per-op axes need an owner.
-    assert finding_coverage.ratchet_axis_problems(status, owned) == []
+    assert finding_coverage.per_op_axis_problems(status, owned) == []
     # B is a semantics family: naming an axis there owns no engine cost.
     semantics_only = finding_status.project(
         _DAG_LEDGER.format(b_rows="HF-3").replace(
@@ -491,15 +491,21 @@ def test_every_per_op_ratchet_axis_has_an_engine_family() -> None:
             "| B. Binding flow | semantics | call/per_op |",
         )
     )
-    assert finding_coverage.ratchet_axis_problems(
-        semantics_only, {"axes": {"loop/per_op": {}, "call/per_op": {}}}
+    assert finding_coverage.per_op_axis_problems(
+        semantics_only, ("loop/per_op", "call/per_op")
     ) == [
-        "ratchet axis call/per_op has no engine family; "
+        "instruction axis call/per_op has no engine family; "
         "name it in one family's HF-459 axes"
     ]
-    assert finding_coverage.ratchet_axis_problems(status, {}) == [
-        "bench/primitive_ratchet.json has no axes table"
-    ]
+
+
+def test_the_ledger_owns_every_registry_per_op_axis() -> None:
+    """The real ledger names an engine owner for each measured primitive."""
+    from tools import finding_status
+    from tools.perf_primitives import per_op_axes
+
+    status = finding_status.read_ledger(Path(__file__).resolve().parents[2])
+    assert finding_coverage.per_op_axis_problems(status, per_op_axes()) == []
 
 
 def test_every_open_finding_sits_in_one_dependency_family_with_prior_art() -> None:

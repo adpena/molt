@@ -708,9 +708,9 @@ pub(crate) fn op_loop_runtime_call(
             },
         });
     }
-    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {
-        return Some(match abi.symbol {
-            "molt_bytearray_count" => OpLoopRuntimeCallSpec {
+    if let Some(abi) = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(kind) {
+        return Some(match abi.function {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayCount => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytearrayCount,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -719,20 +719,22 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytearrayCount],
                 discard_result: false,
             },
-            "molt_bytearray_count_slice" => OpLoopRuntimeCallSpec {
-                import: WasmRuntimeImport::BytearrayCountSlice,
-                args: &[
-                    OpLoopRuntimeArgSpec::Local(0),
-                    OpLoopRuntimeArgSpec::Local(1),
-                    OpLoopRuntimeArgSpec::Local(2),
-                    OpLoopRuntimeArgSpec::Local(3),
-                    OpLoopRuntimeArgSpec::Local(4),
-                    OpLoopRuntimeArgSpec::Local(5),
-                ],
-                required_imports: &[WasmRuntimeImport::BytearrayCountSlice],
-                discard_result: false,
-            },
-            "molt_bytearray_endswith" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayCountSlice => {
+                OpLoopRuntimeCallSpec {
+                    import: WasmRuntimeImport::BytearrayCountSlice,
+                    args: &[
+                        OpLoopRuntimeArgSpec::Local(0),
+                        OpLoopRuntimeArgSpec::Local(1),
+                        OpLoopRuntimeArgSpec::Local(2),
+                        OpLoopRuntimeArgSpec::Local(3),
+                        OpLoopRuntimeArgSpec::Local(4),
+                        OpLoopRuntimeArgSpec::Local(5),
+                    ],
+                    required_imports: &[WasmRuntimeImport::BytearrayCountSlice],
+                    discard_result: false,
+                }
+            }
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayEndswith => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytearrayEndswith,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -741,20 +743,22 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytearrayEndswith],
                 discard_result: false,
             },
-            "molt_bytearray_endswith_slice" => OpLoopRuntimeCallSpec {
-                import: WasmRuntimeImport::BytearrayEndswithSlice,
-                args: &[
-                    OpLoopRuntimeArgSpec::Local(0),
-                    OpLoopRuntimeArgSpec::Local(1),
-                    OpLoopRuntimeArgSpec::Local(2),
-                    OpLoopRuntimeArgSpec::Local(3),
-                    OpLoopRuntimeArgSpec::Local(4),
-                    OpLoopRuntimeArgSpec::Local(5),
-                ],
-                required_imports: &[WasmRuntimeImport::BytearrayEndswithSlice],
-                discard_result: false,
-            },
-            "molt_bytearray_find" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayEndswithSlice => {
+                OpLoopRuntimeCallSpec {
+                    import: WasmRuntimeImport::BytearrayEndswithSlice,
+                    args: &[
+                        OpLoopRuntimeArgSpec::Local(0),
+                        OpLoopRuntimeArgSpec::Local(1),
+                        OpLoopRuntimeArgSpec::Local(2),
+                        OpLoopRuntimeArgSpec::Local(3),
+                        OpLoopRuntimeArgSpec::Local(4),
+                        OpLoopRuntimeArgSpec::Local(5),
+                    ],
+                    required_imports: &[WasmRuntimeImport::BytearrayEndswithSlice],
+                    discard_result: false,
+                }
+            }
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayFind => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytearrayFind,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -763,7 +767,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytearrayFind],
                 discard_result: false,
             },
-            "molt_bytearray_find_slice" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayFindSlice => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytearrayFindSlice,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -776,29 +780,33 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytearrayFindSlice],
                 discard_result: false,
             },
-            "molt_bytearray_startswith" => OpLoopRuntimeCallSpec {
-                import: WasmRuntimeImport::BytearrayStartswith,
-                args: &[
-                    OpLoopRuntimeArgSpec::Local(0),
-                    OpLoopRuntimeArgSpec::Local(1),
-                ],
-                required_imports: &[WasmRuntimeImport::BytearrayStartswith],
-                discard_result: false,
-            },
-            "molt_bytearray_startswith_slice" => OpLoopRuntimeCallSpec {
-                import: WasmRuntimeImport::BytearrayStartswithSlice,
-                args: &[
-                    OpLoopRuntimeArgSpec::Local(0),
-                    OpLoopRuntimeArgSpec::Local(1),
-                    OpLoopRuntimeArgSpec::Local(2),
-                    OpLoopRuntimeArgSpec::Local(3),
-                    OpLoopRuntimeArgSpec::Local(4),
-                    OpLoopRuntimeArgSpec::Local(5),
-                ],
-                required_imports: &[WasmRuntimeImport::BytearrayStartswithSlice],
-                discard_result: false,
-            },
-            "molt_bytes_count" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayStartswith => {
+                OpLoopRuntimeCallSpec {
+                    import: WasmRuntimeImport::BytearrayStartswith,
+                    args: &[
+                        OpLoopRuntimeArgSpec::Local(0),
+                        OpLoopRuntimeArgSpec::Local(1),
+                    ],
+                    required_imports: &[WasmRuntimeImport::BytearrayStartswith],
+                    discard_result: false,
+                }
+            }
+            molt_ir::runtime_fn_generated::RuntimeFn::BytearrayStartswithSlice => {
+                OpLoopRuntimeCallSpec {
+                    import: WasmRuntimeImport::BytearrayStartswithSlice,
+                    args: &[
+                        OpLoopRuntimeArgSpec::Local(0),
+                        OpLoopRuntimeArgSpec::Local(1),
+                        OpLoopRuntimeArgSpec::Local(2),
+                        OpLoopRuntimeArgSpec::Local(3),
+                        OpLoopRuntimeArgSpec::Local(4),
+                        OpLoopRuntimeArgSpec::Local(5),
+                    ],
+                    required_imports: &[WasmRuntimeImport::BytearrayStartswithSlice],
+                    discard_result: false,
+                }
+            }
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesCount => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytesCount,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -807,7 +815,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytesCount],
                 discard_result: false,
             },
-            "molt_bytes_count_slice" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesCountSlice => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytesCountSlice,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -820,7 +828,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytesCountSlice],
                 discard_result: false,
             },
-            "molt_bytes_endswith" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesEndswith => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytesEndswith,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -829,7 +837,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytesEndswith],
                 discard_result: false,
             },
-            "molt_bytes_endswith_slice" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesEndswithSlice => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytesEndswithSlice,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -842,7 +850,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytesEndswithSlice],
                 discard_result: false,
             },
-            "molt_bytes_find" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesFind => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytesFind,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -851,7 +859,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytesFind],
                 discard_result: false,
             },
-            "molt_bytes_find_slice" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesFindSlice => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytesFindSlice,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -864,7 +872,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytesFindSlice],
                 discard_result: false,
             },
-            "molt_bytes_startswith" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesStartswith => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::BytesStartswith,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -873,20 +881,22 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::BytesStartswith],
                 discard_result: false,
             },
-            "molt_bytes_startswith_slice" => OpLoopRuntimeCallSpec {
-                import: WasmRuntimeImport::BytesStartswithSlice,
-                args: &[
-                    OpLoopRuntimeArgSpec::Local(0),
-                    OpLoopRuntimeArgSpec::Local(1),
-                    OpLoopRuntimeArgSpec::Local(2),
-                    OpLoopRuntimeArgSpec::Local(3),
-                    OpLoopRuntimeArgSpec::Local(4),
-                    OpLoopRuntimeArgSpec::Local(5),
-                ],
-                required_imports: &[WasmRuntimeImport::BytesStartswithSlice],
-                discard_result: false,
-            },
-            "molt_string_count" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::BytesStartswithSlice => {
+                OpLoopRuntimeCallSpec {
+                    import: WasmRuntimeImport::BytesStartswithSlice,
+                    args: &[
+                        OpLoopRuntimeArgSpec::Local(0),
+                        OpLoopRuntimeArgSpec::Local(1),
+                        OpLoopRuntimeArgSpec::Local(2),
+                        OpLoopRuntimeArgSpec::Local(3),
+                        OpLoopRuntimeArgSpec::Local(4),
+                        OpLoopRuntimeArgSpec::Local(5),
+                    ],
+                    required_imports: &[WasmRuntimeImport::BytesStartswithSlice],
+                    discard_result: false,
+                }
+            }
+            molt_ir::runtime_fn_generated::RuntimeFn::StringCount => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::StringCount,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -895,7 +905,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::StringCount],
                 discard_result: false,
             },
-            "molt_string_count_slice" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::StringCountSlice => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::StringCountSlice,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -908,7 +918,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::StringCountSlice],
                 discard_result: false,
             },
-            "molt_string_endswith" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::StringEndswith => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::StringEndswith,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -917,20 +927,22 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::StringEndswith],
                 discard_result: false,
             },
-            "molt_string_endswith_slice" => OpLoopRuntimeCallSpec {
-                import: WasmRuntimeImport::StringEndswithSlice,
-                args: &[
-                    OpLoopRuntimeArgSpec::Local(0),
-                    OpLoopRuntimeArgSpec::Local(1),
-                    OpLoopRuntimeArgSpec::Local(2),
-                    OpLoopRuntimeArgSpec::Local(3),
-                    OpLoopRuntimeArgSpec::Local(4),
-                    OpLoopRuntimeArgSpec::Local(5),
-                ],
-                required_imports: &[WasmRuntimeImport::StringEndswithSlice],
-                discard_result: false,
-            },
-            "molt_string_find" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::StringEndswithSlice => {
+                OpLoopRuntimeCallSpec {
+                    import: WasmRuntimeImport::StringEndswithSlice,
+                    args: &[
+                        OpLoopRuntimeArgSpec::Local(0),
+                        OpLoopRuntimeArgSpec::Local(1),
+                        OpLoopRuntimeArgSpec::Local(2),
+                        OpLoopRuntimeArgSpec::Local(3),
+                        OpLoopRuntimeArgSpec::Local(4),
+                        OpLoopRuntimeArgSpec::Local(5),
+                    ],
+                    required_imports: &[WasmRuntimeImport::StringEndswithSlice],
+                    discard_result: false,
+                }
+            }
+            molt_ir::runtime_fn_generated::RuntimeFn::StringFind => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::StringFind,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -939,7 +951,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::StringFind],
                 discard_result: false,
             },
-            "molt_string_find_slice" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::StringFindSlice => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::StringFindSlice,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -952,7 +964,7 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::StringFindSlice],
                 discard_result: false,
             },
-            "molt_string_startswith" => OpLoopRuntimeCallSpec {
+            molt_ir::runtime_fn_generated::RuntimeFn::StringStartswith => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::StringStartswith,
                 args: &[
                     OpLoopRuntimeArgSpec::Local(0),
@@ -961,19 +973,21 @@ pub(crate) fn op_loop_runtime_call(
                 required_imports: &[WasmRuntimeImport::StringStartswith],
                 discard_result: false,
             },
-            "molt_string_startswith_slice" => OpLoopRuntimeCallSpec {
-                import: WasmRuntimeImport::StringStartswithSlice,
-                args: &[
-                    OpLoopRuntimeArgSpec::Local(0),
-                    OpLoopRuntimeArgSpec::Local(1),
-                    OpLoopRuntimeArgSpec::Local(2),
-                    OpLoopRuntimeArgSpec::Local(3),
-                    OpLoopRuntimeArgSpec::Local(4),
-                    OpLoopRuntimeArgSpec::Local(5),
-                ],
-                required_imports: &[WasmRuntimeImport::StringStartswithSlice],
-                discard_result: false,
-            },
+            molt_ir::runtime_fn_generated::RuntimeFn::StringStartswithSlice => {
+                OpLoopRuntimeCallSpec {
+                    import: WasmRuntimeImport::StringStartswithSlice,
+                    args: &[
+                        OpLoopRuntimeArgSpec::Local(0),
+                        OpLoopRuntimeArgSpec::Local(1),
+                        OpLoopRuntimeArgSpec::Local(2),
+                        OpLoopRuntimeArgSpec::Local(3),
+                        OpLoopRuntimeArgSpec::Local(4),
+                        OpLoopRuntimeArgSpec::Local(5),
+                    ],
+                    required_imports: &[WasmRuntimeImport::StringStartswithSlice],
+                    discard_result: false,
+                }
+            }
             _ => unreachable!("shared boxed ABI has no generated WASM projection"),
         });
     }

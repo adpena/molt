@@ -65,15 +65,10 @@ self-commits or invents an external scheduling authority.
 - `tools/perf_scoreboard.py --profile release-fast --classify` — the ONLY citable
   perf board (CPython floor, cold+warm, quiescent, provenance-gated). Non-canonical
   lanes (`bench.py`, `bench/harness.py`) self-stamp `authoritative=false`.
-- `tools/perf_board.py <scoreboard.json>` — project the source board into the FIVE
-  gated boards (CPython/Backend/Profile/PyPy/Codon), each its own artifact + exit
-  code (doc 64 §3.2). A native win cannot hide a wasm regression. Pure consumer.
-- `tools/perf_history.py <board.json>... --gate [--record]` — board-vs-history
-  regression gate (doc 64 Phase 4): fails on a previously-green cell that
-  regressed; only authoritative boards become baselines (Rule 2).
-- `tools/check_perf_plane_gate.py` — falsifiable self-proof that the plane gate
-  FAILS on a synthetic CPython-red (`repository.perf-plane-gate`; a gate that
-  cannot fail is vacuous).
+- `tools/perf_scoreboard.py instructions {run,measure,status}` — instructions
+  retired on main (`tools/perf_instructions.py`): the farm cell compares main's
+  head with the nearest measured ancestor and names suspects; `status` reads the
+  collected verdicts; `measure` is lane A/B (`tools/PERF_AUTHORITY.md`).
 - `molt.metric_ratios.signed_ratio` — the SOLE ratio authority (explicit direction).
 - `tools/perf_causality.py` + `tools/pass_delta_dashboard.py` — attribute a CPython-RED
   to its missing IR fact (do not re-derive perf causality by hand).

@@ -6,8 +6,8 @@ use molt_obj_model::MoltObject;
 use crate::object::ObjectShapeId;
 use crate::{
     PyToken, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
-    exception_pending, inc_ref_bits, molt_getattr_builtin, molt_index, obj_from_bits,
-    object_type_id, raise_exception, string_obj_to_owned,
+    exception_pending, inc_ref_bits, molt_getattr_builtin_attached_body, molt_index_attached_body,
+    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
 };
 
 pub(crate) unsafe fn operator_visit_owned_edges(
@@ -116,9 +116,13 @@ unsafe fn methodcaller_set_kwargs_bits(ptr: *mut u8, bits: u64) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_itemgetter_new(owner: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_itemgetter_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    owner: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(call) = crate::builtins::native_arguments::NativeArguments::read(
             _py,
             "itemgetter",
@@ -160,9 +164,13 @@ pub extern "C" fn molt_operator_itemgetter_new(owner: u64, args: u64, kwargs: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_attrgetter_new(owner: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_attrgetter_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    owner: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(call) = crate::builtins::native_arguments::NativeArguments::read(
             _py,
             "attrgetter",
@@ -216,9 +224,13 @@ pub extern "C" fn molt_operator_attrgetter_new(owner: u64, args: u64, kwargs: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_methodcaller_new(owner: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_methodcaller_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    owner: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(call) = crate::builtins::native_arguments::NativeArguments::read(
             _py,
             "methodcaller",
@@ -270,30 +282,30 @@ pub extern "C" fn molt_operator_methodcaller_new(owner: u64, args: u64, kwargs: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_itemgetter_type() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_itemgetter_type_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         crate::state::cache::retain_cached_result(_py, itemgetter_class(_py))
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_attrgetter_type() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_attrgetter_type_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         crate::state::cache::retain_cached_result(_py, attrgetter_class(_py))
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_methodcaller_type() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_methodcaller_type_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         crate::state::cache::retain_cached_result(_py, methodcaller_class(_py))
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_itemgetter_call(self_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_itemgetter_call_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let items_bits = unsafe { itemgetter_items_bits(self_ptr) };
         let items_ptr = obj_from_bits(items_bits).as_ptr();
@@ -312,7 +324,7 @@ pub extern "C" fn molt_operator_itemgetter_call(self_bits: u64, obj_bits: u64) -
                 return MoltObject::none().bits();
             };
             if items.len() == 1 {
-                let res_bits = molt_index(obj_bits, items[0]);
+                let res_bits = molt_index_attached_body(_py, obj_bits, items[0]);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -320,7 +332,7 @@ pub extern "C" fn molt_operator_itemgetter_call(self_bits: u64, obj_bits: u64) -
             }
             let mut out: Vec<u64> = Vec::with_capacity(items.len());
             for &item_bits in items.iter() {
-                let res_bits = molt_index(obj_bits, item_bits);
+                let res_bits = molt_index_attached_body(_py, obj_bits, item_bits);
                 if exception_pending(_py) {
                     for bits in out.iter() {
                         dec_ref_bits(_py, *bits);
@@ -357,7 +369,7 @@ fn resolve_attr_path(_py: &PyToken<'_>, obj_bits: u64, name: &str) -> u64 {
             return MoltObject::none().bits();
         }
         let part_bits = MoltObject::from_ptr(part_ptr).bits();
-        let next_bits = molt_getattr_builtin(current_bits, part_bits, missing);
+        let next_bits = molt_getattr_builtin_attached_body(_py, current_bits, part_bits, missing);
         dec_ref_bits(_py, part_bits);
         if current_owned {
             dec_ref_bits(_py, current_bits);
@@ -378,9 +390,12 @@ fn resolve_attr_path(_py: &PyToken<'_>, obj_bits: u64, name: &str) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_attrgetter_call(self_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_attrgetter_call_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let attrs_bits = unsafe { attrgetter_attrs_bits(self_ptr) };
         let attrs_ptr = obj_from_bits(attrs_bits).as_ptr();
@@ -430,15 +445,18 @@ pub extern "C" fn molt_operator_attrgetter_call(self_bits: u64, obj_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_operator_methodcaller_call_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let name_bits = unsafe { methodcaller_name_bits(self_ptr) };
         let args_bits = unsafe { methodcaller_args_bits(self_ptr) };
         let kwargs_bits = unsafe { methodcaller_kwargs_bits(self_ptr) };
         let missing = crate::missing_bits(_py);
-        let method_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+        let method_bits = molt_getattr_builtin_attached_body(_py, obj_bits, name_bits, missing);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -474,3 +492,5 @@ pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64)
         unsafe { crate::call::bind::call_bind_capi(_py, method_bits, None, arg_list, mapping) }
     })
 }
+
+include!("../../attached_exports_generated/builtins/operator/getter_objects.rs");

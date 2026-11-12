@@ -2,7 +2,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 use crate::PtrSlot;
-use crate::builtins::frames::FrameEntry;
 use crate::resource::TempArena;
 use crate::state::runtime_state::RuntimeState;
 
@@ -10,14 +9,14 @@ use crate::state::runtime_state::RuntimeState;
 /// thread-local. Compiled code enters the runtime on every operation, and on
 /// macOS each `thread_local!` key costs its own `_tlv_get_addr` call; one key
 /// makes an entry, its drop and its runtime-state resolution one lookup.
-/// Every field is a plain `Cell` and the struct has no destructor, so access
+/// The record has no destructor, so access
 /// never fails, even while other thread-locals are destroyed.
 ///
 /// It is also the thread record compiled code holds, as CPython's code holds
 /// its `PyThreadState`: the leading fields have the fixed layout
 /// `molt_codegen_abi::THREAD_RECORD_*` declares, and compiled code reads and
 /// writes them with plain loads and stores at the address
-/// `molt_thread_record` lends.
+/// the attached context lends.
 #[repr(C)]
 pub(crate) struct ExecutionTls {
     /// An exception is pending in the active execution context
@@ -27,8 +26,18 @@ pub(crate) struct ExecutionTls {
     /// for the call (`THREAD_RECORD_PENDING_INVOCATION_OFFSET`,
     /// `builtins::frames::namespace`).
     pub(crate) pending_invocation: Cell<u64>,
-    /// Borrowed address of this invocation's runtime eval breaker.
-    pending_work_ptr: Cell<u64>,
+    /// Borrowed eval-breaker address, published and cleared with bound_state
+    /// at runtime custody transitions, including runtime-originated callbacks.
+    pub(crate) pending_work_ptr: Cell<u64>,
+    /// The executing Python frame's record base, or zero
+    /// (`THREAD_RECORD_FRAME_TOP_OFFSET`, `builtins::frames::records`).
+    pub(crate) frame_top: Cell<u64>,
+    /// The first free byte and the end of the current frame-arena chunk
+    /// (`THREAD_RECORD_ARENA_TOP_OFFSET`, `THREAD_RECORD_ARENA_LIMIT_OFFSET`).
+    /// Compiled code bumps `arena_top` at an inline frame push; the runtime
+    /// owns the chunk list (`builtins::frames::records`).
+    pub(crate) arena_top: Cell<u64>,
+    pub(crate) arena_limit: Cell<u64>,
     /// The Python recursion depth this thread's execution stack holds
     /// (`state::recursion`).
     pub(crate) recursion_depth: Cell<usize>,
@@ -53,15 +62,35 @@ pub(crate) struct ExecutionTls {
     /// Borrowed from the outermost terminal release until its queue drains.
     /// A pointer Cell has no TLS destructor, including during runtime teardown.
     pub(crate) terminal_release: Cell<*const crate::object::bounded_release::TerminalReleaseState>,
+    pub(crate) attached_context: molt_codegen_abi::AttachedExecutionContextStorage,
+    pub(crate) cext_execution_depth: Cell<u32>,
+    pub(crate) compiled_depth: Cell<usize>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) wasm_execution_depth: Cell<usize>,
+    pub(crate) execution_identity: Cell<u64>,
+    pub(crate) compiled_scope_top: Cell<u64>,
+    pub(crate) compiled_public_dependencies: Cell<usize>,
+    pub(crate) compiled_host_scopes:
+        std::mem::ManuallyDrop<RefCell<Vec<crate::concurrency::execution::CompiledScopeFrame>>>,
+    pub(crate) persistent_execution_owner: Cell<u64>,
+    pub(crate) persistent_execution_owns_gil: Cell<bool>,
+    pub(crate) public_gil_depth: Cell<u32>,
+    pub(crate) public_gil_owns_persistent: Cell<bool>,
+    /// Explicit mutex and suspended-GIL ownership. Its initialized storage has
+    /// no automatic destructor; the GIL authority consumes every acquisition.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_gil: crate::concurrency::gil::GilMutexCustody,
 }
 
 const _: () = {
     use molt_codegen_abi::{
-        THREAD_RECORD_EXCEPTION_PENDING_OFFSET, THREAD_RECORD_PENDING_INVOCATION_OFFSET,
-        THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
+        THREAD_RECORD_ARENA_LIMIT_OFFSET, THREAD_RECORD_ARENA_TOP_OFFSET,
+        THREAD_RECORD_EXCEPTION_PENDING_OFFSET, THREAD_RECORD_FRAME_TOP_OFFSET,
+        THREAD_RECORD_PENDING_INVOCATION_OFFSET, THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
     };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
+    assert!(!std::mem::needs_drop::<ExecutionTls>());
     assert!(
         offset_of!(ExecutionTls, exception_pending) as i32
             == THREAD_RECORD_EXCEPTION_PENDING_OFFSET
@@ -73,6 +102,9 @@ const _: () = {
     assert!(
         offset_of!(ExecutionTls, pending_work_ptr) as i32 == THREAD_RECORD_PENDING_WORK_PTR_OFFSET
     );
+    assert!(offset_of!(ExecutionTls, frame_top) as i32 == THREAD_RECORD_FRAME_TOP_OFFSET);
+    assert!(offset_of!(ExecutionTls, arena_top) as i32 == THREAD_RECORD_ARENA_TOP_OFFSET);
+    assert!(offset_of!(ExecutionTls, arena_limit) as i32 == THREAD_RECORD_ARENA_LIMIT_OFFSET);
 };
 
 thread_local! {
@@ -81,6 +113,9 @@ thread_local! {
             exception_pending: Cell::new(false),
             pending_invocation: Cell::new(0),
             pending_work_ptr: Cell::new(0),
+            frame_top: Cell::new(0),
+            arena_top: Cell::new(0),
+            arena_limit: Cell::new(0),
             recursion_depth: Cell::new(0),
             gil_depth: Cell::new(0),
             lease_depth: Cell::new(0),
@@ -91,6 +126,21 @@ thread_local! {
             bound_state: Cell::new(std::ptr::null()),
             tls_guard_touched: Cell::new(false),
             terminal_release: Cell::new(std::ptr::null()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_gil: crate::concurrency::gil::GilMutexCustody::new(),
+            attached_context: molt_codegen_abi::AttachedExecutionContextStorage::new(),
+            cext_execution_depth: Cell::new(0),
+            compiled_depth: Cell::new(0),
+            #[cfg(target_arch = "wasm32")]
+            wasm_execution_depth: Cell::new(0),
+            execution_identity: Cell::new(0),
+            compiled_scope_top: Cell::new(0),
+            compiled_public_dependencies: Cell::new(0),
+            compiled_host_scopes: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
+            persistent_execution_owner: Cell::new(0),
+            persistent_execution_owns_gil: Cell::new(false),
+            public_gil_depth: Cell::new(0),
+            public_gil_owns_persistent: Cell::new(false),
         }
     };
 }
@@ -111,21 +161,20 @@ pub(crate) fn execution_tls() -> &'static ExecutionTls {
 /// exception check, the invocation handoff of every direct call). Never null;
 /// the record lives as long as the thread.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_record() -> u64 {
+pub extern "C" fn molt_attached_context() -> u64 {
     let tls = execution_tls();
-    let state = super::runtime_state::admitted_runtime_state_in(tls)
-        .expect("compiled thread record requires an attached runtime");
-    tls.pending_work_ptr
-        .set(state.pending_work.word_ptr() as u64);
-    std::ptr::from_ref(tls) as u64
+    super::runtime_state::bind_execution_state(tls);
+    assert!(
+        !tls.bound_state.get().is_null(),
+        "compiled thread record requires an attached runtime"
+    );
+    unsafe { crate::PyToken::with_custody(tls) }.attached_context()
 }
 
 thread_local! {
-    pub(crate) static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
-    pub(crate) static CONTEXT_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static FRAME_STACK: RefCell<Vec<FrameEntry>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static TRACE_FRAME_PUSH_STACK: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static REPR_STACK: RefCell<Vec<PtrSlot>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static REPR_SET: RefCell<HashSet<PtrSlot>> = RefCell::new(HashSet::new());
+    pub(crate) static PARSE_ARENA: std::mem::ManuallyDrop<RefCell<TempArena>> = std::mem::ManuallyDrop::new(RefCell::new(TempArena::new(8 * 1024)));
+    pub(crate) static CONTEXT_STACK: std::mem::ManuallyDrop<RefCell<Vec<u64>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+    pub(crate) static REPR_STACK: std::mem::ManuallyDrop<RefCell<Vec<PtrSlot>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+    pub(crate) static REPR_SET: std::mem::ManuallyDrop<RefCell<HashSet<PtrSlot>>> = std::mem::ManuallyDrop::new(RefCell::new(HashSet::new()));
     pub(crate) static REPR_DEPTH: Cell<usize> = const { Cell::new(0) };
 }

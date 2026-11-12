@@ -376,7 +376,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
             param_types=[],
             return_abi="void",
             return_hint=None,
-            ops=self._new_tracked_ops(count_function=True),
+            ops=[],
         )
         self.module_chunk_symbols.append(symbol)
         return symbol

@@ -17,15 +17,22 @@ use molt_passes::tir::op_kinds_generated::{
 };
 
 pub(super) fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
-    TirOp {
+    let mut op = TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
         results,
         attrs: AttrDict::new(),
         source_span: None,
+    };
+    // Every lifted check names its edge kind (HF-764). A fixture's check
+    // observes the operation in front of it: an Origin edge.
+    if opcode == OpCode::CheckException {
+        op.set_exception_edge_kind(molt_passes::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
     }
+    op
 }
 
 pub(super) fn const_str(result: ValueId) -> TirOp {
@@ -33,6 +40,7 @@ pub(super) fn const_str(result: ValueId) -> TirOp {
     attrs.insert("s_value".into(), AttrValue::Str("x".into()));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -47,6 +55,7 @@ pub(super) fn finalizer_object(result: ValueId) -> TirOp {
     attrs.insert("defines_del".into(), AttrValue::Bool(true));
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ObjectNewBound,
         operands: vec![],

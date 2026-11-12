@@ -138,7 +138,7 @@ molt factgraph app.py hot_loop --output tmp/facts/hot_loop.json --target llvm
 | `--output PATH` | Required fact graph JSON artifact path. Relative paths resolve from the project root. |
 | `--target {native,wasm,luau,llvm}` | Target semantics used by the TIR pipeline. |
 | `--backend {auto,cranelift,llvm}` | Native backend fact selection; `--target llvm` selects the LLVM backend. |
-| `--profile {dev,release}` | Build profile for frontend/midend optimization. |
+| `--profile {dev,release}` | Build profile for TIR optimization. |
 | `--type-hints {ignore,trust,check}` | Apply type annotations to guide lowering and specialization. |
 | `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, or `3.14`. |
 | `--capabilities SPEC` | Capability profiles/tokens or path to manifest. |

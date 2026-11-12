@@ -8,6 +8,7 @@ use crate::tir::values::{TirValue, ValueId};
 fn const_int_op(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -24,6 +25,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
 fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![lhs, rhs],
@@ -36,6 +38,7 @@ fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
 fn cmp_op(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -535,6 +538,7 @@ fn unrolls_with_check_exception_observation_in_body() {
         0,
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -584,6 +588,7 @@ fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation()
                 .ops
                 .push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -631,6 +636,7 @@ fn does_not_unroll_with_try_handler_in_body() {
         0,
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -842,6 +848,7 @@ fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop
             ops: vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -924,6 +931,7 @@ fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> 
     );
     source.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ExceptionPending,
         operands: vec![],
@@ -1467,6 +1475,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
             ops: vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -1500,6 +1509,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
             ops: vec![
                 TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::InplaceAdd,
                     operands: vec![acc, iv_view],
@@ -1514,6 +1524,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                 // store-to-slot: Copy(value, slot) -> () (no result, 2 operands)
                 TirOp {
                     origin: Some(molt_ir::OpKind::Store),
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![acc_next, slot],
@@ -1668,4 +1679,66 @@ fn unroll_rewires_unreachable_header_predecessor_without_losing_its_metadata() {
     assert!(func.blocks.contains_key(target));
     assert!(args.is_empty());
     crate::tir::verify::verify_function(&func).expect("rewired retirement must verify");
+}
+
+#[test]
+fn does_not_unroll_a_body_with_a_conditional_exit() {
+    // for i in range(0, 4, 1): body_op(i); if flag: break
+    let TestLoop {
+        mut func,
+        header,
+        body,
+        exit,
+        ..
+    } = build_test_loop(0, 4, 1, 1);
+    let flag = func.fresh_value();
+    func.value_types.insert(flag, TirType::Bool);
+    let mut constant = TirOp {
+        origin: None,
+        runtime: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstBool,
+        operands: vec![],
+        results: vec![flag],
+        attrs: AttrDict::new(),
+        source_span: None,
+    };
+    constant
+        .attrs
+        .insert("value".into(), AttrValue::Bool(false));
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .push(constant);
+    let latch = func.fresh_block();
+    let back = std::mem::replace(
+        &mut func.blocks.get_mut(&body).unwrap().terminator,
+        Terminator::CondBranch {
+            cond: flag,
+            then_block: exit,
+            then_args: vec![],
+            else_block: latch,
+            else_args: vec![],
+        },
+    );
+    func.blocks.insert(
+        latch,
+        TirBlock {
+            id: latch,
+            args: vec![],
+            ops: vec![],
+            terminator: back,
+        },
+    );
+    let recognized = counted_loop::recognize_counted_loop(&func, header)
+        .expect("a conditional exit keeps the loop counted");
+    assert!(recognized.has_side_exits);
+    assert_eq!(recognized.trip_count, 4);
+    assert_eq!(recognized.body_path, vec![body, latch]);
+
+    let before = format!("{func:?}");
+    let stats = run(&mut func, &TargetInfo::native_release_fast());
+    assert_eq!(stats.total_changes(), 0, "the unroller refuses the loop");
+    assert_eq!(format!("{func:?}"), before);
 }

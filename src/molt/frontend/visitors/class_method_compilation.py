@@ -37,6 +37,7 @@ from molt.frontend._types import (
     ReceiverKind,
     _ClassNsScope,
     _MOLT_CLOSURE_PARAM,
+    class_namespace_closed,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -206,9 +207,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             if item.name == "__new__":
                 return "staticmethod", None
             return "function", None
-        if len(item.decorator_list) != 1 or self.classes[
-            self._class_id_for_definition(class_node)
-        ].get("dynamic"):
+        if len(item.decorator_list) != 1 or not class_namespace_closed(
+            self.classes[self._class_id_for_definition(class_node)]
+        ):
             return "decorated", None
         decorator = item.decorator_list[0]
         index = self.python_binding_index
@@ -508,6 +509,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 needs_return_slot=False,
                 has_exception_handlers=self._body_has_exception_handlers(item.body),
                 code_slots=code_slots,
+                source_node=item,
             )
             self.parameter_bindings = parameter_bindings
             if has_closure:

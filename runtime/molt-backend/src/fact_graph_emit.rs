@@ -53,6 +53,7 @@ pub(crate) fn emit_fact_graph_for_ir(
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "fact graph TIR cache runner",
                 mode: molt_backend::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
+                linkage: None,
             },
         );
     let module = molt_backend::tir::TirModule {

@@ -61,7 +61,14 @@ unsafe extern "C" fn accepting_init(
     });
     0
 }
-extern "C" fn spoofed_constructor(_: u64) -> u64 {
+extern "C" fn spoofed_constructor(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     CONSTRUCTION_COUNTS.with(|state| {
         let mut counts = state.get();
         counts[2] += 1;
@@ -268,9 +275,9 @@ fn same_named_python_functions_never_acquire_builtin_slot_identity_and_deletion_
                 (b"__new__".as_slice(), slots::Py_tp_new),
             ] {
                 let key = crate::dynamic_attr_name_bits(py, name).unwrap();
-                crate::molt_set_attr_name(spoof, name_key, key);
+                crate::molt_set_attr_name_attached_body(py, spoof, name_key, key);
                 assert!(!crate::exception_pending(py));
-                crate::molt_set_attr_name(class, key, spoof);
+                crate::molt_set_attr_name_attached_body(py, class, key, spoof);
                 assert!(!crate::exception_pending(py));
                 let canonical = typeobj::PyType_GetSlot(&raw mut PyBaseObject_Type, slot);
                 for owner in [&base, &child] {
@@ -285,7 +292,7 @@ fn same_named_python_functions_never_acquire_builtin_slot_identity_and_deletion_
                 if slot == slots::Py_tp_new {
                     assert_eq!(instance.as_ptr(), &raw mut Py_None);
                 }
-                crate::molt_del_attr_name(class, key);
+                crate::molt_del_attr_name_attached_body(py, class, key);
                 for owner in [&base, &child] {
                     assert_eq!(
                         typeobj::PyType_GetSlot(owner.as_ptr().cast(), slot),
@@ -309,8 +316,12 @@ fn managed_exception_descendant_preserves_native_exception_slots() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = crate::dynamic_attr_name_bits(py, b"PhysicalExceptionSlots").unwrap();
-            let class = crate::molt_class_new(name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).base_exception);
+            let class = crate::molt_class_new_attached_body(py, name);
+            crate::molt_class_set_base_attached_body(
+                py,
+                class,
+                crate::builtin_classes(py).base_exception,
+            );
             crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
             let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));

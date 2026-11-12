@@ -44,7 +44,7 @@ fn bind_runtime_import_result_name(
     import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
-    use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
     let contract = runtime_boxed_abi(symbol, arity)
         .unwrap_or_else(|| panic!("runtime result has no canonical boxed ABI: {symbol}/{arity}"))
         .result;
@@ -619,12 +619,7 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
         Some(call)
     );
     let args = op.args.as_deref().unwrap_or(&[]);
-    assert_eq!(
-        args.len(),
-        function.boxed_abi().arity,
-        "{} contract arity",
-        op.kind
-    );
+    assert_eq!(args.len(), function.params(), "{} contract arity", op.kind);
     emit_operand_transaction_call(
         op,
         args,
@@ -665,7 +660,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
-    use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
     let contract = runtime_boxed_abi(symbol, args.len())
         .unwrap_or_else(|| {
             panic!(
@@ -1197,69 +1192,26 @@ pub(in crate::native_backend::function_compiler) fn emit_class_definition_slot(
     )
 }
 
-/// Enter the code-slot-backed frame owned by this compiled invocation.
+/// Enter the code-slot-backed frame owned by this compiled invocation and
+/// keep its record base in `entered`: zero when nothing was linked.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_enter(
     entered: Variable,
     code_owner: &str,
+    shape: Option<molt_codegen_abi::frame_record::FrameShape>,
+    sites: NativeFrameSites,
+    thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
 ) {
-    let code_id_val = emit_program_slot_id(
+    let code_slot = emit_program_slot_id(
         molt_ir::code_slots::ProgramSlotKind::Code,
         code_owner,
         module,
         builder,
     );
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        "molt_trace_enter_slot",
-        &[types::I64],
-        &[types::I64],
-    );
-    let local_callee = module.declare_func_in_func(callee, builder.func);
-    let _ = builder.ins().call(local_callee, &[code_id_val]);
-    let active = builder.ins().iconst(types::I8, 1);
-    builder.def_var(entered, active);
-}
-
-/// Release only a frame entered by this invocation, including early-return paths.
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_exit(
-    entered: Option<Variable>,
-    module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
-) {
-    let Some(entered) = entered else {
-        return;
-    };
-    let active = builder.use_var(entered);
-    let pop_block = builder.create_block();
-    let done_block = builder.create_block();
-    builder.ins().brif(active, pop_block, &[], done_block, &[]);
-    switch_to_block_materialized(builder, pop_block);
-    seal_block_once(builder, sealed_blocks, pop_block);
-    // Retire ownership before releasing frame-owned values can call Python.
-    let inactive = builder.ins().iconst(types::I8, 0);
-    builder.def_var(entered, inactive);
-    let exit = import_func_ref(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        "molt_trace_exit",
-        &[],
-        &[types::I64],
-    );
-    builder.ins().call(exit, &[]);
-    jump_block(builder, done_block, &[]);
-    switch_to_block_materialized(builder, done_block);
-    seal_block_once(builder, sealed_blocks, done_block);
+    let base = emit_frame_record_push(builder, sites, thread_record_slot, code_slot, shape);
+    builder.def_var(entered, base);
 }
 
 #[cfg(feature = "native-backend")]

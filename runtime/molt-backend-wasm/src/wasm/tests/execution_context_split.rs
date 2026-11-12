@@ -4,6 +4,7 @@ use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use wasm_encoder::FunctionSection;
 
 // Execute real dispatch conditions: a value-oblivious CFG walker invents
 // impossible state-dispatch paths before entry. Runtime imports are explicit
@@ -15,6 +16,7 @@ const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const boxedNone = BigInt(config.boxed_none);
 const boxedFalse = BigInt(config.boxed_false);
 const boxedTrue = BigInt(config.boxed_true);
+const intBase = BigInt(config.int_base);
 let state;
 function reset(label, inherited = false, exceptionAt = 0, failEntry = false) {
   state = {label, depth: inherited ? 1 : 0, enters: 0, exits: 0,
@@ -40,7 +42,7 @@ function instantiate(path) {
   const hooks = {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
-    thread_record() {
+    initialize_record() {
       const record=256, work=288;
       const view=new DataView(imports.env.memory.buffer);
       // Keep the pending byte armed, as the work word below, so every inline
@@ -127,15 +129,16 @@ function instantiate(path) {
       if (state.anchorFailure==='constructor') {state.pending=true;return 2;}
       state.anchorOwners.set(0x7ffc00000000038dn,1);view.setBigInt64(out,0x7ffc00000000038dn,true);return 0;
     },
-    frame_homes(count) {
-      ensure(state.homeCase && count === 2n, 'wrong home layout request');
-      ensure(state.enters === 1 && state.attempts.length === 1, 'homes lent before frame entry');
-      state.homeLends++;
-      if (state.failEntry || state.failLend) { state.pending = true; return 0n; }
-      ensure(state.depth === state.initialDepth + 1, 'homes lent outside owned frame');
+    // The record the entry links: its base is the homes base. A frame whose
+    // homes could not be reserved is linked without them, with its exception
+    // pending, and its exit still pops it.
+    link_record() {
       // Two public ABI pairs in an extra host page, disjoint from application
       // data and dispatcher maps. The decoy catches wrong-slot/base reads.
       state.homeBase = config.memory_pages * 65536 + 16;
+      if (!state.homeCase) return BigInt(state.homeBase);
+      state.homeLends++;
+      if (state.failLend) { state.pending = true; return BigInt(state.homeBase); }
       const view = new DataView(imports.env.memory.buffer);
       if (state.mixedCase) {
         for (let slot=0; slot<2; slot++) {
@@ -181,22 +184,25 @@ function instantiate(path) {
       state.pending = true;
       return boxedNone;
     },
-    trace_enter_slot(slot) {
+    // Zero: the entry linked nothing, and its exit is never called.
+    frame_record_enter(slot) {
       ensure(state.depth === state.initialDepth && state.enters === 0,
              'unexpected frame entry');
       ensure(slot === 0n, 'wrong owner code slot ' + slot);
       state.enters++;
       state.attempts.push(!state.failEntry);
       if (state.failEntry) {
+        if (state.homeCase) state.homeLends++;
         state.pending = true;
-      } else {
-        state.depth++;
+        return 0n;
       }
-      return boxedNone;
+      state.depth++;
+      return hooks.link_record();
     },
-    trace_exit() {
-      ensure(state.attempts.length === 1 && state.enters === 1 && state.exits === 0,
-             'frame pop without owned entry');
+    frame_record_exit(base) {
+      ensure(state.attempts.length === 1 && state.attempts[0] && state.enters === 1
+             && state.exits === 0, 'frame pop without owned entry');
+      ensure(base === BigInt(state.homeBase), 'frame exit names another record');
       const pushed = state.attempts.pop();
       ensure(state.depth === state.initialDepth + Number(pushed),
              'frame depth does not match the owned entry attempt');
@@ -234,10 +240,10 @@ function instantiate(path) {
       }
       state.exits++; return boxedNone;
     },
-    trace_set_line(line) {
+    print_obj(value) {
       ensure(!state.failEntry && state.depth === state.initialDepth + Number(state.enters !== 0),
-             'line update outside the executing frame');
-      state.lines.push(Number(line)); return boxedNone;
+             'statement executed outside the executing frame');
+      state.lines.push(Number(value - intBase));
     },
     exception_pending() {
       if (state.mixedCase && state.enters===0) {
@@ -334,23 +340,26 @@ function instantiate(path) {
     }
     assert.equal(entry.kind, 'function', 'unexpected import ' + entry.module + '.' + entry.name);
     imports[entry.module] ??= {};
-    imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {
+    imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {
       throw new Error(state.label + ': unexpected runtime call ' + entry.module + '.' + entry.name);
     });
   }
-  return new WebAssembly.Instance(module, imports).exports;
+  initializeExecutionRecord(imports.env.memory, hooks.initialize_record());
+  return new WebAssembly.Instance(module, attachedImports(imports)).exports;
 }
-function verifyOwner(exports, owner, lines, polls, exceptionAt = 0, failEntry = false) {
-  // Failed capture must consume only its false attempt marker, even when a
-  // caller frame already exists and would otherwise accept line mutations.
+function verifyOwner(exports, owner, polls, exceptionAt = 0, failEntry = false) {
+  // A failed entry must pop nothing, even when a caller frame already
+  // exists. Split statements are effect-free `line`
+  // markers, so exception checks are the owner's observable progress.
   reset(owner + ' exceptionAt=' + exceptionAt + ' failEntry=' + failEntry,
         failEntry, exceptionAt, failEntry);
-  const result = exports[owner]();
-  ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
-         && state.attempts.length === 0,
+  const result = exports[compiledSymbol(owner)](executionContext);
+  // A failed entry links nothing: its marker stays and no exit runs.
+  ensure(state.depth === state.initialDepth && state.enters === 1
+         && state.exits === Number(!failEntry)
+         && state.attempts.length === Number(failEntry),
          'owner return must enter/pop exactly once');
   assert.equal(result, boxedNone, state.label + ': void payload returns boxed None');
-  assert.deepEqual(state.lines, lines, state.label + ': executed chunk lines');
   assert.equal(state.polls, polls, state.label + ': executed entry/chunk exception checks');
   assert.equal(state.pending, exceptionAt !== 0 || failEntry,
                state.label + ': exception remains pending');
@@ -361,28 +370,25 @@ const app = instantiate(baseline.module);
 // Unmodified generated chunks: their real status and inherited frame behavior.
 for (const chunk of baseline.chunks) {
   reset('actual inherited chunk ' + chunk.name, true);
-  const status = app[chunk.name]();
+  const status = app[compiledSymbol(chunk.name)](executionContext);
   assert.equal(status, chunk.continues ? boxedTrue : boxedFalse, state.label);
   ensure(state.depth === 1 && state.enters === 0 && state.exits === 0,
          'inherited chunk changed caller frame ownership');
-  assert.deepEqual(state.lines, chunk.lines, state.label);
   assert.equal(state.polls, 0, state.label);
 }
 // Actual owner/chunks: normal return and pending exception at each boundary.
-verifyOwner(app, baseline.owner, baseline.chunks.flatMap(c => c.lines), baseline.chunks.length + 1);
-verifyOwner(app, baseline.owner, [], 1, 1);
-verifyOwner(app, baseline.owner, [], 1, 0, true);
+verifyOwner(app, baseline.owner, baseline.chunks.length + 1);
+verifyOwner(app, baseline.owner, 1, 1);
+verifyOwner(app, baseline.owner, 1, 0, true);
 for (let boundary = 1; boundary <= baseline.chunks.length; boundary++) {
-  verifyOwner(app, baseline.owner,
-    baseline.chunks.slice(0, boundary).flatMap(c => c.lines), boundary + 1, boundary + 1);
+  verifyOwner(app, baseline.owner, boundary + 1, boundary + 1);
 }
 // Separate status-injection fixtures cover each owner stop and fallthrough;
 // they are not evidence for unmodified chunk return behavior.
 for (const test of config.cases.slice(1)) {
   reset('instantiate status module ' + test.owner);
   const statusApp = instantiate(test.module);
-  verifyOwner(statusApp, test.owner,
-    test.chunks.slice(0, test.executed).flatMap(c => c.lines), test.executed + 1);
+  verifyOwner(statusApp, test.owner, test.executed + 1);
 }
 // The same observer rejects executable malformed frame lifecycles.
 reset('instantiate malformed-frame controls');
@@ -393,14 +399,14 @@ for (const [name, message] of [
   ['reentry', /unexpected frame entry/],
   ['missing_exit', /owner return must enter\/pop exactly once/],
 ]) {
-  assert.throws(() => verifyOwner(malformed, name, [], 0), message, name);
+  assert.throws(() => verifyOwner(malformed, name, 0), message, name);
 }
 for (const test of config.return_modules) {
   reset('boxed user-ABI return ' + test.lane);
   const app = instantiate(test.module);
   state.expectsTask = test.stateful;
-  const entry = app[test.export_name ?? 'molt_main'];
-  const result = test.stateful ? entry(64n) : entry();
+  const entry = app[compiledSymbol(test.export_name ?? 'molt_main')];
+  const result = test.stateful ? entry(executionContext, 64n) : entry(executionContext);
   assert.equal(result, BigInt(test.expected), state.label);
   assert.equal(state.taskReads, test.stateful ? 1 : 0, state.label);
   ensure(state.enters === 0 && state.exits === 0, 'frame-free return changed lifecycle');
@@ -413,7 +419,7 @@ for (const test of config.activation_modules) {
     state.activationIndex = index;
     state.expectsTask = test.stateful;
     state.resumeState = resumeState;
-    const result = test.stateful ? app.molt_main(64n) : app.molt_main();
+    const result = test.stateful ? app[compiledSymbol('molt_main')](executionContext, 64n) : app[compiledSymbol('molt_main')](executionContext);
     assert.equal(result, BigInt(expected), state.label);
     ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
            && state.attempts.length === 0, 'activation leaked or consumed caller frame');
@@ -430,7 +436,7 @@ for (const chooseView of [true,false]) {
   state.mixedAnchorLive = false;
   state.mixedReleased = new Set();
   const app = instantiate(config.mixed_home_module);
-  const result = app.molt_main(chooseView ? boxedTrue : boxedFalse);
+  const result = app[compiledSymbol('molt_main')](executionContext, chooseView ? boxedTrue : boxedFalse);
   assert.equal(state.boxes,2,'one construction per distinct literal; no binding rematerialization');
   assert.equal(state.mixedAnchorChecks,2,'both constructors observed before frame entry');
   assert.equal(state.mixedAnchorAllocations,1,'one invocation-owned literal region');
@@ -459,12 +465,13 @@ for (const test of config.home_modules) {
     state.expectsTask = test.stateful;
     state.resumeState = resume;
     const homeApp = instantiate(test.module);
-    const result = test.stateful ? homeApp.molt_main(64n) : homeApp.molt_main();
+    const result = test.stateful ? homeApp[compiledSymbol('molt_main')](executionContext, 64n) : homeApp[compiledSymbol('molt_main')](executionContext);
     const early = anchorFailure!=='none';
     const failed = failure !== 0 || failEntry || failLend || early;
     assert.equal(result,failed ? boxedNone : 0x7ffc000000000309n,state.label);
-    ensure(state.depth === state.initialDepth && state.enters === Number(!early) && state.exits === Number(!early)
-           && state.attempts.length === 0,'home return lost frame-attempt custody');
+    ensure(state.depth === state.initialDepth && state.enters === Number(!early)
+           && state.exits === Number(!early && !failEntry)
+           && state.attempts.length === Number(failEntry),'home return lost frame-attempt custody');
     assert.equal(state.homeLends,Number(!early),state.label);
     assert.equal(state.taskReads,test.stateful && !early ? 1 : 0,state.label);
     assert.equal(state.polls,early ? 0 : failEntry || failLend || failure===1 ? 1 : 2,state.label);
@@ -492,14 +499,14 @@ for (const test of config.home_modules) {
 }
 reset('Python exception returns through framed caller ABI', true);
 const unwindApp = instantiate(config.unwind_module);
-assert.equal(unwindApp.molt_main(), boxedNone);
+assert.equal(unwindApp[compiledSymbol('molt_main')](executionContext), boxedNone);
 ensure(state.pending && state.depth === state.initialDepth && state.enters === 1
        && state.exits === 1 && state.attempts.length === 0,
        'callee exception bypassed activation cleanup');
 reset('foreign WASM exception retains identity through activation cleanup', true);
 const foreign = new WebAssembly.Exception(new WebAssembly.Tag({parameters: []}), []);
 state.foreignException = foreign;
-assert.throws(() => unwindApp.molt_main(), error => error === foreign);
+assert.throws(() => unwindApp[compiledSymbol('molt_main')](executionContext), error => error === foreign);
 ensure(!state.pending && state.depth === state.initialDepth && state.enters === 1
        && state.exits === 1, 'foreign exception bypassed activation cleanup');
 console.log('split-frame execution: checked/failed entry, actual chunks, normal/exceptional owner, status edges, negative controls passed');
@@ -564,25 +571,30 @@ fn chunk_case(chunk: &FunctionIR) -> serde_json::Value {
     json!({
         "name": chunk.name,
         "continues": producer.value == Some(1),
-        "lines": chunk.ops.iter().filter(|op| op.kind == molt_ir::OpKind::Line)
-            .map(|op| op.value.unwrap()).collect::<Vec<_>>(),
     })
 }
 
 fn malformed_frame_module() -> Vec<u8> {
+    use crate::wasm_binary::Function;
     use wasm_encoder::{
-        CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-        ImportSection, Instruction, Module, TypeSection, ValType,
+        CodeSection, EntityType, ExportKind, ExportSection, ImportSection, Instruction, Module,
+        TypeSection, ValType,
     };
     let mut module = Module::new();
     let mut types = TypeSection::new();
+    types
+        .ty()
+        .function([ValType::I64, ValType::I64], [ValType::I64]);
     types.ty().function([ValType::I64], [ValType::I64]);
-    types.ty().function([], [ValType::I64]);
-    types.ty().function([], []);
+    types.ty().function([ValType::I64], []);
     module.section(&types);
     let mut imports = ImportSection::new();
-    imports.import("molt_runtime", "trace_enter_slot", EntityType::Function(0));
-    imports.import("molt_runtime", "trace_exit", EntityType::Function(1));
+    imports.import(
+        "molt_runtime",
+        "frame_record_enter",
+        EntityType::Function(0),
+    );
+    imports.import("molt_runtime", "frame_record_exit", EntityType::Function(0));
     module.section(&imports);
     let mut functions = FunctionSection::new();
     let mut exports = ExportSection::new();
@@ -597,16 +609,26 @@ fn malformed_frame_module() -> Vec<u8> {
     .enumerate()
     {
         functions.function(2);
-        exports.export(name, ExportKind::Func, 2 + index as u32);
-        let mut body = Function::new([]);
+        exports.export(
+            &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(name),
+            ExportKind::Func,
+            2 + index as u32,
+        );
+        // Local 1 holds the base the entry returned, which the exit names.
+        let mut body = Function::new([(1, ValType::I64)]);
         for callee in calls {
+            body.instruction(&Instruction::LocalGet(0));
             if callee == 0 {
                 // Keep the observer's admitted owner; each control changes
                 // only frame lifecycle, never code identity.
                 body.instruction(&Instruction::I64Const(0));
+                body.instruction(&Instruction::Call(callee));
+                body.instruction(&Instruction::LocalSet(1));
+            } else {
+                body.instruction(&Instruction::LocalGet(1));
+                body.instruction(&Instruction::Call(callee));
+                body.instruction(&Instruction::Drop);
             }
-            body.instruction(&Instruction::Call(callee));
-            body.instruction(&Instruction::Drop);
         }
         body.instruction(&Instruction::End);
         code.function(&body);
@@ -721,8 +743,8 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         .compile(ir);
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let import_indices = wasm_function_import_indices(&wasm);
-        let enter = import_indices["trace_enter_slot"];
-        let exit = import_indices["trace_exit"];
+        let enter = import_indices["frame_record_enter"];
+        let exit = import_indices["frame_record_exit"];
         let exports = wasm_function_export_indices(&wasm);
         let owner = case["owner"].as_str().unwrap();
         assert!(exports.contains_key(owner), "missing split owner {owner}");
@@ -964,6 +986,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
     crate::tir::drop_phase::finalize_function_drops(
         &mut mixed,
         &crate::tir::TargetInfo::wasm_release_fast(),
+        None,
     );
     let mixed_ir = SimpleIR {
         functions: vec![mixed_source],
@@ -1079,7 +1102,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "molt_main",
             if stateful { vec!["task"] } else { vec![] },
             None,
-            ops,
+            print_after_each_line(ops),
         );
         function.execution_context = ExecutionContextPolicy::Local;
         let ir = SimpleIR {
@@ -1175,7 +1198,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "molt_main",
             if stateful { vec!["task"] } else { vec![] },
             None,
-            ops,
+            print_after_each_line(ops),
         );
         function.execution_context = ExecutionContextPolicy::Local;
         let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
@@ -1295,6 +1318,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "boxed_false": molt_codegen_abi::box_bool_bits(0).to_string(),
             "boxed_true": molt_codegen_abi::box_bool_bits(1).to_string(),
             "boxed_pending": molt_codegen_abi::box_pending_bits().to_string(),
+            "int_base": executed_line_int_base(),
             "anchor_payload": "home-anchor-β\0雪",
             "cases": cases,
             "return_modules": return_modules,
@@ -1319,9 +1343,10 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
 
 #[test]
 fn exported_body_inspection_counts_import_entries_not_unique_names() {
+    use crate::wasm_binary::Function;
     use wasm_encoder::{
-        CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-        ImportSection, Instruction, Module, TypeSection,
+        CodeSection, EntityType, ExportKind, ExportSection, ImportSection, Instruction, Module,
+        TypeSection,
     };
     let mut module = Module::new();
     let mut types = TypeSection::new();
@@ -1392,11 +1417,12 @@ fn symbolic_code_slots_emit_program_bound_immediates() {
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let imports = wasm_function_import_indices(&wasm);
         let operators = wasm_operator_debug_for_export(&wasm, "molt_main");
-        for (import, argument_distance) in [("code_slot_set", 3), ("trace_enter_slot", 1)] {
+        for (import, argument_distance) in [("code_slot_set", 3), ("frame_record_enter", 1)] {
             let call = format!("Call {{ function_index: {} }}", imports[import]);
             let index = operators.iter().position(|op| *op == call).unwrap();
             assert_eq!(
-                operators[index - argument_distance],
+                operators[attached_call_operands_end(&operators, index, argument_distance)
+                    - argument_distance],
                 format!("I64Const {{ value: {expected_slot} }}"),
                 "{import} must use the final program's immediate slot binding"
             );

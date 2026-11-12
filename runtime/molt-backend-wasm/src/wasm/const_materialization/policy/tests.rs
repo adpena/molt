@@ -59,6 +59,37 @@ fn const_policy_classifies_inline_seed_bits() {
     );
 }
 
+/// A known raw int stands for an inline int (its readers skip the tag guard
+/// and box it with `box_int`), so a constant outside the inline range, such as
+/// a product TIR folded, must leave its local unknown.
+#[test]
+fn only_inline_constants_become_known_raw_ints() {
+    let mut locals = crate::wasm::WasmFrameLocals::new();
+    locals.insert("v".to_string(), 0);
+    let mut known_raw_ints = std::collections::BTreeMap::new();
+    for (value, known) in [
+        (molt_codegen_abi::INT_MAX_INLINE, true),
+        (molt_codegen_abi::INT_MIN_INLINE, true),
+        (molt_codegen_abi::INT_MAX_INLINE + 1, false),
+        (molt_codegen_abi::INT_MIN_INLINE - 1, false),
+        (3_037_000_499 * 3_037_000_499, false),
+    ] {
+        let mut const_op = op(molt_ir::OpKind::Const);
+        const_op.value = Some(value);
+        const_op.out = Some("v".to_string());
+        // A stale entry from an earlier binding of the same local.
+        known_raw_ints.insert(0, 1);
+        WasmConstOpPolicy::for_op(&const_op)
+            .expect("const policy")
+            .apply_raw_int_effect(&const_op, &locals, &mut known_raw_ints);
+        assert_eq!(
+            known_raw_ints.get(&0).copied(),
+            known.then_some(value),
+            "constant {value}"
+        );
+    }
+}
+
 #[test]
 fn const_policy_routes_full_i64_outside_inline_payload_to_runtime_anchor() {
     let mut op = op(molt_ir::OpKind::Const);

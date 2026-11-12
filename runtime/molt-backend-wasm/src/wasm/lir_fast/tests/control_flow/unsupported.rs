@@ -12,6 +12,7 @@ fn alloc_task_bails_to_generic_emission() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::AllocTask,
         operands: vec![ValueId(0)],
@@ -52,6 +53,7 @@ fn state_switch_bails_to_generic_emission() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::StateSwitch,
         operands: vec![ValueId(0)],

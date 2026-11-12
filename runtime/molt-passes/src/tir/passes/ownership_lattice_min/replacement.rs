@@ -20,6 +20,10 @@
 //! transparent copy) held none of its own, so their copies stay transparent.
 //! So does the copy of a raw carrier, by the raw facts DropInsertion reads, and
 //! of an unread result, which names nothing.
+//! GVN may also share two unbound heap code literals: its generated payload key
+//! and dominance proof establish one immutable object, with no independent
+//! Python binding boundary. Terminal drops release that alias class at last use.
+//! Either bound producer keeps the ordinary independent-owner rule.
 //! Every other recorded copy becomes an owned alias (`binding_alias`), whose
 //! lowering retains the object, so DropInsertion releases each name at its own
 //! boundary. The alias keeps the replaced producer's Python-local provenance
@@ -35,7 +39,9 @@ use std::collections::{HashMap, HashSet};
 use crate::representation_facts::non_heap_values_for;
 use crate::tir::ValueRangeResult;
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table;
+use crate::tir::op_kinds_generated::{
+    copy_kind_mints_owned_alias_ref_table, opcode_owned_literal_payload_kind_table,
+};
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::alias_analysis::{AliasUnionFind, build_alias_union_find};
 use crate::tir::passes::liveness::compute_raw_scalars;
@@ -59,6 +65,7 @@ pub(crate) fn owned_alias(
 ) -> TirOp {
     let mut alias = TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![source],
@@ -82,6 +89,9 @@ pub(crate) struct Replacements {
     aliases: AliasUnionFind,
     /// Each replaced owner, and whether its producer bound a Python local.
     owners: HashMap<ValueId, bool>,
+    /// GVN-only admission facts from original producers, never inferred from
+    /// rewritten copies. Other replacement users do not collect these facts.
+    unbound_literals: HashSet<ValueId>,
 }
 
 impl Replacements {
@@ -90,7 +100,41 @@ impl Replacements {
         Self {
             aliases: build_alias_union_find(func),
             owners: HashMap::new(),
+            unbound_literals: HashSet::new(),
         }
+    }
+
+    /// Collects the existing literal/binding facts once for GVN's replacements.
+    /// The generated literal authority excludes immediate constants and every
+    /// nonliteral producer. No other replacing pass pays this scan/storage.
+    pub(crate) fn with_literal_reuse(func: &TirFunction) -> Self {
+        let mut replacements = Self::new(func);
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if opcode_owned_literal_payload_kind_table(op.opcode).is_some()
+                    && !matches!(op.attrs.get(BOUND_LOCAL), Some(AttrValue::Bool(true)))
+                {
+                    replacements
+                        .unbound_literals
+                        .extend(op.results.iter().copied());
+                }
+            }
+        }
+        replacements
+    }
+
+    /// Records GVN's proven equivalent producer and leader. Only two original
+    /// unbound heap literals share a reference; a binding on either side, or
+    /// any other producer, follows record's existing ownership rule. GVN owns
+    /// exact payload identity and dominance; this authority owns lifetime.
+    pub(crate) fn record_equivalent(&mut self, replaced: &TirOp, leader: ValueId) {
+        if let [result] = replaced.results.as_slice()
+            && self.unbound_literals.contains(result)
+            && self.unbound_literals.contains(&leader)
+        {
+            return;
+        }
+        self.record(replaced);
     }
 
     /// Records `replaced` before the pass rewrites it into transparent copies,

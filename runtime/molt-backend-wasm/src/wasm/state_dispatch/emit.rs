@@ -7,7 +7,8 @@ use super::common::{
     emit_dispatch_trailing_return, emit_stateful_resume_prelude, emit_static_dispatch_edge,
 };
 use super::plan::NonLinearControlPlan;
-use wasm_encoder::{BlockType, Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::{BlockType, Instruction};
 
 mod ops;
 

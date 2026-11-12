@@ -259,7 +259,7 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => {
-            if molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind).is_some() {
+            if molt_ir::runtime_fn_generated::runtime_boxed_op_abi(kind).is_some() {
                 NativeOpFamily::BoxedRuntimeCalls
             } else {
                 NativeOpFamily::Unsupported
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn generated_boxed_calls_have_an_explicit_native_route() {
-        for &kind in molt_ir::runtime_boxed_abi_generated::RUNTIME_BOXED_OP_KINDS {
+        for &kind in molt_ir::runtime_fn_generated::RUNTIME_BOXED_OP_KINDS {
             assert_eq!(
                 native_op_family(kind),
                 NativeOpFamily::BoxedRuntimeCalls,

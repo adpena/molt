@@ -191,6 +191,15 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
         if !loop_info.has_material_exit || side_exits_observe_carried_state(func, &loop_info) {
             continue;
         }
+        // The unroller threads one straight-line body. A conditional exit in
+        // the body (`if x: break`) would need its edge cloned per iteration.
+        if loop_info
+            .body_path
+            .iter()
+            .any(|bid| matches!(&func.blocks[bid].terminator, Terminator::CondBranch { .. }))
+        {
+            continue;
+        }
 
         // Cost model: trip count within the full-unroll cap.
         if loop_info.trip_count <= 0 || loop_info.trip_count > tti.unroll_max_trip() {
@@ -322,6 +331,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         const_attrs.insert("value".into(), AttrValue::Int(iter_value));
         landing_ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -356,6 +366,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
                 .collect();
             landing_ops.push(TirOp {
                 origin: op.origin,
+                runtime: None,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands: new_operands,
@@ -385,6 +396,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         attrs.insert("value".into(), AttrValue::Int(final_iv_value));
         landing_ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],

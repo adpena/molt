@@ -8,6 +8,7 @@ use crate::tir::values::{TirValue, ValueId};
 fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -24,6 +25,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
 fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -36,6 +38,7 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
 fn make_const_bool(value: bool, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -52,6 +55,7 @@ fn make_const_bool(value: bool, result: ValueId) -> TirOp {
 fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBytes,
         operands: vec![],
@@ -68,6 +72,7 @@ fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
 fn make_type_guard(operand: ValueId, expected_type: &str, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],
@@ -235,6 +240,7 @@ fn side_effecting_ops_preserved() {
     // Two identical Call ops — both must be preserved (side effects).
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![p0],
@@ -244,6 +250,7 @@ fn side_effecting_ops_preserved() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![p0],
@@ -275,6 +282,7 @@ fn zero_result_unpack_remains_ordering_visible() {
     for _ in 0..2 {
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnpackSequence,
             operands: vec![ValueId(0)],
@@ -956,4 +964,184 @@ fn cross_block_const_bool_not_folded() {
     assert_eq!(stats.values_changed, 0);
     assert_eq!(func.blocks[&body].ops[0].opcode, OpCode::ConstBool);
     let _ = b1;
+}
+
+fn heap_literal(opcode: OpCode, result: ValueId, bound: bool) -> TirOp {
+    let mut operation = match opcode {
+        OpCode::ConstStr => TirOp {
+            origin: None,
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("s_value".into(), AttrValue::Str("literal-λ".into()));
+                attrs
+            },
+            runtime: None,
+            source_span: None,
+        },
+        OpCode::ConstBytes | OpCode::ConstBigInt => {
+            let mut operation = make_const_bytes(b"123456789012345678901234567890", result);
+            operation.opcode = opcode;
+            operation
+        }
+        _ => panic!("heap literal fixture requires a heap literal opcode"),
+    };
+    if bound {
+        operation
+            .attrs
+            .insert("bound_local".into(), AttrValue::Bool(true));
+    }
+    operation
+}
+
+#[test]
+fn heap_literal_identity_preserves_independent_binding_lifetimes() {
+    for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
+        for leader_bound in [false, true] {
+            for replaced_bound in [false, true] {
+                let mut func = TirFunction::new(
+                    "literal_ownership".into(),
+                    vec![],
+                    TirType::Bool,
+                    molt_ir::FunctionReturnAbi::Value,
+                );
+                let leader = func.fresh_value();
+                let replaced = func.fresh_value();
+                let same = func.fresh_value();
+                let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                entry.ops = vec![
+                    heap_literal(opcode, leader, leader_bound),
+                    heap_literal(opcode, replaced, replaced_bound),
+                    make_binop(OpCode::Is, leader, replaced, same),
+                ];
+                entry.terminator = Terminator::Return { values: vec![same] };
+                crate::tir::verify::verify_function(&func).unwrap();
+                run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+                crate::tir::verify::verify_function(&func).unwrap();
+                let replacement = &func.blocks[&func.entry_block].ops[1];
+                assert_eq!(replacement.opcode, OpCode::Copy);
+                assert_eq!(replacement.operands, [leader]);
+                assert_eq!(
+                    replacement.origin,
+                    (leader_bound || replaced_bound).then_some(molt_ir::OpKind::BindingAlias)
+                );
+                assert_eq!(
+                    matches!(
+                        replacement.attrs.get("bound_local"),
+                        Some(AttrValue::Bool(true))
+                    ),
+                    replaced_bound
+                );
+                // Exercise the real ownership consumer, not a mock of GVN's
+                // classification: one root for two temporary code literals,
+                // independent releases when either Python binding needs one.
+                crate::tir::passes::copy_prop::run(&mut func);
+                crate::tir::passes::drop_insertion::run(
+                    &mut func,
+                    &mut crate::tir::analysis::AnalysisManager::new(),
+                );
+                crate::tir::verify::verify_function(&func).unwrap();
+                let releases = func
+                    .blocks
+                    .values()
+                    .flat_map(|b| &b.ops)
+                    .filter(|op| op.opcode == OpCode::DecRef)
+                    .count();
+                assert_eq!(
+                    releases,
+                    if leader_bound || replaced_bound { 2 } else { 1 },
+                    "{opcode:?}, leader_bound={leader_bound}, replaced_bound={replaced_bound}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn heap_literals_keep_sibling_and_exception_only_definitions() {
+    for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
+        let mut func = TirFunction::new(
+            "literal_siblings".into(),
+            vec![TirType::Bool],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let left = func.fresh_block();
+        let right = func.fresh_block();
+        let first = func.fresh_value();
+        let second = func.fresh_value();
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: left,
+            then_args: vec![],
+            else_block: right,
+            else_args: vec![],
+        };
+        for (block, value) in [(left, first), (right, second)] {
+            func.blocks.insert(
+                block,
+                TirBlock {
+                    id: block,
+                    args: vec![],
+                    ops: vec![heap_literal(opcode, value, false)],
+                    terminator: Terminator::Return {
+                        values: vec![value],
+                    },
+                },
+            );
+        }
+        run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+        crate::tir::verify::verify_function(&func).unwrap();
+        assert_eq!(func.blocks[&left].ops[0].opcode, opcode);
+        assert_eq!(func.blocks[&right].ops[0].opcode, opcode);
+
+        let mut func = TirFunction::new(
+            "literal_handler".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let handler = func.fresh_block();
+        let first = func.fresh_value();
+        let second = func.fresh_value();
+        let mut check = TirOp {
+            origin: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::new(),
+            runtime: None,
+            source_span: None,
+        };
+        check.attrs.insert("value".into(), AttrValue::Int(70));
+        check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops = vec![heap_literal(opcode, first, false), check];
+        entry.terminator = Terminator::Return {
+            values: vec![first],
+        };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![heap_literal(opcode, second, false)],
+                terminator: Terminator::Return {
+                    values: vec![second],
+                },
+            },
+        );
+        func.label_id_map.insert(handler.0, 70);
+        crate::tir::verify::verify_function(&func).unwrap();
+        run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+        crate::tir::verify::verify_function(&func).unwrap();
+        assert_eq!(
+            func.blocks[&handler].ops[0].opcode, opcode,
+            "exception-only handler cannot acquire a strict-CFG external leader"
+        );
+    }
 }

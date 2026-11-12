@@ -16,7 +16,8 @@ section 9.4.2):
   `[[command]]` of the `pre-push` tier; a source names packages with `-p`;
 * cells: per source naming a reached crate, the source's build flags
   (profile, `--config`, target, features) with `--lib` and without its name
-  filters, so the cell runs the whole lib; a qualified feature of a package
+  filters, so the cell runs the whole lib, plus every integration test
+  target (`--test NAME`) the source declares and a selected crate owns; a qualified feature of a package
   the cell does not select is dropped (Cargo refuses it) and the cell is
   reported as narrowed; `molt-runtime` is tested by its declared runtime gate
   (tools/run_runtime_test_gate.py), which owns its fresh-process witnesses;
@@ -27,7 +28,7 @@ section 9.4.2):
   the schedule runs it;
 * accounting: each `Running unittests` binary is bound to its package through
   Cargo's compiler-artifact records, and its `test result:` line to that
-  package. A cell that exits non-zero, a selected crate without a summary,
+  package; each declared integration binary must report a summary too. A cell that exits non-zero, a selected crate without a summary,
   or a declared crate that runs 0 tests fails the gate.
 
 The last line is one JSON object (`molt.changed-crate-tests.v1`).
@@ -101,6 +102,10 @@ _DROPPED_OPTIONS = _TARGET_OPTIONS | {
 _LIBTEST_FLAGS = frozenset({"--include-ignored", "--ignored", "--nocapture"})
 _LIBTEST_VALUES = frozenset({"--skip", "--test-threads"})
 _RUNNING = re.compile(r"^\s*Running unittests \S+ \((?P<path>.+)\)\s*$")
+# An integration test binary: `Running tests/NAME.rs (target/.../NAME-hash)`.
+_RUNNING_INTEGRATION = re.compile(
+    r"^\s*Running (?P<source>tests/\S+\.rs) \((?P<path>.+)\)\s*$"
+)
 # Members whose lib has no unit tests in any declared cell (measured). A
 # 0-test total fails every other declared member: it means the cell compiled
 # the tests out (molt-backend-wasm's tests need test-util). An entry that runs
@@ -119,6 +124,9 @@ class Library:
     present: bool
     # `[lib] test = false` or `harness = false`: no libtest summary exists.
     harnessed: bool
+    # Its integration test targets: `[[test]]` names and, unless
+    # `autotests = false`, each `tests/*.rs` file.
+    tests: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +141,7 @@ class Source:
     skips: tuple[str, ...]
     unrunnable: str | None = None  # why this host cannot run it
     toolchains: tuple[str, ...] = ()  # the source's declared toolchains
+    tests: tuple[str, ...] = ()  # declared integration test targets
 
     @property
     def names(self) -> dict[str, str]:
@@ -158,6 +167,8 @@ class Cell:
     declared: set[str] = field(default_factory=set)
     # The union of its sources' declared toolchains, projected when it runs.
     toolchains: set[str] = field(default_factory=set)
+    # Integration test targets a source declares and a selected package owns.
+    tests: set[str] = field(default_factory=set)
 
     @property
     def label(self) -> str:
@@ -169,7 +180,10 @@ class Cell:
             argv += ["--features", ",".join(self.key.features)]
         for name in sorted(self.packages):
             argv += ["-p", self.packages[name]]
-        argv += ["--lib", "--no-fail-fast", "--message-format=json-render-diagnostics"]
+        argv += ["--lib"]
+        for name in sorted(self.tests):
+            argv += ["--test", name]
+        argv += ["--no-fail-fast", "--message-format=json-render-diagnostics"]
         libtest = [*self.key.libtest]
         for name in sorted(self.skips):
             libtest += ["--skip", name]
@@ -250,6 +264,9 @@ def parse_source(
         else None
     )
     libtest, skips = _libtest_options(invocation.forwarded)
+    tests = tuple(
+        sorted({value for name, value in invocation.option_values if name == "--test"})
+    )
     return Source(
         source_id,
         packages,
@@ -259,6 +276,7 @@ def parse_source(
         skips,
         unrunnable,
         tuple(toolchains),
+        tests,
     )
 
 
@@ -316,10 +334,18 @@ def libraries(root: Path) -> dict[str, Library]:
             isinstance(lib, dict) or (manifest.parent / "src" / "lib.rs").is_file()
         )
         lib = lib if isinstance(lib, dict) else {}
+        tests = {
+            entry["name"]
+            for entry in data.get("test", ())
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        }
+        if data.get("package", {}).get("autotests", True) is not False:
+            tests.update(path.stem for path in (manifest.parent / "tests").glob("*.rs"))
         result[name] = Library(
             present=present,
             harnessed=lib.get("test", True) is not False
             and lib.get("harness", True) is not False,
+            tests=frozenset(tests),
         )
     return result
 
@@ -395,6 +421,9 @@ def select(
             cell.declared.add(name)
         cell.skips.update(source.skips)
         cell.toolchains.update(source.toolchains)
+        # Cargo refuses a `--test` target that no selected package owns.
+        owned = {test for name in selected for test in libs[name].tests}
+        cell.tests.update(set(source.tests) & owned)
         if source.id not in cell.sources:
             cell.sources.append(source.id)
         cell.dropped.update(dropped)
@@ -423,10 +452,14 @@ class CellResult:
 
 
 def account(
-    lines: Iterable[str], packages: Mapping[str, str], root: Path
+    lines: Iterable[str],
+    packages: Mapping[str, str],
+    root: Path,
+    tests: Iterable[str] = (),
 ) -> CellResult:
-    """Bind each lib test binary's summary to its package (argv/returncode
-    are filled by the caller)."""
+    """Bind each lib test binary's summary to its package, and require a
+    summary from each declared integration test binary (argv/returncode are
+    filled by the caller)."""
     members = {
         manifest.resolve(): name
         for name, manifest in workspace_member_packages(root).items()
@@ -435,6 +468,8 @@ def account(
     counts: dict[str, dict[str, int]] = {}
     problems: list[str] = []
     current: str | None = None
+    integration: str | None = None
+    integration_seen: set[str] = set()
     for line in lines:
         record = compiler_artifact_record(line, source_context="mixed-test-output")
         if record is not None:
@@ -454,9 +489,22 @@ def account(
         if running := _RUNNING.match(line):
             binary = Path(running["path"].strip()).name
             current = binaries.get(binary)
+            integration = None
             if current is None or current not in packages:
                 problems.append(f"test binary {binary} maps to no selected package")
                 current = None
+            continue
+        if running := _RUNNING_INTEGRATION.match(line):
+            current = None
+            integration = Path(running["source"]).stem
+            continue
+        if (summary := _SUMMARY.search(line)) and integration is not None:
+            integration_seen.add(integration)
+            if int(summary["failed"]):
+                problems.append(
+                    f"integration test {integration}: {summary['failed']} failed"
+                )
+            integration = None
             continue
         if (summary := _SUMMARY.search(line)) and current is not None:
             if current in counts:
@@ -468,6 +516,8 @@ def account(
     for name in sorted(packages):
         if name not in counts:
             problems.append(f"{name}: no lib test summary (build or run failed)")
+    for name in sorted(set(tests) - integration_seen):
+        problems.append(f"integration test {name}: no summary (build or run failed)")
     return CellResult((), 0, counts, problems)
 
 
@@ -504,7 +554,7 @@ def run_cell(cell: Cell, *, root: Path, plan: ProofPlan) -> CellResult:
             lines.append(line)
     finally:
         returncode = COMMANDS.wait_owned(process, timeout=30.0)
-    result = account(lines, cell.packages, root)
+    result = account(lines, cell.packages, root, cell.tests)
     result.argv = argv
     result.returncode = returncode
     if returncode != 0:

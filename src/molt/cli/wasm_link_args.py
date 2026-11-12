@@ -29,6 +29,7 @@ _RUNTIME_LINK_SWITCHES = frozenset(
     {
         "--relocatable",
         "--import-memory",
+        "--export-memory",
         "--import-table",
         "--growable-table",
         "--export-table",
@@ -88,6 +89,33 @@ def runtime_link_response_arguments(payload: bytes) -> tuple[str, ...]:
     return validate_runtime_link_arguments(text.splitlines())
 
 
+def wasm_undefined_allowlist_path(argument: str) -> str | None:
+    prefix = "--allow-undefined-file="
+    if not argument.startswith(prefix):
+        return None
+    path = argument.removeprefix(prefix)
+    if not path or "\0" in path:
+        raise ValueError("WASM undefined-symbol allowlist requires a file operand")
+    return path
+
+
+def write_wasm_app_import_allowlist(root: Path, symbols: Sequence[str]) -> Path:
+    names = sorted(set(symbols))
+    if not names or any(
+        not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_.$]*", name) for name in names
+    ):
+        raise ValueError("invalid WASM app-import symbol identity")
+    payload = ("\n".join(names) + "\n").encode("ascii")
+    path = root / f"runtime-app-imports.{hashlib.sha256(payload).hexdigest()}.txt"
+    try:
+        current = path.read_bytes()
+    except FileNotFoundError:
+        current = None
+    if current != payload:
+        atomic_io._atomic_write_bytes(path, payload)
+    return path.resolve(strict=True)
+
+
 def wasi_external_libc_rustflags(
     flags: Sequence[str],
     *,
@@ -102,7 +130,10 @@ def wasi_external_libc_rustflags(
             continue
         if option.startswith("link-arg="):
             operand = option.removeprefix("link-arg=")
-            if not operand.startswith("@"):
+            if (
+                not operand.startswith("@")
+                and wasm_undefined_allowlist_path(operand) is None
+            ):
                 validate_runtime_link_arguments((operand,))
         elif option.startswith("link-args="):
             raise ValueError(

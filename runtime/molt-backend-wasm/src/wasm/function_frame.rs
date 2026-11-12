@@ -34,7 +34,7 @@ pub(super) struct WasmFunctionFramePlan {
     frame: WasmFunctionFrame,
 }
 
-/// A function's view of its frame's binding homes (`molt_frame_homes`).
+/// A function's view of its frame's binding homes: its record's base.
 #[derive(Clone, Copy)]
 pub(super) struct WasmFrameHomes {
     /// The i32 base address the frame lent, once per activation.
@@ -42,8 +42,6 @@ pub(super) struct WasmFrameHomes {
     /// i64 scratch: the bits a home store or clear displaces, released once
     /// the new pair is published.
     displaced: u32,
-    /// The code slots this function addresses: one past its largest.
-    slots: i64,
     /// A split chunk has no frame entry of its own: it borrows the homes of
     /// the frame it runs in at function entry.
     at_entry: bool,
@@ -61,9 +59,12 @@ pub(super) struct WasmFunctionFrame {
     control_mode: WasmFrameControlMode,
     control_plan: Option<NonLinearControlPlan>,
     tail_call_eligible: bool,
-    // Per-invocation custody, never a persistent generator/task field. A failed
-    // entry also creates a runtime attempt marker that this invocation owns.
+    // Per-invocation custody, never a persistent generator/task field: the
+    // i32 base of the frame record this invocation entered, zero until it does.
     owned_frame_attempt: Option<u32>,
+    // A synchronous frame's home count and clear order, which its entry
+    // carries; absent for a runtime-linked frame.
+    frame_shape: Option<molt_codegen_abi::frame_record::FrameShape>,
     // The binding homes that own a synchronous Python frame's bindings.
     frame_homes: Option<WasmFrameHomes>,
     // Native EH is local control flow. Python exceptions cross function ABIs

@@ -14,7 +14,6 @@ use crate::call::{
     StaticmethodCallTarget, lookup_call_attr, require_call_attr, resolve_staticmethod_call_target,
 };
 use crate::state::recursion::RecursionGuard;
-use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_TYPE_NEW_INIT, CALL_BIND_IC_HIT_COUNT,
     CALL_BIND_IC_MISS_COUNT, HEADER_FLAG_FUNC_REQUIRES_BINDER,
@@ -44,19 +43,20 @@ use crate::{
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
     molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
     molt_frozenset_union_multi, molt_int_from_bytes, molt_int_to_bytes, molt_list_append,
-    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
-    molt_memoryview_hex, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
-    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
-    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
-    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
-    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
-    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
-    molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
-    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
-    molt_string_startswith_slice, molt_tuple_index_range, molt_type_call, molt_type_init,
-    molt_type_new, obj_from_bits, object_class_bits, object_type_id, profile_hit_unchecked,
-    ptr_from_bits, raise_exception, raise_not_callable, string_obj_to_owned, type_name,
-    type_of_bits,
+    molt_list_append_attached_body, molt_list_index_range, molt_list_pop, molt_list_sort,
+    molt_memoryview_cast, molt_memoryview_hex, molt_object_init, molt_object_init_subclass,
+    molt_object_new_bound, molt_set_difference_multi, molt_set_difference_update_multi,
+    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
+    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
+    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
+    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
+    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
+    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
+    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice,
+    molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new,
+    molt_type_new_attached_body, obj_from_bits, object_class_bits, object_type_id,
+    profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable, string_obj_to_owned,
+    type_name, type_of_bits,
 };
 use std::sync::OnceLock;
 
@@ -67,6 +67,8 @@ mod frame_binding;
 #[cfg(test)]
 mod test_support;
 
+#[cfg(test)]
+pub(crate) use arguments::molt_callargs_push_kw_attached_body;
 use arguments::{Admission, ArgumentCustody, callee_custody};
 pub(crate) use arguments::{
     CallArguments, CallForm, EntryArguments, ReceiverOrigin, callargs_detach_owned, callargs_ptr,
@@ -74,11 +76,8 @@ pub(crate) use arguments::{
 };
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) use arguments::{
-    callargs_positional_snapshot, clone_callargs_builder_bits, molt_callargs_new_expanded,
-};
-pub use arguments::{
-    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_callargs_push_kw, molt_callargs_push_pos,
+    callargs_positional_snapshot, clone_callargs_builder_bits,
+    molt_callargs_new_expanded_attached_body,
 };
 pub(crate) use constructors::dispatch_init_subclass_hooks;
 use constructors::{call_type_with_arguments, is_default_type_call};
@@ -90,6 +89,11 @@ use frame_binding::{
 pub(crate) use frame_binding::{
     function_raw_positional_call_needs_binding, function_requires_binder_flag,
     refresh_function_requires_binder_flag,
+};
+pub(crate) use {
+    arguments::molt_callargs_expand_kwstar_attached_body,
+    arguments::molt_callargs_expand_star_attached_body, arguments::molt_callargs_new_attached_body,
+    arguments::molt_callargs_push_pos_attached_body,
 };
 
 mod inline_cache;
@@ -104,11 +108,27 @@ pub(crate) fn call_bind_ic_site_cached_for_test(site_id: u64) -> bool {
     inline_cache::ic_tls_lookup(site_id).is_some()
 }
 #[allow(unused_imports)]
-pub use inline_cache::{
-    molt_call_bind_ic, molt_call_bind_ic_owned, molt_call_indirect_ic,
-    molt_call_loaded_method_spilled, molt_call_loaded_method0, molt_call_loaded_method1,
-    molt_call_loaded_method2, molt_call_loaded_method3, molt_call_loaded_method4,
-    molt_invoke_ffi_ic, molt_load_method, molt_load_super_method,
+pub use {
+    inline_cache::molt_call_bind_ic, inline_cache::molt_call_bind_ic_owned,
+    inline_cache::molt_call_indirect_ic, inline_cache::molt_call_loaded_method_spilled,
+    inline_cache::molt_call_loaded_method0, inline_cache::molt_call_loaded_method1,
+    inline_cache::molt_call_loaded_method2, inline_cache::molt_call_loaded_method3,
+    inline_cache::molt_call_loaded_method4, inline_cache::molt_invoke_ffi_ic,
+    inline_cache::molt_load_method, inline_cache::molt_load_super_method,
+};
+#[allow(unused_imports)]
+pub(crate) use {
+    inline_cache::molt_call_bind_ic_attached_body,
+    inline_cache::molt_call_bind_ic_owned_attached_body,
+    inline_cache::molt_call_indirect_ic_attached_body,
+    inline_cache::molt_call_loaded_method_spilled_attached_body,
+    inline_cache::molt_call_loaded_method0_attached_body,
+    inline_cache::molt_call_loaded_method1_attached_body,
+    inline_cache::molt_call_loaded_method2_attached_body,
+    inline_cache::molt_call_loaded_method3_attached_body,
+    inline_cache::molt_call_loaded_method4_attached_body,
+    inline_cache::molt_invoke_ffi_ic_attached_body, inline_cache::molt_load_method_attached_body,
+    inline_cache::molt_load_super_method_attached_body,
 };
 
 /// Cached trace mode for `molt_call_bind`.  The env var is read once;
@@ -263,15 +283,18 @@ unsafe fn call_foreign_with_arguments(
     }
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is a live CallArgs builder whose reference
 /// this call consumes.
-pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_call_bind_attached_body(
+    _py: &crate::PyToken<'_>,
+    call_bits: u64,
+    builder_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let builder_ptr = ptr_from_bits(builder_bits);
-            let builder_guard = PtrDropGuard::new(builder_ptr);
+            let builder_guard = PtrDropGuard::new(_py, builder_ptr);
             // A pending error means argument preparation failed: the builder
             // is still that call's value stack and releases as one.
             if exception_pending(_py) {
@@ -325,7 +348,7 @@ pub(crate) unsafe fn call_bind_with_arguments(
         }
         let Some(call_ptr) = call_obj.as_ptr() else {
             if trace {
-                if let Some(frame) = FRAME_STACK.with(|stack| stack.borrow().last().copied())
+                if let Some(frame) = crate::builtins::frames::frame_stack_top_entry()
                     && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
                 {
                     let (name_bits, file_bits) =
@@ -604,3 +627,5 @@ pub(crate) unsafe fn call_owned_arguments(
         }
     }
 }
+
+include!("../attached_exports_generated/call/bind.rs");

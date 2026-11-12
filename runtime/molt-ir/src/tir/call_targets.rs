@@ -89,6 +89,7 @@ mod tests {
         attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
         TirOp {
             origin: original,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],

@@ -61,7 +61,14 @@ class InlineHarness(CallMethodDispatchMixin, ClassMethodCompilationMixin):
         self.events: list[str] = []
         self.locals = {"x": MoltValue("caller_x", type_hint="str")}
         self.free_vars = {"x": 0}
-        self.classes = {C: {"fields": {"first": 0, "second": 8}, "methods": {}}}
+        self.classes = {
+            C: {
+                "fields": {"first": 0, "second": 8},
+                "methods": {},
+                "dynamic": False,
+                "definition_exposed": False,
+            }
+        }
 
     def visit(self, node: ast.Constant) -> MoltValue:
         assert isinstance(node, ast.Constant)

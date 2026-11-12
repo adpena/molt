@@ -85,11 +85,11 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
             let name = crate::dynamic_attr_name_bits(py, b"field").unwrap();
             let value = MoltObject::from_int(19).bits();
             assert_eq!(
-                crate::molt_setattr_builtin(bits, name, value),
+                crate::molt_setattr_builtin_attached_body(py, bits, name, value),
                 MoltObject::none().bits()
             );
             assert_eq!(receiver.calls, 1);
-            crate::molt_delattr_builtin(bits, name);
+            crate::molt_delattr_builtin_attached_body(py, bits, name);
             assert_eq!(receiver.calls, 2);
             assert_eq!(crate::c_api::PyObject_SetAttr(bits, name, value), 0);
             assert_eq!(receiver.calls, 3);
@@ -97,7 +97,7 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
             assert_eq!(receiver.calls, 4);
             assert!(!crate::exception_pending(py));
 
-            let state = crate::molt_dict_new(0);
+            let state = crate::molt_dict_new_attached_body(py, 0);
             assert!(crate::dict_set_in_place(
                 py,
                 obj_from_bits(state).as_ptr().unwrap(),
@@ -124,8 +124,8 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
             member(py, source, b"field", value);
             let assigned = MoltObject::from_ptr(crate::alloc_tuple(py, &[name])).bits();
             let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-            let result = crate::builtins::functools::molt_functools_update_wrapper(
-                bits, source, assigned, empty,
+            let result = crate::builtins::functools::molt_functools_update_wrapper_attached_body(
+                py, bits, source, assigned, empty,
             );
             assert_eq!(result, bits);
             dec_ref_bits(py, result);
@@ -136,9 +136,9 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
             for delete in [false, true] {
                 let invalid_name = MoltObject::from_int(5).bits();
                 if delete {
-                    crate::molt_object_delattr(bits, invalid_name);
+                    crate::molt_object_delattr_attached_body(py, bits, invalid_name);
                 } else {
-                    crate::molt_object_setattr(bits, invalid_name, value);
+                    crate::molt_object_setattr_attached_body(py, bits, invalid_name, value);
                 }
                 assert_native_setter_rejection(delete, "NativeMutationConsumer");
             }
@@ -149,7 +149,7 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
                 let before = receiver.calls;
                 match consumer {
                     0 => {
-                        crate::molt_setattr_builtin(bits, name, value);
+                        crate::molt_setattr_builtin_attached_body(py, bits, name, value);
                     }
                     1 => {
                         assert_eq!(crate::c_api::PyObject_SetAttr(bits, name, value), -1);
@@ -166,13 +166,13 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
                         );
                     }
                     4 => {
-                        crate::builtins::functools::molt_functools_update_wrapper(
-                            bits, source, assigned, empty,
+                        crate::builtins::functools::molt_functools_update_wrapper_attached_body(
+                            py, bits, source, assigned, empty,
                         );
                     }
                     _ => {
-                        crate::builtins::functools::molt_functools_update_wrapper(
-                            bits, source, empty, empty,
+                        crate::builtins::functools::molt_functools_update_wrapper_attached_body(
+                            py, bits, source, empty, empty,
                         );
                     }
                 }
@@ -233,8 +233,9 @@ fn managed_class_mutation_separates_normal_explicit_and_raw_generic() {
                 };
                 let name = crate::dynamic_attr_name_bits(py, b"MutableClass").unwrap();
                 let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-                let namespace = crate::molt_dict_new(0);
-                let class = crate::builtins::types::molt_type_new(
+                let namespace = crate::molt_dict_new_attached_body(py, 0);
+                let class = crate::builtins::types::molt_type_new_attached_body(
+                    py,
                     meta,
                     name,
                     bases,
@@ -247,8 +248,13 @@ fn managed_class_mutation_separates_normal_explicit_and_raw_generic() {
                 let name_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(field);
                 let value =
                     GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(MoltObject::from_float(0.0).bits());
-                crate::molt_setattr_builtin(class, field, MoltObject::from_int(5).bits());
-                crate::molt_delattr_builtin(class, field);
+                crate::molt_setattr_builtin_attached_body(
+                    py,
+                    class,
+                    field,
+                    MoltObject::from_int(5).bits(),
+                );
+                crate::molt_delattr_builtin_attached_body(py, class, field);
                 assert!(!crate::exception_pending(py));
                 assert_eq!(
                     &CALLS.with(Cell::get)[1..3],
@@ -256,9 +262,14 @@ fn managed_class_mutation_separates_normal_explicit_and_raw_generic() {
                 );
                 for delete in [false, true] {
                     if delete {
-                        crate::molt_object_delattr(class, field);
+                        crate::molt_object_delattr_attached_body(py, class, field);
                     } else {
-                        crate::molt_object_setattr(class, field, MoltObject::none().bits());
+                        crate::molt_object_setattr_attached_body(
+                            py,
+                            class,
+                            field,
+                            MoltObject::none().bits(),
+                        );
                     }
                     assert_native_setter_rejection(
                         delete,
@@ -430,8 +441,13 @@ fn explicit_object_mutation_admits_builtin_storage_and_managed_subclasses() {
             // The finished fixture class is owned and the runtime token is held.
             let receiver =
                 unsafe { crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]) };
-            crate::molt_object_setattr(receiver, name, MoltObject::from_int(77).bits());
-            crate::molt_object_delattr(receiver, name);
+            crate::molt_object_setattr_attached_body(
+                py,
+                receiver,
+                name,
+                MoltObject::from_int(77).bits(),
+            );
+            crate::molt_object_delattr_attached_body(py, receiver, name);
             assert!(!crate::exception_pending(py));
             assert_eq!(CALLS.with(Cell::get), [0, 0, 0, 1, 1, 0]);
             for value in [receiver, class] {
@@ -445,9 +461,9 @@ fn explicit_object_mutation_admits_builtin_storage_and_managed_subclasses() {
         ] {
             for delete in [false, true] {
                 if delete {
-                    crate::molt_object_delattr(receiver, name);
+                    crate::molt_object_delattr_attached_body(py, receiver, name);
                 } else {
-                    crate::molt_object_setattr(receiver, name, receiver);
+                    crate::molt_object_setattr_attached_body(py, receiver, name, receiver);
                 }
                 let error = crate::exception_last_bits_noinc(py).unwrap();
                 assert!(crate::builtins::exceptions::exception_matches_kind(
@@ -482,7 +498,12 @@ fn explicit_object_defaults_mutate_managed_storage_without_projection() {
                         .has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
                 );
                 assert!(!GLOBAL_BRIDGE.type_has_projection(class));
-                crate::molt_object_setattr(receiver, field, MoltObject::from_int(47).bits());
+                crate::molt_object_setattr_attached_body(
+                    py,
+                    receiver,
+                    field,
+                    MoltObject::from_int(47).bits(),
+                );
                 assert!(!crate::exception_pending(py));
                 let dictionary = crate::object::field_storage::current_dictionary(py, pointer)
                     .unwrap()
@@ -492,7 +513,7 @@ fn explicit_object_defaults_mutate_managed_storage_without_projection() {
                     crate::dict_get_in_place(py, dictionary, field).unwrap(),
                     Some(MoltObject::from_int(47).bits())
                 );
-                crate::molt_object_delattr(receiver, field);
+                crate::molt_object_delattr_attached_body(py, receiver, field);
                 assert_eq!(
                     crate::dict_get_in_place(py, dictionary, field).unwrap(),
                     None
@@ -521,8 +542,12 @@ fn metaclass_default_pairs_select_raw_type_or_explicit_admission() {
                 [(true, true), (false, false), (true, false), (false, true)]
             {
                 let name = crate::dynamic_attr_name_bits(py, b"ObjectDefaultMeta").unwrap();
-                let meta = crate::molt_class_new(name);
-                crate::molt_class_set_base(meta, crate::builtin_classes(py).type_obj);
+                let meta = crate::molt_class_new_attached_body(py, name);
+                crate::molt_class_set_base_attached_body(
+                    py,
+                    meta,
+                    crate::builtin_classes(py).type_obj,
+                );
                 let setter = if object_set {
                     crate::builtins::methods::object_method_bits(py, crate::NameId::DunderSetattr)
                 } else {
@@ -542,8 +567,9 @@ fn metaclass_default_pairs_select_raw_type_or_explicit_admission() {
                 crate::object::class_finish_definition(py, obj_from_bits(meta).as_ptr().unwrap())
                     .unwrap();
                 let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-                let namespace = crate::molt_dict_new(0);
-                let class = crate::builtins::types::molt_type_new(
+                let namespace = crate::molt_dict_new_attached_body(py, 0);
+                let class = crate::builtins::types::molt_type_new_attached_body(
+                    py,
                     meta,
                     name,
                     bases,
@@ -564,9 +590,14 @@ fn metaclass_default_pairs_select_raw_type_or_explicit_admission() {
                     .expect("class mutation setup succeeds");
                     let version = crate::class_layout_version_bits(class_ptr);
                     if delete {
-                        crate::molt_del_attr_name(class, name);
+                        crate::molt_del_attr_name_attached_body(py, class, name);
                     } else {
-                        crate::molt_set_attr_name(class, name, MoltObject::from_int(41).bits());
+                        crate::molt_set_attr_name_attached_body(
+                            py,
+                            class,
+                            name,
+                            MoltObject::from_int(41).bits(),
+                        );
                     }
                     let rejects = object_set != object_delete
                         && if delete { object_delete } else { object_set };
@@ -605,7 +636,7 @@ fn raw_managed_class_dictionary_retires_displaced_ownership() {
         unsafe {
             let class = snapshot_class(py, b"RawOwnedClass");
             let name = crate::dynamic_attr_name_bits(py, b"raw_owned_value").unwrap();
-            let value = crate::molt_dict_new(0);
+            let value = crate::molt_dict_new_attached_body(py, 0);
             let value_ptr = obj_from_bits(value).as_ptr().unwrap();
             let before = (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot();
             crate::builtins::attributes::generic_set_attr_name(class, name, value)
@@ -677,8 +708,8 @@ fn managed_mutation_projection_profile() {
                     let value = MoltObject::from_int(79).bits();
                     match family {
                         "normal_class" => {
-                            crate::molt_set_attr_name(class, name, value);
-                            crate::molt_del_attr_name(class, name);
+                            crate::molt_set_attr_name_attached_body(py, class, name, value);
+                            crate::molt_del_attr_name_attached_body(py, class, name);
                         }
                         "explicit_type" => {
                             let result = crate::call_callable3(py, setter, class, name, value);
@@ -687,8 +718,8 @@ fn managed_mutation_projection_profile() {
                             dec_ref_bits(py, result);
                         }
                         _ => {
-                            crate::molt_object_setattr(receiver, name, value);
-                            crate::molt_object_delattr(receiver, name);
+                            crate::molt_object_setattr_attached_body(py, receiver, name, value);
+                            crate::molt_object_delattr_attached_body(py, receiver, name);
                         }
                     }
                 }

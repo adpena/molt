@@ -780,6 +780,7 @@ name = "molt-gpu-runtime"
 version = "0.1.0"
 dependencies = [
  "molt-gpu",
+ "molt-lang-obj-model",
  "molt-runtime-core",
  "objc2",
  "objc2-foundation",
@@ -932,6 +933,7 @@ name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "molt-codegen-abi",
  "molt-lang-obj-model",
  "num-bigint 0.5.1",
  "num-integer",
@@ -975,6 +977,7 @@ dependencies = [
  "libfuzzer-sys",
  "molt-lang-obj-model",
  "molt-runtime",
+ "molt-runtime-core",
 ]
 
 [[package]]

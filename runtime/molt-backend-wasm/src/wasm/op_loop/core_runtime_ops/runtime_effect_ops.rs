@@ -1,10 +1,11 @@
 use super::super::result_sink::store_result_or_drop;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::emit_box_bool_from_i32;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_runtime_effect_op(
     func: &mut Function,
@@ -16,6 +17,15 @@ pub(super) fn emit_runtime_effect_op(
     match op.kind {
         molt_ir::OpKind::ExceptionPending => {
             emit_exception_pending(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::AsyncWorkPending => {
+            // Test the thread's pending-work word; service nothing. The
+            // word's address is a frame local of every function that reads it.
+            crate::wasm::pending_work::emit_pending_work_word(func, locals);
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Ne);
+            emit_box_bool_from_i32(func);
+            store_result_or_drop(func, op, locals);
         }
         molt_ir::OpKind::Print => emit_print(func, op, import_ids, locals, reloc_enabled),
         _ => return false,

@@ -229,6 +229,7 @@ mod tests {
     fn tir(opcode: OpCode, attrs: AttrDict) -> TirOp {
         TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],

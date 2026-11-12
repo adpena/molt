@@ -18,8 +18,14 @@ extern crate std;
 mod heap_kinds_generated;
 pub use heap_kinds_generated::*;
 
+mod attached_context_generated;
+pub use attached_context_generated::*;
+
+pub mod boxed_word;
 pub mod c_width;
+pub mod frame_record;
 pub mod inline_refcount;
+pub mod word;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperatingSystem {
@@ -135,7 +141,7 @@ pub const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 // the frame's bindings: a compiled store hands its operand's reference to the
 // home, publishes the pair, then releases what the home held; a PEP 667 frame
 // proxy writes the same pairs (molt-runtime builtins/frames/bindings.rs).
-// `molt_frame_homes` lends the base address to the compiled frame.
+// The homes follow the frame record's header: the record's base is their base.
 pub const FRAME_HOME_WORDS: usize = 2;
 pub const FRAME_HOME_BYTES: i64 = 16;
 pub const FRAME_HOME_KIND_OFFSET: i32 = 0;
@@ -174,6 +180,43 @@ pub const THREAD_RECORD_PENDING_INVOCATION_OFFSET: i32 = 8;
 /// entry; async poll sites load the word atomically, never the pointer afresh.
 pub const THREAD_RECORD_PENDING_WORK_PTR_OFFSET: i32 = 16;
 pub const THREAD_RECORD_PENDING_WORK_WORD_BYTES: u32 = 4;
+/// u64: the executing Python frame's record base (its homes base), or zero.
+/// The chain it heads is the runtime's one frame authority
+/// (molt-runtime builtins/frames/records.rs).
+pub const THREAD_RECORD_FRAME_TOP_OFFSET: i32 = 24;
+/// u64: the first free byte of the thread's current frame-arena chunk.
+pub const THREAD_RECORD_ARENA_TOP_OFFSET: i32 = 32;
+/// u64: the end of the thread's current frame-arena chunk.
+pub const THREAD_RECORD_ARENA_LIMIT_OFFSET: i32 = 40;
+
+// A frame record: six header words, then the frame's homes. `base` is the
+// homes base; every header word sits at a negative offset from it, so home
+// and location accesses keep their offsets. Compiled code pushes and pops the
+// record of a synchronous function inline (`frame_record::generate_frame_push`
+// and `generate_frame_pop`); the runtime links every other frame.
+pub const FRAME_RECORD_HEADER_BYTES: i64 = 48;
+/// The caller's record base, or zero.
+pub const FRAME_RECORD_PREV_OFFSET: i32 = -48;
+/// The frame's function object, which the record owns one reference to; the
+/// address of a runtime namespace block when `FRAME_RECORD_OWNED`.
+pub const FRAME_RECORD_FUNCTION_OFFSET: i32 = -40;
+/// The function's code object at entry, which an unowned record owns one
+/// reference to.
+pub const FRAME_RECORD_CODE_OFFSET: i32 = -32;
+pub const FRAME_RECORD_FLAGS_OFFSET: i32 = -24;
+/// The `FRAME_BINDINGS` payload the frame's observers share, owned, or zero.
+pub const FRAME_RECORD_OBSERVER_OFFSET: i32 = -16;
+/// An observer attached a payload: the pop retires it.
+pub const FRAME_RECORD_OBSERVED: u64 = 1;
+/// The runtime linked the record and owns its edges through a namespace block.
+pub const FRAME_RECORD_OWNED: u64 = 2;
+/// The record opened an arena chunk: its pop returns to the previous chunk.
+pub const FRAME_RECORD_CHUNK_FIRST: u64 = 4;
+/// Function object fields the inline push reads (molt-runtime object/layout.rs
+/// asserts both).
+pub const FUNCTION_CODE_OFFSET: i32 = 32;
+/// A code object's compiled slot id plus one; zero when it has none.
+pub const CODE_FRAME_SLOT_OFFSET: i32 = 136;
 
 /// A compiled function object's entry custody, passed to `molt_func_new` and
 /// `molt_func_new_closure`: the entry adopts every Python argument. Zero: it
@@ -462,10 +505,16 @@ pub struct GeneratedObjectAbiFacts {
     pub refcount_owner_limit: u32,
     pub compiled_plain_refcount_window: u64,
     pub flags_refcount_custody: u32,
+    pub attached_context_schema_fingerprint: u64,
+    pub attached_context_argument_position: u32,
+    pub attached_context_argument_carrier_bytes: u32,
+    pub attached_context_header_size: u32,
+    pub attached_context_header_align: u32,
+    pub attached_context_thread_record_offset: i32,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 66] {
+    pub const fn words(self) -> [u64; 72] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -533,6 +582,12 @@ impl GeneratedObjectAbiFacts {
             self.refcount_owner_limit as u64,
             self.compiled_plain_refcount_window,
             self.flags_refcount_custody as u64,
+            self.attached_context_schema_fingerprint,
+            self.attached_context_argument_position as u64,
+            self.attached_context_argument_carrier_bytes as u64,
+            self.attached_context_header_size as u64,
+            self.attached_context_header_align as u64,
+            self.attached_context_thread_record_offset as i64 as u64,
         ]
     }
 
@@ -623,6 +678,12 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     refcount_owner_limit: REFCOUNT_OWNER_LIMIT,
     compiled_plain_refcount_window: COMPILED_PLAIN_REFCOUNT_WINDOW,
     flags_refcount_custody: HEADER_FLAGS_REFCOUNT_CUSTODY,
+    attached_context_schema_fingerprint: ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+    attached_context_argument_position: ATTACHED_CONTEXT_ARGUMENT_POSITION,
+    attached_context_argument_carrier_bytes: ATTACHED_CONTEXT_ARGUMENT_CARRIER_BYTES,
+    attached_context_header_size: core::mem::size_of::<AttachedExecutionContextStorage>() as u32,
+    attached_context_header_align: core::mem::align_of::<AttachedExecutionContextStorage>() as u32,
+    attached_context_thread_record_offset: ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
 };
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
@@ -644,17 +705,21 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// the count-word custody encoding, owner bound, inline window and custody
 /// flags (`molt_generated_object_abi_69bab6cda2adac1b_*_v7`), and the
 /// code-location word immediately before every lent frame-home base
-/// (`molt_generated_object_abi_16b12518d4094b67_*_v7`). Revision 8 binds both:
-/// it is the fingerprint of the merged fact words.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V8: u64 = 0xb353_df98_e047_c49b;
+/// (`molt_generated_object_abi_16b12518d4094b67_*_v7`). Revision 8 (main) binds
+/// both. Lane HF-198's revisions 8 and 9 bound the generated attached-context
+/// schema, hidden machine argument and permanent context header, and corrected
+/// raw buffer-close/native-completion classification. Revision 10 joins main's
+/// revision 8 with lane HF-198's revision 9; every older binding fails link
+/// admission.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V10: u64 = 0x5a9b_7d4f_57f5_2f50;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V8,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V10,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_b353df98e047c49b_gil_v8";
+    "molt_generated_object_abi_5a9b7d4f57f52f50_gil_v10";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_b353df98e047c49b_free_threaded_v8";
+    "molt_generated_object_abi_5a9b7d4f57f52f50_free_threaded_v10";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1649,14 +1714,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V8
+            GENERATED_OBJECT_ABI_FINGERPRINT_V10
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V8,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V10,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1664,13 +1729,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V8);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V10);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v8"), "{symbol}");
+            assert!(symbol.ends_with("_v10"), "{symbol}");
         }
     }
 

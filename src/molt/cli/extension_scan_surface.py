@@ -13,23 +13,19 @@ from molt.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
 from molt.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
 from molt.c_api_symbols import is_c_api_symbol, is_cpython_abi_link_symbol
 from molt._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
-    WASM_IMPORT_REGISTRY,
-    WASM_LINK_ALLOWED_IMPORTS,
-    WASM_RUNTIME_HOST_EXPORTS,
-    wasm_runtime_export_name,
 )
+from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 
 
 @typed_cache(maxsize=1)
 def _wasm_runtime_backed_abi_symbols() -> frozenset[str]:
-    symbols = set(WASM_LINK_ALLOWED_IMPORTS) | set(WASM_RUNTIME_HOST_EXPORTS)
-    for import_name in WASM_IMPORT_REGISTRY:
-        symbols.add(import_name)
-        export_name = wasm_runtime_export_name(import_name)
-        if export_name is not None:
-            symbols.add(export_name)
-    return frozenset(symbols)
+    return frozenset(
+        wasm_static_link_runtime_symbols_for_imports(
+            WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES
+        )
+    )
 
 
 def _molt_runtime_namespace_symbol(symbol: str) -> bool:

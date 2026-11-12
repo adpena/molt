@@ -5,8 +5,9 @@ use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
     bound_method_self_bits, clear_exception, dec_ref_bits, exception_pending,
     function_closure_bits, function_fn_ptr, inc_ref_bits, int_bits_from_i64, is_truthy,
-    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_is_callable, obj_from_bits, object_type_id, raise_exception, runtime_state,
+    molt_call_bind_attached_body, molt_callargs_expand_kwstar_attached_body,
+    molt_callargs_expand_star_attached_body, molt_callargs_new_attached_body,
+    molt_is_callable_attached_body, obj_from_bits, object_type_id, raise_exception, runtime_state,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,25 +198,29 @@ fn atexit_unraisable_policy(_py: &PyToken<'_>, callback_bits: u64) -> (u64, Opti
 }
 
 fn atexit_call_callback(_py: &PyToken<'_>, callback: &AtexitCallbackEntry) -> u64 {
-    let builder_bits = molt_callargs_new(0, 0);
+    let builder_bits = molt_callargs_new_attached_body(_py, 0, 0);
     if builder_bits == 0 {
         return MoltObject::none().bits();
     }
     if !obj_from_bits(callback.args_bits).is_none() {
-        let _ = unsafe { molt_callargs_expand_star(builder_bits, callback.args_bits) };
+        let _ = unsafe {
+            molt_callargs_expand_star_attached_body(_py, builder_bits, callback.args_bits)
+        };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
     if !obj_from_bits(callback.kwargs_bits).is_none() {
-        let _ = unsafe { molt_callargs_expand_kwstar(builder_bits, callback.kwargs_bits) };
+        let _ = unsafe {
+            molt_callargs_expand_kwstar_attached_body(_py, builder_bits, callback.kwargs_bits)
+        };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
-    molt_call_bind(callback.func_bits, builder_bits)
+    molt_call_bind_attached_body(_py, callback.func_bits, builder_bits)
 }
 
 fn atexit_register_impl(
@@ -224,7 +229,7 @@ fn atexit_register_impl(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    let callable_bits = molt_is_callable(func_bits);
+    let callable_bits = molt_is_callable_attached_body(_py, func_bits);
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
@@ -517,32 +522,37 @@ pub(crate) fn atexit_run_exitfuncs_teardown(_py: &PyToken<'_>) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_atexit_register(func_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_atexit_register_attached_body(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         atexit_register_impl(_py, func_bits, args_bits, kwargs_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_atexit_unregister(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { atexit_unregister_impl(_py, func_bits) })
+pub(crate) fn molt_atexit_unregister_attached_body(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { atexit_unregister_impl(_py, func_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_atexit_clear() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { atexit_clear_impl(_py) })
+pub(crate) fn molt_atexit_clear_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { atexit_clear_impl(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_atexit_run_exitfuncs() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { atexit_run_exitfuncs_impl(_py) })
+pub(crate) fn molt_atexit_run_exitfuncs_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { atexit_run_exitfuncs_impl(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_atexit_ncallbacks() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { atexit_ncallbacks_impl(_py) })
+pub(crate) fn molt_atexit_ncallbacks_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { atexit_ncallbacks_impl(_py) })
 }
+
+include!("../attached_exports_generated/builtins/atexit.rs");
 
 #[cfg(test)]
 mod tests {
@@ -554,18 +564,40 @@ mod tests {
     static RELEASE_CALLS: AtomicUsize = AtomicUsize::new(0);
     static RELEASE_SAW_DETACHED_ROOTS: AtomicBool = AtomicBool::new(false);
 
-    extern "C" fn count_exit_callback(_arg: u64) -> u64 {
+    extern "C" fn count_exit_callback(__context: u64, _arg: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         EXIT_CALLS.fetch_add(1, Ordering::AcqRel);
         MoltObject::none().bits()
     }
 
-    extern "C" fn count_exit_once() -> u64 {
+    extern "C" fn count_exit_once(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         EXIT_CALLS.fetch_add(1, Ordering::AcqRel);
         MoltObject::none().bits()
     }
 
-    extern "C" fn observe_exit_owner_release(_weak: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn observe_exit_owner_release(__context: u64, _weak: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             RELEASE_CALLS.fetch_add(1, Ordering::AcqRel);
             let detached = runtime_state(py)
                 .exit_registry
@@ -580,7 +612,8 @@ mod tests {
                     return MoltObject::none().bits();
                 }
                 let args = MoltObject::from_ptr(args).bits();
-                molt_atexit_register(
+                molt_atexit_register_attached_body(
+                    py,
                     LATE_CALLBACK.load(Ordering::Acquire),
                     args,
                     MoltObject::none().bits(),
@@ -588,7 +621,7 @@ mod tests {
                 dec_ref_bits(py, args);
             }
             MoltObject::none().bits()
-        })
+        }
     }
 
     fn test_callable(py: &PyToken<'_>, address: *const (), arity: u64) -> u64 {
@@ -622,7 +655,8 @@ mod tests {
             LATE_CALLBACK.store(callback, Ordering::Release);
 
             // Run the actual one-time phase before introducing late owners.
-            molt_atexit_register(
+            molt_atexit_register_attached_body(
+                py,
                 exit_once,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
@@ -634,7 +668,8 @@ mod tests {
             let target_ptr = crate::object::builders::alloc_set_with_entries(py, &[]);
             assert!(!target_ptr.is_null());
             let target = MoltObject::from_ptr(target_ptr).bits();
-            let weak = crate::molt_weakref_new(
+            let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                py,
                 crate::builtin_classes(py).reference_type,
                 target,
                 observer,
@@ -643,7 +678,7 @@ mod tests {
             let args_ptr = crate::alloc_tuple(py, &[target]);
             assert!(!args_ptr.is_null());
             let args = MoltObject::from_ptr(args_ptr).bits();
-            molt_atexit_register(callback, args, MoltObject::none().bits());
+            molt_atexit_register_attached_body(py, callback, args, MoltObject::none().bits());
             assert!(!exception_pending(py));
             assert_eq!(owner_count(callback), callback_base + 1);
             dec_ref_bits(py, args);
@@ -653,7 +688,12 @@ mod tests {
             assert!(atexit_clear_runtime_roots(py));
             assert_eq!(RELEASE_CALLS.load(Ordering::Acquire), 1);
             assert!(RELEASE_SAW_DETACHED_ROOTS.load(Ordering::Acquire));
-            assert!(obj_from_bits(crate::molt_weakref_get(weak)).is_none());
+            assert!(
+                obj_from_bits(crate::object::weakref::molt_weakref_get_attached_body(
+                    py, weak
+                ))
+                .is_none()
+            );
             assert_eq!(
                 owner_count(callback),
                 callback_base + 1,

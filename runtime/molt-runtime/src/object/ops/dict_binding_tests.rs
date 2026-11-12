@@ -39,8 +39,16 @@ static FINALIZER_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// `__eq__` of a key stored under the hash of a bound `str`: ordinary lookup of
 /// that `str` must consult it, and it may raise or restructure the mapping.
-extern "C" fn same_hash_key_eq(self_bits: u64, _other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn same_hash_key_eq(__context: u64, self_bits: u64, _other_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let call = PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
         match PROBE_MODE.load(Ordering::SeqCst) {
             PROBE_EQUAL => MoltObject::from_bool(true).bits(),
@@ -48,7 +56,8 @@ extern "C" fn same_hash_key_eq(self_bits: u64, _other_bits: u64) -> u64 {
                 raise_exception::<u64>(py, BuiltinExc::RuntimeError, "probe equality failure")
             }
             PROBE_RAISE_OWNED => {
-                crate::builtins::exceptions::molt_exception_set_last(
+                crate::builtins::exceptions::molt_exception_set_last_attached_body(
+                    py,
                     PROBE_VALUE.load(Ordering::SeqCst),
                 );
                 MoltObject::none().bits()
@@ -116,12 +125,20 @@ extern "C" fn same_hash_key_eq(self_bits: u64, _other_bits: u64) -> u64 {
             }
             _ => MoltObject::from_bool(false).bits(),
         }
-    })
+    }
 }
 
 /// Finalizer of a displaced value: it must observe the complete transition.
-extern "C" fn observe_committed_bindings(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn observe_committed_bindings(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         FINALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
         let dict = obj_from_bits(OBSERVED_DICT.load(Ordering::SeqCst))
             .as_ptr()
@@ -133,7 +150,7 @@ extern "C" fn observe_committed_bindings(_self_bits: u64) -> u64 {
         }
         OBSERVED_COMMITTED.store(u64::from(committed), Ordering::SeqCst);
         MoltObject::none().bits()
-    })
+    }
 }
 
 struct TrackerReset;
@@ -171,13 +188,13 @@ fn instance_with_method(
     arity: u64,
 ) -> (u64, u64, u64) {
     let name = dynamic_attr_name_bits(py, class_name).unwrap();
-    let class = crate::molt_class_new(name);
-    crate::molt_class_set_base(class, builtin_classes(py).object);
+    let class = crate::molt_class_new_attached_body(py, name);
+    crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
     let method_name = dynamic_attr_name_bits(py, method).unwrap();
     let function = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, target), arity);
     assert!(!function.is_null());
     let function = MoltObject::from_ptr(function).bits();
-    crate::molt_set_attr_name(class, method_name, function);
+    crate::molt_set_attr_name_attached_body(py, class, method_name, function);
     let class_ptr = obj_from_bits(class).as_ptr().unwrap();
     unsafe {
         crate::object::class_finish_definition(py, class_ptr).unwrap();
@@ -248,7 +265,7 @@ unsafe fn exhaust_dict_usable_with_deleted_rows(py: &PyToken<'_>, dict: *mut u8)
 
 fn take_pending_error(py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(py));
-    let error = crate::builtins::exceptions::molt_exception_last_pending();
+    let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         py, error, expected
     ));
@@ -355,7 +372,7 @@ fn string_binding_failure_leaves_every_binding_unchanged() {
             drop(reset);
             assert!(denied);
             assert!(exception_pending(py));
-            let _ = crate::molt_exception_clear();
+            let _ = crate::molt_exception_clear_attached_body(py);
             // The present key was probed and its replacement planned, yet no
             // binding, order, key or owner changed.
             assert_eq!(
@@ -646,7 +663,8 @@ fn exact_string_reads_preserve_key_identity_borrowing_and_pending_error() {
             assert_eq!(dict_find_entry_kv_in_place(py, dict, absent).unwrap(), None);
             assert_eq!(dict_find_entry(py, dict, absent).unwrap(), None);
             assert_eq!(
-                crate::object::ops_dict::molt_dict_getitem_borrowed(
+                crate::object::ops_dict::molt_dict_getitem_borrowed_attached_body(
+                    py,
                     MoltObject::from_ptr(dict).bits(),
                     query
                 ),
@@ -745,7 +763,7 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
             // second lookup after the original equality callback raises.
             let default = mortal_value(py);
             let default_owners = owners(default);
-            type Method = extern "C" fn(u64, u64, u64) -> u64;
+            type Method = unsafe extern "C" fn(u64, u64, u64, u64) -> u64;
             for method in [
                 crate::object::ops_dict::molt_dict_get as Method,
                 crate::object::ops_dict::molt_dict_setdefault as Method,
@@ -753,7 +771,12 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
                 PROBE_MODE.store(PROBE_RAISE, Ordering::SeqCst);
                 PROBE_CALLS.store(0, Ordering::SeqCst);
                 assert_eq!(
-                    method(MoltObject::from_ptr(dict).bits(), query, default),
+                    method(
+                        py.attached_context(),
+                        MoltObject::from_ptr(dict).bits(),
+                        query,
+                        default
+                    ),
                     MoltObject::none().bits()
                 );
                 assert_eq!(owners(default), default_owners);
@@ -769,7 +792,8 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
             }
             PROBE_CALLS.store(0, Ordering::SeqCst);
             assert_eq!(
-                crate::object::ops_dict::molt_dict_getitem_borrowed(
+                crate::object::ops_dict::molt_dict_getitem_borrowed_attached_body(
+                    py,
                     MoltObject::from_ptr(dict).bits(),
                     query
                 ),
@@ -891,13 +915,21 @@ fn exact_string_reads_reacquire_entries_after_equality_mutates_the_table() {
 
 static SETDEFAULT_HASH_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn setdefault_hash_once(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn setdefault_hash_once(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         if SETDEFAULT_HASH_CALLS.fetch_add(1, Ordering::SeqCst) != 0 {
             return raise_exception::<u64>(py, BuiltinExc::RuntimeError, "setdefault hashed twice");
         }
         MoltObject::from_int(37).bits()
-    })
+    }
 }
 
 #[test]
@@ -920,9 +952,13 @@ fn exact_string_reads_setdefault_hashes_once_and_balances_result_ownership() {
                 let default = mortal_value(py);
                 SETDEFAULT_HASH_CALLS.store(0, Ordering::SeqCst);
                 let result = if empty_list {
-                    crate::object::ops_dict::molt_dict_setdefault_empty_list(dict_bits, key)
+                    crate::object::ops_dict::molt_dict_setdefault_empty_list_attached_body(
+                        py, dict_bits, key,
+                    )
                 } else {
-                    crate::object::ops_dict::molt_dict_setdefault(dict_bits, key, default)
+                    crate::object::ops_dict::molt_dict_setdefault_attached_body(
+                        py, dict_bits, key, default,
+                    )
                 };
                 assert!(!exception_pending(py));
                 assert_eq!(SETDEFAULT_HASH_CALLS.load(Ordering::SeqCst), 1);
@@ -939,9 +975,13 @@ fn exact_string_reads_setdefault_hashes_once_and_balances_result_ownership() {
 
                 SETDEFAULT_HASH_CALLS.store(0, Ordering::SeqCst);
                 let hit = if empty_list {
-                    crate::object::ops_dict::molt_dict_setdefault_empty_list(dict_bits, key)
+                    crate::object::ops_dict::molt_dict_setdefault_empty_list_attached_body(
+                        py, dict_bits, key,
+                    )
                 } else {
-                    crate::object::ops_dict::molt_dict_setdefault(dict_bits, key, default)
+                    crate::object::ops_dict::molt_dict_setdefault_attached_body(
+                        py, dict_bits, key, default,
+                    )
                 };
                 assert_eq!(hit, result);
                 assert_eq!(SETDEFAULT_HASH_CALLS.load(Ordering::SeqCst), 1);
@@ -992,9 +1032,13 @@ fn exact_string_reads_setdefault_reuses_probe_and_observes_reentrant_insertion()
                     PROBE_CALLS.store(0, Ordering::SeqCst);
                     PROBE_MODE.store(mode, Ordering::SeqCst);
                     let result = if empty_list {
-                        crate::object::ops_dict::molt_dict_setdefault_empty_list(dict_bits, query)
+                        crate::object::ops_dict::molt_dict_setdefault_empty_list_attached_body(
+                            py, dict_bits, query,
+                        )
                     } else {
-                        crate::object::ops_dict::molt_dict_setdefault(dict_bits, query, default)
+                        crate::object::ops_dict::molt_dict_setdefault_attached_body(
+                            py, dict_bits, query, default,
+                        )
                     };
                     assert_eq!(
                         PROBE_CALLS.load(Ordering::SeqCst),
@@ -1186,7 +1230,7 @@ fn stored_hash_sentinel_is_rejected_before_ownership_or_storage_changes() {
             let before = (owners(key), owners(value), dict_structural_epoch(dict));
             assert!(!dict_set_with_hash_in_place(py, dict, key, value, u64::MAX));
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(
                 (owners(key), owners(value), dict_structural_epoch(dict)),
                 before
@@ -1195,23 +1239,23 @@ fn stored_hash_sentinel_is_rejected_before_ownership_or_storage_changes() {
             assert!(dict_entries(dict).is_empty());
             assert!(dict_del_with_hash_deferred(py, dict, key, u64::MAX).is_err());
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(
                 (owners(key), owners(value), dict_structural_epoch(dict)),
                 before
             );
-            let set = crate::molt_set_new(0);
+            let set = crate::molt_set_new_attached_body(py, 0);
             let ptr = obj_from_bits(set).as_ptr().unwrap();
             let before = owners(key);
             assert!(!set_add_with_hash_in_place(py, ptr, key, u64::MAX));
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(owners(key), before);
             assert_eq!(set_len(ptr), 0);
             assert!(set_entries(ptr).is_empty());
             assert_eq!(set_del_with_hash_in_place(py, ptr, key, u64::MAX), Err(()));
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(owners(key), before);
             // Every other hash bit pattern, including zero and -2, is storable.
             for hash in [0, 1, i64::MIN as u64, u64::MAX - 1] {
@@ -1514,7 +1558,9 @@ fn module_rollback_keeps_a_value_replaced_by_key_equality() {
                                 BuiltinExc::ValueError,
                                 "original rollback failure",
                             );
-                            crate::builtins::exceptions::molt_exception_last_pending()
+                            crate::builtins::exceptions::molt_exception_last_pending_attached_body(
+                                py,
+                            )
                         });
                         crate::builtins::modules::module_cache_remove(
                             name,
@@ -1523,7 +1569,7 @@ fn module_rollback_keeps_a_value_replaced_by_key_equality() {
                         assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
                         if let Some(expected) = pending {
                             let observed =
-                                crate::builtins::exceptions::molt_exception_last_pending();
+                                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                             assert_eq!(
                                 observed, expected,
                                 "rollback preserves the original exception identity"
@@ -1620,7 +1666,7 @@ fn module_failure_cleanup_selects_exact_error_and_chains_callback_context() {
                         ))
                         .bits();
                         if pending {
-                            exceptions::molt_exception_set_last(prior);
+                            exceptions::molt_exception_set_last_attached_body(py, prior);
                         }
                         PROBE_VALUE.store(cleanup, Ordering::SeqCst);
                         PROBE_CALLS.store(0, Ordering::SeqCst);
@@ -1631,7 +1677,7 @@ fn module_failure_cleanup_selects_exact_error_and_chains_callback_context() {
                         );
                         assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
                         assert!(exception_pending(py));
-                        let selected = exceptions::molt_exception_last_pending();
+                        let selected = exceptions::molt_exception_last_pending_attached_body(py);
                         let preserves =
                             pending && (conditional || kind == crate::BuiltinExc::KeyError);
                         assert_eq!(selected, if preserves { prior } else { cleanup });
@@ -1869,7 +1915,7 @@ fn dictionary_copy_preserves_dense_holes_and_compacts_sparse_sources_without_reh
             }
             assert!(dict_del_in_place(py, dict, int(1)).unwrap());
             let original = MoltObject::from_ptr(dict).bits();
-            let copied = crate::object::ops_dict::molt_dict_copy(original);
+            let copied = crate::object::ops_dict::molt_dict_copy_attached_body(py, original);
             let copy = obj_from_bits(copied).as_ptr().unwrap();
             assert_eq!(
                 dict_entries(copy),
@@ -1878,7 +1924,7 @@ fn dictionary_copy_preserves_dense_holes_and_compacts_sparse_sources_without_reh
             );
             assert_eq!((dict_table(copy).len(), dict_storage(copy).usable), (8, 0));
             assert_ne!(dict_entries_ptr(copy), dict_entries_ptr(dict));
-            let constructed = crate::molt_dict_from_obj(original);
+            let constructed = crate::molt_dict_from_obj_attached_body(py, original);
             let compact = obj_from_bits(constructed).as_ptr().unwrap();
             assert_eq!(
                 (
@@ -1891,7 +1937,7 @@ fn dictionary_copy_preserves_dense_holes_and_compacts_sparse_sources_without_reh
             for key in [2, 3] {
                 assert!(dict_del_in_place(py, dict, int(key)).unwrap());
             }
-            let sparse_copy = crate::object::ops_dict::molt_dict_copy(original);
+            let sparse_copy = crate::object::ops_dict::molt_dict_copy_attached_body(py, original);
             let sparse = obj_from_bits(sparse_copy).as_ptr().unwrap();
             assert_eq!(
                 (
@@ -1984,7 +2030,12 @@ fn dictionary_full_pairs_prescan_and_fromkeys_share_real_capacity_policy() {
             let int = |value| MoltObject::from_int(value).bits();
             let keys = [int(1), int(2), int(3), int(4), int(5), int(5)];
             let values = [int(10), int(20), int(30), int(40), int(50), int(51)];
-            let literal = crate::c_api::molt_dict_from_pairs(keys.as_ptr(), values.as_ptr(), 6);
+            let literal = crate::c_api::molt_dict_from_pairs_attached_body(
+                py,
+                keys.as_ptr(),
+                values.as_ptr(),
+                6,
+            );
             let dict = obj_from_bits(literal).as_ptr().unwrap();
             assert_eq!(dict_storage(dict).kind, DictKeyKind::General);
             assert_eq!(
@@ -2010,7 +2061,7 @@ fn dictionary_full_pairs_prescan_and_fromkeys_share_real_capacity_policy() {
             // Exact dict fromkeys presizes from live cardinality, not source
             // extent; generic tuple fromkeys grows from the shared empty state.
             let cls = builtin_classes(py).dict;
-            let exact = dict_fromkeys_method(cls, literal, int(99)) as u64;
+            let exact = dict_fromkeys_method(py.attached_context(), cls, literal, int(99)) as u64;
             let exact_ptr = obj_from_bits(exact).as_ptr().unwrap();
             assert_eq!(
                 (
@@ -2022,7 +2073,8 @@ fn dictionary_full_pairs_prescan_and_fromkeys_share_real_capacity_policy() {
             );
             let tuple = alloc_tuple(py, &keys);
             let tuple_bits = MoltObject::from_ptr(tuple).bits();
-            let generic = dict_fromkeys_method(cls, tuple_bits, int(99)) as u64;
+            let generic =
+                dict_fromkeys_method(py.attached_context(), cls, tuple_bits, int(99)) as u64;
             let generic_ptr = obj_from_bits(generic).as_ptr().unwrap();
             assert_eq!(
                 (
@@ -2098,12 +2150,20 @@ fn dictionary_equal_nonstring_probe_obeys_selected_conversion_phase() {
 
 static FROMKEYS_RETURN_DICT: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn fromkeys_return_existing_dict(_class: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn fromkeys_return_existing_dict(__context: u64, _class: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let result = FROMKEYS_RETURN_DICT.load(Ordering::SeqCst);
         inc_ref_bits(py, result);
         result
-    })
+    }
 }
 
 #[test]
@@ -2121,8 +2181,8 @@ fn dictionary_fromkeys_nonempty_exact_constructor_preserves_live_capacity() {
             let target_bits = MoltObject::from_ptr(target).bits();
             FROMKEYS_RETURN_DICT.store(target_bits, Ordering::SeqCst);
             let name = string_key(py, b"ExistingFromKeysTarget");
-            let class = crate::molt_class_new(name);
-            crate::molt_class_set_base(class, builtin_classes(py).dict);
+            let class = crate::molt_class_new_attached_body(py, name);
+            crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).dict);
             let method = string_key(py, b"__new__");
             let function = alloc_runtime_function_obj(
                 py,
@@ -2134,12 +2194,13 @@ fn dictionary_fromkeys_nonempty_exact_constructor_preserves_live_capacity() {
             );
             assert!(!function.is_null());
             let function = MoltObject::from_ptr(function).bits();
-            crate::molt_set_attr_name(class, method, function);
+            crate::molt_set_attr_name_attached_body(py, class, method, function);
             crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
             let source = alloc_dict_with_pairs(py, &[int(0), int(42)]);
             let source_bits = MoltObject::from_ptr(source).bits();
-            let result = dict_fromkeys_method(class, source_bits, int(99)) as u64;
+            let result =
+                dict_fromkeys_method(py.attached_context(), class, source_bits, int(99)) as u64;
             assert!(!exception_pending(py));
             assert_eq!(result, target_bits);
             assert_eq!(dict_len(target), 8);
@@ -2158,6 +2219,186 @@ fn dictionary_fromkeys_nonempty_exact_constructor_preserves_live_capacity() {
                 class,
                 name,
                 target_bits,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+static SUBCLASS_EQ_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// `__eq__` of the str subclass below: never equal, and counted, so a probe
+/// that ran ordinary equality is visible.
+extern "C" fn counted_unequal(__context: u64, _left: u64, _right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    SUBCLASS_EQ_CALLS.fetch_add(1, Ordering::SeqCst);
+    MoltObject::from_bool(false).bits()
+}
+
+/// A str subclass with a counting, never-equal `__eq__`, and one instance of
+/// it whose storage spells `text`.
+fn str_subclass_key(py: &PyToken<'_>, text: &[u8]) -> (u64, u64) {
+    let name = dynamic_attr_name_bits(py, b"PhysicalProbeText").unwrap();
+    let class = crate::molt_class_new_attached_body(py, name);
+    dec_ref_bits(py, name);
+    let result = crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).str);
+    dec_ref_bits(py, result);
+    unsafe { crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()) }
+        .expect("valid str subclass");
+    let eq_name = crate::NameId::DunderEq.owned_bits(py).unwrap();
+    let function = MoltObject::from_ptr(alloc_runtime_function_obj(
+        py,
+        runtime_fn_addr("counted_unequal", counted_unequal as *const ()),
+        2,
+    ))
+    .bits();
+    let result = crate::molt_set_attr_name_attached_body(py, class, eq_name, function);
+    dec_ref_bits(py, result);
+    dec_ref_bits(py, eq_name);
+    dec_ref_bits(py, function);
+    let storage = string_key(py, text);
+    let instance = unsafe { crate::call_callable1(py, class, storage) };
+    dec_ref_bits(py, storage);
+    assert!(!exception_pending(py));
+    (instance, class)
+}
+
+/// `dict_get_str_borrowed` is a physical lookup: the first string-storage row
+/// whose hash and bytes match, without ordinary equality. Each expected value
+/// is written out from the table the case builds.
+#[test]
+fn physical_string_reads_select_the_first_matching_string_row_without_equality() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let hash = hash_string_bytes(py, b"selected") as u64;
+            let (subclass_key, subclass) = str_subclass_key(py, b"selected");
+            let (probe, probe_class, probe_function) = same_hash_probe_key(py);
+            let int = |value: i64| MoltObject::from_int(value).bits();
+            let query = string_key(py, b"selected");
+            let missing = string_key(py, b"missing");
+            // Stored with an explicit hash, so the key object caches none.
+            let stored = string_key(py, b"selected");
+            let other = string_key(py, b"other");
+
+            let plain = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                plain,
+                stored,
+                int(42),
+                hash
+            ));
+            // A tombstone in the probe chain: the colliding row that preceded
+            // the exact key is deleted.
+            let tombstoned = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                tombstoned,
+                probe,
+                int(7),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                tombstoned,
+                stored,
+                int(42),
+                hash
+            ));
+            drop(dict_del_with_hash_deferred(py, tombstoned, probe, hash).unwrap());
+            // A same-hash str-subclass row precedes the exact row.
+            let shadowed = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                shadowed,
+                subclass_key,
+                int(5),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                shadowed,
+                stored,
+                int(42),
+                hash
+            ));
+            // An exact row with the same stored hash but other bytes comes
+            // first, then the str-subclass row: the exact probe passes the
+            // mismatch, meets the subclass row and defers to the byte probe.
+            let mismatched = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                mismatched,
+                other,
+                int(3),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                mismatched,
+                subclass_key,
+                int(5),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                mismatched,
+                stored,
+                int(42),
+                hash
+            ));
+            assert!(!exception_pending(py));
+
+            PROBE_MODE.store(PROBE_EQUAL, Ordering::SeqCst);
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            SUBCLASS_EQ_CALLS.store(0, Ordering::SeqCst);
+            let cases = [
+                (plain, query, Some(int(42))),
+                (plain, subclass_key, Some(int(42))),
+                (plain, missing, None),
+                (plain, int(1), None),
+                (tombstoned, query, Some(int(42))),
+                (tombstoned, missing, None),
+                (shadowed, query, Some(int(5))),
+                (shadowed, subclass_key, Some(int(5))),
+                (mismatched, query, Some(int(5))),
+                // The row stores another string's hash: its own bytes,
+                // probed under their real hash, never reach it.
+                (mismatched, other, None),
+                (mismatched, missing, None),
+            ];
+            for (index, (dict, key, expected)) in cases.into_iter().enumerate() {
+                assert_eq!(
+                    dict_get_str_borrowed(py, dict, key),
+                    expected,
+                    "case {index}"
+                );
+            }
+            assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 0);
+            assert_eq!(SUBCLASS_EQ_CALLS.load(Ordering::SeqCst), 0);
+            assert!(!exception_pending(py));
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            for bits in [
+                MoltObject::from_ptr(plain).bits(),
+                MoltObject::from_ptr(tombstoned).bits(),
+                MoltObject::from_ptr(shadowed).bits(),
+                MoltObject::from_ptr(mismatched).bits(),
+                query,
+                missing,
+                stored,
+                other,
+                subclass_key,
+                subclass,
+                probe,
+                probe_class,
+                probe_function,
             ] {
                 dec_ref_bits(py, bits);
             }

@@ -1,6 +1,8 @@
 use super::*;
-use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 // Handler-owned routing slice. `code_new` and the CallArgs push/expand
 // steps are exact `molt_<kind>` boxed-ABI calls and take the shared admitted
@@ -80,12 +82,33 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             })
     }
 
-    /// Borrow the executing frame's homes at the builder's position and keep
-    /// the base in this function's entry slot. Returns the base: 0 when the
-    /// frame entry failed (its exception pending) or the frame has too few
-    /// homes (`SystemError` raised); the caller routes 0 to an exception exit.
-    fn lend_frame_homes(&mut self, slots: u64) -> inkwell::values::IntValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
+    /// The frame shape this function's entry declares: a synchronous frame's
+    /// home count and clear order. `None`: its frame is runtime-linked, or it
+    /// has no entry.
+    pub(in crate::llvm_backend::lowering) fn frame_shape(
+        &self,
+    ) -> Option<molt_codegen_abi::frame_record::FrameShape> {
+        self.func
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find(|op| matches!(op.origin, Some(kind) if kind == OpKind::TraceEnterSlot))
+            .and_then(Self::entry_frame_shape)
+    }
+
+    fn entry_frame_shape(op: &TirOp) -> Option<molt_codegen_abi::frame_record::FrameShape> {
+        match op.attrs.get("value") {
+            Some(AttrValue::Int(value)) => {
+                Some(molt_codegen_abi::frame_record::FrameShape::from_entry_value(*value))
+            }
+            _ => None,
+        }
+    }
+
+    /// Keep the frame's homes base, its record's base, in this function's
+    /// entry slot. Zero means no frame was entered; the caller routes it to
+    /// an exception exit.
+    fn bind_frame_homes(&mut self, base: inkwell::values::IntValue<'ctx>) {
         let slot = match self.frame_homes {
             Some(slot) => slot,
             None => {
@@ -94,34 +117,42 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 slot
             }
         };
-        let lend = self.ensure_runtime_i64_fn("molt_frame_homes", 1);
-        let homes = self
-            .backend
-            .builder
-            .build_call(
-                lend,
-                &[i64_ty.const_int(slots, false).into()],
-                "frame_homes",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
-        self.backend.builder.build_store(slot, homes).unwrap();
-        homes
+        self.backend.builder.build_store(slot, base).unwrap();
     }
 
     /// A split chunk has no frame entry of its own: at function entry it
-    /// borrows the homes of the frame it runs in, and returns at once, with
-    /// the exception pending, when none are lent.
+    /// borrows the homes of the executing frame it runs in, and returns at
+    /// once when there is none.
     pub(in crate::llvm_backend::lowering) fn lend_chunk_frame_homes(&mut self) {
         if self.has_frame_entry() {
             return;
         }
-        let Some(slots) = self.frame_home_slot_count() else {
+        if self.frame_home_slot_count().is_none() {
             return;
+        }
+        let i64_ty = self.backend.context.i64_type();
+        let (record, _) = self.async_poll_context();
+        let frame_top = unsafe {
+            self.backend
+                .builder
+                .build_gep(
+                    self.backend.context.i8_type(),
+                    record,
+                    &[i64_ty.const_int(
+                        molt_codegen_abi::THREAD_RECORD_FRAME_TOP_OFFSET as u64,
+                        false,
+                    )],
+                    "frame_top",
+                )
+                .unwrap()
         };
-        let homes = self.lend_frame_homes(slots);
+        let homes = self
+            .backend
+            .builder
+            .build_load(i64_ty, frame_top, "executing_frame")
+            .unwrap()
+            .into_int_value();
+        self.bind_frame_homes(homes);
         let failed = self
             .backend
             .builder
@@ -210,7 +241,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> inkwell::values::IntValue<'ctx> {
         let context = self.backend.context;
         let i64_ty = context.i64_type();
-        let fits = inline_int_fits_with_builder(&self.backend.builder, context, raw);
+        let fits = nanbox::boxed_word::generate_inline_int_fits(&mut self.words(), raw);
         let inline_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_inline");
         let slow_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_slow");
         let done_bb = context.append_basic_block(self.llvm_fn, "frame_home_boxed");
@@ -224,7 +255,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_llvm_edge(origin, slow_bb);
 
         self.backend.builder.position_at_end(inline_bb);
-        let inline = inline_int_box_with_builder(&self.backend.builder, context, raw);
+        let inline = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw);
         self.backend.builder.build_store(bits_ptr, inline).unwrap();
         self.backend
             .builder
@@ -249,7 +280,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let slow = self
             .backend
             .builder
-            .build_call(load_fn, &[home.into()], "frame_home_load")
+            .build_execution_call(load_fn, &[home.into()], "frame_home_load")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -413,7 +444,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 // Dedicated task-wrapper ABI; a machine i64 declaration does
                 // not authorize generic boxed-call admission for this symbol.
-                let wrap = self.ensure_runtime_import(MOLT_ASYNCGEN_NEW);
+                let wrap = self.ensure_runtime_import(RuntimeFn::AsyncgenNew);
                 self.emit_borrowed_runtime_call(
                     op,
                     wrap,
@@ -527,7 +558,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         new_fn,
                         &[
                             fn_ptr.into(),
@@ -632,7 +663,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let _ = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         init_fn,
                         &[i64_ty.const_int(count as u64, true).into()],
                         "code_slots_init",
@@ -645,26 +676,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .owned_frame_entered
                     .expect("trace_enter_slot requires local execution-context ownership");
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
-                let enter_fn = self.ensure_runtime_i64_fn("molt_trace_enter_slot", 1);
-                let _ = self
-                    .backend
-                    .builder
-                    .build_call(enter_fn, &[code_id.into()], "trace_enter_slot")
-                    .unwrap();
-                // Even a failed entry attempt records a runtime credit that
-                // must be balanced; this is not proof that a frame was pushed.
-                self.backend
-                    .builder
-                    .build_store(
-                        entered,
-                        self.backend.context.bool_type().const_int(1, false),
-                    )
-                    .unwrap();
-                // The entry took the frame's binding homes: lend them before
-                // the entry's adjacent exception check, which leaves for the
-                // entry-failure label when the lend is 0.
-                if let Some(slots) = self.frame_home_slot_count() {
-                    self.lend_frame_homes(slots);
+                let shape = Self::entry_frame_shape(op);
+                debug_assert!(
+                    shape.is_none_or(|shape| {
+                        self.frame_home_slot_count().unwrap_or(0) <= u64::from(shape.homes)
+                    }),
+                    "compiled frame addresses more homes than its entry declares"
+                );
+                // Zero: nothing was linked, and the exit pops nothing.
+                let base = self.emit_frame_record_push(code_id, shape);
+                self.backend.builder.build_store(entered, base).unwrap();
+                // The record's base is the homes base. The entry's adjacent
+                // exception check leaves for the entry-failure label before
+                // any home op runs.
+                if self.frame_home_slot_count().is_some() {
+                    self.bind_frame_homes(base);
                 }
                 true
             }
@@ -818,7 +844,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let slow_bits = self
                     .backend
                     .builder
-                    .build_call(load_fn, &[home.into()], "frame_home_load")
+                    .build_execution_call(load_fn, &[home.into()], "frame_home_load")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -905,27 +931,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.store_frame_location(*location);
                 true
             }
-            OpKind::Line => {
-                let line = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => Some(*v),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let line_fn = self.ensure_runtime_i64_fn("molt_trace_set_line", 1);
-                let _ = self
-                    .backend
-                    .builder
-                    .build_call(
-                        line_fn,
-                        &[i64_ty.const_int(line as u64, true).into()],
-                        "trace_set_line",
-                    )
-                    .unwrap();
-                true
-            }
+            // A statement marker: it emits no code. Tracebacks read the
+            // location that `frame_set_location` publishes before each
+            // raising op.
+            OpKind::Line => true,
             OpKind::CallargsNew => {
                 // The source call form picks the builder: a CALL_FUNCTION_EX
                 // call site's arguments are its own tuple and mapping.
@@ -937,7 +946,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         new_fn,
                         &[i64_ty.const_zero().into(), i64_ty.const_zero().into()],
                         "callargs_new",

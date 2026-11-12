@@ -16,6 +16,7 @@ fn wasm_reachability_never_rewrites_existing_release_custody() {
     let block = function.blocks.get_mut(&function.entry_block).unwrap();
     block.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],

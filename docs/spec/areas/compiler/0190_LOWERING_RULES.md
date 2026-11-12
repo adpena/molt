@@ -967,9 +967,11 @@ untyped call-and-store helper owns this boundary.
 
 Runtime import return custody is generated from the shared boxed-call ABI and
 explicit non-boxed import declarations in `wasm_abi_manifest.toml`. An `i64`
-carrier alone does not imply an object or a borrowed result. WASM direct,
-generated and manual sinks consume `WasmRuntimeReturn`; native and LLVM boxed
-calls consume the same owned/borrowed/poll facts. A bound borrowed return is
+carrier alone does not imply an object or a borrowed result. Every backend
+reads one return contract, `RuntimeReturnContract` on the generated `RuntimeFn`
+(`runtime/molt-ir/src/runtime_fn_generated.rs`): WASM direct, generated and
+manual sinks, and native and LLVM boxed calls, consume the same
+owned/borrowed/poll facts. A bound borrowed return is
 retained before releasing temporary arguments; discarding it releases no owner.
 Poll returns own ready values, while the pending immediate is not a heap pointer.
 Poll-table membership establishes that protocol for scheduler callbacks; direct

@@ -459,7 +459,11 @@ role = "compilation SDK invoking the installed CLI; no runtime dependency"
 name = "molt-wasm-host"
 runtime_layer = "outside"
 layer = 7
-role = "WASM host over molt-runtime + obj-model"
+# The host validates attached entries against molt-ir runtime_callable_abi_generated.
+# This intentional vocabulary edge shares physical symbols and context classification
+# with every backend instead of maintaining a second host ABI table. It adds the
+# host to the IR rebuild cone; lowering and backend crates remain independent.
+role = "WASM host over runtime, object model, and generated runtime-call ABI vocabulary"
 
 [[crate]]
 name = "molt-cext-discovery"

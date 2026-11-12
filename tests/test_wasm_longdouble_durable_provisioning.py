@@ -17,6 +17,7 @@ from molt.cli import wasm_link_inputs
 from molt.cli import runtime_wasm_build_support as rb
 from molt.cli.runtime_identity_schema import RuntimePublicationTransform
 from molt.llvm_toolchain import LlvmToolchainConfigError
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 
 
 def test_missing_sdk_refuses_c_runtime_instead_of_using_an_isolated_archive(
@@ -380,7 +381,7 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
         encoding="utf-8",
     )
     executable = tmp_path / ("decoder.exe" if os.name == "nt" else "decoder")
-    cold_timeout = 60  # The newly built decoder has not executed yet.
+    cold_timeout = 60  # Installed compiler work has its own bound.
     run_guarded_test_process(
         [rustc, "--edition=2024", str(source), "-o", str(executable)],
         capture_output=True,
@@ -421,7 +422,7 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
             capture_output=True,
             text=True,
             check=True,
-            timeout=cold_timeout if index == 0 else 10,
+            timeout=FRESH_EXECUTABLE_TIMEOUT_S if index == 0 else 10,
         )
     # The receiver sees raw effective Cargo flags, not necessarily our Python
     # canonical spelling. Exercise both aliases and each conflicting mode there.

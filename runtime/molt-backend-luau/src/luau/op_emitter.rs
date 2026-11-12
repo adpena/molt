@@ -41,12 +41,7 @@ impl LuauBackend {
         }
         let function = call.function();
         let args = op.args.as_deref().unwrap_or(&[]);
-        assert_eq!(
-            args.len(),
-            function.boxed_abi().arity,
-            "{} contract arity",
-            op.kind
-        );
+        assert_eq!(args.len(), function.params(), "{} contract arity", op.kind);
         let args = args
             .iter()
             .map(|arg| sanitize_ident(arg))
@@ -139,6 +134,7 @@ impl LuauBackend {
             | molt_ir::OpKind::AsciiFromObj
             | molt_ir::OpKind::AsyncForEnd
             | molt_ir::OpKind::AsyncForStart
+            | molt_ir::OpKind::AsyncWorkPending
             | molt_ir::OpKind::AsyncWorkPoll
             | molt_ir::OpKind::AsyncgenNew
             | molt_ir::OpKind::Band

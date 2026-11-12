@@ -2,13 +2,11 @@ use super::support::*;
 
 #[test]
 fn pure_poll_can_read_its_execution_record_without_admitting_native_thread_spawn() {
-    use crate::wasm_abi_generated::WasmRuntimeImport;
     for row in crate::wasm_abi_generated::IMPORT_REGISTRY {
         if row.name.starts_with("thread_") {
-            assert_eq!(
-                WasmProfile::Pure.allows_runtime_import(row.import),
-                row.import == WasmRuntimeImport::ThreadRecord,
-                "only the execution record belongs to the Pure thread family: {}",
+            assert!(
+                !WasmProfile::Pure.allows_runtime_import(row.import),
+                "native thread operations remain outside the Pure poll profile: {}",
                 row.name,
             );
         }
@@ -109,7 +107,7 @@ fn jumpful_and_native_eh_dispatch_call_async_observer_then_branch() {
             .position(|op| op == &call)
             .expect("molt_main must call the async observer");
         assert!(
-            ops[call_pos - 1].starts_with("If"),
+            ops[attached_call_operands_end(&ops, call_pos, 0) - 1].starts_with("If"),
             "service must be conditional: {ops:?}"
         );
         assert_eq!(ops[call_pos + 1], "Else");
@@ -143,25 +141,17 @@ fn finally_pending_observer_services_only_the_notified_branch_without_exception_
                     .iter()
                     .position(|op| op == &format!("Call {{ function_index: {service} }}"))
                     .unwrap();
-                assert!(ops[index - 1].starts_with("If"));
+                assert!(ops[index - 2].starts_with("If"));
                 assert_eq!(ops[index + 1], "Else");
                 let passive_index = ops
                     .iter()
                     .position(|op| op == &format!("Call {{ function_index: {passive} }}"))
                     .unwrap();
                 assert!(
-                    ops[passive_index - 1].starts_with("If"),
+                    ops[passive_index - 2].starts_with("If"),
                     "empty exception state must also avoid runtime entry: {ops:?}"
                 );
-                assert_eq!(
-                    calls,
-                    [
-                        imports["thread_record"],
-                        imports["refcount_admission"],
-                        service,
-                        passive
-                    ]
-                );
+                assert_eq!(calls, [imports["refcount_admission"], service, passive]);
             } else {
                 assert!(!imports.contains_key("async_work_poll_and_exception_last_pending"));
                 assert_eq!(calls, [imports["refcount_admission"], passive]);

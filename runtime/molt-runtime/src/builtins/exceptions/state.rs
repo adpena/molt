@@ -1,10 +1,6 @@
 use crate::runtime_flags::{self, RuntimeFlag};
-use crate::{GilGuard, MoltObject, PyToken, dec_ref_bits, runtime_state};
+use crate::{PyToken, runtime_state};
 use std::cell::{Cell, RefCell};
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
 pub(super) fn debug_oom() -> bool {
@@ -21,18 +17,13 @@ thread_local! {
     /// CPython-compatible pending exception for the current native thread.
     /// Async task execution uses the task-keyed runtime map instead; the
     /// thread slot is the sole authority whenever no task is active. The slot
-    /// has no destructor, so it stays accessible while other thread-locals are
-    /// torn down; `THREAD_EXCEPTION_RELEASE` releases its strong edge.
+    /// has no destructor, so it stays accessible during the exact-origin,
+    /// two-domain thread-state drain that releases its strong edge.
     pub(crate) static THREAD_LAST_EXCEPTION: ThreadExceptionState = const { ThreadExceptionState::new() };
-    /// Thread-exit owner of the pending exception's strong edge. Releasing it
-    /// runs finalizer probes that preserve and restore the pending error, so
-    /// they re-enter `THREAD_LAST_EXCEPTION`; a slot with its own destructor is
-    /// inaccessible while that destructor runs and would abort the thread.
-    static THREAD_EXCEPTION_RELEASE: ThreadExceptionRelease = const { ThreadExceptionRelease };
-    pub(crate) static EXCEPTION_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static EXCEPTION_STACK: std::mem::ManuallyDrop<RefCell<Vec<usize>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
     pub(crate) static EXCEPTION_STACK_BASELINE: Cell<usize> = const { Cell::new(0) };
-    pub(crate) static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<ExceptionContextFallback>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static ACTIVE_EXCEPTION_STACK: std::mem::ManuallyDrop<RefCell<Vec<u64>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+    pub(crate) static ACTIVE_EXCEPTION_FALLBACK: std::mem::ManuallyDrop<RefCell<Vec<ExceptionContextFallback>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
     pub(crate) static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };
     pub(crate) static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
@@ -50,19 +41,6 @@ pub(crate) struct ThreadExceptionState {
     slot: Cell<*mut u8>,
 }
 
-#[cfg(test)]
-#[derive(Clone)]
-pub(super) struct ThreadExceptionDropTestGate {
-    pub(super) owner: std::thread::ThreadId,
-    pub(super) entered: std::sync::mpsc::Sender<()>,
-    pub(super) release: Arc<std::sync::Barrier>,
-    pub(super) completion: std::sync::mpsc::Sender<()>,
-}
-
-#[cfg(test)]
-pub(super) static THREAD_EXCEPTION_DROP_TEST_GATE: Mutex<Option<ThreadExceptionDropTestGate>> =
-    Mutex::new(None);
-
 impl ThreadExceptionState {
     const fn new() -> Self {
         Self {
@@ -75,61 +53,7 @@ impl ThreadExceptionState {
     }
 
     pub(crate) fn replace(&self, ptr: *mut u8) -> *mut u8 {
-        arm_thread_exception_release(ptr);
         self.slot.replace(ptr)
-    }
-}
-
-/// First access registers the thread-exit release. During that release the
-/// sentinel is already being destroyed; an exception published by a finalizer
-/// there is drained by the release loop itself.
-fn arm_thread_exception_release(ptr: *mut u8) {
-    if !ptr.is_null() {
-        let _ = THREAD_EXCEPTION_RELEASE.try_with(|_| ());
-    }
-}
-
-struct ThreadExceptionRelease;
-
-impl Drop for ThreadExceptionRelease {
-    fn drop(&mut self) {
-        if THREAD_LAST_EXCEPTION.with(|state| state.get().is_null()) {
-            return;
-        }
-        let gil = GilGuard::new();
-        #[cfg(test)]
-        let test_completion = {
-            let gate = { THREAD_EXCEPTION_DROP_TEST_GATE.lock().unwrap().clone() };
-            if let Some(gate) = gate
-                && gate.owner == std::thread::current().id()
-            {
-                gate.entered.send(()).unwrap();
-                gate.release.wait();
-                Some(gate.completion)
-            } else {
-                None
-            }
-        };
-        // Liveness must be validated only after acquiring the same GIL that
-        // shutdown holds through unpublication and free. A pre-lock check can
-        // race with shutdown and turn this DECREF into a use-after-free.
-        if crate::state::runtime_state::runtime_state_for_gil().is_none() {
-            return;
-        }
-        let py = gil.token();
-        // Releasing an exception can run finalizers that publish another one;
-        // drain until the slot stays empty.
-        loop {
-            let ptr = THREAD_LAST_EXCEPTION.with(|state| state.slot.replace(std::ptr::null_mut()));
-            if ptr.is_null() {
-                break;
-            }
-            dec_ref_bits(&py, MoltObject::from_ptr(ptr).bits());
-        }
-        #[cfg(test)]
-        if let Some(completion) = test_completion {
-            completion.send(()).unwrap();
-        }
     }
 }
 

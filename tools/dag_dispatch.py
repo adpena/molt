@@ -10,8 +10,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-import json
-import math
 from typing import Any
 
 from tools import finding_status
@@ -146,52 +144,8 @@ def row_plan(
     )
 
 
-def parse_ratchet(text: str) -> Mapping[str, Any]:
-    """A present ratchet must be an object; JSON null never means absent."""
-    value = json.loads(text)
-    if not isinstance(value, Mapping):
-        raise DispatchRefused("primitive north star: ratchet must be an object")
-    return value
-
-
-def north_star(ratchet: Mapping[str, Any] | None) -> str:
-    """One per-operation ratio per primitive, plus the empty startup axis."""
-    if ratchet is None:
-        return (
-            "Primitive north star unavailable: bench/primitive_ratchet.json is absent."
-        )
-    if ratchet.get("schema") != "molt-primitive-instructions-v1":
-        raise DispatchRefused("primitive north star: unsupported ratchet schema")
-    axes = ratchet.get("axes")
-    if not isinstance(axes, Mapping) or not axes:
-        raise DispatchRefused("primitive north star: missing recorded axes")
-    ratios = []
-    for key, value in axes.items():
-        if not isinstance(key, str) or not isinstance(value, Mapping):
-            raise DispatchRefused("primitive north star: malformed recorded axis")
-        ratio = value.get("ratio")
-        if (
-            isinstance(ratio, bool)
-            or not isinstance(ratio, (int, float))
-            or not math.isfinite(ratio)
-            or ratio <= 0
-        ):
-            raise DispatchRefused(f"primitive north star: invalid ratio for {key}")
-        if key.endswith("/per_op") or key == "empty/startup":
-            ratios.append(ratio)
-    if not ratios:
-        raise DispatchRefused("primitive north star: no primitive ratios")
-    mean = math.exp(math.fsum(math.log(ratio) for ratio in ratios) / len(ratios))
-    return f"Recorded primitive geometric mean: {mean:.2f}x CPython over {len(ratios)} axes (instructions; empty/startup included)."
-
-
-def render_plan(
-    plan: Sequence[PlannedRow], ratchet: Mapping[str, Any] | None = None
-) -> str:
-    lines = [
-        north_star(ratchet),
-        "Ready v1 rows (critical path, downstream rows, family custody):",
-    ]
+def render_plan(plan: Sequence[PlannedRow]) -> str:
+    lines = ["Ready v1 rows (critical path, downstream rows, family custody):"]
     for row in plan:
         if row.ready:
             custody = ", ".join(row.claimed_by) or "unclaimed"

@@ -6,7 +6,8 @@ use std::fmt::Write as _;
 
 pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
     pub(in crate::native_backend::simple_backend) emit_resolver_here: bool,
-    pub(in crate::native_backend::simple_backend) app_callable_manifest: BTreeSet<String>,
+    pub(in crate::native_backend::simple_backend) app_callable_manifest:
+        crate::passes::AppCallableManifest,
     pub(in crate::native_backend::simple_backend) source_callables:
         molt_tir::trampolines::CallableMetadata,
     pub(in crate::native_backend::simple_backend) final_functions: Option<NativeFinalFunctions>,
@@ -121,6 +122,7 @@ impl SimpleBackend {
                     } else {
                         crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
                     },
+                    linkage: None,
                 },
             );
             let mut final_functions = NativeFinalFunctions::from_final_tir(

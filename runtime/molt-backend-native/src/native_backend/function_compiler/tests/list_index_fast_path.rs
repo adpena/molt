@@ -47,6 +47,7 @@ fn with_list_storage_state(
         let mut state = ListIndexFastPathState::new(&roots);
         check(&mut builder, &mut state, &roots, release_site);
         builder.ins().return_(&[]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))
@@ -504,7 +505,9 @@ fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
     let symbols = native_object_symbols(&emit_direct_object(backend));
     for name in names {
         assert!(
-            symbols.defined.contains(name),
+            symbols.defined.contains(
+                &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(name)
+            ),
             "the real loop callers must emit {name}"
         );
     }

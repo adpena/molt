@@ -51,7 +51,12 @@ def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
     # class's offsets, and the wire names the class statement the guard trusts
     # (HF-220), never a class operand.
     generator = SimpleTIRGenerator()
-    generator.classes[POINT] = {"binding_name": "Point", "fields": {"x": 8}}
+    generator.classes[POINT] = {
+        "binding_name": "Point",
+        "dynamic": False,
+        "definition_exposed": False,
+        "fields": {"x": 8},
+    }
     context = SerializationContext([], set(), None)
     assert generator._serialize_object_attr_op(
         MoltOp(
@@ -218,6 +223,8 @@ def test_exact_binding_alias_and_lowered_value_drive_direct_field_consumers() ->
     first_field_op = len(generator.current_ops)
     generator.classes[POINT] = {
         "binding_name": "Point",
+        "dynamic": False,
+        "definition_exposed": False,
         "fields": {"x": 24},
         "layout_version": 7,
         "static": True,
@@ -453,6 +460,8 @@ def test_exact_dataclass_value_uses_the_attribute_protocol() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.classes[RECORD] = {
         "binding_name": "Record",
+        "dynamic": False,
+        "definition_exposed": False,
         "dataclass": True,
         "fields": {},
         "field_hints": {},
@@ -602,6 +611,8 @@ def test_synthesized_layout_guards_name_their_class_statement(operation: str) ->
     generator.current_func_name = "retained_method"
     generator.classes[POINT] = {
         "binding_name": "Point",
+        "dynamic": False,
+        "definition_exposed": False,
         "static": True,
         "fields": {"x": 8},
     }
@@ -636,6 +647,8 @@ def test_external_layout_identity_does_not_import_or_read_module(
     generator.current_func_name = "retained_method"
     generator.classes[ELSEWHERE_POINT] = {
         "binding_name": "Point",
+        "dynamic": False,
+        "definition_exposed": False,
         "static": True,
         "fields": {"x": 8},
     }
@@ -676,6 +689,8 @@ def test_external_layout_identity_ignores_imported_aliases(local: bool) -> None:
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
     generator.classes[ELSEWHERE_POINT] = {
         "binding_name": "Point",
+        "dynamic": False,
+        "definition_exposed": False,
         "static": True,
         "fields": {"x": 8},
     }
@@ -702,6 +717,8 @@ def test_local_class_guard_reads_no_class_storage(operation: str, storage: str) 
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
     generator.classes[POINT] = {
         "binding_name": "Point",
+        "dynamic": False,
+        "definition_exposed": False,
         "static": False,
         "fields": {"x": 8},
     }

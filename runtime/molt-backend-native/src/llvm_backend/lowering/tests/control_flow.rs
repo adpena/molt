@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
 use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
@@ -31,6 +33,7 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
     };
     let marker = |kind, attrs| TirOp {
         origin: Some(kind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -77,26 +80,42 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
     let function = lower_tir_to_llvm(&func, &backend);
     backend.module.verify().unwrap();
     let ir = function.print_to_string().to_string();
-    assert_eq!(ir.matches("@molt_trace_enter_slot(").count(), 1, "{ir}");
     assert_eq!(
-        ir.matches("@molt_trace_exit(").count(),
+        ir.matches_execution("@molt_frame_record_enter(").count(),
+        1,
+        "{ir}"
+    );
+    assert_eq!(
+        ir.matches_execution("@__molt_frame_pop_linked(").count(),
         3,
         "every return needs its own guarded closure: {ir}"
     );
     assert_eq!(
-        ir.matches("store i1 true").count(),
+        ir.matches_execution("store i64 %frame_record_enter, ptr %owned_frame_base")
+            .count(),
         1,
-        "only a returned entry attempt grants a balancing credit: {ir}"
+        "only the entry's own record base grants a pop: {ir}"
     );
     assert_eq!(
-        ir.matches("store i1 false").count(),
+        ir.matches_execution("store i64 0, ptr %owned_frame_base")
+            .count(),
         4,
-        "one initial empty credit, retired before each potential pop: {ir}"
+        "one initial empty base, retired before each potential pop: {ir}"
+    );
+    // The pop body tests the base, so an early exit does not pop the caller.
+    let module_ir = backend.module.print_to_string().to_string();
+    let pop_body = module_ir
+        .split("define ")
+        .find(|body| body.starts_with("internal void @__molt_frame_pop_linked"))
+        .expect("frame pop body");
+    assert!(
+        pop_body.contains("icmp ne i64") && pop_body.contains("br i1 %word_test"),
+        "{pop_body}"
     );
     assert_eq!(
-        ir.matches("br i1 %frame_entered").count(),
-        3,
-        "early exits must not pop the caller: {ir}"
+        pop_body.matches("molt_frame_record_exit").count(),
+        1,
+        "{pop_body}"
     );
 }
 
@@ -118,6 +137,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let previous_baseline = func.fresh_value();
     let marker = |opcode| TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],
@@ -127,6 +147,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     };
     let runtime = |kind: OpKind, operands, results| TirOp {
         origin: Some(kind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
@@ -170,15 +191,27 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
         .expect("path-local cleanup must verify");
     let ir = llvm_fn.print_to_string().to_string();
     assert_eq!(
-        ir.matches("@molt_exception_stack_enter(").count(),
+        ir.matches_execution("@molt_exception_stack_enter(").count(),
         1,
         "{ir}"
     );
-    assert_eq!(ir.matches("@molt_exception_push(").count(), 1, "{ir}");
-    assert_eq!(ir.matches("@molt_exception_pop(").count(), 2, "{ir}");
-    assert_eq!(ir.matches("@molt_exception_stack_exit(").count(), 2, "{ir}");
+    assert_eq!(
+        ir.matches_execution("@molt_exception_push(").count(),
+        1,
+        "{ir}"
+    );
+    assert_eq!(
+        ir.matches_execution("@molt_exception_pop(").count(),
+        2,
+        "{ir}"
+    );
+    assert_eq!(
+        ir.matches_execution("@molt_exception_stack_exit(").count(),
+        2,
+        "{ir}"
+    );
     assert!(
-        !ir.contains("try_baseline"),
+        !ir.contains_execution("try_baseline"),
         "metadata must not allocate a second runtime baseline: {ir}"
     );
 }
@@ -220,6 +253,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             let args: Vec<_> = entry.args.iter().map(|arg| arg.id).collect();
             entry.ops.push(TirOp {
                 origin: Some(OpKind::TraceEnterSlot),
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![],
@@ -243,6 +277,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             let origin = call_async.then_some(OpKind::CallAsync);
             entry.ops.push(TirOp {
                 origin,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -256,6 +291,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             });
             entry.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ExceptionPending,
                 operands: vec![],
@@ -266,6 +302,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             for arg in args {
                 entry.ops.push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::DecRef,
                     operands: vec![arg],
@@ -276,6 +313,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             }
             entry.ops.push(TirOp {
                 origin: Some(OpKind::TraceExit),
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![],
@@ -314,7 +352,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 .expect("ordinary continuation shared by success and failure");
             let allocation = blocks
                 .iter()
-                .find(|bb| block_ir(bb).contains("@molt_task_new("))
+                .find(|bb| block_ir(bb).contains_execution("@molt_task_new("))
                 .expect("runtime allocator block");
             let allocation_ir = block_ir(allocation);
             let init_ir = block_ir(init);
@@ -325,14 +363,14 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "task_new"
             };
             assert!(
-                allocation_ir.contains(&format!(
+                allocation_ir.contains_execution(&format!(
                     "icmp ne i64 %{call_name}, {}",
                     nanbox::QNAN | nanbox::TAG_NONE
                 )),
                 "{ir}"
             );
             assert!(
-                allocation_ir.contains(&format!(
+                allocation_ir.contains_execution(&format!(
                     "br i1 %task_allocated, label %{}, label %{}",
                     init.get_name().to_str().unwrap(),
                     ready.get_name().to_str().unwrap()
@@ -340,19 +378,24 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "allocation failure must directly join cleanup: {ir}"
             );
             assert!(
-                !allocation_ir.contains("inttoptr") && !allocation_ir.contains("ret "),
+                !allocation_ir.contains_execution("inttoptr")
+                    && !allocation_ir.contains_execution("ret "),
                 "{ir}"
             );
-            assert!(init_ir.contains("inttoptr"), "{ir}");
-            assert_eq!(init_ir.matches("store i64").count(), payload_count, "{ir}");
+            assert!(init_ir.contains_execution("inttoptr"), "{ir}");
             assert_eq!(
-                init_ir.matches("@__molt_inline_retain(").count(),
+                init_ir.matches_execution("store i64").count(),
+                payload_count,
+                "{ir}"
+            );
+            assert_eq!(
+                init_ir.matches_execution("@__molt_inline_retain(").count(),
                 payload_count,
                 "{ir}"
             );
             if payload_count != 0 {
                 assert!(
-                    init_ir.contains(&format!(
+                    init_ir.contains_execution(&format!(
                         "getelementptr i64, ptr %task_obj_ptr, i64 {}",
                         payload_base / 8
                     )),
@@ -361,64 +404,57 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             }
             let registers_token = layout.completion() == TaskCompletion::RegisterCancelToken;
             assert_eq!(
-                init_ir.contains("@molt_cancel_token_get_current("),
+                init_ir.contains_execution("@molt_cancel_token_get_current("),
                 registers_token,
                 "{ir}"
             );
             assert_eq!(
-                init_ir.contains("@molt_task_register_execution("),
+                init_ir.contains_execution("@molt_task_register_execution("),
                 registers_token,
                 "{ir}"
             );
-            assert!(!init_ir.contains("ret "), "{ir}");
-            assert!(ready_ir.contains("@molt_exception_pending("), "{ir}");
+            assert!(!init_ir.contains_execution("ret "), "{ir}");
+            assert!(
+                ready_ir.contains_execution("@molt_exception_pending("),
+                "{ir}"
+            );
             assert_eq!(
-                ready_ir.matches("@__molt_inline_release(").count(),
+                ready_ir
+                    .matches_execution("@__molt_inline_release(")
+                    .count(),
                 2,
                 "{ir}"
             );
             assert!(
-                allocation_ir.contains("store i1 true"),
-                "frame credit must precede allocation: {ir}"
+                allocation_ir.contains_execution("store i64 %frame_record_enter"),
+                "the frame's record base must precede allocation: {ir}"
+            );
+            let retire = ready_ir
+                .find("store i64 0, ptr %owned_frame_base")
+                .expect("cleanup retires the record base");
+            let pop = ready_ir
+                .find("@__molt_frame_pop_linked")
+                .expect("cleanup must reach the guarded frame exit");
+            assert!(
+                retire < pop,
+                "retire the record base before finalizers: {ir}"
             );
             assert!(
-                ready_ir.contains(
-                    "br i1 %frame_entered, label %owned_frame_exit, label %owned_frame_exited"
-                ),
-                "cleanup must reach guarded frame exit: {ir}"
-            );
-            let pop_ir = block_ir(
-                blocks
-                    .iter()
-                    .find(|bb| block_ir(bb).contains("@molt_trace_exit("))
-                    .expect("owned frame exit"),
-            );
-            assert!(
-                pop_ir.contains("store i1 false")
-                    && pop_ir.contains("br label %owned_frame_exited"),
-                "retire the frame credit before finalizers: {ir}"
-            );
-            let return_ir = block_ir(
-                blocks
-                    .iter()
-                    .find(|bb| bb.get_name().to_str().unwrap() == "owned_frame_exited")
-                    .expect("return after frame closure"),
-            );
-            assert!(
-                return_ir.contains(&format!("ret i64 %{call_name}")),
+                ready_ir.contains_execution(&format!("ret i64 %{call_name}")),
                 "boxed result must survive unchanged: {ir}"
             );
             assert!(
-                !ready_ir.contains("inttoptr") && !ready_ir.contains("store i64"),
+                !ready_ir.contains_execution("inttoptr")
+                    && ready_ir.matches_execution("store i64").count() == 1,
                 "{ir}"
             );
             assert!(
-                !ready_ir.contains("@__molt_inline_retain(")
-                    && !ready_ir.contains("@molt_task_register_execution("),
+                !ready_ir.contains_execution("@__molt_inline_retain(")
+                    && !ready_ir.contains_execution("@molt_task_register_execution("),
                 "{ir}"
             );
             assert!(
-                !ir.contains("@molt_exception_clear("),
+                !ir.contains_execution("@molt_exception_clear("),
                 "allocation failure must preserve pending exception: {ir}"
             );
         }
@@ -457,6 +493,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             let origin = call_async.then_some(OpKind::CallAsync);
             entry.ops.push(TirOp {
                 origin,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -482,9 +519,13 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 while let Some(inst) = current {
                     current = inst.get_next_instruction();
                     if let Ok(call) = inkwell::values::CallSiteValue::try_from(inst)
-                        && call
-                            .get_called_fn_value()
-                            .is_some_and(|callee| callee.get_name().to_bytes() == b"molt_task_new")
+                        && call.get_called_fn_value().is_some_and(|callee| {
+                            callee.get_name().to_bytes()
+                                == crate::llvm_backend::execution_abi::execution_symbol(
+                                    "molt_task_new",
+                                )
+                                .as_bytes()
+                        })
                     {
                         allocations.push(inst);
                     }
@@ -492,7 +533,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             }
             assert_eq!(allocations.len(), 1);
             let poll = allocations[0]
-                .get_operand(0)
+                .get_operand(1)
                 .unwrap()
                 .value()
                 .unwrap()
@@ -506,7 +547,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             if expected_key.is_none() {
                 let compiled = backend
                     .module
-                    .get_function(symbol)
+                    .get_execution_function(symbol)
                     .unwrap()
                     .as_global_value()
                     .as_pointer_value()
@@ -536,6 +577,7 @@ fn lower_const_and_return() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -552,9 +594,15 @@ fn lower_const_and_return() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
 
-    assert!(ir.contains("const_ret"), "function name missing from IR");
-    assert!(ir.contains("42"), "constant 42 missing from IR");
-    assert!(ir.contains("ret "), "return instruction missing from IR");
+    assert!(
+        ir.contains_execution("const_ret"),
+        "function name missing from IR"
+    );
+    assert!(ir.contains_execution("42"), "constant 42 missing from IR");
+    assert!(
+        ir.contains_execution("ret "),
+        "return instruction missing from IR"
+    );
 }
 
 #[test]
@@ -573,6 +621,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
     entry.ops.push(const_none_def(owned));
     let mut exception_pop = TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -584,6 +633,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
     entry.ops.push(exception_pop);
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DecRef,
         operands: vec![owned],
@@ -596,10 +646,10 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
     let pop_pos = ir
-        .find("molt_exception_pop")
+        .find_execution("molt_exception_pop")
         .unwrap_or_else(|| panic!("LLVM must call molt_exception_pop; IR:\n{ir}"));
     let dec_pos = ir
-        .find("__molt_inline_release")
+        .find_execution("__molt_inline_release")
         .unwrap_or_else(|| panic!("LLVM must call molt_dec_ref_obj; IR:\n{ir}"));
     assert!(
         pop_pos < dec_pos,
@@ -754,6 +804,7 @@ fn check_exception_edge_feeds_handler_phi() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Import,
             operands: vec![],
@@ -763,6 +814,7 @@ fn check_exception_edge_feeds_handler_phi() {
         });
         let mut check = TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![live_value],
@@ -816,7 +868,10 @@ fn check_exception_edge_feeds_handler_phi() {
         } else {
             "molt_exception_pending"
         };
-        assert!(ir.contains(&format!("call i64 @{symbol}()")), "{ir}");
+        assert!(
+            ir.contains_execution(&format!("call i64 @{symbol}()")),
+            "{ir}"
+        );
     }
 }
 
@@ -839,6 +894,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
             if inside_try {
                 entry.ops.push(TirOp {
                     origin: None,
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::TryStart,
                     operands: vec![],
@@ -849,6 +905,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
             }
             let mut check = TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -874,9 +931,9 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
             let error = try_lower_tir_to_llvm(&function, &backend)
                 .expect_err("a surrounding handler cannot supply an omitted exceptional edge");
             assert!(
-                error
-                    .to_string()
-                    .contains("check_exception requires an explicit exceptional successor label"),
+                error.to_string().contains_execution(
+                    "check_exception requires an explicit exceptional successor label"
+                ),
                 "inside_try={inside_try}, poll={poll}: {error}"
             );
         }

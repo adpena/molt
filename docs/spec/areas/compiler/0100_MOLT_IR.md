@@ -238,10 +238,26 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   excluded from Python callable publication remain excluded. A direct `call`
   to a runtime entry uses the generated boxed ABI, or, for a manifest row that
   opts in with `raw_call = true` (a raw-bits return through an all-i64 word
-  signature, such as the host init's `molt_runtime_init`), the generated raw
-  ABI (`runtime/molt-ir/src/runtime_raw_abi_generated.rs`): LLVM binds that
-  word without an owner and never releases it. Raw machine helpers whose
+  signature, such as the host init's `molt_runtime_init`), its `RawCall` form
+  in the generated `RuntimeFn` table (`runtime/molt-ir/src/runtime_fn_generated.rs`):
+  LLVM binds that word without an owner and never releases it. Raw machine helpers whose
   operands or results are not Python values never become generic call targets.
+- **Late lowering stage (HF-821)**: for a target whose backend consumes final TIR
+  (`FinalLowering::FinalTir` in `TargetInfo::lowering`; LLVM today), the drop
+  phase's `finalize_function_drops` first runs `run_late_lowering`. It expands
+  each value-level fast path into representation-level control flow over three
+  final-TIR ops (`final_tir_opcodes`, never on the SimpleIR wire):
+  `IsInlineInt` (the runtime's tag test), `UnboxInlineInt` (the sign-extended
+  47-bit payload, total) and `CallRuntime`, whose callee is the typed
+  `TirOp::runtime` entry that the verifier requires on it and forbids elsewhere.
+  First slice: `Add`/`Sub`/`InplaceAdd`/`InplaceSub` on two boxed words become a
+  tag-test diamond whose fast arm adds the payloads exactly (`RawI64FullDeopt`)
+  and boxes through the full-range path, and whose cold arm calls the op's own
+  entry, `TirOp::numeric_runtime` (`numeric_runtime_fn`, generated from the WASM
+  ABI manifest's `numeric_runtime_selector` rows). GVN then merges a value's
+  repeated tag tests and DCE drops the rest; debug builds verify after each
+  pass. Backends lower the primitives through molt-codegen-abi's shared
+  `boxed_word` generators. A function without an eligible op is unchanged.
 - **SSA**: every value is defined once; all uses are dominated by the definition (loop index carried via block params).
   SimpleIR construction uses one definition-stack walk over the augmented
   dominator tree. Explicit branch and state-resume arguments read those stacks
@@ -394,52 +410,12 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - Partial / pending:
   - Dedicated HIR and LIR modules are not yet split into standalone compiler
     crates/modules in this tree.
-  - Frontend lowering now includes a lightweight mid-end canonicalization
-    pipeline before JSON IR serialization (check-exception coalescing +
-    explicit basic-block CFG, dominator, and liveness passes). Current
-    behavior includes deterministic fixed-point ordering
-    (`simplify -> SCCP -> canonicalize -> DCE`) with sparse SCCP lattice
-    propagation (`unknown`/`constant`/`overdefined`) over SSA names, explicit
-    executable-edge tracking, SCCP folding for arithmetic/boolean/comparison/
-    `TypeOf` plus constant-safe `Contains`/`Index`, selected `IsInstance`
-    folds, and selected guard-tag/dict-shape facts (including guard-failure
-    edge termination). It now tracks try exceptional vs normal completion facts
-    and threads executable edges for `If`/`LoopBreakIf*`/`LoopEnd`/`Try*`, and
-    region-aware CFG
-    simplification across structured `If`/`Else`, `Loop`, `Try`, and
-    `Label`/`Jump` regions (including dead-label pruning and no-op jump
-    elimination, plus dead try-body suffix pruning after proven guard/raise
-    exits). A structural canonicalization step now runs before SCCP each round
-    to remove degenerate empty branch/loop/try regions. It also includes
-    conservative branch-tail merging, loop-invariant pure-op hoisting,
-    pure/read-heap cross-block CSE with conservative alias/effect classes
-    (`dict`/`list`/`indexable`/`attr`) including `GetAttr`/`LoadAttr`/`Index`
-    reuse under no-interfering-write checks. Read-heap invalidation treats
-    call/invoke operations as conservative write barriers, and class-level
-    alias epochs are augmented with lightweight object-sensitive epochs for
-    higher CSE hit-rate without unsafe reuse. Exceptional try-edge pruning
-    preserves balanced `TryStart`/`TryEnd` structure unless
-    dominance/post-dominance plus pre-trap `CheckException`-free proofs permit
-    marker elision. The CFG now models explicit `CheckException` branch targets
-    and threads proven exceptional checks into direct handler `Jump` edges with
-    dominance-safe guards before unreachable-region pruning. It also normalizes
-    nested try/except multi-handler join trampolines (label->jump chains)
-    before CSE rounds, and
-    side-effect-aware DCE with strict protection for guard/call/exception/control
-    ops. Expanded cross-block value reuse is still guarded by a CFG
-    definite-assignment verifier that rejects unproven reuse candidates instead
-    of trusting them. Fixed-point non-convergence and post-convergence
-    idempotence drift fail closed with diagnostics rather than emitting a
-    last-known-good or probe-rewritten IR variant; fixed-point policies and
-    explicit round overrides keep a two-round proof floor so one successful
-    rewrite is not misclassified as convergence failure.
-    Loop analysis tracks `(start, step, bound, compare-op)` tuples for affine
-    induction facts and monotonic bound proofs used by SCCP.
-    The pass also performs trivial-`Phi` elision, proven no-op `GuardTag`
-    elision, and dominance-safe hoisting of duplicate branch guards across
-    structured joins. CFG analysis data structures are now first-class in
-    `src/molt/frontend/cfg_analysis.py`, and mid-end telemetry reports
-    per-transform and function-scoped counters via `MOLT_MIDEND_STATS=1`.
+  - The Python frontend performs language lowering and serializes wire IR once.
+    Rust typed SSA passes own SCCP, GVN, exception-check elimination and DCE.
+    The Python fixed-point optimizer and its policy/coverage controls are retired
+    by HF-773 slice E. Async frame transport, traceback location publication and
+    wire validation remain frontend responsibilities. Rust SCCP's loop-header
+    refusal remains HF-821 work; the findings ledger bounds verified cells.
   - Frontend/lowering/backend now provide dedicated lanes for
     `CallIndirect`/`InvokeFFI`/`GuardTag`/`GuardLayout` and
     `IncRef`/`DecRef`/`Borrow`/`Release` plus conversion families

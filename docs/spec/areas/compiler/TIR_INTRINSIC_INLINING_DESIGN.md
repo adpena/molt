@@ -458,8 +458,8 @@ All 369 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 |----------|-----------|------|-------|
 | `molt_debug_trace` | 1 | Low | |
 | `molt_trace_enter` | 2 | Low | |
-| `molt_trace_enter_slot` | 2 | Low | |
-| `molt_trace_exit` | 4 | Low | |
+| `molt_frame_record_enter` | 2 | Low | frame entry off the inline record push |
+| `molt_frame_record_exit` | 4 | Low | frame exit off the inline record pop |
 | `molt_trace_set_line` | 1 | Low | |
 | `molt_frame_locals_set` | 1 | Low | |
 | `molt_profile_enabled` | 1 | Low | |

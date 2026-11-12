@@ -282,8 +282,10 @@ crate::builtins::methods::native_method_table!(
 // neither a Python __len__ lookup nor mapping admission supplies the result.
 macro_rules! dict_view_length_descriptor {
     ($py:ident, $owner:ident, $kind:ident) => {{
-        extern "C" fn length(view: u64) -> u64 {
-            crate::with_gil_entry_nopanic!(py, {
+        extern "C" fn length(__context: u64, view: u64) -> u64 {
+            let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+            crate::with_attached_entry_nopanic!(__attached_py, py, {
                 let Some(pointer) = obj_from_bits(view)
                     .as_ptr()
                     .filter(|pointer| unsafe { object_type_id(*pointer) } == $kind)
@@ -354,8 +356,10 @@ crate::builtins::methods::native_method_table!(
             fn_addr!(crate::object::ops_arith::native_slots::view_rxor_slot), 2)),
         crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_keys, TYPE_ID_DICT_KEYS_VIEW),
         crate::NameId::DunderContains => {
-            extern "C" fn contains(view: u64, item: u64) -> u64 {
-                crate::with_gil_entry_nopanic!(py, {
+            extern "C" fn contains(__context: u64, view: u64, item: u64) -> u64 {
+ let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+                crate::with_attached_entry_nopanic!(__attached_py, py, {
                     crate::object::ops_compare::builtin_families::BuiltinComparison::DictKeys
                         .invoke_contains(py, view, item)
                 })
@@ -398,8 +402,10 @@ crate::builtins::methods::native_method_table!(
             fn_addr!(crate::object::ops_arith::native_slots::view_rxor_slot), 2)),
         crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_items, TYPE_ID_DICT_ITEMS_VIEW),
         crate::NameId::DunderContains => {
-            extern "C" fn contains(view: u64, item: u64) -> u64 {
-                crate::with_gil_entry_nopanic!(py, {
+            extern "C" fn contains(__context: u64, view: u64, item: u64) -> u64 {
+ let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+                crate::with_attached_entry_nopanic!(__attached_py, py, {
                     crate::object::ops_compare::builtin_families::BuiltinComparison::DictItems
                         .invoke_contains(py, view, item)
                 })

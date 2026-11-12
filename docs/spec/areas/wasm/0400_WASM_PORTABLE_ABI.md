@@ -123,6 +123,52 @@ deployment host still admits a table base through
 `molt_set_wasm_table_base`, which no longer has a consumer. The host-parity guest
 oracle in `tests/test_wasm_runner_table_base.py` exercises both verdict sets.
 
+### Attached execution ABI
+
+Compiled Python entries, module dispatchers, poll functions and trampolines take
+an execution-context `i64` before their logical operands. Logical Python arity
+and callable-table arity metadata exclude that context. The runtime callable
+manifest and generated execution classifications own whether a runtime entry is
+`Attached` or a genuine host/C `Boundary`; runtime import fields retain their
+semantic names, while export and linker symbols use the generated physical
+identity. No old physical signature is exported as an alias.
+
+Raw scratch allocation/free remain host boundaries. They work before Python
+initialization and retain their null refusal and budget-reuse contract. Python
+allocation failures use the existing conditional raw failure admission.
+
+The app publishes the generated attached-context ABI custom section as exactly
+one eight-byte little-endian fingerprint. Before any application initializer,
+linked and split hosts compare the section with their generated schema and the
+runtime's pure `molt_attached_context_abi_fingerprint` getter. Missing, duplicate,
+malformed or mismatched sections fail admission. Manifest metadata must match
+the generated fingerprint, suffix, section and thread-record offset; it cannot
+reclassify runtime functions or admit an earlier execution schema.
+
+A host execution boundary enters the runtime, captures `molt_attached_context`
+once, enters the compiled scope with that context, and passes it to every
+compiled entry and indirect forwarding call. Scope entry returns an opaque
+nonzero scope id. Cleanup leaves that exact `(context, scope id)` before leaving
+the runtime boundary, including nested execution and exceptional exits. Detached
+host exception observation uses the pure, non-initializing
+`molt_exception_pending_detached`; the compiled pending readers remain attached.
+
+The context header carries the thread-record pointer at the generated offset.
+Compiled code loads it directly, including RC handoff and pending-work paths.
+The WASM emitter reserves bounded locals of the actual operand types before
+emitting bytes. A direct attached call with `N` logical operands adds `2N` local
+moves and one context load to place the context before those operands, without
+runtime allocation or an attachment call. This describes emitted operations;
+WASM execution cost remains a measurement obligation.
+
+Split compiled Python modules import the runtime's same `env.memory` instance.
+This follows the existing memory-zero ABI: compiled RC, exception, pending-work
+and execution-header loads address runtime objects inline. Copying selected byte
+arguments between distinct memories cannot establish that invariant. Hosts
+reject a separate app memory before entry. Byte-copy bridges remain available
+for their host-interface payload protocol; raw WASI commands have their own
+memory contract.
+
 ---
 
 ## 2.5 Host lifetime and buffered output
@@ -177,7 +223,9 @@ v0.1 recommendation: **host copies results** for simplicity and safety.
 
 Application callable exports (`molt.wasm.app-call`, declared in
 `src/molt/cli/app_export_contract.py` and published as
-`manifest.abi.app_exports`) pass tagged-i64 object references. An export adopts
+`manifest.abi.app_exports`) receive the borrowed execution context first, then
+pass tagged-i64 object references for logical Python operands. The context is
+neither a Python argument nor a transferred object owner. An export adopts
 each explicit Python argument: the host materializes one owned
 reference per parameter and moves it into the call. The host never releases an
 argument after the call; it releases only the arguments it built before a
@@ -203,8 +251,8 @@ host calls to closure-bearing bindings require a future module-value dispatch
 boundary; this exclusion does not claim that such a host API exists. Hidden
 closure parameters remain borrowed and the ABI custody validator remains
 strict. The policy adds one compile-time boolean branch per source declaration,
-with no IR reanalysis, runtime call, allocation or new wire field; valid flat
-exports retain their existing direct-call cost.
+with no IR reanalysis, runtime call or allocation for that exclusion. Flat
+exports use the attached execution transport and retain direct result forwarding.
 
 ---
 

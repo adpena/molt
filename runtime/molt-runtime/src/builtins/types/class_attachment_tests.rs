@@ -1,16 +1,19 @@
 use super::*;
-use crate::builtins::attributes::molt_set_attr_name;
 use crate::header_from_obj_ptr;
-use crate::object::accessors::{molt_object_field_get, molt_object_field_set};
-use crate::object::builders::{molt_alloc_class, molt_object_publish_initialized};
+use crate::object::accessors::{
+    molt_object_field_get_attached_body, molt_object_field_set_attached_body,
+};
+use crate::object::builders::{
+    molt_alloc_class_attached_body, molt_object_publish_initialized_attached_body,
+};
 
 unsafe fn new_class_with_base(_py: &PyToken<'_>, name: &[u8], base: u64) -> u64 {
     let name_bits = dynamic_attr_name_bits(_py, name).expect("class name");
-    let class_bits = molt_class_new(name_bits);
+    let class_bits = molt_class_new_attached_body(_py, name_bits);
     dec_ref_bits(_py, name_bits);
     assert!(obj_from_bits(class_bits).as_ptr().is_some());
     assert_eq!(
-        molt_class_set_base(class_bits, base),
+        molt_class_set_base_attached_body(_py, class_bits, base),
         MoltObject::none().bits()
     );
     assert!(!exception_pending(_py));
@@ -30,7 +33,7 @@ unsafe fn new_slotted_class_with_base(
     let class_bits = unsafe { new_class_with_base(_py, name, base) };
     let slots_name = dynamic_attr_name_bits(_py, b"__slots__").expect("slots name");
     let slot_name = dynamic_attr_name_bits(_py, slot).expect("slot name");
-    molt_set_attr_name(class_bits, slots_name, slot_name);
+    molt_set_attr_name_attached_body(_py, class_bits, slots_name, slot_name);
     dec_ref_bits(_py, slot_name);
     dec_ref_bits(_py, slots_name);
     assert!(!exception_pending(_py));
@@ -39,7 +42,7 @@ unsafe fn new_slotted_class_with_base(
 
 fn set_class_via_attribute(_py: &PyToken<'_>, object_bits: u64, class_bits: u64) -> u64 {
     let class_name = dynamic_attr_name_bits(_py, b"__class__").expect("class attribute");
-    let result = molt_set_attr_name(object_bits, class_name, class_bits);
+    let result = molt_set_attr_name_attached_body(_py, object_bits, class_name, class_bits);
     dec_ref_bits(_py, class_name);
     result
 }
@@ -58,12 +61,15 @@ fn compatible_slot_class_reassignment_preserves_exact_scalar_bits() {
             .expect("seal second class");
         let size = unsafe { crate::object::layout::class_cached_layout_size(first_ptr) }
             .expect("sealed size");
-        let object = molt_alloc_class(size as u64, first);
+        let object = molt_alloc_class_attached_body(_py, size as u64, first);
         let object_ptr = obj_from_bits(object).as_ptr().expect("instance");
-        assert_eq!(molt_object_publish_initialized(object), object);
+        assert_eq!(
+            molt_object_publish_initialized_attached_body(_py, object),
+            object
+        );
         let negative_zero = MoltObject::from_float(-0.0).bits();
         assert_eq!(
-            unsafe { molt_object_field_set(object, 0, negative_zero) },
+            unsafe { molt_object_field_set_attached_body(_py, object, 0, negative_zero) },
             MoltObject::none().bits()
         );
 
@@ -73,7 +79,10 @@ fn compatible_slot_class_reassignment_preserves_exact_scalar_bits() {
         );
         assert!(!exception_pending(_py));
         assert_eq!(unsafe { object_class_bits(object_ptr) }, second);
-        assert_eq!(unsafe { molt_object_field_get(object, 0) }, negative_zero);
+        assert_eq!(
+            unsafe { molt_object_field_get_attached_body(_py, object, 0) },
+            negative_zero
+        );
 
         dec_ref_bits(_py, object);
         dec_ref_bits(_py, second);
@@ -93,12 +102,15 @@ fn incompatible_slot_names_reject_without_changing_class_or_fields() {
             .expect("seal first class");
         let size = unsafe { crate::object::layout::class_cached_layout_size(first_ptr) }
             .expect("sealed size");
-        let object = molt_alloc_class(size as u64, first);
+        let object = molt_alloc_class_attached_body(_py, size as u64, first);
         let object_ptr = obj_from_bits(object).as_ptr().expect("instance");
-        assert_eq!(molt_object_publish_initialized(object), object);
+        assert_eq!(
+            molt_object_publish_initialized_attached_body(_py, object),
+            object
+        );
         let negative_zero = MoltObject::from_float(-0.0).bits();
         assert_eq!(
-            unsafe { molt_object_field_set(object, 0, negative_zero) },
+            unsafe { molt_object_field_set_attached_body(_py, object, 0, negative_zero) },
             MoltObject::none().bits()
         );
 
@@ -108,8 +120,11 @@ fn incompatible_slot_names_reject_without_changing_class_or_fields() {
         );
         assert!(exception_pending(_py));
         assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
-        crate::molt_exception_clear();
-        assert_eq!(unsafe { molt_object_field_get(object, 0) }, negative_zero);
+        crate::molt_exception_clear_attached_body(_py);
+        assert_eq!(
+            unsafe { molt_object_field_get_attached_body(_py, object, 0) },
+            negative_zero
+        );
 
         dec_ref_bits(_py, object);
         dec_ref_bits(_py, second);
@@ -133,15 +148,18 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
         let namespace = unsafe { crate::object::layout::class_dict_bits(first_ptr) };
         let namespace_ptr = obj_from_bits(namespace).as_ptr().expect("class namespace");
         let metaclass = type_of_bits(_py, first);
-        assert_eq!(molt_set_attr_name(first, class_name, property), none);
+        assert_eq!(
+            molt_set_attr_name_attached_body(_py, first, class_name, property),
+            none
+        );
         assert!(exception_pending(_py));
-        let error = crate::molt_exception_last_pending();
+        let error = crate::molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
             crate::BuiltinExc::TypeError
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         assert_eq!(type_of_bits(_py, first), metaclass);
         assert_eq!(
             unsafe {
@@ -167,22 +185,25 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
             .expect("seal first class");
         let size = unsafe { crate::object::layout::class_cached_layout_size(first_ptr) }
             .expect("sealed size");
-        let object = molt_alloc_class(size as u64, first);
+        let object = molt_alloc_class_attached_body(_py, size as u64, first);
         let object_ptr = obj_from_bits(object).as_ptr().expect("instance");
-        assert_eq!(molt_object_publish_initialized(object), object);
+        assert_eq!(
+            molt_object_publish_initialized_attached_body(_py, object),
+            object
+        );
 
         let first_owners = unsafe { (*header_from_obj_ptr(first_ptr)).ref_count_snapshot() };
         let second_ptr = obj_from_bits(second).as_ptr().expect("second class");
         let second_owners = unsafe { (*header_from_obj_ptr(second_ptr)).ref_count_snapshot() };
         for explicit in [false, true] {
             let result = if explicit {
-                crate::molt_object_setattr(object, class_name, second)
+                crate::molt_object_setattr_attached_body(_py, object, class_name, second)
             } else {
-                molt_set_attr_name(object, class_name, second)
+                molt_set_attr_name_attached_body(_py, object, class_name, second)
             };
             assert_eq!(result, none);
             assert!(exception_pending(_py));
-            let error = crate::molt_exception_last_pending();
+            let error = crate::molt_exception_last_pending_attached_body(_py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 error,
@@ -190,7 +211,7 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
             ));
             // Normal dictionary lookup admits hashing only without a raised
             // exception. Keep our error owner while checking the rejected write.
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
             assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
             assert_eq!(
                 unsafe {
@@ -226,8 +247,8 @@ fn tuple_subclass_construction_is_always_fresh_and_never_retags_empty_singleton(
         let class_bits =
             unsafe { new_class_with_base(_py, b"TupleChild", builtin_classes(_py).tuple) };
         let missing = missing_bits(_py);
-        let first = molt_tuple_new_bound(class_bits, missing);
-        let second = molt_tuple_new_bound(class_bits, missing);
+        let first = molt_tuple_new_bound_attached_body(_py, class_bits, missing);
+        let second = molt_tuple_new_bound_attached_body(_py, class_bits, missing);
         let first_ptr = obj_from_bits(first).as_ptr().expect("first tuple child");
         let second_ptr = obj_from_bits(second).as_ptr().expect("second tuple child");
         let empty_ptr = alloc_tuple(_py, &[]);
@@ -239,7 +260,7 @@ fn tuple_subclass_construction_is_always_fresh_and_never_retags_empty_singleton(
         assert_eq!(unsafe { object_class_bits(empty_ptr) }, 0);
 
         let descendant = unsafe { new_class_with_base(_py, b"TupleGrandchild", class_bits) };
-        let inherited = molt_tuple_new_bound(descendant, missing);
+        let inherited = molt_tuple_new_bound_attached_body(_py, descendant, missing);
         let inherited_ptr = obj_from_bits(inherited)
             .as_ptr()
             .expect("inherited tuple child");
@@ -248,8 +269,8 @@ fn tuple_subclass_construction_is_always_fresh_and_never_retags_empty_singleton(
 
         let source_ptr = alloc_tuple(_py, &[MoltObject::from_int(7).bits()]);
         let source = MoltObject::from_ptr(source_ptr).bits();
-        let populated = molt_tuple_new_bound(class_bits, source);
-        let copied = molt_tuple_new_bound(class_bits, populated);
+        let populated = molt_tuple_new_bound_attached_body(_py, class_bits, source);
+        let copied = molt_tuple_new_bound_attached_body(_py, class_bits, populated);
         let populated_ptr = obj_from_bits(populated)
             .as_ptr()
             .expect("populated tuple child");
@@ -309,13 +330,13 @@ fn tuple_sequence_descriptors_reject_other_physical_receivers() {
                     exception_pending(py),
                     "{name:?}: descriptor receiver admission"
                 );
-                let exception = crate::molt_exception_last();
+                let exception = crate::molt_exception_last_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
                     crate::BuiltinExc::TypeError,
                 ));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 dec_ref_bits(py, exception);
             }
         }
@@ -363,7 +384,7 @@ fn tuple_sequence_methods_survive_runtime_reinitialization() {
                     ),
                 ] {
                     let name_bits = name.owned_bits(py).unwrap();
-                    let method = crate::molt_get_attr_name(tuple, name_bits);
+                    let method = crate::molt_get_attr_name_attached_body(py, tuple, name_bits);
                     assert!(!exception_pending(py), "{name:?}: lookup");
                     let result = unsafe {
                         match args.as_slice() {
@@ -379,7 +400,8 @@ fn tuple_sequence_methods_survive_runtime_reinitialization() {
                         dec_ref_bits(py, bits);
                     }
                 }
-                let copied = molt_tuple_new_bound(builtin_classes(py).tuple, tuple);
+                let copied =
+                    molt_tuple_new_bound_attached_body(py, builtin_classes(py).tuple, tuple);
                 assert!(!exception_pending(py));
                 let ptr = obj_from_bits(copied).as_ptr().expect("exact tuple copy");
                 assert_eq!(unsafe { object_class_bits(ptr) }, 0);
@@ -395,14 +417,22 @@ fn tuple_sequence_methods_survive_runtime_reinitialization() {
     }
 }
 
-extern "C" fn tuple_iteration_override(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn tuple_iteration_override(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let source =
             MoltObject::from_ptr(alloc_tuple(py, &[MoltObject::from_int(9).bits()])).bits();
-        let iterator = crate::molt_iter(source);
+        let iterator = crate::molt_iter_attached_body(py, source);
         dec_ref_bits(py, source);
         iterator
-    })
+    }
 }
 
 #[test]
@@ -421,7 +451,7 @@ fn tuple_subclass_conversion_observes_overrides_but_explicit_base_slot_does_not(
         );
         assert!(!callback.is_null());
         let callback = MoltObject::from_ptr(callback).bits();
-        molt_set_attr_name(class, name, callback);
+        molt_set_attr_name_attached_body(py, class, name, callback);
         let source = unsafe {
             crate::object::builders::alloc_tuple_subclass(
                 py,
@@ -431,7 +461,7 @@ fn tuple_subclass_conversion_observes_overrides_but_explicit_base_slot_does_not(
         };
         assert!(!exception_pending(py));
         for destination in [builtin_classes(py).tuple, class] {
-            let copied = molt_tuple_new_bound(destination, source);
+            let copied = molt_tuple_new_bound_attached_body(py, destination, source);
             assert!(!exception_pending(py));
             let ptr = obj_from_bits(copied)
                 .as_ptr()
@@ -448,17 +478,17 @@ fn tuple_subclass_conversion_observes_overrides_but_explicit_base_slot_does_not(
                 .unwrap();
         let iterator = unsafe { crate::call_callable1(py, base_method, source) };
         assert!(!exception_pending(py));
-        let item = crate::molt_next_builtin(iterator, missing_bits(py));
+        let item = crate::molt_next_builtin_attached_body(py, iterator, missing_bits(py));
         assert!(!exception_pending(py));
         assert_eq!(item, MoltObject::from_int(7).bits());
-        molt_set_attr_name(class, name, MoltObject::none().bits());
-        let rejected = molt_tuple_new_bound(class, source);
+        molt_set_attr_name_attached_body(py, class, name, MoltObject::none().bits());
+        let rejected = molt_tuple_new_bound_attached_body(py, class, source);
         assert!(obj_from_bits(rejected).is_none());
         assert!(
             exception_pending(py),
             "None override must not expose builtin iteration"
         );
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(py);
         for bits in [item, iterator, source, callback, name, class] {
             dec_ref_bits(py, bits);
         }
@@ -478,21 +508,21 @@ fn tuple_subclass_admission_rejects_nominal_and_physical_layout_mismatches() {
         // empty tuple, but size equality cannot manufacture tuple ancestry.
         let unrelated = unsafe { new_class_with_base(_py, b"TupleSizedImpostor", object_base) };
         assert_eq!(
-            molt_tuple_new_bound(unrelated, missing),
+            molt_tuple_new_bound_attached_body(_py, unrelated, missing),
             MoltObject::none().bits()
         );
         assert!(exception_pending(_py));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
 
         let expanded = unsafe {
             new_slotted_class_with_base(_py, b"ExpandedTupleChild", b"extra", tuple_base)
         };
         assert_eq!(
-            molt_tuple_new_bound(expanded, missing),
+            molt_tuple_new_bound_attached_body(_py, expanded, missing),
             MoltObject::none().bits()
         );
         assert!(exception_pending(_py));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
 
         let shaped = unsafe { new_class_with_base(_py, b"ShapedTupleChild", tuple_base) };
         let shaped_ptr = obj_from_bits(shaped).as_ptr().expect("shaped tuple class");
@@ -503,11 +533,11 @@ fn tuple_subclass_admission_rejects_nominal_and_physical_layout_mismatches() {
             )
         });
         assert_eq!(
-            molt_tuple_new_bound(shaped, missing),
+            molt_tuple_new_bound_attached_body(_py, shaped, missing),
             MoltObject::none().bits()
         );
         assert!(exception_pending(_py));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
 
         dec_ref_bits(_py, shaped);
         dec_ref_bits(_py, expanded);
@@ -544,29 +574,29 @@ fn native_class_reassignment_preserves_intrinsic_owner_and_live_payload() {
                 let ptr = obj_from_bits(object).as_ptr().expect("native instance");
                 let value_name = dynamic_attr_name_bits(py, b"value").unwrap();
                 let value = MoltObject::from_int(42).bits();
-                molt_set_attr_name(object, value_name, value);
+                molt_set_attr_name_attached_body(py, object, value_name, value);
                 assert!(!exception_pending(py));
 
                 set_class_via_attribute(py, object, second);
                 assert_eq!(exception_pending(py), !allowed);
                 if !allowed {
-                    let error = crate::molt_exception_last_pending();
+                    let error = crate::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
                         crate::BuiltinExc::TypeError
                     ));
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     dec_ref_bits(py, error);
                 }
                 assert_eq!(
                     unsafe { object_class_bits(ptr) },
                     if allowed { second } else { first }
                 );
-                let loaded = crate::molt_get_attr_name(object, value_name);
+                let loaded = crate::molt_get_attr_name_attached_body(py, object, value_name);
                 assert_eq!(loaded, value);
                 dec_ref_bits(py, loaded);
-                let contents = crate::builtins::io::molt_file_getvalue(object);
+                let contents = crate::builtins::io::molt_file_getvalue_attached_body(py, object);
                 assert!(!exception_pending(py));
                 assert_eq!(
                     type_of_bits(py, contents),
@@ -597,11 +627,11 @@ fn ordinary_shared_base_slot_siblings_remain_class_compatible() {
         assert!(!exception_pending(py));
         let name = dynamic_attr_name_bits(py, b"value").unwrap();
         let value = MoltObject::from_int(42).bits();
-        molt_set_attr_name(object, name, value);
+        molt_set_attr_name_attached_body(py, object, name, value);
         set_class_via_attribute(py, object, second);
         assert!(!exception_pending(py));
         assert_eq!(type_of_bits(py, object), second);
-        let loaded = crate::molt_get_attr_name(object, name);
+        let loaded = crate::molt_get_attr_name_attached_body(py, object, name);
         assert_eq!(loaded, value);
         dec_ref_bits(py, loaded);
         for bits in [name, object, second, first, base] {

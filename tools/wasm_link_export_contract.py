@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from tools.wasm_link_transaction import WasmSectionEdit
 
 from molt.wasm_artifact import parse_wasm_export_section
+from molt._wasm_abi_generated import compiled_execution_symbol
 
 from molt.cli.app_export_contract import (
     app_export_call_abi,
@@ -51,8 +52,8 @@ _SPLIT_RUNTIME_EXPORT_CONTRACT = (
     _SplitRuntimeExportContractEntry(
         artifact="app",
         kind=0,
-        canonical_name="molt_main",
-        accepted_names=("molt_main",),
+        canonical_name=compiled_execution_symbol("molt_main"),
+        accepted_names=(compiled_execution_symbol("molt_main"),),
     ),
     _SplitRuntimeExportContractEntry(
         artifact="app",
@@ -163,8 +164,8 @@ def _public_output_export_symbol_map(
         {
             name: export_symbol_map[name]
             for name in (
-                "molt_host_init",
-                "molt_main",
+                compiled_execution_symbol("molt_host_init"),
+                compiled_execution_symbol("molt_main"),
                 "molt_set_wasm_table_base",
             )
             if name in export_symbol_map

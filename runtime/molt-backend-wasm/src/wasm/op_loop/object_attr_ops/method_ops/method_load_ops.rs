@@ -5,12 +5,13 @@ use super::super::super::out_param::WasmOutParam;
 use super::super::super::result_sink::store_owned_value;
 use crate::wasm::{WasmBackend, WasmFrameLocals};
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{box_int, stable_ic_site_id};
 use crate::{FunctionIR, OpIR};
 use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 /// `load_method(site, receiver, name, len, self_out)` or
 /// `load_super_method(site, class, first_arg, name, len, self_out)`: the entry

@@ -247,14 +247,15 @@ Global invariants:
 pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<PollTarget>;
 /// The variant fixes the argument convention: a runtime poll takes the task's object word, a
 /// compiled poll its raw payload address (its table index on wasm32, its address on native).
-pub(crate) enum PollTarget { Runtime(extern "C" fn(u64) -> i64), AppTableIndex(u64) }
+/// Both first receive the borrowed attached execution context.
+pub(crate) enum PollTarget { Runtime(unsafe extern "C" fn(u64, u64) -> i64), AppTableIndex(u64) }
 
 // runtime/molt-backend-wasm/src/wasm/module_abi/ (K1, K5)
 pub(crate) enum CallableIdentity { TableSlot(u32), RuntimeKey(u64) }
 /// Seeds each runtime poll's identity with RUNTIME_POLL_CALLABLE_KEY_BASE + poll_table_slot.
 fn seed_function_table_slots(&self, identities: &mut BTreeMap<String, CallableIdentity>);
 // crate::wasm_table: WasmCallableTableTarget::{TableSlot(WasmCallableTableSlot), RuntimeKey(u64)}
-// type_layout.rs (K2): each exported molt_call_indirectN compares its index with u32::MAX
+// type_layout.rs (K2): each exported molt_call_indirectN compares its index (after the context) with u32::MAX
 // (one i64.gt_u) and traps before i32.wrap_i64.
 ```
 

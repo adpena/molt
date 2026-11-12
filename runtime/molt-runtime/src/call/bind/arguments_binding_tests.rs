@@ -17,25 +17,37 @@ fn callargs_pending_error_stops_mutation_and_consuming_dispatch() {
             // No callback or invalid-callee TypeError may replace the
             // original exception, including cached and indirect entries.
             for dispatch in 0..3 {
-                let builder = crate::call::bind::arguments::molt_callargs_new(1, 0);
+                let builder =
+                    crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 0);
                 let builder_ptr = crate::call::bind::ptr_from_bits(builder);
-                crate::call::bind::arguments::molt_callargs_push_pos(builder, item_bits);
+                crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                    _py, builder, item_bits,
+                );
                 assert_eq!(
                     (*crate::header_from_obj_ptr(item)).ref_count_snapshot(),
                     baseline + 1
                 );
                 crate::raise_exception::<()>(_py, BuiltinExc::ValueError, "argument failure");
                 let original = crate::exception_last_bits_noinc(_py).unwrap();
-                assert_eq!(crate::call::bind::arguments::molt_callargs_new(0, 0), 0);
-                crate::call::bind::arguments::molt_callargs_push_pos(builder, item_bits);
-                crate::call::bind::arguments::molt_callargs_push_kw(builder, item_bits, item_bits);
+                assert_eq!(
+                    crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 0),
+                    0
+                );
+                crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                    _py, builder, item_bits,
+                );
+                crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                    _py, builder, item_bits, item_bits,
+                );
                 // Invalid iterables/mappings would raise fresh exceptions
                 // if the failed transaction reached protocol dispatch.
-                crate::call::bind::arguments::molt_callargs_expand_star(
+                crate::call::bind::arguments::molt_callargs_expand_star_attached_body(
+                    _py,
                     builder,
                     MoltObject::none().bits(),
                 );
-                crate::call::bind::arguments::molt_callargs_expand_kwstar(
+                crate::call::bind::arguments::molt_callargs_expand_kwstar_attached_body(
+                    _py,
                     builder,
                     MoltObject::none().bits(),
                 );
@@ -51,13 +63,19 @@ fn callargs_pending_error_stops_mutation_and_consuming_dispatch() {
                 );
                 let invalid_callee = MoltObject::from_int(42).bits();
                 let result = match dispatch {
-                    0 => crate::call::bind::molt_call_bind(invalid_callee, builder),
-                    1 => crate::call::bind::inline_cache::molt_call_bind_ic(
+                    0 => crate::call::bind::molt_call_bind_attached_body(
+                        _py,
+                        invalid_callee,
+                        builder,
+                    ),
+                    1 => crate::call::bind::inline_cache::molt_call_bind_ic_attached_body(
+                        _py,
                         23,
                         invalid_callee,
                         builder,
                     ),
-                    _ => crate::call::bind::inline_cache::molt_call_indirect_ic(
+                    _ => crate::call::bind::inline_cache::molt_call_indirect_ic_attached_body(
+                        _py,
                         29,
                         invalid_callee,
                         builder,
@@ -69,7 +87,7 @@ fn callargs_pending_error_stops_mutation_and_consuming_dispatch() {
                     (*crate::header_from_obj_ptr(item)).ref_count_snapshot(),
                     baseline
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(_py);
             }
             dec_ref_bits(_py, item_bits);
         }
@@ -93,8 +111,10 @@ fn callargs_expansion_has_one_keyword_owner_and_releases_iterator() {
             let key_before = refs(key);
             let value_before = refs(value);
             let list_before = refs(list);
-            let builder = crate::call::bind::arguments::molt_callargs_new(0, 0);
-            crate::call::bind::arguments::molt_callargs_push_kw(builder, key_bits, value_bits);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 0);
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, key_bits, value_bits,
+            );
             assert!(!crate::exception_pending(_py));
             assert_eq!(
                 refs(key),
@@ -102,7 +122,9 @@ fn callargs_expansion_has_one_keyword_owner_and_releases_iterator() {
                 "expansion must retain keywords only through their dictionary"
             );
             assert_eq!(refs(value), value_before + 1);
-            crate::call::bind::arguments::molt_callargs_expand_star(builder, list_bits);
+            crate::call::bind::arguments::molt_callargs_expand_star_attached_body(
+                _py, builder, list_bits,
+            );
             assert!(!crate::exception_pending(_py));
             assert_eq!(
                 refs(list),
@@ -139,9 +161,11 @@ fn keyword_admission_reads_replacements_and_retains_a_shared_mapping() {
             let key_before = refs(key);
             let old_before = refs(old);
             let replacement_before = refs(replacement);
-            let builder = crate::call::bind::arguments::molt_callargs_new(0, 1);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 1);
             assert_ne!(builder, 0);
-            crate::call::bind::arguments::molt_callargs_push_kw(builder, key_bits, old_bits);
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, key_bits, old_bits,
+            );
             let dict_bits =
                 (*crate::call::bind::arguments::callargs_ptr(ptr_from_bits(builder))).keywords;
             let dict = obj_from_bits(dict_bits).as_ptr().unwrap();
@@ -208,11 +232,12 @@ fn callargs_clone_and_ic_read_the_live_keyword_dictionary() {
             let key = crate::alloc_string(_py, b"key");
             assert!(!key.is_null());
             let key_bits = MoltObject::from_ptr(key).bits();
-            let builder = crate::call::bind::arguments::molt_callargs_new(1, 1);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 1);
             assert_ne!(builder, 0);
             let value = MoltObject::from_int(17).bits();
-            crate::call::bind::arguments::molt_callargs_push_pos(builder, value);
-            crate::call::bind::arguments::molt_callargs_push_kw(
+            crate::call::bind::arguments::molt_callargs_push_pos_attached_body(_py, builder, value);
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py,
                 builder,
                 key_bits,
                 MoltObject::from_int(1).bits(),
@@ -293,8 +318,9 @@ fn callargs_nonstring_keywords_are_rejected_at_call_boundary() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let builder = crate::call::bind::arguments::molt_callargs_new(0, 0);
-            crate::call::bind::arguments::molt_callargs_push_kw(
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 0);
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py,
                 builder,
                 MoltObject::from_int(1).bits(),
                 MoltObject::from_int(2).bits(),
@@ -308,7 +334,7 @@ fn callargs_nonstring_keywords_are_rejected_at_call_boundary() {
             crate::dec_ref_bits(_py, builder);
             assert!(!arguments.validate_keywords());
             assert!(crate::exception_pending(_py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
             // Names already unpacked from a mapping face the same check.
             let unpacked = crate::call::bind::arguments::CallArguments::retained(
                 _py,
@@ -320,7 +346,7 @@ fn callargs_nonstring_keywords_are_rejected_at_call_boundary() {
             .unwrap();
             assert!(!unpacked.validate_keywords());
             assert!(crate::exception_pending(_py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
         }
     });
 }
@@ -338,9 +364,13 @@ fn consuming_entry_moves_builder_edges_into_the_call_argument_vector() {
             let value_bits = MoltObject::from_ptr(value).bits();
             let item_bits = MoltObject::from_ptr(item).bits();
             let refs = |ptr| (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot();
-            let builder = crate::call::bind::arguments::molt_callargs_new(1, 1);
-            crate::call::bind::arguments::molt_callargs_push_pos(builder, item_bits);
-            crate::call::bind::arguments::molt_callargs_push_kw(builder, key_bits, value_bits);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 1);
+            crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                _py, builder, item_bits,
+            );
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, key_bits, value_bits,
+            );
             assert!(!crate::exception_pending(_py));
             let counts = (refs(item), refs(key), refs(value));
             let builder_ptr = ptr_from_bits(builder);
@@ -388,8 +418,10 @@ fn a_shared_builder_keeps_its_edges_and_the_call_retains_its_own() {
             assert!(!item.is_null());
             let item_bits = MoltObject::from_ptr(item).bits();
             let refs = || (*crate::header_from_obj_ptr(item)).ref_count_snapshot();
-            let builder = crate::call::bind::arguments::molt_callargs_new(1, 0);
-            crate::call::bind::arguments::molt_callargs_push_pos(builder, item_bits);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 0);
+            crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                _py, builder, item_bits,
+            );
             let before = refs();
             // Another owner can still reach the builder: T1 must not drain it.
             crate::inc_ref_bits(_py, builder);
@@ -423,8 +455,10 @@ fn extension_callees_receive_the_whole_mapping_or_a_fresh_one() {
             assert!(!key.is_null() && !value.is_null());
             let key_bits = MoltObject::from_ptr(key).bits();
             let value_bits = MoltObject::from_ptr(value).bits();
-            let builder = crate::call::bind::arguments::molt_callargs_new(0, 1);
-            crate::call::bind::arguments::molt_callargs_push_kw(builder, key_bits, value_bits);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 1);
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, key_bits, value_bits,
+            );
             let dict_bits =
                 (*crate::call::bind::arguments::callargs_ptr(ptr_from_bits(builder))).keywords;
             let mut arguments = crate::call::bind::arguments::CallArguments::from_builder(
@@ -502,7 +536,8 @@ fn borrowing_callees_leave_the_last_release_to_the_call_instruction() {
                             &values[..2],
                             &[(a, values[2]), (b, values[3])],
                         );
-                        let result = crate::call::bind::molt_call_bind(variadic, builder);
+                        let result =
+                            crate::call::bind::molt_call_bind_attached_body(_py, variadic, builder);
                         assert!(obj_from_bits(result).is_none());
                         assert!(!crate::exception_pending(_py));
                         assert_eq!(
@@ -523,10 +558,18 @@ fn borrowing_callees_leave_the_last_release_to_the_call_instruction() {
 
 #[test]
 fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
-    extern "C" fn raising_hash(_self_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(_py, {
+    extern "C" fn raising_hash(__context: u64, _self_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let _py = __py;
             crate::raise_exception::<u64>(_py, BuiltinExc::ValueError, "keyword name hash")
-        })
+        }
     }
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
@@ -545,7 +588,8 @@ fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
             let namespace_bits = MoltObject::from_ptr(namespace).bits();
             let class_name = MoltObject::from_ptr(crate::alloc_string(_py, b"Name")).bits();
             // `class Name(str): __hash__ = raising_hash`
-            let class_bits = crate::builtins::types::molt_type_new(
+            let class_bits = crate::builtins::types::molt_type_new_attached_body(
+                _py,
                 builtins.type_obj,
                 class_name,
                 builtins.str,
@@ -578,7 +622,8 @@ fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
             // Building the fresh mapping hashes the name; its callback raises.
             let error = arguments.keyword_mapping().unwrap_err();
             assert!(obj_from_bits(error).is_none());
-            let pending = crate::builtins::exceptions::molt_exception_last_pending();
+            let pending =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
             assert!(
                 crate::builtins::exceptions::exception_matches_kind(
                     _py,
@@ -587,7 +632,7 @@ fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
                 ),
                 "the callback's exception reaches the caller, not a MemoryError"
             );
-            let _ = crate::molt_exception_clear();
+            let _ = crate::molt_exception_clear_attached_body(_py);
             dec_ref_bits(_py, pending);
             drop(arguments);
             for bits in [
@@ -613,9 +658,13 @@ fn callargs_detach_publishes_empty_storage_before_reentrant_release() {
             let probes = ReleaseProbes::new(_py);
             let values = probes.instances(_py, 2);
             let key = MoltObject::from_ptr(crate::alloc_string(_py, b"argument")).bits();
-            let builder = crate::call::bind::arguments::molt_callargs_new(1, 1);
-            crate::call::bind::arguments::molt_callargs_push_pos(builder, values[0]);
-            crate::call::bind::arguments::molt_callargs_push_kw(builder, key, values[1]);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 1);
+            crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                _py, builder, values[0],
+            );
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, key, values[1],
+            );
             assert!(!crate::exception_pending(_py));
             for &value in &values {
                 dec_ref_bits(_py, value);
@@ -630,7 +679,8 @@ fn callargs_detach_publishes_empty_storage_before_reentrant_release() {
                 let current = crate::call::bind::arguments::callargs_ptr(builder_ptr);
                 assert!((*current).pos.is_empty());
                 assert!(obj_from_bits((*current).keywords).is_none());
-                let nested = crate::call::bind::arguments::molt_callargs_new(0, 0);
+                let nested =
+                    crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 0);
                 assert_ne!(nested, 0);
                 dec_ref_bits(_py, nested);
                 dec_ref_bits(_py, bits);
@@ -661,7 +711,7 @@ fn callargs_projection_rejects_a_live_object_of_another_kind() {
                 crate::object_class_bits(error),
                 crate::builtins::exceptions::exception_class_bits(_py, BuiltinExc::TypeError)
             );
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
             dec_ref_bits(_py, MoltObject::from_ptr(list).bits());
         }
     });
@@ -687,7 +737,7 @@ fn callargs_construction_refusal_releases_every_prepared_allocation() {
                 max_allocations: Some(budget),
                 ..ResourceLimits::default()
             })));
-            let builder = crate::call::bind::arguments::molt_callargs_new(2, 1);
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 2, 1);
             if builder == 0 {
                 crate::test_support::assert_and_clear_emergency_memory_error(_py);
             } else {
@@ -747,7 +797,8 @@ fn capi_arguments_keep_forward_value_release_across_target_versions_and_binding_
             let namespace = alloc_dict_with_pairs(_py, &[del_name, finalizer_bits]);
             let namespace_bits = MoltObject::from_ptr(namespace).bits();
             let builtins = crate::builtin_classes(_py);
-            let key_class = crate::builtins::types::molt_type_new(
+            let key_class = crate::builtins::types::molt_type_new_attached_body(
+                _py,
                 builtins.type_obj,
                 class_name,
                 builtins.str,
@@ -796,7 +847,7 @@ fn capi_arguments_keep_forward_value_release_across_target_versions_and_binding_
                             "3.{minor} failure={fail_binding}"
                         );
                         if fail_binding {
-                            crate::molt_exception_clear();
+                            crate::molt_exception_clear_attached_body(_py);
                         }
                     }
                 });

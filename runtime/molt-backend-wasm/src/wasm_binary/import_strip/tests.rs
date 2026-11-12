@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::FunctionSection;
 
+use crate::wasm_binary::Function;
 use wasm_encoder::{
     CodeSection, ConstExpr, ElementMode, ElementSection, ElementSegment, Elements, EntityType,
-    ExportKind, ExportSection, Function, FunctionSection, ImportSection, Instruction, Module,
-    RefType, StartSection, TableSection, TableType, TypeSection,
+    ExportKind, ExportSection, ImportSection, Instruction, Module, RefType, StartSection,
+    TableSection, TableType, TypeSection,
 };
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 

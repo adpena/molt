@@ -532,6 +532,7 @@ mod tests {
             }
             block.ops.push(TirOp {
                 origin: None,
+                runtime: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -601,6 +602,7 @@ mod tests {
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallMethod,
             operands: vec![],
@@ -638,6 +640,7 @@ mod tests {
                 .ops
                 .push(TirOp {
                     origin: Some(molt_ir::OpKind::BuiltinFunc),
+                    runtime: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![argument],
@@ -775,6 +778,7 @@ mod tests {
         attrs.insert("s_value".into(), AttrValue::Str("g".into()));
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::CallFunc),
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -808,6 +812,7 @@ mod tests {
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![v],
@@ -920,6 +925,7 @@ mod tests {
         attrs.insert("s_value".into(), AttrValue::Str("g_poll".into()));
         block.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode: OpCode::AllocTask,
             operands: vec![],

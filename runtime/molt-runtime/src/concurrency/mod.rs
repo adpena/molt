@@ -138,3 +138,43 @@ macro_rules! with_raw_gil_entry_nopanic {
         $body
     }};
 }
+
+/// Execute with the caller's typed attached borrow; no admission or TLS lookup.
+#[macro_export]
+macro_rules! with_attached_entry {
+    ($context:expr, $py:ident, $body:block) => {{
+        let $py: &$crate::PyToken<'_> = $context;
+
+        // Profile-conditional FFI-boundary dispatch lives in molt-runtime-core
+        // (`with_gil_entry_body!`) so every catching GIL-entry macro shares one
+        // `cfg(panic = ...)` selection and cannot drift.  The raise handler
+        // below runs only on the `panic = "unwind"` catch path; it raises a
+        // `RuntimeError`, skipping allocator/refcount panics (raising into a
+        // corrupted allocator would recurse).
+        ::molt_runtime_core::with_gil_entry_body!(raise: |__msg| {
+            let __is_alloc_panic = __msg.contains("use-after-free")
+                || __msg.contains("invalid type_id")
+                || __msg.contains("double free")
+                || __msg.contains("slab");
+            if !__is_alloc_panic {
+                let _ = $crate::builtins::exceptions::raise_exception::<u64>(
+                    $py,
+                    $crate::BuiltinExc::RuntimeError,
+                    __msg,
+                );
+            }
+        }, $body)
+    }};
+}
+
+#[macro_export]
+macro_rules! with_attached_entry_nopanic {
+    ($context:expr, $py:ident, { $($body:tt)* }) => {{
+        let $py: &$crate::PyToken<'_> = $context;
+        $($body)*
+    }};
+    ($context:expr, $py:ident, $body:expr) => {{
+        let $py: &$crate::PyToken<'_> = $context;
+        $body
+    }};
+}

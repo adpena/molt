@@ -9,6 +9,7 @@ use crate::tir::values::ValueId;
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -196,6 +197,7 @@ fn make_store_attr(original_kind: molt_ir::OpKind, target: ValueId, value: Value
 
     TirOp {
         origin: Some(original_kind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::StoreAttr,
         operands: vec![target, value],
@@ -217,6 +219,7 @@ fn make_passthrough(
 
     TirOp {
         origin: Some(original_kind),
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
@@ -298,6 +301,7 @@ fn object_new_bound_into_dict_new_passthrough_escapes() {
     });
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ObjectNewBound,
         operands: vec![class_ref],
@@ -538,6 +542,7 @@ fn make_op_with_attrs(
 ) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

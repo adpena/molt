@@ -27,7 +27,7 @@ import traceback
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Final, NoReturn
+from typing import TYPE_CHECKING, Final, NoReturn
 import zipfile
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +39,9 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools.proof_receipts import SourceTreeState  # noqa: E402
+
+if TYPE_CHECKING:
+    from tools import cross_run
 
 SCHEMA = "molt.trunk-run.v3"
 
@@ -1100,6 +1103,18 @@ def prepare_checkouts(
         transport.shell_command(remote_argv(host, argv), timeout=180)
 
 
+def host_busy(host: "cross_run.Host", transport: "cross_run.Transport") -> bool:
+    """Whether a worker holds the host lock: the disk-maintenance probe, read."""
+    return (
+        transport.shell_command(
+            f"set -eu\nlock={shlex.quote(host.remote_dir + '/trunk-worker.lock')}\n"
+            'if test -f "$lock" && ! flock -n "$lock" true; then echo busy; '
+            "else echo idle; fi"
+        )
+        == "busy"
+    )
+
+
 def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path:
     cross = authorities()
     host = selected_host(
@@ -2047,6 +2062,7 @@ def worker(record_path: Path) -> int:
                 raise ValueError(
                     "proof receipt does not bind the selected clean source and cell"
                 )
+            copy_declared_evidence(receipt, Path(record["checkout"]), directory)
             cells.append({"id": cell, "returncode": returncode, "receipt": True})
             if (
                 "landing" in record
@@ -2078,6 +2094,29 @@ def worker(record_path: Path) -> int:
                 atexit.unregister(release_host_lock)
                 release_host_lock()
     return 0 if status is TerminalStatus.SUCCESS else 1
+
+
+def copy_declared_evidence(receipt: dict, checkout: Path, directory: Path) -> None:
+    """Carry each command's declared evidence into the cell's stage.
+
+    The run checkout is retired after collection and the archive holds only
+    ``stage/<cell>/``. The receipt's evidence snapshot names each path and its
+    digests, so the collector can verify the copies.
+    """
+    import shutil
+
+    from molt.portable_paths import portable_relative_path
+
+    for command in receipt.get("commands", ()):
+        for snapshot in command.get("evidence_outputs") or ():
+            relative = portable_relative_path(snapshot["path"])
+            source = checkout / relative
+            target = directory / "evidence" / relative
+            if source.is_dir():
+                shutil.copytree(source, target, symlinks=True)
+            elif source.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
 
 
 def publish_worker_result(
@@ -2152,6 +2191,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--commit", required=True)
     run.add_argument("--cell", action="append", required=True)
     run.add_argument("--no-wait", action="store_true")
+    run.add_argument(
+        "--if-idle",
+        action="store_true",
+        help="skip, staging nothing, while a worker holds the host lock",
+    )
     setup = sub.add_parser("provision")
     setup.add_argument(
         "--inventory", type=Path, default=_REPO_ROOT / "tools/cross_hosts.toml"
@@ -2190,6 +2234,14 @@ def main(argv: list[str] | None = None) -> int:
                 if all(s is RemoteRetirement.RETIRED for s in outcomes.values())
                 else 1
             )
+        if args.if_idle:
+            host = selected_host(args.inventory, args.host, args.cell)
+            if host_busy(host, authorities().SSHTransport(host)):
+                # A periodic measurement never queues behind or competes with
+                # a landing gate: before any retirement or staging, the slot
+                # is skipped (docs/design/trunk_loop.md, the instruction driver).
+                print(f"trunk-loop: {host.name} busy; nothing staged, not measured")
+                return 0
         record = start(args)
         return 0 if args.no_wait else collect(record)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

@@ -3,9 +3,8 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from molt.frontend import SimpleTIRGenerator
 from molt.frontend import ClassId, ClassInfo, layout_definition_symbol
-from molt.cli.models import _FrontendIntegrationState, _MidendDiagnosticsState
+from molt.cli.models import _FrontendIntegrationState
 from molt.frontend.module_publication import (
     inspect_source_module_publication,
     parse_function_metadata,
@@ -71,7 +70,13 @@ def _plan_module_code_slots(
                 )
             if kind in {"code_slot_set", "trace_enter_slot"}:
                 symbol = op.get("s_value")
-                if symbol not in local_symbols or op.get("value") is not None:
+                value = op.get("value")
+                # A frame entry may carry its synchronous frame's home count
+                # and clear order; the symbol alone is the code identity.
+                frame_shape = (
+                    kind == "trace_enter_slot" and type(value) is int and value >= 0
+                )
+                if symbol not in local_symbols or not (value is None or frame_shape):
                     raise ValueError(
                         f"Missing canonical code owner {symbol!r} in module {module_name}"
                     )
@@ -107,43 +112,6 @@ def _validate_class_definition_references_with_state(
                 "defined by no module of the program"
             )
     return None
-
-
-def _accumulate_midend_diagnostics_with_state(
-    diagnostics_state: _MidendDiagnosticsState,
-    module_name: str,
-    *,
-    policy_outcomes_by_func: dict[str, dict[str, Any]],
-    pass_stats_by_func: dict[str, dict[str, dict[str, Any]]],
-) -> None:
-    def normalize_function_name(function_name: str) -> str:
-        if function_name == "molt_main":
-            return SimpleTIRGenerator.module_init_symbol(module_name)
-        return function_name
-
-    for function_name in sorted(policy_outcomes_by_func):
-        normalized_name = normalize_function_name(function_name)
-        combined_name = f"{module_name}::{normalized_name}"
-        outcome = policy_outcomes_by_func[function_name]
-        copied_events: list[dict[str, Any]] = []
-        for event in outcome.get("degrade_events", []):
-            if isinstance(event, dict):
-                copied_events.append(dict(event))
-        copied_outcome = dict(outcome)
-        copied_outcome["degrade_events"] = copied_events
-        diagnostics_state.policy_outcomes_by_function[combined_name] = copied_outcome
-    for function_name in sorted(pass_stats_by_func):
-        normalized_name = normalize_function_name(function_name)
-        combined_name = f"{module_name}::{normalized_name}"
-        per_pass = pass_stats_by_func[function_name]
-        copied_per_pass: dict[str, dict[str, Any]] = {}
-        for pass_name in sorted(per_pass):
-            copied_stats = dict(per_pass[pass_name])
-            samples = copied_stats.get("samples_ms")
-            if isinstance(samples, list):
-                copied_stats["samples_ms"] = list(samples)
-            copied_per_pass[pass_name] = copied_stats
-        diagnostics_state.pass_stats_by_function[combined_name] = copied_per_pass
 
 
 def _integrate_module_frontend_result_with_state(

@@ -8,9 +8,9 @@ static RICH_RESULT: AtomicU64 = AtomicU64::new(0);
 
 fn subclass(py: &PyToken<'_>, base: u64) -> u64 {
     let name = dynamic_attr_name_bits(py, b"ComparedSequence").unwrap();
-    let class = molt_class_new(name);
+    let class = molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    let result = molt_class_set_base(class, base);
+    let result = molt_class_set_base_attached_body(py, class, base);
     dec_ref_bits(py, result);
     unsafe { crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()) }
         .expect("valid sequence subclass");
@@ -26,35 +26,61 @@ fn install(py: &PyToken<'_>, class: u64, name: &[u8], target: *const ()) {
         2,
     ))
     .bits();
-    let result = molt_set_attr_name(class, name, function);
+    let result = molt_set_attr_name_attached_body(py, class, name, function);
     dec_ref_bits(py, result);
     dec_ref_bits(py, name);
     dec_ref_bits(py, function);
     assert!(!exception_pending(py));
 }
 
-extern "C" fn equal_callback(_left: u64, _right: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn equal_callback(__context: u64, _left: u64, _right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         EQUALITY_CALLS.fetch_add(1, AtomicOrdering::SeqCst);
         let clear = CLEAR_DURING_EQUALITY.load(AtomicOrdering::SeqCst);
         if clear != 0 {
-            let result = crate::molt_list_clear(clear);
+            let result = crate::molt_list_clear_attached_body(py, clear);
             dec_ref_bits(py, result);
         }
         MoltObject::from_bool(clear == 0).bits()
-    })
+    }
 }
 
-extern "C" fn decline_callback(_left: u64, _right: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { crate::builtins::methods::not_implemented_bits(py) })
+extern "C" fn decline_callback(__context: u64, _left: u64, _right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        crate::builtins::methods::not_implemented_bits(py)
+    }
 }
 
-extern "C" fn result_callback(_left: u64, _right: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn result_callback(__context: u64, _left: u64, _right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let result = RICH_RESULT.load(AtomicOrdering::SeqCst);
         inc_ref_bits(py, result);
         result
-    })
+    }
 }
 
 #[test]
@@ -89,7 +115,7 @@ fn inherited_sequence_descriptors_cover_every_operation_and_declaring_owner() {
             for (name, operator, expected) in [
                 (
                     crate::NameId::DunderEq,
-                    molt_eq as extern "C" fn(u64, u64) -> u64,
+                    molt_eq as unsafe extern "C" fn(u64, u64, u64) -> u64,
                     false,
                 ),
                 (crate::NameId::DunderNe, molt_ne, true),
@@ -107,7 +133,7 @@ fn inherited_sequence_descriptors_cover_every_operation_and_declaring_owner() {
                     assert!(!exception_pending(py), "{name:?}");
                     assert_eq!(direct, MoltObject::from_bool(expected).bits(), "{name:?}");
                     dec_ref_bits(py, direct);
-                    let generic = operator(lhs, right);
+                    let generic = unsafe { operator(py.attached_context(), lhs, right) };
                     assert!(!exception_pending(py), "inherited {name:?}");
                     assert_eq!(
                         generic,
@@ -122,7 +148,7 @@ fn inherited_sequence_descriptors_cover_every_operation_and_declaring_owner() {
                 let invalid = unsafe { call_callable2(py, descriptor, one, right) };
                 dec_ref_bits(py, invalid);
                 assert!(exception_pending(py));
-                let error = molt_exception_last();
+                let error = molt_exception_last_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -158,7 +184,10 @@ fn sequence_equality_length_rules_and_mutation_match_cpython() {
             let a = MoltObject::from_ptr(a).bits();
             let b = MoltObject::from_ptr(b).bits();
             EQUALITY_CALLS.store(0, AtomicOrdering::SeqCst);
-            assert_eq!(molt_eq(a, b), MoltObject::from_bool(false).bits());
+            assert_eq!(
+                molt_eq_attached_body(py, a, b),
+                MoltObject::from_bool(false).bits()
+            );
             assert_eq!(EQUALITY_CALLS.load(AtomicOrdering::SeqCst), expected_calls);
             dec_ref_bits(py, b);
             dec_ref_bits(py, a);
@@ -169,7 +198,10 @@ fn sequence_equality_length_rules_and_mutation_match_cpython() {
         EQUALITY_CALLS.store(0, AtomicOrdering::SeqCst);
         // The equality callback clears lhs: [] < [right] is true. Reusing the
         // old pair would raise TypeError because its elements cannot order.
-        assert_eq!(molt_lt(a, b), MoltObject::from_bool(true).bits());
+        assert_eq!(
+            molt_lt_attached_body(py, a, b),
+            MoltObject::from_bool(true).bits()
+        );
         assert!(!exception_pending(py));
         assert_eq!(EQUALITY_CALLS.load(AtomicOrdering::SeqCst), 1);
         CLEAR_DURING_EQUALITY.store(0, AtomicOrdering::SeqCst);
@@ -190,13 +222,22 @@ fn sequence_overrides_reflect_and_notimplemented_falls_back_to_identity() {
         let b = unsafe { call_callable1(py, class, values) };
         install(py, class, b"__eq__", decline_callback as *const ());
         install(py, class, b"__ne__", decline_callback as *const ());
-        assert_eq!(molt_eq(a, b), MoltObject::from_bool(false).bits());
-        assert_eq!(molt_ne(a, b), MoltObject::from_bool(true).bits());
-        assert_eq!(molt_eq(a, a), MoltObject::from_bool(true).bits());
+        assert_eq!(
+            molt_eq_attached_body(py, a, b),
+            MoltObject::from_bool(false).bits()
+        );
+        assert_eq!(
+            molt_ne_attached_body(py, a, b),
+            MoltObject::from_bool(true).bits()
+        );
+        assert_eq!(
+            molt_eq_attached_body(py, a, a),
+            MoltObject::from_bool(true).bits()
+        );
         let result = MoltObject::from_ptr(alloc_list(py, &[])).bits();
         RICH_RESULT.store(result, AtomicOrdering::SeqCst);
         install(py, class, b"__ge__", result_callback as *const ());
-        let reflected = molt_le(values, a);
+        let reflected = molt_le_attached_body(py, values, a);
         assert_eq!(reflected, result);
         dec_ref_bits(py, reflected);
         // Explicit base descriptor bypasses the subclass override.
@@ -223,12 +264,14 @@ fn sequence_overrides_reflect_and_notimplemented_falls_back_to_identity() {
 fn bytearray_declaring_comparison_uses_owned_buffer_protocol() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        use crate::builtins::array_mod::{molt_array_append, molt_array_new};
+        use crate::builtins::array_mod::{
+            molt_array_append_attached_body, molt_array_new_attached_body,
+        };
         use molt_obj_model::sequence_compare::RichCompareOp;
         let format = MoltObject::from_ptr(alloc_string(py, b"B")).bits();
-        let handle = molt_array_new(format);
+        let handle = molt_array_new_attached_body(py, format);
         let array = crate::test_support::declared_array_buffer_instance(py, handle);
-        let appended = molt_array_append(handle, MoltObject::from_int(97).bits());
+        let appended = molt_array_append_attached_body(py, handle, MoltObject::from_int(97).bits());
         dec_ref_bits(py, appended);
         let left = MoltObject::from_ptr(alloc_bytearray(py, b"a")).bits();
         assert_eq!(
@@ -236,15 +279,15 @@ fn bytearray_declaring_comparison_uses_owned_buffer_protocol() {
             MoltObject::from_bool(true).bits()
         );
         // No retained buffer export may prevent a subsequent resize.
-        let appended = molt_array_append(handle, MoltObject::from_int(98).bits());
+        let appended = molt_array_append_attached_body(py, handle, MoltObject::from_int(98).bits());
         dec_ref_bits(py, appended);
         assert!(!exception_pending(py));
         assert_eq!(
             SequenceComparison::Bytearray.invoke(py, left, array, RichCompareOp::Lt),
             MoltObject::from_bool(true).bits()
         );
-        let view = crate::molt_memoryview_new(array);
-        let released = crate::molt_memoryview_release(view);
+        let view = crate::molt_memoryview_new_attached_body(py, array);
+        let released = crate::molt_memoryview_release_attached_body(py, view);
         dec_ref_bits(py, released);
         let declined = SequenceComparison::Bytearray.invoke(py, left, view, RichCompareOp::Eq);
         assert!(is_not_implemented_bits(py, declined));
@@ -268,14 +311,17 @@ fn identifier_storage_equality_does_not_invoke_string_subclass_comparison() {
         install(py, class, b"__eq__", equal_callback as *const ());
         CLEAR_DURING_EQUALITY.store(0, AtomicOrdering::SeqCst);
         EQUALITY_CALLS.store(0, AtomicOrdering::SeqCst);
-        assert_eq!(molt_eq(child, other), MoltObject::from_bool(true).bits());
+        assert_eq!(
+            molt_eq_attached_body(py, child, other),
+            MoltObject::from_bool(true).bits()
+        );
         assert_eq!(EQUALITY_CALLS.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(
-            molt_string_eq(child, name),
+            molt_string_eq_attached_body(py, child, name),
             MoltObject::from_bool(true).bits()
         );
         assert_eq!(
-            molt_string_eq(child, other),
+            molt_string_eq_attached_body(py, child, other),
             MoltObject::from_bool(false).bits()
         );
         assert_eq!(EQUALITY_CALLS.load(AtomicOrdering::SeqCst), 1);

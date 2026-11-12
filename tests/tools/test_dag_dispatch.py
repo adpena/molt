@@ -352,30 +352,9 @@ def test_only_landing_repair_and_integrator_ledger_are_capacity_exceptions() -> 
     )
 
 
-def test_north_star_uses_geometric_mean_and_family_axis_authority() -> None:
-    ratchet = {
-        "schema": "molt-primitive-instructions-v1",
-        "axes": {
-            "one/per_op": {"ratio": 4},
-            "one/startup": {"ratio": 1000},
-            "two/per_op": {"ratio": 16},
-            "empty/startup": {"ratio": 1},
-        },
-    }
-    # Cube root of 4*16*1 = 4. The per-primitive startup duplicate must not
-    # contaminate the operation mean.
-    assert "4.00x CPython over 3 axes" in dag_dispatch.north_star(ratchet)
-    rendered = dag_dispatch.render_plan(dag_dispatch.row_plan(STATUS), ratchet)
+def test_render_plan_names_engine_family_axes() -> None:
+    rendered = dag_dispatch.render_plan(dag_dispatch.row_plan(STATUS))
     assert "axes=loop/per_op" in rendered
-    assert "unavailable" in dag_dispatch.north_star(None)
-    for ratio in (0, -1, float("nan"), float("inf"), True, "1"):
-        ratchet["axes"]["one/per_op"]["ratio"] = ratio
-        with pytest.raises(DispatchRefused, match="invalid ratio"):
-            dag_dispatch.north_star(ratchet)
-    with pytest.raises(DispatchRefused, match="schema"):
-        dag_dispatch.north_star({"schema": "unknown"})
-    with pytest.raises(DispatchRefused, match="missing recorded axes"):
-        dag_dispatch.north_star({"schema": "molt-primitive-instructions-v1"})
 
 
 def test_capacity_is_shared_between_distinct_apparatus_families() -> None:
@@ -405,9 +384,3 @@ def test_capacity_is_shared_between_distinct_apparatus_families() -> None:
         DispatchRefused, match="engine capacity rule.*unassigned: ledger-owner"
     ):
         dag_dispatch.plan_dispatch(status, [_Record("ledger-owner")], ["HF-11"])
-
-
-@pytest.mark.parametrize("text", ["null", "[]", "true", "2", '"x"'])
-def test_north_star_refuses_non_object_json(text: str) -> None:
-    with pytest.raises(DispatchRefused, match="ratchet must be an object"):
-        dag_dispatch.parse_ratchet(text)

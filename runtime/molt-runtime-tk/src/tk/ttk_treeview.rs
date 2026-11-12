@@ -1092,7 +1092,7 @@ pub(super) fn handle_treeview_widget_path_command(
                             .items
                             .iter()
                             .filter_map(|(item_id, item)| {
-                                parse_treeview_tags(item)
+                                parse_treeview_tags(py, item)
                                     .iter()
                                     .any(|tag| tag == &tagname)
                                     .then_some(item_id.clone())
@@ -1110,7 +1110,9 @@ pub(super) fn handle_treeview_widget_path_command(
                     if args.len() == 5 {
                         let item_id = get_string_arg(py, handle, args[4], "treeview tag has item")?;
                         let has_tag = treeview.items.get(&item_id).is_some_and(|item| {
-                            parse_treeview_tags(item).iter().any(|tag| tag == &tagname)
+                            parse_treeview_tags(py, item)
+                                .iter()
+                                .any(|tag| tag == &tagname)
                         });
                         app.last_error = None;
                         return Ok(Some(MoltObject::from_bool(has_tag).bits()));

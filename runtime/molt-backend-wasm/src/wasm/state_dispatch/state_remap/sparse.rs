@@ -1,4 +1,5 @@
-use wasm_encoder::{BlockType, Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::{BlockType, Instruction};
 
 pub(in crate::wasm::state_dispatch) fn emit_sparse_state_remap_lookup(
     func: &mut Function,

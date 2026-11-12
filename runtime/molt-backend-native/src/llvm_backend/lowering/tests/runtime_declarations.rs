@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
 
 #[test]
@@ -15,6 +17,7 @@ fn boxed_or_retains_selected_operand_result() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Or,
         operands: vec![ValueId(0), ValueId(1)],
@@ -28,9 +31,9 @@ fn boxed_or_retains_selected_operand_result() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_is_truthy"), "{ir}");
+    assert!(ir.contains_execution("molt_is_truthy"), "{ir}");
     assert!(
-        ir.contains("call void @__molt_inline_retain(i64 %bool_or, i64 %rc_admission)"),
+        ir.contains_execution("call void @__molt_inline_retain(i64 %bool_or, i64 %rc_admission)"),
         "{ir}"
     );
 }
@@ -80,7 +83,7 @@ fn removed_runtime_delegates_fail_before_phantom_imports() {
         assert_lowering_error_contains(&err, symbol);
         assert_lowering_error_contains(&err, message);
         assert!(
-            backend.module.get_function(symbol).is_none(),
+            backend.module.get_execution_function(symbol).is_none(),
             "{symbol} must not be declared as a phantom runtime import"
         );
     }
@@ -117,6 +120,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
         entry.ops.push(const_none_def(operand));
         entry.ops.push(TirOp {
             origin: None,
+            runtime: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![operand],
@@ -132,9 +136,9 @@ fn iterator_ops_lower_to_real_runtime_exports() {
             .unwrap()
             .print_to_string()
             .to_string();
-        assert!(ir.contains(expected), "{ir}");
-        assert!(ir.contains(call_name), "{ir}");
-        assert!(!ir.contains(forbidden), "{ir}");
+        assert!(ir.contains_execution(expected), "{ir}");
+        assert!(ir.contains_execution(call_name), "{ir}");
+        assert!(!ir.contains_execution(forbidden), "{ir}");
     }
 }
 
@@ -143,7 +147,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
 fn llvm_symbol_signature_mismatch_rejects_tir_forward_declaration() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    backend.module.add_function(
+    backend.module.add_compiled_function(
         "same_name",
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
         Some(inkwell::module::Linkage::External),
@@ -313,12 +317,12 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
 }
 
 #[test]
-#[should_panic(expected = "LLVM function type mismatch for `molt_trace_exit`")]
+#[should_panic(expected = "LLVM function type mismatch for `molt_frame_record_exit`")]
 fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "test");
-    backend.module.add_function(
-        "molt_trace_exit",
+    backend.module.add_compiled_function(
+        "molt_frame_record_exit",
         ctx.void_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
     );
@@ -328,14 +332,14 @@ fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy_runtime_symbol",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
     );
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
 
-    let _ = lowering.ensure_runtime_i64_fn("molt_trace_exit", 0);
+    let _ = lowering.ensure_runtime_i64_fn("molt_frame_record_exit", 1);
 }
 
 #[test]
@@ -343,7 +347,7 @@ fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
 fn llvm_symbol_signature_mismatch_rejects_runtime_void_reuse() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "test");
-    backend.module.add_function(
+    backend.module.add_compiled_function(
         "molt_inc_ref_obj",
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
         Some(inkwell::module::Linkage::External),
@@ -354,7 +358,7 @@ fn llvm_symbol_signature_mismatch_rejects_runtime_void_reuse() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy_runtime_void_symbol",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -374,7 +378,7 @@ fn on_demand_runtime_declaration_uses_conservative_attributes() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy_runtime_attrs",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -392,7 +396,7 @@ fn on_demand_runtime_declaration_uses_conservative_attributes() {
 
 #[test]
 #[should_panic(
-    expected = "LLVM runtime import `molt_unclassified_runtime_symbol` has no ABI classification"
+    expected = "LLVM runtime import `molt_unclassified_runtime_symbol` has no execution ABI"
 )]
 fn unclassified_runtime_declaration_rejects_new_symbol_drift() {
     let ctx = Context::create();
@@ -403,7 +407,7 @@ fn unclassified_runtime_declaration_rejects_new_symbol_drift() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy_runtime_reject",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
@@ -431,7 +435,7 @@ fn preserved_runtime_call_rejects_name_only_symbol_drift() {
 fn llvm_symbol_signature_mismatch_rejects_function_symbol_reuse() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend.module.add_function(
+    backend.module.add_compiled_function(
         "gen_fn",
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
         Some(inkwell::module::Linkage::External),
@@ -446,7 +450,7 @@ fn llvm_symbol_signature_mismatch_rejects_function_symbol_reuse() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let dummy_fn = backend.module.add_function(
+    let dummy_fn = backend.module.add_compiled_function(
         "dummy_function_symbol",
         ctx.i64_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),

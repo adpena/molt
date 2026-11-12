@@ -301,6 +301,7 @@ fn released_operands(op: &TirOp) -> Vec<ValueId> {
 fn del_boundary(value: ValueId) -> TirOp {
     TirOp {
         origin: None,
+        runtime: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelBoundary,
         operands: vec![value],

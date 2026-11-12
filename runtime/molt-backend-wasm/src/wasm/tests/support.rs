@@ -4,8 +4,9 @@ pub(super) use crate::representation_plan::ScalarRepresentationPlan;
 pub(super) use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 pub(super) use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS,
-    RUNTIME_CALLABLE_KEY_BASE, WasmRuntimeImport, wasm_runtime_export_name, wasm_runtime_import,
+    RUNTIME_CALLABLE_KEY_BASE, WasmRuntimeImport, wasm_runtime_import,
 };
+pub(super) use crate::wasm_abi_generated::wasm_runtime_export_name;
 pub(super) use crate::wasm_plan::{
     is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
     wasm_scalar_truthiness_fast_path_for_name,
@@ -64,6 +65,49 @@ pub(super) fn wasm_test_op(kind: molt_ir::OpKind, out: Option<&str>, args: Vec<&
         args: Some(args.into_iter().map(str::to_string).collect()),
         ..OpIR::new(kind)
     }
+}
+
+/// The executed-statement oracle of guests that mark statements with `line`.
+/// A `line` op is a zero-cost statement marker (call-anatomy phase 1a), so
+/// each statement prints its line; the host's `print_obj` records it, decoded
+/// with [`executed_line_int_base`]. `print` may raise, so it follows the
+/// statement's own `check_exception` when one comes right after the `line`: a
+/// checked statement prints only after its check passes. The `line` ops stay,
+/// so statement boundaries (megafunction split) are unchanged.
+pub(super) fn print_after_each_line(ops: Vec<OpIR>) -> Vec<OpIR> {
+    let mut printed = Vec::with_capacity(ops.len() * 3);
+    let mut ops = ops.into_iter().enumerate().peekable();
+    while let Some((index, op)) = ops.next() {
+        let line = (op.kind == molt_ir::OpKind::Line).then(|| op.value.expect("line value"));
+        printed.push(op);
+        let Some(line) = line else {
+            continue;
+        };
+        if let Some((_, check)) =
+            ops.next_if(|(_, next)| next.kind == molt_ir::OpKind::CheckException)
+        {
+            printed.push(check);
+        }
+        printed.extend(print_line(line, &format!("executed_line_{index}")));
+    }
+    printed
+}
+
+/// `print(<line>)` through the fresh variable `name`.
+pub(super) fn print_line(line: i64, name: &str) -> [OpIR; 2] {
+    [
+        OpIR {
+            value: Some(line),
+            ..wasm_test_op(molt_ir::OpKind::Const, Some(name), vec![])
+        },
+        wasm_test_op(molt_ir::OpKind::Print, None, vec![name]),
+    ]
+}
+
+/// `print_obj` receives a boxed inline integer; subtracting this base gives
+/// the printed line.
+pub(super) fn executed_line_int_base() -> String {
+    molt_codegen_abi::box_int_bits(0).to_string()
 }
 
 pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
@@ -224,7 +268,7 @@ pub(super) fn wasm_function_import_names(wasm: &[u8]) -> Vec<String> {
             for import in reader.into_imports() {
                 let import = import.expect("valid WASM import");
                 if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
-                    imports.push(import.name.to_string());
+                    imports.push(logical_export_name(import.name).to_string());
                 }
             }
         }
@@ -238,7 +282,10 @@ pub(super) fn wasm_function_import_modules(wasm: &[u8]) -> BTreeMap<String, Stri
         if let Ok(Payload::ImportSection(reader)) = payload {
             for import in reader.into_imports().flatten() {
                 if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
-                    imports.insert(import.name.to_string(), import.module.to_string());
+                    imports.insert(
+                        logical_export_name(import.name).to_string(),
+                        import.module.to_string(),
+                    );
                 }
             }
         }
@@ -255,7 +302,7 @@ pub(super) fn wasm_function_import_type_indices(wasm: &[u8]) -> BTreeMap<String,
                     TypeRef::Func(idx) | TypeRef::FuncExact(idx) => idx,
                     _ => continue,
                 };
-                imports.insert(import.name.to_string(), type_idx);
+                imports.insert(logical_export_name(import.name).to_string(), type_idx);
             }
         }
     }
@@ -269,7 +316,7 @@ pub(super) fn wasm_function_import_indices(wasm: &[u8]) -> BTreeMap<String, u32>
         if let Ok(Payload::ImportSection(reader)) = payload {
             for import in reader.into_imports().flatten() {
                 if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
-                    imports.insert(import.name.to_string(), func_index);
+                    imports.insert(logical_export_name(import.name).to_string(), func_index);
                     func_index += 1;
                 }
             }
@@ -478,7 +525,7 @@ pub(super) fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
         if let Ok(Payload::ExportSection(reader)) = payload {
             for export in reader.into_iter().flatten() {
                 if export.kind == ExternalKind::Func {
-                    exports.insert(export.name.to_string());
+                    exports.insert(logical_export_name(export.name).to_string());
                 }
             }
         }
@@ -493,12 +540,21 @@ pub(super) fn wasm_function_export_indices(wasm: &[u8]) -> BTreeMap<String, u32>
             for export in reader {
                 let export = export.expect("valid WASM export");
                 if export.kind == ExternalKind::Func {
-                    exports.insert(export.name.to_string(), export.index);
+                    exports.insert(logical_export_name(export.name).to_string(), export.index);
                 }
             }
         }
     }
     exports
+}
+
+/// Inspection helpers address source identities; the binary retains only the
+/// generated physical identity. Boundary exports have no attached suffix.
+fn logical_export_name(name: &str) -> &str {
+    name.strip_suffix(
+        molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+    )
+    .unwrap_or(name)
 }
 
 pub(super) fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
@@ -545,3 +601,5 @@ pub(super) fn wasm_type_section_value_signatures(wasm: &[u8]) -> Vec<(Vec<String
     }
     sigs
 }
+
+pub(super) use crate::wasm::test_execution::attached_call_operands_end;

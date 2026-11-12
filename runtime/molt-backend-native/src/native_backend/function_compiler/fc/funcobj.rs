@@ -90,33 +90,37 @@ fn metadata_target_signature(
     signature
 }
 
-/// Borrow the executing frame's binding homes for `slots` code slots into
-/// `homes` and return the lent base: `molt_frame_homes` lends it, or 0 when
-/// the frame entry failed (its exception pending) or the frame has fewer
-/// homes (`SystemError` raised). Callers route 0 through an exception edge.
+/// Bind the frame's homes base into `homes` and into its cold stack copy:
+/// the record this invocation entered, or, in a split chunk that has no entry
+/// of its own, the executing frame it runs in. Cold paths (an Origin capture,
+/// a check's cold `frame_location` store) read the copy, so their rare uses
+/// do not keep the hot value live into cold blocks. Zero means no frame was
+/// entered; callers route it through an exception edge.
 #[cfg(feature = "native-backend")]
-/// Lend the frame's homes into `homes` and into its cold stack copy. Cold
-/// paths (an Origin capture, a check's cold `frame_location` store) read the
-/// copy, so their rare uses do not keep the hot value live into cold blocks.
 pub(in crate::native_backend::function_compiler) fn emit_frame_homes_lend(
     homes: Variable,
     cold_homes: cranelift_codegen::ir::StackSlot,
-    slots: i64,
-    module: &mut dyn Module,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    entered: Option<Variable>,
+    thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     builder: &mut FunctionBuilder<'_>,
 ) -> Value {
-    let slots_val = builder.ins().iconst(types::I64, slots);
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        "molt_frame_homes",
-        &[types::I64],
-        &[types::I64],
-    );
-    let local_callee = module.declare_func_in_func(callee, builder.func);
-    let call = builder.ins().call(local_callee, &[slots_val]);
-    let base = builder.inst_results(call)[0];
+    let base = match entered {
+        Some(entered) => builder.use_var(entered),
+        None => {
+            let thread_record = builder.ins().stack_load(
+                types::I64,
+                types::I64,
+                thread_record_slot.expect("a split chunk holds the thread record"),
+                0,
+            );
+            builder.ins().load(
+                types::I64,
+                MemFlagsData::trusted(),
+                thread_record,
+                molt_codegen_abi::THREAD_RECORD_FRAME_TOP_OFFSET,
+            )
+        }
+    };
     builder.def_var(homes, base);
     builder.ins().stack_store(types::I64, base, cold_homes, 0);
     base
@@ -243,6 +247,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     owned_frame_entered: Option<Variable>,
     frame_homes: Option<(Variable, i64)>,
     cold_frame_homes: Option<cranelift_codegen::ir::StackSlot>,
+    frame_sites: Option<NativeFrameSites>,
+    thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     leading_frame_entry_preemitted: Option<usize>,
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
@@ -870,21 +876,34 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             if let Some(leading_frame_entry_op_idx) = leading_frame_entry_preemitted {
                 debug_assert_eq!(op_idx, leading_frame_entry_op_idx);
             } else {
+                let record_slot = thread_record_slot;
+                let origin = builder.current_block();
                 emit_owned_execution_frame_enter(
                     entered,
                     op.s_value
                         .as_deref()
                         .expect("admitted trace_enter_slot owner"),
+                    op.value
+                        .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value),
+                    frame_sites.expect("a frame entry has its sites"),
+                    record_slot,
                     module,
-                    import_ids,
                     builder,
                 );
-                // The entry took the frame's binding homes: lend them before
+                if let Some(continuation) = builder.current_block() {
+                    carry_internal_cfg_tracking(
+                        origin,
+                        continuation,
+                        block_tracked_obj,
+                        block_tracked_ptr,
+                    );
+                }
+                // The entry linked the frame's record: bind its homes before
                 // the entry's adjacent exception check, which leaves for the
-                // entry-failure label when the lend is 0.
-                if let Some((homes, slots)) = frame_homes {
+                // entry-failure label when the base is 0.
+                if let Some((homes, _)) = frame_homes {
                     let cold_homes = cold_frame_homes.expect("lent homes keep a cold stack copy");
-                    emit_frame_homes_lend(homes, cold_homes, slots, module, import_ids, builder);
+                    emit_frame_homes_lend(homes, cold_homes, Some(entered), record_slot, builder);
                 }
             }
         }
@@ -1201,25 +1220,13 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             emit_frame_location_store(builder, address, op.value.expect("admitted location index"));
         }
         OpKind::Line => {
-            // Inside active loops, skip line tracking entirely.
-            // These are debug-info calls (~3ns each) that dominate
-            // inner-loop cost when inlining arithmetic and stores.
-            // Exception tracebacks still get correct line info from
-            // the last line op before the loop or at loop entry.
+            // A statement marker: it emits no code. Tracebacks read the
+            // location that `frame_set_location` publishes before each
+            // raising op. Outside active loops the marker is a cleanup point
+            // that releases tracked values whose last use lies behind it.
             if in_loop {
                 return OpFlow::Continue;
             }
-            let line = op.value.unwrap_or(0);
-            let line_val = builder.ins().iconst(types::I64, line);
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_trace_set_line",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let _ = builder.ins().call(local_callee, &[line_val]);
             if !is_block_filled && let Some(block) = builder.current_block() {
                 for tracked in [
                     block_tracked_obj.get_mut(&block),

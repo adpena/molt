@@ -46,16 +46,21 @@ impl SimpleBackend {
         let mut canonical_sig = self.module.make_signature();
         canonical_sig.returns.push(AbiParam::new(types::I64));
         for (offset, symbol) in &registry.relocs {
+            let physical_symbol = compiled_execution_symbol(symbol);
             let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
-                self.module.get_name(symbol)
+                self.module.get_name(&physical_symbol)
             {
                 id
             } else {
-                self.module
-                    .declare_function(symbol, Linkage::Import, &canonical_sig)
-                    .unwrap_or_else(|e| {
-                        panic!("module registry: failed to declare init symbol '{symbol}': {e:?}")
-                    })
+                declare_python_execution_function(
+                    &mut self.module,
+                    symbol,
+                    Linkage::Import,
+                    &canonical_sig,
+                )
+                .unwrap_or_else(|e| {
+                    panic!("module registry: failed to declare init symbol '{symbol}': {e:?}")
+                })
             };
             let func_ref = self.module.declare_func_in_data(func_id, &mut desc);
             let slot = u32::try_from(*offset).unwrap_or_else(|_| {
