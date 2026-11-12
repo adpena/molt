@@ -570,12 +570,14 @@ fn owned_tuple_parts_ratios_and_divmod_transfer_and_retire() {
                 }
             },
         );
+        // A float is its own word (HF-833): the NaN parts are inline, so the
+        // result tuple is the only allocation and owns no heap part.
         let nan = crate::object::ops::float_result_bits(py, f64::NAN);
         assert_owned_tuple_parts(
             py,
             "NaN divmod",
-            3,
-            &[0, 1],
+            1,
+            &[],
             || {
                 ops_builtins::molt_divmod_builtin_attached_body(
                     py,
