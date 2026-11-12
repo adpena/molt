@@ -459,7 +459,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             OpCode::CallLoadedMethod,
             Some(OpKind::CallLoadedMethod),
             2,
-            "call_loaded_method",
+            "method_site_call",
         ),
         (OpCode::CallBuiltin, None, 2, "call_builtin"),
         (OpCode::CallBuiltin, None, 1, "owned_name_result"),
@@ -486,7 +486,8 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             }
             let kind = origin.unwrap_or(OpKind::CallBuiltin);
             let operands = if opcode == OpCode::CallLoadedMethod {
-                // CPython's CALL takes the pair its method load produced.
+                // CPython's CALL takes the pair its method load produced;
+                // the method-site pass stamps both with one site.
                 let pair = vec![func.fresh_value(), func.fresh_value()];
                 func.blocks
                     .get_mut(&func.entry_block)
@@ -499,7 +500,10 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
                         opcode: OpCode::LoadMethod,
                         operands: vec![input],
                         results: pair.clone(),
-                        attrs: AttrDict::from([("name".into(), AttrValue::Str("m".into()))]),
+                        attrs: AttrDict::from([
+                            ("name".into(), AttrValue::Str("m".into())),
+                            ("method_site".into(), AttrValue::Int(0)),
+                        ]),
                         source_span: None,
                     });
                 pair
@@ -518,6 +522,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             };
             if opcode == OpCode::CallLoadedMethod {
                 call.set_argument_custody(&[molt_ir::ParameterCustody::Transferred; 2]);
+                call.set_method_site(Some(0));
             }
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(call);
