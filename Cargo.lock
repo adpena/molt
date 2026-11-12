@@ -1931,7 +1931,7 @@ dependencies = [
  "bitflags 2.13.2",
  "inkwell_internals",
  "libc",
- "llvm-sys",
+ "llvm-sys 221.1.2",
  "thiserror 2.0.21",
 ]
 
@@ -2273,9 +2273,23 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "llvm-sys"
-version = "221.1.1"
+version = "221.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d19cbc1fbc2f93b1508959fe2c92a09b6d760ffbea9a89be30fed6327f6c786"
+checksum = "2e94aa5b03c11c1ba1815bb79083ac0a3490b7b20cd7e2654502c0c39987ff14"
+dependencies = [
+ "anyhow",
+ "cc",
+ "lazy_static",
+ "libc",
+ "regex-lite",
+ "semver",
+]
+
+[[package]]
+name = "llvm-sys"
+version = "231.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77d743201f766af6ecdd95a2e6dbb295af7f72848098e3828fee8853da034c15"
 dependencies = [
  "anyhow",
  "cc",
@@ -2466,7 +2480,7 @@ dependencies = [
  "cranelift-object",
  "inkwell",
  "libc",
- "llvm-sys",
+ "llvm-sys 231.0.2",
  "molt-codegen-abi",
  "molt-ir",
  "molt-llvm-link",
