@@ -191,7 +191,21 @@ def landing_built_tests(
     return {test: owners[test] for test in importers if test in owners}
 
 
-def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
+def presubmit_pytest_argv(root: Path, tests: Sequence[str]) -> list[str]:
+    """The importer run as presubmit makes it: the landing's own formatter
+    (``local_pytest_argv``: ``-n auto``, the tests' declared worker memory)
+    with ``--skip-slow``, so a `slow` test runs in postsubmit, as it does for
+    the landing, and never holds a commit."""
+    from tools.molt_dev_policy import GateConfig
+    from tools.proof_plan import local_pytest_argv
+
+    units = GateConfig.load(root / "tools" / "proof_plan.toml").pytest_memory_units
+    command = local_pytest_argv(tests, ("--skip-slow",), memory_units=units)
+    assert command[0] == "python", command
+    return [sys.executable, *command[1:]]
+
+
+def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
     from tools.test_dependency_graph import load_graph
 
     tree = commit_tree(root, paths)
@@ -222,8 +236,10 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
         for test in tests:
             print(f"  {test}")
     if run_now:
-        argv = [sys.executable, "-m", "pytest", "-q", *pytest_args]
-        argv += run_now
+        if pytest_args is None:
+            argv = presubmit_pytest_argv(root, run_now)
+        else:
+            argv = [sys.executable, "-m", "pytest", "-q", *pytest_args, *run_now]
         print("consumer-gate: " + " ".join(argv), flush=True)
         if _COMMANDS.run(argv, cwd=root).returncode != 0:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
@@ -284,8 +300,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pytest-arg",
         action="append",
-        default=[],
-        help="extra pytest argument for run (repeatable), e.g. -n=auto",
+        default=None,
+        help=(
+            "pytest argument for run (repeatable); given, it replaces the "
+            "presubmit options (-n auto, declared worker memory, --skip-slow)"
+        ),
     )
     parser.add_argument("paths", nargs="*", help="the paths the commit names")
     args = parser.parse_args(argv)
