@@ -122,10 +122,12 @@ impl<'ctx> LlvmBackend<'ctx> {
         let table_init = record_ty.const_array(&record_values);
         table_global.set_initializer(&table_init);
 
-        // Resolver function: i64 molt_app_resolve_callable(ptr name, i64 len).
-        // Matches the C stub declaration `unsigned long long(const char*,
-        // unsigned long long)` and the Cranelift emitter's ABI.
-        let resolver_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+        // Resolver function: i64 molt_app_resolve_callable(ptr name, usize len),
+        // the runtime's `extern "C" fn(*const u8, usize) -> u64`
+        // (`intrinsics/registry.rs`). `usize` is i64 on 64-bit hosts and i32
+        // on wasm32, where an indirect call checks the exact signature.
+        let len_ty = self.pointer_sized_int_type();
+        let resolver_ty = i64_ty.fn_type(&[ptr_ty.into(), len_ty.into()], false);
         let resolver =
             module.add_function(APP_RESOLVER_SYMBOL, resolver_ty, Some(Linkage::External));
 
@@ -137,7 +139,13 @@ impl<'ctx> LlvmBackend<'ctx> {
         let name_addr = builder
             .build_ptr_to_int(name_ptr, i64_ty, "name_addr")
             .unwrap();
-        let name_len = resolver.get_nth_param(1).unwrap().into_int_value();
+        let name_len = builder
+            .build_int_z_extend_or_bit_cast(
+                resolver.get_nth_param(1).unwrap().into_int_value(),
+                i64_ty,
+                "name_len",
+            )
+            .unwrap();
 
         if count == 0 {
             builder.build_unconditional_branch(not_found_bb).unwrap();

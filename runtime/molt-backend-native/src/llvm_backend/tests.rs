@@ -193,11 +193,45 @@ fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
 }
 
 #[test]
+fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
+    let ctx = Context::create();
+    let backend =
+        LlvmBackend::new_for_target(&ctx, "wasm32_object", LlvmCodegenTarget::Wasm32Wasip1);
+    assert_eq!(
+        backend.target.reloc_mode(),
+        inkwell::targets::RelocMode::Static
+    );
+    assert_eq!(backend.pointer_sized_int_type().get_bit_width(), 32);
+    let layout = backend.module.get_data_layout();
+    let layout = layout.as_str().to_str().expect("UTF-8 data layout");
+    assert!(layout.contains("p:32:32"), "wasm32 layout: {layout}");
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-wasm32-object")
+        .expect("create LLVM wasm32 object output");
+    let artifact = artifacts.path().join("backend.o");
+    backend
+        .emit_object(&artifact, MoltOptLevel::None)
+        .expect("wasm32 object emission");
+    let bytes = std::fs::read(&artifact).expect("read wasm32 object");
+    assert_eq!(
+        &bytes[..8],
+        b"\0asm\x01\0\0\0",
+        "a version-1 WebAssembly module"
+    );
+    // wasm-ld admits only relocatable objects, which carry a `linking` section.
+    assert!(
+        bytes
+            .windows(b"linking".len())
+            .any(|window| window == b"linking"),
+        "a relocatable WebAssembly object"
+    );
+}
+
+#[test]
 fn test_create_target_machine_all_levels() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "tm_test");
     assert_eq!(
-        LlvmBackend::reloc_mode(),
+        backend.target.reloc_mode(),
         inkwell::targets::RelocMode::PIC,
         "LLVM object emission must stay PIC-compatible for the shared runtime link path"
     );

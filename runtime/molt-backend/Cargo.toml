@@ -57,7 +57,9 @@ windows-sys = { version = "0.61", features = [
 [features]
 default = ["native-backend"]
 free-threaded = ["native-backend", "molt-backend-native/free-threaded"]
-llvm = ["dep:molt-backend-native", "molt-backend-native/llvm"]
+# The LLVM lane is driven by the native backend's program pipeline, for the
+# host and for wasm32 alike.
+llvm = ["native-backend", "molt-backend-native/llvm"]
 polly = ["llvm", "molt-backend-native/polly"]
 luau-backend = ["dep:molt-backend-luau", "molt-backend-luau/luau-backend"]
 native-backend = [

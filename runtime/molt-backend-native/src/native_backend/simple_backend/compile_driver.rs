@@ -60,6 +60,17 @@ impl SimpleBackend {
         self.compile_selected_checked(ir, NativeCodegenBackend::Llvm)
     }
 
+    /// Compile through LLVM to a relocatable `wasm32-wasip1` object whose
+    /// exported `molt_main` bootstraps the runtime (`emit_wasm_entry_wrapper`).
+    #[cfg(feature = "llvm")]
+    pub fn compile_llvm_wasm32_checked(
+        mut self,
+        ir: SimpleIR,
+    ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+        self.llvm_target = crate::llvm_backend::LlvmCodegenTarget::Wasm32Wasip1;
+        self.compile_selected_checked(ir, NativeCodegenBackend::Llvm)
+    }
+
     fn compile_selected_checked(
         self,
         ir: SimpleIR,
@@ -106,8 +117,9 @@ impl SimpleBackend {
             let emit_resolver_here = program.emit_resolver_here;
             let app_callable_manifest = &program.app_callable_manifest;
 
+            let llvm_target = self.llvm_target;
             let context = inkwell::context::Context::create();
-            let mut llvm = LlvmBackend::new(&context, "molt_module");
+            let mut llvm = LlvmBackend::new_for_target(&context, "molt_module", llvm_target);
 
             // Runtime functions are declared on first use by typed identity.
 
@@ -127,10 +139,13 @@ impl SimpleBackend {
             // the host CPU's vector feature string so the vectorizer can size
             // lanes to the actual machine (behavior-neutral today: the width is
             // a dead annotation, but structurally correct for real SIMD codegen).
+            let host_features = inkwell::targets::TargetMachine::get_host_cpu_features();
             let llvm_tti = crate::tir::target_info::TargetInfo::from_llvm_feature_string(
-                inkwell::targets::TargetMachine::get_host_cpu_features()
-                    .to_str()
-                    .unwrap_or(""),
+                if llvm_target.is_wasm() {
+                    ""
+                } else {
+                    host_features.to_str().unwrap_or("")
+                },
             );
             // Source ABI metadata survives transport retirement unchanged.
             let function_signatures: BTreeMap<_, _> = ir
@@ -322,6 +337,18 @@ impl SimpleBackend {
                     self.code_slots.as_ref(),
                     self.module_registry.as_ref(),
                 );
+            }
+            if llvm_target.is_wasm() {
+                assert!(
+                    emit_resolver_here,
+                    "an LLVM WASM object is the whole application and owns its entry"
+                );
+                llvm.emit_wasm_call_indirect_trampolines();
+                if let Some(registry) = self.module_registry.as_ref() {
+                    llvm.emit_wasm_isolate_import(registry);
+                }
+                llvm.emit_wasm_entry_wrapper(self.module_registry.is_some());
+                llvm.emit_wasm_attached_context_abi_section();
             }
 
             // Dump LLVM IR under the repo-local debug artifact root when

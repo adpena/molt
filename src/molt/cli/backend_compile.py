@@ -87,11 +87,12 @@ from molt.cli.output import (
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
+    wasm_runtime_callable_binding,
 )
 from molt.cli.runtime_features import SOURCE_EXTENSION_RUNTIME_FEATURES
 from molt.cli.runtime_native_build import _maybe_start_native_runtime_lib_ready_async
 from molt.cli.runtime_native_codegen import (
-    NativeRuntimeCodegenBinding,
+    RuntimeCallableBinding,
     native_runtime_codegen_environment,
 )
 from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
@@ -345,6 +346,16 @@ def _prepare_backend_setup(
     assert backend_bin is not None
     runtime_wasm_codegen_digest = ""
     wasm_layout = None
+    if is_wasm and codegen.backend == "llvm" and split_runtime:
+        # LLVM code uses the shadow stack, so a split app needs a PIC
+        # side-module link and the `molt_runtime` import namespace
+        # (call_anatomy.md, "P0, WASM through LLVM's wasm32 target").
+        return None, _fail(
+            "--target wasm --backend llvm builds linked modules only; the split "
+            "runtime is not yet supported on the LLVM wasm32 target",
+            json_output,
+            command="build",
+        )
     if is_wasm:
         # Runtime layout is an input to every WASM cache tier, including cache
         # hits that never dispatch the backend. Bind before admitting artifacts.
@@ -380,6 +391,19 @@ def _prepare_backend_setup(
                 command="build",
             )
         runtime_wasm_codegen_digest = binding.semantic_digest
+        runtime_state.wasm_runtime_callable_binding = None
+        if codegen.backend == "llvm":
+            try:
+                reloc = binding.generation.reloc_member_identity
+                runtime_state.wasm_runtime_callable_binding = (
+                    wasm_runtime_callable_binding(
+                        reloc,
+                        binding.generation.linking_names,
+                        projection_path=reloc.path,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                return None, _fail(str(exc), json_output, command="build")
         try:
             wasm_layout = prepare_wasm_codegen_layout(
                 binding, linked=linked, split_runtime=split_runtime
@@ -411,7 +435,7 @@ def _prepare_backend_setup(
             target_python=target_python,
             stdlib_profile=stdlib_profile,
             native_artifact_plan=native_artifact_plan,
-            native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
+            native_runtime_codegen_binding=runtime_state.runtime_callable_binding,
             runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
             codegen=codegen,
@@ -619,7 +643,7 @@ def _prepare_backend_dispatch(
     backend_compiler_fingerprint: str | None = None,
     start_daemon: bool = True,
     capture_origin: bool = False,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
     backend_environment = dict(backend_environment)
     backend_environment.pop("MOLT_EMISSION_SCOPE", None)
@@ -786,7 +810,7 @@ def _execute_backend_compile(
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
     codegen: CodegenSelection,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
     backend_emission_origin: BackendEmissionOrigin | None = None
     target_triple = cache_setup.artifact_contract.target_triple
@@ -1401,7 +1425,7 @@ def _prepare_backend_compile(
             prepared_backend_dispatch, prepared_backend_dispatch_error = (
                 _prepare_backend_dispatch(
                     capture_origin=capture_origin,
-                    native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
+                    native_runtime_codegen_binding=runtime_state.runtime_callable_binding,
                     is_rust_transpile=is_rust_transpile,
                     is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
@@ -1432,7 +1456,7 @@ def _prepare_backend_compile(
             backend_execution_result, backend_execution_error = (
                 _execute_backend_compile(
                     capture_origin=capture_origin,
-                    native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
+                    native_runtime_codegen_binding=runtime_state.runtime_callable_binding,
                     cache=cache_enabled,
                     cache_path=cache_path,
                     function_cache_path=function_cache_path,

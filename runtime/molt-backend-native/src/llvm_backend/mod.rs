@@ -13,6 +13,7 @@ mod module_registry;
 mod program_slots;
 pub mod runtime_imports;
 pub mod types;
+mod wasm_entry;
 
 #[cfg(feature = "llvm")]
 use inkwell::OptimizationLevel;
@@ -56,6 +57,63 @@ pub struct LlvmBackend<'ctx> {
     pub(crate) runtime_callable_symbols: molt_ir::runtime_callable_symbols::RuntimeFnSet,
     /// This module's runtime declarations, by typed identity (HF-821).
     pub(crate) runtime_imports: runtime_imports::LlvmRuntimeImports<'ctx>,
+    /// The machine this module is generated for. The triple, data layout,
+    /// relocation model and CPU policy all derive from it.
+    pub target: LlvmCodegenTarget,
+}
+
+/// The machine an LLVM module is generated for.
+///
+/// `Host` emits a native object for the compiler's own machine. `Wasm32Wasip1`
+/// emits a relocatable WebAssembly object for wasm-ld, linked against the
+/// runtime's relocatable `wasm32-wasip1` module: 32-bit pointers inside the
+/// same 64-bit NaN-boxed words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LlvmCodegenTarget {
+    Host,
+    Wasm32Wasip1,
+}
+
+#[cfg(feature = "llvm")]
+impl LlvmCodegenTarget {
+    pub const fn is_wasm(self) -> bool {
+        matches!(self, Self::Wasm32Wasip1)
+    }
+
+    fn triple(self) -> inkwell::targets::TargetTriple {
+        match self {
+            Self::Host => TargetMachine::get_default_triple(),
+            Self::Wasm32Wasip1 => inkwell::targets::TargetTriple::create("wasm32-wasip1"),
+        }
+    }
+
+    /// CPU name and feature string. WASM matches the runtime module's Rust
+    /// codegen policy: the generic CPU without reference types
+    /// (`.cargo/config.toml`, `runtime_wasm_build_support.py`).
+    pub(crate) fn cpu_features(self) -> (String, String) {
+        match self {
+            Self::Host => native_cpu_features(),
+            Self::Wasm32Wasip1 => ("generic".to_string(), "-reference-types".to_string()),
+        }
+    }
+
+    /// Native objects join a position-independent link; the WASM object is
+    /// linked statically by wasm-ld into one module.
+    fn reloc_mode(self) -> inkwell::targets::RelocMode {
+        match self {
+            Self::Host => inkwell::targets::RelocMode::PIC,
+            Self::Wasm32Wasip1 => inkwell::targets::RelocMode::Static,
+        }
+    }
+
+    fn initialize(self) {
+        use inkwell::targets::{InitializationConfig, Target};
+        match self {
+            Self::Host => Target::initialize_native(&InitializationConfig::default())
+                .expect("Failed to initialize native target"),
+            Self::Wasm32Wasip1 => Target::initialize_webassembly(&InitializationConfig::default()),
+        }
+    }
 }
 
 /// Exact LLVM CPU inputs shared by target-machine construction and cache identity.
@@ -80,11 +138,17 @@ pub(crate) fn native_cpu_features() -> (String, String) {
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
+        Self::new_for_target(context, module_name, LlvmCodegenTarget::Host)
+    }
+
+    pub fn new_for_target(
+        context: &'ctx Context,
+        module_name: &str,
+        target: LlvmCodegenTarget,
+    ) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
-        // Set target triple for the host
-        let triple = inkwell::targets::TargetMachine::get_default_triple();
-        module.set_triple(&triple);
+        module.set_triple(&target.triple());
         let symbols = crate::runtime_callable_symbols::RuntimeCallableSymbols::capture();
         let backend = Self {
             context,
@@ -94,9 +158,23 @@ impl<'ctx> LlvmBackend<'ctx> {
             function_repr_facts: BTreeMap::new(),
             runtime_callable_symbols: symbols.runtime_fn_set(),
             runtime_imports: runtime_imports::LlvmRuntimeImports::default(),
+            target,
         };
+        // Lowering lays out structs and GEPs against the module's data
+        // layout, so it must be the target's before any body is generated.
+        let machine = backend.create_target_machine(&MoltOptLevel::Aggressive);
+        backend
+            .module
+            .set_data_layout(&machine.get_target_data().get_data_layout());
         backend.ensure_generated_object_abi_anchor();
         backend
+    }
+
+    /// The integer type as wide as a target pointer (`usize`).
+    pub(crate) fn pointer_sized_int_type(&self) -> inkwell::types::IntType<'ctx> {
+        let machine = self.create_target_machine(&MoltOptLevel::None);
+        self.context
+            .ptr_sized_int_type(&machine.get_target_data(), None)
     }
 
     /// Attach the mandatory, retained relocation to the runtime's exact
@@ -270,14 +348,12 @@ impl<'ctx> LlvmBackend<'ctx> {
 
     /// Create a native target machine for the host CPU at the given opt level.
     fn create_target_machine(&self, opt_level: &MoltOptLevel) -> TargetMachine {
-        use inkwell::targets::{CodeModel, InitializationConfig, Target};
+        use inkwell::targets::{CodeModel, Target};
 
-        Target::initialize_native(&InitializationConfig::default())
-            .expect("Failed to initialize native target");
-
-        let triple = TargetMachine::get_default_triple();
+        self.target.initialize();
+        let triple = self.target.triple();
         let target = Target::from_triple(&triple).expect("Failed to get target from triple");
-        let (cpu, features) = native_cpu_features();
+        let (cpu, features) = self.target.cpu_features();
 
         let llvm_opt = match opt_level {
             MoltOptLevel::None => OptimizationLevel::None,
@@ -291,17 +367,10 @@ impl<'ctx> LlvmBackend<'ctx> {
                 &cpu,
                 &features,
                 llvm_opt,
-                Self::reloc_mode(),
+                self.target.reloc_mode(),
                 CodeModel::Default,
             )
             .expect("Failed to create target machine")
-    }
-
-    /// Molt LLVM objects are linked into the same runtime/shared-image path as
-    /// native backend outputs, so object generation must be position independent
-    /// at the target-machine authority instead of relying on linker flags.
-    fn reloc_mode() -> inkwell::targets::RelocMode {
-        inkwell::targets::RelocMode::PIC
     }
 
     /// Emit a native object file (`.o`) at the given optimization level.

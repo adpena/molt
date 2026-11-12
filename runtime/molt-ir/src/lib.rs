@@ -46,6 +46,12 @@ pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, v
 /// The implicit FIRST parameter name the frontend prepends to every closure's
 /// parameter list to carry its captured environment.
 pub const MOLT_CLOSURE_PARAM_NAME: &str = "__molt_closure__";
+/// The program entry the frontend's entry-module lowering emits. The AOT main
+/// stub, the JIT and the WASM hosts call it.
+pub const PROGRAM_ENTRY_SYMBOL: &str = "molt_main";
+/// The application's module-import dispatcher. The wasm32 runtime calls it
+/// with a module id; the application object defines it.
+pub const ISOLATE_IMPORT_SYMBOL: &str = "molt_isolate_import";
 
 /// Lossless Python code-point carrier shared with standalone source backends.
 pub mod python_string;

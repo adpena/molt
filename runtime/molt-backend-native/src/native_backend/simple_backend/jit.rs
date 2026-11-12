@@ -8,6 +8,7 @@
 use super::compile_driver::backend_timing_enabled;
 use super::*;
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
+use molt_ir::PROGRAM_ENTRY_SYMBOL;
 use molt_ir::backend_environment::BackendEnv;
 use std::sync::Arc;
 
@@ -26,9 +27,6 @@ pub(crate) struct JitCodeOwner {
     lookup: JitSymbolLookup,
 }
 
-/// The program entry the AOT main stub calls (`molt_main`, emitted by the
-/// frontend's entry module lowering).
-const PROGRAM_ENTRY_SYMBOL: &str = "molt_main";
 /// The application initializer the runtime calls for a fresh isolate.
 const ISOLATE_BOOTSTRAP_SYMBOL: &str = "molt_isolate_bootstrap";
 

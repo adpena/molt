@@ -1217,7 +1217,7 @@ impl SimpleIR {
     pub fn tree_shake_source_emission(&mut self) {
         for func in &mut self.functions {
             match func.name.as_str() {
-                "molt_main" => {
+                crate::PROGRAM_ENTRY_SYMBOL => {
                     func.ops.retain(|op| {
                         !(op.kind == crate::OpKind::Call
                             && op.s_value.as_deref() == Some("molt_runtime_init"))
@@ -1244,8 +1244,10 @@ impl SimpleIR {
             .iter()
             .map(|func| func.name.as_str())
             .collect();
-        let mut reachable: BTreeSet<String> = BTreeSet::from([String::from("molt_main")]);
-        let mut worklist: VecDeque<String> = VecDeque::from([String::from("molt_main")]);
+        let mut reachable: BTreeSet<String> =
+            BTreeSet::from([String::from(crate::PROGRAM_ENTRY_SYMBOL)]);
+        let mut worklist: VecDeque<String> =
+            VecDeque::from([String::from(crate::PROGRAM_ENTRY_SYMBOL)]);
 
         while let Some(func_name) = worklist.pop_front() {
             let Some(func) = self

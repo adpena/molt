@@ -39,6 +39,49 @@ pub(crate) fn validate_wasm_module_catalog(
     Ok(())
 }
 
+/// Compile one admitted WASM document to the bytes wasm-ld links: the WASM
+/// backend's module, or, when the build selects LLVM, LLVM's relocatable
+/// `wasm32-wasip1` object. The one-shot and daemon paths both call this.
+pub(crate) fn compile_wasm_target(
+    ir: SimpleIR,
+    module_registry: Option<ModuleRegistryIR>,
+    code_slots: molt_ir::code_slots::CodeSlotBindings,
+    options: WasmTargetOptions,
+) -> io::Result<Vec<u8>> {
+    if let Some(registry) = module_registry.as_ref() {
+        validate_wasm_module_catalog(&ir, registry)?;
+    }
+    let selects_llvm =
+        molt_ir::backend_environment::var(molt_ir::backend_environment::BackendEnv::MOLT_BACKEND)
+            .as_deref()
+            == Ok("llvm");
+    if selects_llvm {
+        // The `--target wasm --backend llvm` cell: LLVM's wasm32 target emits
+        // a relocatable object that wasm-ld links against the runtime's
+        // relocatable module, as rustc and Zig build WASM.
+        #[cfg(feature = "llvm")]
+        {
+            let mut backend = molt_backend::SimpleBackend::new();
+            backend.module_registry = module_registry;
+            backend.code_slots = Some(code_slots);
+            return backend
+                .compile_llvm_wasm32_checked(ir)
+                .map(|object| object.bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()));
+        }
+        #[cfg(not(feature = "llvm"))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "MOLT_BACKEND=llvm selects LLVM's wasm32 target, but this backend was built \
+             without the `llvm` feature",
+        ));
+    }
+    Ok(WasmBackend::with_options(options.compile_options())
+        .with_module_registry(module_registry)
+        .with_code_slots(code_slots)
+        .compile(ir))
+}
+
 pub(super) fn emit_wasm_target(
     ir: SimpleIR,
     module_registry: Option<ModuleRegistryIR>,
@@ -47,13 +90,7 @@ pub(super) fn emit_wasm_target(
     options: WasmTargetOptions,
     capture_origin: bool,
 ) -> io::Result<Option<crate::backend_process::origin::EmittedArtifact>> {
-    if let Some(registry) = module_registry.as_ref() {
-        validate_wasm_module_catalog(&ir, registry)?;
-    }
-    let backend = WasmBackend::with_options(options.compile_options())
-        .with_module_registry(module_registry)
-        .with_code_slots(code_slots);
-    let wasm_bytes = backend.compile(ir);
+    let wasm_bytes = compile_wasm_target(ir, module_registry, code_slots, options)?;
     write_bytes_atomically(Path::new(output_file), &wasm_bytes).map_err(|error| {
         io::Error::new(
             error.kind(),

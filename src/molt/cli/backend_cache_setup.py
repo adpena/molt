@@ -61,7 +61,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.target_python import TargetPythonVersion
 from molt.cli.wasm_codegen_layout import WasmCodegenLayout
 from molt.cli.runtime_native_codegen import (
-    NativeRuntimeCodegenBinding,
+    RuntimeCallableBinding,
     native_runtime_codegen_environment,
 )
 
@@ -295,7 +295,7 @@ def backend_operation_environment(
     *,
     codegen: CodegenSelection,
     profile: str,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None,
     backend_compiler_fingerprint: str | None,
     entry_module: str | None,
     stdlib_module_symbols_json: str | None,
@@ -357,7 +357,7 @@ def _prepare_backend_cache_setup(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     runtime_wasm_codegen_digest: str = "",
     backend_compiler_fingerprint: str | None = None,
     codegen: CodegenSelection,

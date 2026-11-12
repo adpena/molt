@@ -80,7 +80,11 @@ if TYPE_CHECKING:
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
-    from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+    from molt.cli.runtime_native_codegen import (
+        NativeRuntimeCodegenBinding,
+        RuntimeCallableBinding,
+        WasmRuntimeCallableBinding,
+    )
     from molt.cli.runtime_native_generation import NativeRuntimeGeneration
     from molt.cli.installed_runtime_contract import InstalledNativeAdmission
     from molt.cli.module_resolution import _ModuleResolutionCache
@@ -686,12 +690,22 @@ class _RuntimeArtifactState:
     native_runtime_build_identity: RuntimeBuildIdentity | None = None
     native_runtime_generation: NativeRuntimeGeneration | None = None
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None
+    # LLVM's wasm32 codegen reads the callable set of the relocatable runtime
+    # it links against; the WASM backend needs none.
+    wasm_runtime_callable_binding: WasmRuntimeCallableBinding | None = None
     # One build operation's installed-cell admission; codegen and final link
     # reuse it through its fences. None for source-checkout runtimes.
     installed_native_admission: InstalledNativeAdmission | None = None
     native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
     runtime_wasm_build_failure: _RuntimeWasmBuildFailure | None = None
     runtime_lib_ready_future: Future[bool] | None = None
+
+    @property
+    def runtime_callable_binding(self) -> RuntimeCallableBinding | None:
+        """The callable set this build's code generation consumes."""
+        if self.native_runtime_codegen_binding is not None:
+            return self.native_runtime_codegen_binding
+        return self.wasm_runtime_callable_binding
 
     def revoke_native_runtime_admission(self) -> None:
         """Revoke all authority to use this operation's native generation."""

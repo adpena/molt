@@ -25,10 +25,10 @@ use native::emit_native_target;
 use rust::emit_rust_target;
 #[cfg(all(feature = "rust-backend", test))]
 pub(crate) use rust::rust_source_for_ir;
+#[cfg(all(molt_backend_daemon, feature = "wasm-backend"))]
+pub(crate) use wasm::compile_wasm_target;
 #[cfg(feature = "wasm-backend")]
 use wasm::emit_wasm_target;
-#[cfg(all(molt_backend_daemon, feature = "wasm-backend"))]
-pub(crate) use wasm::validate_wasm_module_catalog;
 
 /// One admitted document to compile for one target; see
 /// `BackendTarget::admit_document`.

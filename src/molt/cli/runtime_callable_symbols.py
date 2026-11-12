@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import hashlib
 import json
@@ -24,7 +25,10 @@ from molt.cli.models import _RuntimeArtifactState
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_for_codegen
-from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+from molt.cli.runtime_native_codegen import (
+    NativeRuntimeCodegenBinding,
+    WasmRuntimeCallableBinding,
+)
 from molt.cli.runtime_native_generation import (
     NativeRuntimeGeneration,
     NativeRuntimeGenerationConsumerError,
@@ -38,6 +42,7 @@ from molt.toolchain_identity import (
     StableRegularFileHandle,
     StableRegularFileIdentity,
     capture_stable_regular_file,
+    stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
 
@@ -500,3 +505,45 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         )
     runtime_state.native_runtime_codegen_binding = binding
     return projection.semantic_digest, None
+
+
+def wasm_runtime_callable_binding(
+    reloc_runtime: StableRegularFileIdentity,
+    linking_names: Callable[[Mapping[str, str]], frozenset[str]],
+    *,
+    projection_path: Path,
+) -> WasmRuntimeCallableBinding:
+    """Project the callables a relocatable runtime module defines.
+
+    LLVM's wasm32 codegen links against this module with wasm-ld, so its
+    linking symbol table is the authority, as the staticlib's symbol table is
+    for native codegen. The projection is content-addressed in the build's
+    projection sits beside the module, named for its own bytes, as the native
+    projection sits beside its archive, in the same canonical encoding.
+    """
+    candidates = {
+        name: abi.physical_symbol
+        for name, abi in RUNTIME_EXECUTION_ABIS.items()
+        if name.startswith("molt_") and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+    }
+    defined = linking_names({physical: "function" for physical in candidates.values()})
+    symbols = tuple(
+        sorted(name for name, physical in candidates.items() if physical in defined)
+    )
+    if not symbols:
+        raise ValueError("relocatable runtime WASM defines no molt_* callable symbols")
+    content = _runtime_callable_projection_content(symbols)
+    digest = hashlib.sha256(content).hexdigest()
+    path = projection_path.with_name(f"{projection_path.name}.callables.{digest}.txt")
+    try:
+        atomic_write_bytes(path, content, exclusive=True, create_parent=False)
+    except FileExistsError:
+        pass
+    identity = stable_regular_file_identity(path, label="runtime WASM callable symbols")
+    if identity.sha256 != digest:
+        raise ValueError(f"runtime WASM callable projection {path} has foreign bytes")
+    return WasmRuntimeCallableBinding(
+        runtime=reloc_runtime,
+        callable_symbols=identity,
+        semantic_digest=_runtime_callable_symbols_digest(symbols),
+    )

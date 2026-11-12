@@ -33,6 +33,11 @@ impl<'ctx> LlvmBackend<'ctx> {
         let i8_ty = ctx.i8_type();
         let i64_ty = ctx.i64_type();
         let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let pointer_bytes = self.pointer_sized_int_type().get_bit_width() / 8;
+        assert!(
+            pointer_bytes == 4 || pointer_bytes == 8,
+            "module registry slots hold a 4- or 8-byte pointer"
+        );
 
         let mut relocs: Vec<(u64, &str)> = registry
             .relocs
@@ -78,6 +83,13 @@ impl<'ctx> LlvmBackend<'ctx> {
             });
             field_types.push(ptr_ty.into());
             field_values.push(init_fn.as_global_value().as_pointer_value().into());
+            // Each slot is a little-endian u64 (the runtime reads a word). A
+            // 32-bit target's pointer fills its low half; the high half is 0.
+            let pad = 8 - pointer_bytes;
+            if pad > 0 {
+                field_types.push(i8_ty.array_type(pad).into());
+                field_values.push(i8_ty.array_type(pad).const_zero().into());
+            }
             cursor = offset + 8;
         }
         push_bytes(&blob[cursor..], &mut field_types, &mut field_values);

@@ -86,7 +86,7 @@ from molt.cli.command_runtime import (
 )
 from molt.cli.env_paths import _resolve_env_path
 from molt.cli.runtime_native_codegen import (
-    NativeRuntimeCodegenBinding,
+    RuntimeCallableBinding,
     native_runtime_codegen_environment,
 )
 from molt.cli.backend_artifact_contract import BackendArtifactContract
@@ -1011,7 +1011,7 @@ def _backend_daemon_compile_request_bytes(
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
     include_health: bool = False,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> tuple[bytes | None, str | None]:
     cache_entry = request_environment.get("MOLT_STDLIB_CACHE_ENTRY")
@@ -1694,7 +1694,7 @@ def _compile_with_backend_daemon(
     stdlib_module_symbols_json: str | None = None,
     timeout: float | None,
     daemon_identity: _BackendDaemonIdentity | None = None,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> _BackendDaemonCompileResult:
     """Compile ``program`` on the daemon, shipping only the bodies it lacks.

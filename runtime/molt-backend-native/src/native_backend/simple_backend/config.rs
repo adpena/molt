@@ -245,6 +245,8 @@ impl SimpleBackend {
             defined_func_names: std::collections::BTreeSet::new(),
             deferred_defines: Vec::new(),
             function_entry_custody: BTreeMap::new(),
+            #[cfg(feature = "llvm")]
+            llvm_target: crate::llvm_backend::LlvmCodegenTarget::Host,
         }
     }
 
