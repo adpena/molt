@@ -26,8 +26,13 @@
 //! ^join(%r):  the rest of the block, then its terminator
 //! ```
 //!
-//! An operand proven an exact int takes no float arm and one proven an exact
-//! float takes no int arm. Mixed int and float operands take the runtime.
+//! Two mixed arms follow, one per order, for a float and an inline int: the
+//! int payload converts exactly (`IntToFloat`; |x| < 2**46) and the float op
+//! computes, as CPython converts the int first. True division (`Div`) has no
+//! int arm: two inline ints convert and divide in F64, which is CPython's
+//! correctly rounded quotient below 2**53; F64 division raises on a zero
+//! divisor. An operand proven an exact int takes no arm that reads it as a
+//! float payload, and one proven an exact float none that reads it as an int.
 //!
 //! A comparison (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`) takes the same shape. Its
 //! fast arm compares the two payloads, which order exactly as the ints do, and
@@ -272,17 +277,20 @@ enum NumOperand {
     RawFloat,
 }
 
-/// One fast arm: the payload kind it tests for, the op it computes with on
-/// the payloads, and the raw type that op yields.
+/// The payload one operand holds in a fast arm.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ArmKind {
+enum Payload {
     Int,
     Float,
 }
 
+/// One fast arm: the payload each operand must hold, the type it computes in
+/// (`I64` for two ints; `F64` otherwise, an int payload converted exactly by
+/// `IntToFloat`), the op it computes with, and the raw type that op yields.
 #[derive(Clone, Debug)]
 struct NumericArm {
-    kind: ArmKind,
+    payloads: [Payload; 2],
+    compute: TirType,
     fast: OpCode,
     raw: TirType,
 }
@@ -312,9 +320,10 @@ fn expansion_of(
     if !op.has_valid_shape() || op.results.len() != 1 {
         return None;
     }
-    // `int` and `float` are each arm's payload op and raw type, or None where
-    // the op has no such arm.
-    let numeric = |int: Option<(OpCode, TirType)>, float: Option<(OpCode, TirType)>| {
+    // `int` is the two-int arm's op and raw type, or None where the op has no
+    // such arm (true division computes on floats); `float` is the op and raw
+    // type every other arm computes with in F64.
+    let numeric = |int: Option<(OpCode, TirType)>, float: (OpCode, TirType)| {
         let [lhs, rhs] = op.operands[..] else {
             return None;
         };
@@ -323,32 +332,37 @@ fn expansion_of(
         if !operands.contains(&NumOperand::Boxed) || op.numeric_runtime().is_none() {
             return None;
         }
-        // An operand proven to be an exact int never takes the float arm, and
-        // one proven to be an exact float never takes the int arm.
-        let exact_kind = |value: &ValueId| exact.get(value);
-        let any_float = operands.contains(&NumOperand::RawFloat)
-            || op
-                .operands
-                .iter()
-                .any(|v| exact_kind(v) == Some(&TirType::F64));
-        let any_int = operands.contains(&NumOperand::InlineInt)
-            || op.operands.iter().any(|v| {
-                matches!(
-                    exact_kind(v),
-                    Some(TirType::I64 | TirType::BigInt | TirType::Bool)
-                )
-            });
+        // The payloads an operand may hold: a raw value is its own kind, and a
+        // boxed operand proven an exact int (or float) takes no arm that reads
+        // it as the other kind.
+        let admits = |i: usize, payload: Payload| match operands[i] {
+            NumOperand::InlineInt => payload == Payload::Int,
+            NumOperand::RawFloat => payload == Payload::Float,
+            NumOperand::Boxed => match exact.get(&op.operands[i]) {
+                Some(TirType::F64) => payload == Payload::Float,
+                Some(TirType::I64 | TirType::BigInt | TirType::Bool) => payload == Payload::Int,
+                _ => true,
+            },
+        };
         let mut arms = Vec::new();
-        if let Some((fast, raw)) = int.filter(|_| !any_float) {
+        for payloads in [
+            [Payload::Int, Payload::Int],
+            [Payload::Float, Payload::Float],
+            [Payload::Float, Payload::Int],
+            [Payload::Int, Payload::Float],
+        ] {
+            if !(admits(0, payloads[0]) && admits(1, payloads[1])) {
+                continue;
+            }
+            let (fast, raw, compute) = match (&int, payloads) {
+                (Some((fast, raw)), [Payload::Int, Payload::Int]) => {
+                    (*fast, raw.clone(), TirType::I64)
+                }
+                _ => (float.0, float.1.clone(), TirType::F64),
+            };
             arms.push(NumericArm {
-                kind: ArmKind::Int,
-                fast,
-                raw,
-            });
-        }
-        if let Some((fast, raw)) = float.filter(|_| !any_int) {
-            arms.push(NumericArm {
-                kind: ArmKind::Float,
+                payloads,
+                compute,
                 fast,
                 raw,
             });
@@ -370,24 +384,28 @@ fn expansion_of(
     match opcode_fast_path_expansion_rule_table(op.opcode) {
         FastPathExpansionRule::NumericAdd => numeric(
             Some((OpCode::Add, TirType::I64)),
-            Some((OpCode::Add, TirType::F64)),
+            (OpCode::Add, TirType::F64),
         ),
         FastPathExpansionRule::NumericSub => numeric(
             Some((OpCode::Sub, TirType::I64)),
-            Some((OpCode::Sub, TirType::F64)),
+            (OpCode::Sub, TirType::F64),
         ),
         // The int product of two inline payloads can leave i64: CheckedMul
         // tests the overflow and the arm leaves for the runtime on it.
         FastPathExpansionRule::NumericMul => numeric(
             Some((OpCode::CheckedMul, TirType::I64)),
-            Some((OpCode::Mul, TirType::F64)),
+            (OpCode::Mul, TirType::F64),
         ),
+        // True division computes in F64 on every arm, two ints included: two
+        // inline payloads convert exactly, and one IEEE division of exact
+        // operands is CPython's correctly rounded int quotient below 2**53
+        // (`long_true_divide`). Raw F64 division raises on a zero divisor.
+        FastPathExpansionRule::NumericTrueDiv => numeric(None, (OpCode::Div, TirType::F64)),
         // A comparison on two payloads is the same comparison on raw values;
         // float comparisons keep IEEE order, so NaN compares unequal.
-        FastPathExpansionRule::NumericCompare => numeric(
-            Some((op.opcode, TirType::Bool)),
-            Some((op.opcode, TirType::Bool)),
-        ),
+        FastPathExpansionRule::NumericCompare => {
+            numeric(Some((op.opcode, TirType::Bool)), (op.opcode, TirType::Bool))
+        }
         FastPathExpansionRule::Truthiness => (op.operands.len() == 1
             && is_boxed_word(repr, op.operands[0]))
         .then_some(Expansion::Truthiness),
@@ -548,9 +566,9 @@ fn expand_numeric(
     let exact_result = exact_operands
         .and_then(|types| crate::tir::op_semantics::op_instance_facts(op.opcode, &types))
         .and_then(|facts| facts.result_type);
-    let boxed: Vec<ValueId> = (0..2)
+    let boxed: Vec<(usize, ValueId)> = (0..2)
         .filter(|&i| kinds[i] == NumOperand::Boxed)
-        .map(|i| operands[i])
+        .map(|i| (i, operands[i]))
         .collect();
 
     let slow = func.fresh_block();
@@ -571,16 +589,17 @@ fn expand_numeric(
     for (index, arm) in arms.iter().enumerate() {
         let on_failure = arm_entries.get(index + 1).copied().unwrap_or(slow);
         let fast_block = func.fresh_block();
-        let (test_op, unbox_op, payload_ty) = match arm.kind {
-            ArmKind::Int => (OpCode::IsInlineInt, OpCode::UnboxInlineInt, TirType::I64),
-            ArmKind::Float => (OpCode::IsFloatWord, OpCode::UnboxFloatWord, TirType::F64),
+        let payload_ops = |payload: Payload| match payload {
+            Payload::Int => (OpCode::IsInlineInt, OpCode::UnboxInlineInt, TirType::I64),
+            Payload::Float => (OpCode::IsFloatWord, OpCode::UnboxFloatWord, TirType::F64),
         };
         let checks: Vec<BlockId> = std::iter::once(arm_entries[index])
             .chain((1..boxed.len()).map(|_| func.fresh_block()))
             .collect();
-        for (k, &operand) in boxed.iter().enumerate() {
+        for (k, &(index, operand)) in boxed.iter().enumerate() {
             let holds = fresh_typed(func, TirType::Bool);
             let next = checks.get(k + 1).copied().unwrap_or(fast_block);
+            let (test_op, _, _) = payload_ops(arm.payloads[index]);
             let test = vec![new_op(test_op, vec![operand], vec![holds], span)];
             let check_end = cond_branch(holds, next, on_failure);
             if checks[k] == block {
@@ -595,8 +614,47 @@ fn expand_numeric(
         let mut payloads = operands;
         for i in 0..2 {
             if kinds[i] == NumOperand::Boxed {
-                payloads[i] = fresh_typed(func, payload_ty.clone());
+                let (_, unbox_op, payload_ty) = payload_ops(arm.payloads[i]);
+                payloads[i] = fresh_typed(func, payload_ty);
                 fast_ops.push(new_op(unbox_op, vec![operands[i]], vec![payloads[i]], span));
+            }
+        }
+        // Two ints divided by zero raise the int message ("division by
+        // zero"), not F64 division's: a zero int divisor leaves for the
+        // runtime with the original words.
+        let mut fast_block = fast_block;
+        if arm.fast == OpCode::Div && arm.payloads == [Payload::Int, Payload::Int] {
+            let zero = fresh_typed(func, TirType::I64);
+            let nonzero = fresh_typed(func, TirType::Bool);
+            fast_ops.push(const_int(zero, 0, span));
+            fast_ops.push(new_op(
+                OpCode::Ne,
+                vec![payloads[1], zero],
+                vec![nonzero],
+                span,
+            ));
+            let divide_block = func.fresh_block();
+            func.blocks.insert(
+                fast_block,
+                new_block(
+                    fast_block,
+                    std::mem::take(&mut fast_ops),
+                    cond_branch(nonzero, divide_block, slow),
+                ),
+            );
+            fast_block = divide_block;
+        }
+        for i in 0..2 {
+            // A float arm reads an int payload as its exact f64.
+            if arm.compute == TirType::F64 && arm.payloads[i] == Payload::Int {
+                let converted = fresh_typed(func, TirType::F64);
+                fast_ops.push(new_op(
+                    OpCode::IntToFloat,
+                    vec![payloads[i]],
+                    vec![converted],
+                    span,
+                ));
+                payloads[i] = converted;
             }
         }
         let raw = fresh_typed(func, arm.raw.clone());
