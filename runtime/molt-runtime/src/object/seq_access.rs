@@ -141,6 +141,55 @@ pub(crate) unsafe fn snapshot<'a, 'py>(
     })
 }
 
+/// Capture the items a decoded slice selects, normalized against the live
+/// length under the same lock that reads them, into one pinned,
+/// resource-accounted allocation sized to the selection. No index vector and
+/// no copy of the unselected items is made.
+pub(crate) unsafe fn snapshot_slice<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    slice: &crate::object::ops_sys::DecodedSlice,
+    failure_message: &str,
+) -> Option<PinnedSequenceSnapshot<'a, 'py>> {
+    if ptr.is_null() {
+        return None;
+    }
+    let copy = |live: &[u64]| {
+        let (start, stop, step) = slice.adjust(live.len() as isize);
+        let count = crate::object::ops_sys::slice_length(start, stop, step);
+        let values = crate::object::backing::tracked_vec_box_with_capacity::<u64>(count)?;
+        unsafe {
+            let out = &mut *values;
+            if step == 1 {
+                out.extend_from_slice(&live[start as usize..start as usize + count]);
+            } else {
+                let mut index = start;
+                for _ in 0..count {
+                    out.push(live[index as usize]);
+                    index += step;
+                }
+            }
+            for &bits in out.iter() {
+                inc_ref_bits(py, bits);
+            }
+        }
+        Some(values)
+    };
+    let values = if unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE {
+        copy(unsafe { tuple_slice(ptr) })
+    } else {
+        unsafe { with_locked_sequence_slice(ptr, copy) }
+    };
+    let Some(values) = values else {
+        let _ = raise_exception::<u64>(py, BuiltinExc::MemoryError, failure_message);
+        return None;
+    };
+    Some(PinnedSequenceSnapshot {
+        py,
+        values: unsafe { crate::object::backing::tracked_vec_box_from_raw(values) },
+    })
+}
+
 /// Capture two sequences into one pinned, resource-accounted allocation.
 /// Locks are acquired by backing address, giving free-threaded concatenation a
 /// deterministic linearization point without the three allocations of two
