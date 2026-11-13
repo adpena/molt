@@ -2862,22 +2862,15 @@ pub(crate) fn alloc_memoryview_from_storage(
 #[cfg(test)]
 mod sequence_builder_tests {
     use super::*;
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 
-    struct RestoreBudget;
-    impl Drop for RestoreBudget {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
-
-    fn deny_allocations() -> RestoreBudget {
+    fn deny_allocations() -> crate::test_support::UnlimitedTrackerRestore {
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
             max_memory: Some(0),
             max_allocations: Some(0),
             ..Default::default()
         })));
-        RestoreBudget
+        crate::test_support::restore_unlimited_tracker_on_drop()
     }
 
     fn refs(bits: u64) -> u32 {
@@ -2927,7 +2920,7 @@ mod sequence_builder_tests {
                         max_allocations: Some(limit + 1),
                         ..Default::default()
                     })));
-                    let budget = RestoreBudget;
+                    let budget = crate::test_support::restore_unlimited_tracker_on_drop();
                     let sentinel = crate::object::backing::tracked_vec_box_with_capacity::<u64>(0)
                         .expect("one reserved sentinel allocation");
                     let value = construct();
@@ -3097,7 +3090,7 @@ mod sequence_builder_tests {
                             max_allocations: Some(limit + 1),
                             ..Default::default()
                         })));
-                        let budget = RestoreBudget;
+                        let budget = crate::test_support::restore_unlimited_tracker_on_drop();
                         let sentinel =
                             crate::object::backing::tracked_vec_box_with_capacity::<u64>(0)
                                 .expect("one reserved sentinel allocation");

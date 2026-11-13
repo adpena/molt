@@ -1006,7 +1006,7 @@ include!("../../attached_exports_generated/builtins/exceptions/exception_group.r
 mod tests {
     use super::*;
     use crate::alloc_dict_with_pairs;
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static GENERIC_SEQUENCE_ITEMS: AtomicU64 = AtomicU64::new(0);
@@ -1375,13 +1375,7 @@ mod tests {
                 max_memory: Some(0),
                 ..Default::default()
             })));
-            struct TrackerReset;
-            impl Drop for TrackerReset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let reset = TrackerReset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             let group_ptr = alloc_exception_group_from_class_bits(
                 _py,
                 builtin_classes(_py).exception_group,

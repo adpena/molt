@@ -18,7 +18,7 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5) | guarded call promotion design (HF-773 slice D); `module.attr` slot reads and the guarded builtin call (lane module-slots) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5) | guarded call promotion design (HF-773 slice D); closed-world static binding of `module.attr` calls, with a late-TIR `sqrt` (lane module-attr-call-sites, section 4.5a) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -337,6 +337,9 @@ replaces:
 | 5 | Exceptions: native exception classes, lazy tracebacks, class-handle matching | HF-561, HF-207, new row (C-API detour) | raise 210,274 → ≤ 1,500 |
 | 6 | Unboxed loop carriers and observation-point locals | HF-185 (loop half), HF-229 | inline-int loop → ≤ 8; call loop → ≤ 80; attr → ≤ 40 |
 | 7 | TIR inlining of proven small callees with inline frames in the location table | new | call loop → ≤ 12 |
+
+Stages 3 and 4 first bind statically on whole-program facts (section 4.5a). The inline caches in
+stage 4 serve only sites where the program contains a possible writer.
 
 A stage's target assumes the stages it depends on have landed. The end state is 10-80 instructions
 for a Python call and single-digit instructions for a scalar loop iteration: 45-300x below today on
@@ -1325,6 +1328,63 @@ module slot write, builtins version). Check: mutation tests per guard kind (rebi
 data descriptor to a class, assign `__class__`) run on native, LLVM and WASM and must observe the
 new value at the next execution of the site.
 
+### 4.5a Closed world: prove the fact, then emit the operation (2026-11-13)
+
+Molt compiles the whole program, the standard library included. The verified subset excludes
+`eval`/`exec` and runtime monkeypatching (spec 0216). A fact that no code in the program can
+change at run time is therefore a compile-time constant. GraalVM Native Image, Codon and mypyc bind
+on such facts. HotSpot and V8 cannot, because new code can arrive at run time, so they guard and
+cache. Sections 4.5 and stage 4 borrowed the JIT answer. This section replaces it as the default.
+
+**Rule.** A proven site emits the operation itself: an instruction, a field load at a fixed offset,
+or a direct call of a compiled function. It makes no runtime call to find, check or bind the
+operation. The only runtime call left on a proven site is a direct call to an intrinsic that has
+no TIR primitive. A guard, a site record or an inline cache exists only where the program contains
+a possible writer. The build diagnostic for that site names the writer (`module:line`, construct)
+or the analysis limit (computed name, escaping `globals()`, import cycle). An unproven site keeps
+the generic path. A guarded middle tier needs a measured class of hot unproven sites first.
+
+The owner's correction that set this rule: the approved 2026-11-13 design for `math.sqrt` checked
+the receiver with a runtime slot base and compared the callee with a published object on every
+call. That was three cheaper runtime calls in place of one expensive path. The design was
+replaced before implementation.
+
+**One whole-program fact pass at integration.** Integration sees every module's lowered ops, the
+import graph and the namespace facts. Each fact below has one authority, and each consumer reads
+it:
+
+| fact | authority | consumers |
+|---|---|---|
+| Writers: module attributes, module globals, class attributes, `__class__` | HF-226 namespace writes (`python_namespace_writes`, `python_namespace_graph`, `verified_namespace_premises.md`); extend for classes | static module-attribute binding; module globals as static cells; devirtualized methods; fixed field offsets |
+| Class hierarchy: classes, subclasses, per-class mutation | new; preorder numbering of the class tree | `isinstance` and `except C` as a class-id range check; method devirtualization; inline construction |
+| Reachability: functions, intrinsics, stdlib modules | new; replaces the intrinsic registry's keep-alive roots | compile and link only reachable code |
+| Build-time initializability: pure module initializers | new | run the initializer at build time and serialize its heap into the binary (GraalVM image heap) |
+
+Measured stakes (release, macOS arm64; profiles and per-op counts from 2026-11-12 and 2026-11-13):
+
+| consumer | today | stake |
+|---|---|---|
+| `math.sqrt(x)` and other module functions | by-name attribute lookup, then the generic call | attribute access 27.2% and call dispatch 28.7% of `bench_math_numeric` samples; compiled code is 2.5% |
+| module globals (`total`, `index`) | slot table inside the module dictionary, `molt_global_slot_set` per store | 38% of LLVM self samples in `bench_method_defaults` after method sites |
+| methods with a proven receiver class | class-version guard and site record per call | the guard and record remain after the -56% to -81% method-site win |
+| `isinstance`, type dispatch | runtime MRO walk | 4,702 against 795 instructions (5.9x CPython); type dispatch 7,678 against 1,031 (7.4x) |
+| `except C` | runtime class match | `raise_user` 7.9x CPython |
+| construction | generic `__new__`/`__init__` | 4.7x to 11.3x CPython |
+| startup | runtime initialization of `sys`, builtins and stdlib modules | about 98 million instructions; C 12.0 million, Rust 15.4 million |
+| binary size, build time | every stdlib function and intrinsic stays alive | 804 stdlib functions compiled for a five-line program; 59 MB debug and 11.6 MB release binaries |
+
+**Measure against native code.** Report runtime calls per iteration in the emitted IR, the
+compiled-code share of profile samples, and instructions retired against C, Rust or Go versions of
+the program. CPython is the correctness oracle. It is not the performance bar.
+
+**First consumer (lane module-attr-call-sites).** `m.f(args)` binds statically when four facts
+hold. F1: no writer of `f` in `M`'s namespace in any module. F2: `M`'s body stores `f` once,
+unconditionally, from its intrinsic publication. F3: the receiver is a global of `U` bound only
+by `import M`, and `U` is not reachable from `M`. F4: positional arguments match the intrinsic's
+arity. The attribute read is deleted. The call becomes a direct call of the intrinsic, or a late-TIR
+primitive when one exists (`math.sqrt` on a proven float: one `fsqrt` with a cold domain branch,
+raw `f64` result).
+
 ### 4.6 Reference counts
 
 - Values whose TIR type is an immediate carrier (`I64` within the tagged range, `Bool`, `None`,
@@ -1431,6 +1491,10 @@ a static layout, such as big integers) remain.
 | `FieldSlot(ClassId, j)` for attribute sites | **missing** at compile time (runtime site caches exist) | new, from class layout facts |
 | Interprocedural may-raise summary | **missing** | new TIR analysis |
 | Location table per code object | data exists on ops (`source_line`, `col_offset`) | new generated table |
+| Whole-program writers per namespace entry | exists for module namespaces (HF-226); classes **missing** | section 4.5a |
+| Class-hierarchy numbering | **missing** | section 4.5a |
+| Reachable functions and intrinsics | **missing** | section 4.5a |
+| Build-time initializable modules | **missing** | section 4.5a |
 
 ### 4.11 What this design refuses
 
@@ -1441,6 +1505,8 @@ a static layout, such as big integers) remain.
 - Removing frame or traceback fidelity: every observation keeps CPython's answer (invariant I1).
 - A second cache or registry beside an existing one: site records replace runtime-side site caches
   in the same migration.
+- A runtime guard, cache or lookup on a fact the whole-program analysis proves (section 4.5a).
+  Guards exist only where the program contains a possible writer.
 
 ## 5. Staged plan
 
@@ -1554,7 +1620,8 @@ instructions per iteration; `fib` ≤ 300 per call. Closes HF-507, HF-200; close
 
 ### Stage 4: inline caches in compiled code
 
-Attribute, method, constructor and module-attribute sites (4.5) with typed name handles.
+Attribute, method, constructor and module-attribute sites (4.5) with typed name handles. A site
+the whole-program facts prove binds statically with no guard (4.5a); the cache serves the rest.
 Typed-layout deallocation: an instance of a fixed-layout class frees by its layout's field list,
 without the generic edge-visiting cascade (`DetachedEdgeSink`, `clear_cycle_edges_with_sink`;
 31% of the `struct` loop). Deletes runtime-side site caches that the site records replace
@@ -1807,6 +1874,40 @@ refcount correctness; generator and coroutine semantics; C-API frame and excepti
   needed: Python has no tail-call elimination and tracebacks need every frame).
 - PEP 590 (vectorcall), PEP 683 (immortal objects), PEP 703 (biased reference counting), PEP 669
   (instrument only enabled events), PEP 667 (`f_locals` proxy).
+
+## 8a. Rust 1.100: what the toolchain now offers (2026-11-12)
+
+Molt pins Rust 1.100.0 (owner directive 2026-11-12). Three features change
+what later stages can do. Each line is a lead, not an implementation:
+
+- `-Cprofile-sample-use` is stable: sample PGO for the runtime from a `perf`/`sample`
+  profile of the benchmark corpus, without an instrumented build.
+- `extern "custom"` is stable: a function with no Rust calling convention, so the
+  runtime-entry trampolines of section 4.2 can be Rust items with naked bodies.
+- `wasm32-wasip3` is Tier 2: a component-model WASI target for the WASM backend.
+
+### Rust 1.100 Allocator API: candidate sites
+
+1.100 stabilizes `std::alloc::Allocator`, `Box::new_in` and `Vec::with_capacity_in`.
+The migration crosses the runtime and every backend, so the integrator designs it
+first. These sites hold a hand-written allocator today:
+
+- `runtime/molt-runtime/src/arena.rs:29-130`: `ArenaChunk`/`ScopeArena`, a chunked
+  bump arena over `alloc_zeroed`. An `Allocator` impl lets `Vec<T, &ScopeArena>`
+  and `Box<T, &ScopeArena>` live in it and drops the raw `alloc` pointer API.
+- `runtime/molt-runtime-resource/src/temp_arena.rs:7`: `TempArena`, chunked
+  `Vec<Vec<u8>>` storage with tracker charging. The same `Allocator` impl would
+  carry the resource-tracker charge that each call site now pairs by hand.
+- `runtime/molt-runtime/src/object/layout.rs:291` and `:554`: `ListIntStorage` and
+  `ListBoolStorage` allocate their owner with `std::alloc::alloc` and charge the
+  tracker separately. A tracking allocator makes `Box::new_in` charge and release
+  in one place.
+- `runtime/molt-runtime/src/object/aux_header.rs:409`: the aux sidecar's raw
+  `alloc`, same pattern.
+- `runtime/molt-ir/src/tir/blocks.rs:38` (`TirBlock::ops: Vec<TirOp>`) and
+  `runtime/molt-ir/src/tir/function.rs:42` (`TirFunction::blocks`): every TIR op and
+  block is a separate global-heap allocation. A per-function arena frees a
+  function's IR in one release and keeps its ops adjacent.
 
 ## 9. Programs and reproduction
 

@@ -13,3 +13,6 @@ vfs_bundle_tar = ["dep:tar"]
 
 [dependencies]
 tar = { version = "0.4", optional = true }
+
+[lints]
+workspace = true

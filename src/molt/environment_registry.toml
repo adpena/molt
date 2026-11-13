@@ -743,6 +743,14 @@ owner = "runtime/molt-runtime/src/cpython_abi_hooks.rs"
 summary = "tools/benchmark_cext_trampoline.py sets it on Windows to the single-bit process affinity mask for the timed child, and configure_cext_benchmark_process in cpython_abi_hooks.rs applies that mask as a usize and panics when it is unset, non-numeric, holds more than one bit, or disagrees with MOLT_CEXT_BENCH_TARGET_CPU."
 
 [[variable]]
+name = "MOLT_CEXT_HOST_LIBRARY"
+audience = "internal"
+kind = "path"
+default = ""
+owner = "runtime/test_support/cext_fixture.rs"
+summary = "The `cext_host` example cdylib that Cargo's JSON `filenames` reported for the running C-extension test's target and profile; the test links fixture extensions against it and panics when it is unset or absent."
+
+[[variable]]
 name = "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS"
 audience = "user"
 kind = "float"

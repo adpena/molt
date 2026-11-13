@@ -1,10 +1,10 @@
 // Shared native C-extension fixture builder for runtime-backed ABI tests.
 // Extensions link against the one-image `cext_host` example Cargo built for the
-// running test image's exact target/profile; CargoTestArtifacts owns every
-// generated input and output. No standalone ABI library, ambient target/profile
-// probing or temporary-directory reuse is permitted.
+// running test image's exact target/profile, named by MOLT_CEXT_HOST_LIBRARY;
+// CargoTestArtifacts owns every generated input and output. No standalone ABI
+// library, ambient target/profile probing or temporary-directory reuse is
+// permitted.
 
-use std::ffi::OsStr;
 #[cfg(windows)]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -25,41 +25,30 @@ pub struct HostArtifact {
 
 impl HostArtifact {
     pub fn for_current_test_image(example: &str) -> Self {
+        // Cargo writes this test image to its build directory, whose layout
+        // is not a stable interface, so the image cannot find the example
+        // from its own path. The caller builds the example in this test's
+        // target/profile and names the image Cargo's JSON `filenames` report.
+        let build = format!(
+            "cargo build -p molt-runtime --example {example} --features cext_loader \
+             --message-format=json (with this test's --target, profile and features), then \
+             set MOLT_CEXT_HOST_LIBRARY to the reported {example} cdylib"
+        );
+        let library = std::env::var_os("MOLT_CEXT_HOST_LIBRARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("MOLT_CEXT_HOST_LIBRARY is unset: {build}"));
         // These paths reach compiler and linker arguments. Canonicalization
         // would turn them into Windows verbatim paths, which tools misparse.
-        let executable = std::env::current_exe()
-            .and_then(std::path::absolute)
-            .expect("locate Cargo test image");
-        let deps = executable.parent().expect("Cargo test image parent");
-        assert_eq!(
-            deps.file_name(),
-            Some(OsStr::new("deps")),
-            "C-extension host requires Cargo's <profile>/deps test-image layout: {executable:?}"
-        );
-        let profile_dir = deps.parent().expect("Cargo profile output parent");
-        let profile = profile_dir
-            .file_name()
-            .and_then(OsStr::to_str)
-            .expect("Cargo profile directory name is UTF-8");
-        let profile_flag = match profile {
-            "debug" => String::new(),
-            "release" => " --release".to_owned(),
-            other => format!(" --profile {other}"),
-        };
-        let build = format!(
-            "cargo build -p molt-runtime --example {example} --features cext_loader{profile_flag} \
-             (with this test's --target and features)"
-        );
-        let examples_dir = profile_dir.join("examples");
-        let linked = examples_dir.join(format!(
-            "{}{example}{}",
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        ));
+        let library = std::path::absolute(&library)
+            .unwrap_or_else(|error| panic!("locate {library:?}: {error}"));
         assert!(
-            linked.is_file(),
-            "one-image C-extension host for this exact Cargo test image is absent: {linked:?}; build it first: {build}"
+            library.is_file(),
+            "one-image C-extension host is absent: {library:?}; {build}"
         );
+        let examples_dir = library
+            .parent()
+            .expect("C-extension host image parent")
+            .to_path_buf();
 
         #[cfg(windows)]
         let (library, import_library) = {
@@ -79,8 +68,6 @@ impl HostArtifact {
             );
             (library, import_library)
         };
-        #[cfg(not(windows))]
-        let library = linked;
 
         Self {
             library,

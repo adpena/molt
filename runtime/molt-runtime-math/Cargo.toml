@@ -29,3 +29,6 @@ sha2 = "0.11"
 
 [features]
 default = []
+
+[lints]
+workspace = true

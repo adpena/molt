@@ -8,7 +8,7 @@ use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::op_kinds_generated::{
     FUZZ_TIR_OPCODE_SHAPES, FuzzTirAttrPayloadRule, opcode_fixed_result_count_table,
 };
-use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, TirOp};
+use molt_backend::tir::ops::{AttrDict, AttrValue, TirOp};
 use molt_backend::tir::passes;
 use molt_backend::tir::target_info::TargetInfo;
 use molt_backend::tir::types::TirType;
@@ -153,13 +153,8 @@ fn build_function(data: &mut &[u8]) -> Option<TirFunction> {
             populate_fuzz_attrs(shape.attr_payload, data, &mut attrs);
 
             ops.push(TirOp {
-                origin: None,
-                dialect: Dialect::Molt,
-                opcode,
-                operands,
-                results,
                 attrs,
-                source_span: None,
+                ..TirOp::new(opcode, operands, results)
             });
         }
 

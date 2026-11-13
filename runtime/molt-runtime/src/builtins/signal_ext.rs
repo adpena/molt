@@ -2126,14 +2126,11 @@ mod delivery_tests {
                 let mut isolate = Box::new(crate::state::runtime_state::RuntimeState::new());
                 signal_record_delivery_for_test(py, libc::SIGINT);
                 {
-                    struct RestoreRuntime(*mut crate::state::runtime_state::RuntimeState);
-                    impl Drop for RestoreRuntime {
-                        fn drop(&mut self) {
-                            crate::state::runtime_state::set_thread_runtime_state(self.0);
-                        }
-                    }
-                    let _restore_runtime = RestoreRuntime(
+                    let _restore_runtime = std::mem::DropGuard::new(
                         (primary as *const crate::state::runtime_state::RuntimeState).cast_mut(),
+                        |state| {
+                            crate::state::runtime_state::set_thread_runtime_state(state);
+                        },
                     );
                     crate::state::runtime_state::set_thread_runtime_state(&mut *isolate);
                     // Only identity/atomic paths are exercised under the empty
@@ -2188,15 +2185,14 @@ mod delivery_tests {
                 assert!(async_work_owner(py));
                 let (_reader, writer) = os_pipe::pipe().expect("pipe");
                 let previous = runtime_state(py).signal.wakeup_fd();
-                struct RestoreWakeupFd<'a>(&'a SignalRuntimeState, i32);
-                impl Drop for RestoreWakeupFd<'_> {
-                    fn drop(&mut self) {
-                        self.0.swap_wakeup_fd(self.1);
-                        quiesce_admitted_notifications();
-                    }
-                }
                 // Restore and quiesce before the writer closes, including on panic.
-                let _restore = RestoreWakeupFd(&runtime_state(py).signal, previous);
+                let _restore = std::mem::DropGuard::new(
+                    (&runtime_state(py).signal, previous),
+                    |(state0, state1)| {
+                        state0.swap_wakeup_fd(state1);
+                        quiesce_admitted_notifications();
+                    },
+                );
                 let _ = molt_signal_set_wakeup_fd_attached_body(
                     py,
                     int_bits_from_i64(py, writer.as_raw_fd() as i64),

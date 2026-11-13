@@ -25,3 +25,6 @@ wasm-backend = [
     "molt-tir/wasm-backend",
 ]
 test-util = ["wasm-backend", "molt-ir/test-util", "molt-tir/test-util"]
+
+[lints]
+workspace = true

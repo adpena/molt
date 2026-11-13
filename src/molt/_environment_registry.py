@@ -1724,6 +1724,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_CEXT_HOST_LIBRARY",
+      "output_neutral": false,
+      "owner": "runtime/test_support/cext_fixture.rs",
+      "summary": "The `cext_host` example cdylib that Cargo's JSON `filenames` reported for the running C-extension test's target and profile; the test links fixture extensions against it and panics when it is unset or absent.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "30",
       "kind": "float",

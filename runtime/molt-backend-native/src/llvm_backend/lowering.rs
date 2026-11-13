@@ -982,7 +982,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let undef: BasicValueEnum<'ctx> = self.backend.context.i64_type().get_undef().into();
         for &result_id in &op.results {
             self.values.set_value(result_id, undef);
-            self.values.set_type(result_id, TirType::DynBox);
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
         }
     }
 
@@ -1033,7 +1036,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let value =
                     self.coerce_to_type(value, lower_type(self.backend.context, &effective_ty), bb);
                 self.values.set_value(arg.id, value);
-                self.values.set_type(arg.id, effective_ty);
+                self.values
+                    .set_repr(arg.id, crate::codegen_ssa::HeldCarrier::of(&effective_ty));
             }
         } else {
             // Non-entry blocks: create phi nodes for block arguments.
@@ -1048,7 +1052,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_phi(llvm_ty, &format!("phi_{}", arg.id.0))
                     .unwrap();
                 self.values.set_value(arg.id, phi.as_basic_value());
-                self.values.set_type(arg.id, effective_ty);
+                self.values
+                    .set_repr(arg.id, crate::codegen_ssa::HeldCarrier::of(&effective_ty));
                 self.pending_phis.push((block_id, i, phi));
             }
         }

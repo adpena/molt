@@ -433,19 +433,13 @@ fn public_c_api_shares_runtime_identity_defaults_tokens_and_snapshots() {
 #[test]
 fn allocation_failure_is_atomic_and_failed_reset_consumes_the_token() {
     fixture(|py| {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct Budget;
-        impl Drop for Budget {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let deny = || {
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
                 ..Default::default()
             })));
-            Budget
+            crate::test_support::restore_unlimited_tracker_on_drop()
         };
         clear_thread_context(py);
         let var = variable_named(py, "oom", None);
@@ -704,13 +698,7 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
 #[test]
 fn staged_trie_failures_preserve_shared_snapshot_at_later_allocation_ordinals() {
     fixture(|py| {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct Budget;
-        impl Drop for Budget {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         clear_thread_context(py);
         let vars: Vec<_> = (0..4)
             .map(|i| variable_named(py, &format!("staged-{i}"), None))
@@ -736,7 +724,7 @@ fn staged_trie_failures_preserve_shared_snapshot_at_later_allocation_ordinals() 
                     max_allocations: Some(allowed),
                     ..Default::default()
                 })));
-                let budget = Budget;
+                let budget = crate::test_support::restore_unlimited_tracker_on_drop();
                 let outcome = set_variable(py, vars[0], integer(20));
                 drop(budget);
                 if let Some(token) = outcome {
@@ -779,7 +767,7 @@ fn staged_trie_failures_preserve_shared_snapshot_at_later_allocation_ordinals() 
                     max_allocations: Some(allowed),
                     ..Default::default()
                 })));
-                let budget = Budget;
+                let budget = crate::test_support::restore_unlimited_tracker_on_drop();
                 let reset = reset_variable(py, vars[0], token);
                 drop(budget);
                 if reset {
@@ -845,13 +833,7 @@ extern "C" fn mutate_empty_context_poll(__context: u64, raw_task: u64) -> i64 {
 fn owned_empty_poll_materializes_once_persists_and_restores_after_allocation_failure() {
     fixture(|py| {
         use crate::async_rt::cancellation::{TaskContextBinding, register_task_execution};
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct Budget;
-        impl Drop for Budget {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         clear_thread_context(py);
         let var = variable_named(py, "empty-poll", Some(integer(0)));
         let ambient = set_variable(py, var, integer(1)).unwrap();
@@ -879,7 +861,7 @@ fn owned_empty_poll_materializes_once_persists_and_restores_after_allocation_fai
             max_memory: Some(0),
             ..Default::default()
         })));
-        let budget = Budget;
+        let budget = crate::test_support::restore_unlimited_tracker_on_drop();
         unsafe {
             crate::async_rt::poll::call_scheduled_poll_fn(py, address, pointer);
         }

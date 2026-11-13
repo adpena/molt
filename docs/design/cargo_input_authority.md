@@ -69,8 +69,12 @@ JSON messages:
 1. For each local `compiler-artifact` unit, the rustc dep-info beside its
    outputs (`<crate>.d` or `<crate>-<metadata>.d`): its files and its
    `# env-dep:` variables.
-   A build script's unit lives in `build/<package>-<metadata>/`. For a root
-   artifact reported only uplifted, the reader binds a candidate's populated
+   Cargo 1.100.0 gives every unit its own directory,
+   `<build-dir>/[<triple>/]<profile>/build/<package>/<unit hash>/`, with rustc
+   outputs and dep-info in `out/` and the build-script run in `run/`. Cargo
+   reports every output it does not uplift in such an `out/`. For a root
+   artifact reported only uplifted, the reader searches the `out/` of every unit
+   of that package under the build roots this build's other units name, and binds a candidate's populated
    rustc output rules to the primary outputs in Cargo's
    [`compiler-artifact` message](https://doc.rust-lang.org/cargo/reference/external-tools.html#compiler-artifact).
    Several feature or profile units can share `OUT_DIR`; its recorded value
@@ -80,13 +84,21 @@ JSON messages:
    an unhashed name alone does not establish identity. The combined WASM
    producer reports final archives/modules under the target root while its
    unhashed per-unit dep-info lives in the resource-selected build directory.
-2. For each `build-script-executed` message, the script's `output` file beside
-   its `out_dir`: the `rerun-if-changed` paths (relative to the package root)
+2. For each `build-script-executed` message, the script's captured stdout
+   (`run/stdout` in the unit that owns its `out_dir`): the `rerun-if-changed` paths (relative to the package root)
    and the `rerun-if-env-changed` names. A script that declares neither counts
    its whole package, including an obligation to cover future additions there.
 3. Registry and git units currently contribute their variables; Cargo.lock
    identifies the requested source archives, not the bytes of a mutable unpacked
    source tree. Complete file attestation must bind those consumed bytes too.
+
+The build-directory layout is not a stable Cargo interface
+([build cache](https://doc.rust-lang.org/cargo/reference/build-cache.html)).
+JSON messages carry every output path, but not a build script's stdout or the
+unit behind an uplifted root artifact. `_unit_directory` and
+`_build_script_stdout` hold that whole dependency, a build in another layout
+fails closed, and a real-Cargo test (`tests/cli/test_cargo_build_reads.py`)
+fails when a toolchain moves it.
 
 The uplifted dep-info beside a final artifact is not enough: Cargo's
 `output_depinfo` recurses only through local dependencies, so a local package

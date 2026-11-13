@@ -16,14 +16,13 @@ thread_local! {
     static EVENTS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
 }
 
-struct CallbackScope;
-impl Drop for CallbackScope {
-    fn drop(&mut self) {
+fn callback_scope() -> std::mem::DropGuard<(), fn(())> {
+    std::mem::DropGuard::new((), |()| {
         for slot in [&OWNER, &REPLACEMENT, &RESULT, &ENCODING, &FAILURE] {
             slot.with(|slot| slot.set(0));
         }
         EVENTS.with(|events| events.borrow_mut().clear());
-    }
+    })
 }
 
 fn text<'a, 'py>(py: &'a PyToken<'py>, bytes: &[u8]) -> ExceptionValue<'a, 'py> {
@@ -251,7 +250,7 @@ fn events(expected: &[&str]) {
 /// Exposed only to the existing isolate lifecycle suite, so the same fixtures
 /// exercise both runtime ownership coordinates without copying expectations.
 pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
-    let _callbacks = CallbackScope;
+    let _callbacks = callback_scope();
     let message = text(py, b"message");
     let new_message = text(py, b"new args");
     for name in [
@@ -865,7 +864,7 @@ mod native_fields {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
-            let _callbacks = CallbackScope;
+            let _callbacks = callback_scope();
             unsafe {
                 let mut slots: Box<PySequenceMethods> = Box::new(std::mem::zeroed());
                 slots.sq_length = overridden_length as *const () as *mut _;

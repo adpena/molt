@@ -91,18 +91,8 @@ mod tests {
         AbiReturnDomain, AbiReturnKind, FailureStatus, NullAddress, NullHandle, ZeroIndex,
     };
     use crate::MoltObject;
-    use crate::resource::{
-        LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker, with_tracker,
-    };
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker, with_tracker};
     use std::collections::BTreeSet;
-
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
 
     const RAW_INTEGER_ABI_EXPORTS: &[(&str, AbiReturnKind, &str)] = &[
         (
@@ -210,7 +200,7 @@ mod tests {
             max_allocations: Some(1),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
         crate::with_gil_entry_nopanic!(py, {
             assert_eq!(super::fail_memory::<NullAddress>(py), 0);
             assert!(crate::exception_pending(py));

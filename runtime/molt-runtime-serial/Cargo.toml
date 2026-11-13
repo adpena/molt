@@ -16,8 +16,6 @@ num-bigint = "0.5"
 memchr = "2"
 num-traits = "0.2"
 libm = "0.2"
-serde_json = { workspace = true, optional = true }
 
-[features]
-default = ["serial"]
-serial = ["dep:serde_json"]
+[lints]
+workspace = true

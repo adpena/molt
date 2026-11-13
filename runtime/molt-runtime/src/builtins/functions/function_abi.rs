@@ -2216,13 +2216,7 @@ mod function_type_execution_kind_tests {
             NativeCallableKind as Kind, NativeCallableSpec, configure_native_callable,
         };
         use crate::object::function_metadata::FunctionMetadataField as Field;
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
@@ -2260,7 +2254,7 @@ mod function_type_execution_kind_tests {
                         max_memory: Some(0),
                         ..Default::default()
                     })));
-                    let reset = RestoreTracker;
+                    let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                     assert!(!configure_native_callable(
                         py,
                         function,

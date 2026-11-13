@@ -220,13 +220,9 @@ fn native_str_repr_is_quoted() {
 fn managed_heap_stringification_uses_runtime_protocol_not_projected_type_slots() {
     let _abi_test = install();
     STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::ProtocolProbe));
-    struct ResetMode;
-    impl Drop for ResetMode {
-        fn drop(&mut self) {
-            STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::Scalars));
-        }
-    }
-    let _reset = ResetMode;
+    let _reset = std::mem::DropGuard::new((), |()| {
+        STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::Scalars));
+    });
     let bits = support::fake_runtime::fresh_handle();
     unsafe {
         use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
@@ -438,13 +434,10 @@ fn unicode_formatter_handles_utf8_wide_unicode_and_v_fallbacks() {
 #[test]
 fn unicode_formatter_replacement_decoder_matches_terminal_and_middle_errors() {
     let _abi_test = install();
-    struct RestoreTarget((i64, i64));
-    impl Drop for RestoreTarget {
-        fn drop(&mut self) {
-            FORMAT_TARGET_VERSION.with(|value| value.set(self.0));
-        }
-    }
-    let _restore = RestoreTarget(FORMAT_TARGET_VERSION.with(std::cell::Cell::get));
+    let _restore =
+        std::mem::DropGuard::new(FORMAT_TARGET_VERSION.with(std::cell::Cell::get), |state| {
+            FORMAT_TARGET_VERSION.with(|value| value.set(state));
+        });
     // Literal byte oracles distinguish an incomplete precision boundary from
     // an unbounded malformed tail and from invalid bytes inside the prefix.
     for (version, drops_incomplete) in [

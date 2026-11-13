@@ -4,16 +4,24 @@ Cargo reports each unit it built or found fresh in its ``compiler-artifact``
 JSON messages. Beside each local unit's outputs, rustc wrote a dep-info file:
 every file it read for that crate (``include_str!``, ``#[path]`` modules and
 the rest) and every environment variable it read. Each build script's
-``output`` file, beside the ``out_dir`` that ``build-script-executed`` reports,
-holds the paths and variables it declared with ``rerun-if-changed`` and
-``rerun-if-env-changed``. A script that declares neither reruns when any file
-of its package changes, so its whole package counts. This is the input set
+captured stdout holds the paths and variables it declared with
+``rerun-if-changed`` and ``rerun-if-env-changed``. A script that declares
+neither reruns when any file of its package changes, so its whole package
+counts. This is the input set
 Cargo's own fingerprints use; docs/design/cargo_input_authority.md holds the
 rules and their prior art.
 
 The uplifted dep-info beside a final artifact is not enough: it leaves out
 local packages that only registry crates reach (``vendor/rust/zlib-rs``) and
 every environment input.
+
+Cargo's JSON messages name every unit output, so they locate the dep-info of
+every unit Cargo does not uplift. Two facts have no JSON spelling: where a
+build script's stdout is, and which unit an uplifted root artifact came from.
+For those two this module reads Cargo's build-directory layout, which is not a
+stable interface. ``_unit_directory`` and ``_build_script_stdout`` hold the
+whole layout dependency (Cargo 1.100.0: ``<build-dir>/<profile>/build/
+<package>/<unit hash>/{out,run}``). A build in any other layout fails closed.
 """
 
 from __future__ import annotations
@@ -157,7 +165,7 @@ def _build_script_inputs(
                     f"conflicting build-script generated input: {name}"
                 )
             generated[name] = row[1]
-        paths, variables = _read_build_script_output(Path(out_dir).parent / "output")
+        paths, variables = _read_build_script_output(_build_script_stdout(out_dir))
         for name in variables:
             _environment_name(name)
         observed = _BuildScriptInputs(
@@ -426,12 +434,15 @@ def cargo_build_reads(
     messages = tuple(_messages(cargo_stdout))
     # Where this build put its units, and each package's build-script out_dir:
     # together they name the dep-info of a unit Cargo reports only uplifted.
-    deps_dirs = {
-        Path(filename).parent
+    build_roots = {
+        unit.parents[1]
         for message in messages
-        if message.get("reason") == "compiler-artifact"
-        for filename in _strings(message.get("filenames"))
-        if Path(filename).parent.name == "deps"
+        if message.get("reason") in {"compiler-artifact", "build-script-executed"}
+        for filename in (
+            *_strings(message.get("filenames")),
+            *_strings([message.get("out_dir")]),
+        )
+        if (unit := _unit_directory(Path(filename))) is not None
     }
     scripts = _build_script_inputs(messages, environment)
     package_values: dict[Path, dict[str, str]] = {}
@@ -449,7 +460,7 @@ def cargo_build_reads(
             out_dirs = {script.out_dir for script in script_inputs}
             dep_info = _unit_dep_info(
                 message,
-                deps_dirs,
+                _package_unit_directories(build_roots, package_id),
                 next(iter(out_dirs)) if len(out_dirs) == 1 else None,
                 dep_info_base=base,
             )
@@ -580,23 +591,76 @@ def _messages(cargo_stdout: str) -> Iterator[Mapping[str, object]]:
         )
 
 
+def _unit_directory(path: Path) -> Path | None:
+    """The unit directory holding ``path``, in Cargo's build-directory layout.
+
+    Cargo 1.100.0 gives each unit ``<build-dir>/[<triple>/]<profile>/build/
+    <package>/<unit hash>/``; rustc writes the unit's outputs and dep-info to
+    its ``out/`` and Cargo runs its build script in ``run/``. Cargo reports
+    every output it does not uplift, and every build-script OUT_DIR, inside
+    one. https://doc.rust-lang.org/cargo/reference/build-cache.html
+    """
+    parents = path.parents
+    if path.name == "out" and len(parents) >= 3 and parents[2].name == "build":
+        return parents[0]
+    if len(parents) >= 4 and parents[0].name == "out" and parents[3].name == "build":
+        return parents[1]
+    return None
+
+
+def _build_script_stdout(out_dir: str) -> Path:
+    """The stdout Cargo captured from the build script that owns ``out_dir``."""
+    unit = _unit_directory(Path(out_dir))
+    if unit is None:
+        raise CargoBuildReadsError(
+            f"a build-script OUT_DIR is outside Cargo's unit layout: {out_dir}"
+        )
+    return unit / "run" / "stdout"
+
+
+def _package_name(package_id: str) -> str | None:
+    """The package name a Cargo package ID spells, with or without ``name@``."""
+    url, _, fragment = package_id.partition("#")
+    if "@" in fragment:
+        return fragment.partition("@")[0] or None
+    name = urlparse(url).path.rstrip("/").rpartition("/")[2]
+    return name or None
+
+
+def _package_unit_directories(
+    build_roots: Iterable[Path], package_id: str
+) -> tuple[Path, ...]:
+    """The ``out/`` of every unit of one package under this build's roots."""
+    name = _package_name(package_id)
+    if name is None:
+        return ()
+    return tuple(
+        sorted(
+            unit / "out"
+            for root in build_roots
+            if (root / name).is_dir()
+            for unit in (root / name).iterdir()
+            if (unit / "out").is_dir()
+        )
+    )
+
+
 def _unit_dep_info(
     message: Mapping[str, object],
-    deps_dirs: Iterable[Path],
+    unit_dirs: Iterable[Path],
     out_dir: object,
     *,
     dep_info_base: Path,
 ) -> _RustcDepInfo | None:
     """The rustc dep-info of one unit, with or without a metadata suffix.
 
-    A library's outputs in ``deps`` carry the ``<crate>-<metadata>`` stem, with
-    the dep-info beside them. A build script compiles in
-    ``build/<package>-<metadata>/`` as ``build_script_build-<metadata>``, while
-    Cargo reports its uplifted copy ``build-script-build``. A root artifact
-    Cargo reports only uplifted (a staticlib or binary in the profile
-    directory) can have ``<crate>.d`` and ``<crate>-<metadata>.d`` candidates
-    across feature and profile lanes. Bind all candidates' populated output
-    rules to Cargo's actual output bytes; several units can share ``OUT_DIR``.
+    rustc writes a unit's dep-info beside its outputs in the unit's ``out/``:
+    ``<crate>-<metadata>.d`` for a library or test, ``<crate>.d`` for a binary
+    or build script. A root artifact Cargo reports only uplifted (a staticlib
+    or binary in the profile directory) can have candidates in several units
+    of its package, across feature and profile lanes. Bind all candidates'
+    populated output rules to Cargo's actual output bytes; several units can
+    share ``OUT_DIR``.
     """
     filenames = _strings(message.get("filenames"))
     target = message.get("target")
@@ -611,24 +675,19 @@ def _unit_dep_info(
     crate = name.replace("-", "_") if isinstance(name, str) else None
     for filename in filenames:
         output = Path(filename)
-        if "custom-build" in kinds and crate is not None:
-            metadata = output.parent.name.rpartition("-")[2]
-            candidate = output.with_name(f"{crate}-{metadata}.d")
-        else:
-            stem = output.stem if output.suffix in _OUTPUT_SUFFIXES else output.name
-            if library and stem.startswith("lib"):
-                stem = stem[3:]
-            candidate = output.with_name(stem + ".d")
-        if output.parent.name in {"deps", "build"} or "custom-build" in kinds:
-            if candidate.is_file():
-                return _read_dep_info(candidate)
+        stem = output.stem if output.suffix in _OUTPUT_SUFFIXES else output.name
+        if library and stem.startswith("lib"):
+            stem = stem[3:]
+        candidate = output.with_name(stem + ".d")
+        if _unit_directory(output) is not None and candidate.is_file():
+            return _read_dep_info(candidate)
     if crate is None:
         return None
     candidates = []
     for path in sorted(
         {
             path
-            for directory in deps_dirs
+            for directory in unit_dirs
             for pattern in (f"{crate}.d", f"{crate}-*.d")
             for path in directory.glob(pattern)
         }

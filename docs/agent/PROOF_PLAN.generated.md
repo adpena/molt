@@ -135,10 +135,10 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `browser-acorn` | `executable` | — | `^8\.19\.0$` | `tools/browser_asset_graph` | `8.19.0` | 1 |
 | `npm` | `executable` | — | `^12\.2\.1$` | `.` | `12.2.1` | 4 |
 | `edgebox-typescript` | `executable` | — | `^7\.0\.2$` | `examples/edgebox/packages/edgebox-cloudflare` | `7.0.2` | 1 |
-| `rustc` | `executable` | — | `^rustc 1\.99\.1\b` | `.` | `1.99.1` | 3 |
-| `cargo` | `executable` | — | `^cargo 1\.99\.1\b` | `.` | `1.99.1` | 3 |
+| `rustc` | `executable` | — | `^rustc 1\.100\.0\b` | `.` | `1.100.0` | 3 |
+| `cargo` | `executable` | — | `^cargo 1\.100\.0\b` | `.` | `1.100.0` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
-| `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
+| `rustfmt` | `executable` | — | `^rustfmt 1\.11\.0-stable\b` | `.` | `1.11.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `hosted-clang` | `executable` | — | `clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `host image C object compiler` | 1 |
 | `hosted-clang-cl` | `executable` | — | `^clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `windows-2022 image C11 compiler` | 1 |

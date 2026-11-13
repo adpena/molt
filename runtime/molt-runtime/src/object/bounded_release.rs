@@ -137,14 +137,6 @@ impl Drop for ReleaseFrame<'_> {
     }
 }
 
-struct ActiveRelease<'a>(&'a Cell<*const TerminalReleaseState>);
-
-impl Drop for ActiveRelease<'_> {
-    fn drop(&mut self) {
-        self.0.set(std::ptr::null());
-    }
-}
-
 /// The one managed terminal entry, used by every generated heap kind and by
 /// ordinary, collector-pin, C-view and runtime-teardown owner releases.
 #[inline(always)]
@@ -169,7 +161,9 @@ unsafe fn release_outermost(
 ) -> Option<u64> {
     let state = TerminalReleaseState::default();
     active.set(&state);
-    let _active = ActiveRelease(active);
+    let _active = std::mem::DropGuard::new(active, |active| {
+        active.set(std::ptr::null());
+    });
     let mut successor = None;
     super::terminal_resource_drop_no_unwind(|| unsafe {
         successor = state.release(py, release);

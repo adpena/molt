@@ -16,7 +16,6 @@ hashlink = "0.12.2"
 libc = "0.2"
 molt-ir = { path = "../molt-ir" }
 molt-host-process = { path = "../molt-host-process" }
-num-integer = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 rmp-serde = "1"
@@ -28,3 +27,6 @@ native-backend = ["molt-ir/native-backend"]
 llvm = ["molt-ir/llvm"]
 wasm-backend = ["molt-ir/wasm-backend"]
 test-util = ["molt-ir/test-util"]
+
+[lints]
+workspace = true

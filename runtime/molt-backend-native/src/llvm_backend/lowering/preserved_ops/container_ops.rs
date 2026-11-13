@@ -151,7 +151,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .build_load(i64_ty, elem_ptr, "unpack_elem")
                         .unwrap();
                     self.values.set_value(result_id, elem);
-                    self.values.set_type(result_id, TirType::DynBox);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }

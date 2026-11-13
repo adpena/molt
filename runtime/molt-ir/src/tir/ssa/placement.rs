@@ -728,10 +728,7 @@ impl<'a> SsaContext<'a> {
         // Each state bit is admitted once. Revisited edges remain bounded by
         // those three bits; Kahn's indegree walk handles parallel edges without
         // sorting/deduplication, keeping high-fanout switches linear as well.
-        if !reached_producer || !reached_value || graph_has_cycle(&awaiting_edges) {
-            return false;
-        }
-        true
+        reached_producer && reached_value && !graph_has_cycle(&awaiting_edges)
     }
 
     fn tir_op_dominates(&self, definition: TirOpLocation, usage: TirOpLocation) -> bool {

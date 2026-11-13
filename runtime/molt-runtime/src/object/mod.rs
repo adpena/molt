@@ -5073,13 +5073,7 @@ mod tests {
                 max_memory: Some(small_plan.alloc_size),
                 ..Default::default()
             })));
-            struct TrackerReset;
-            impl Drop for TrackerReset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let denied = alloc_object(_py, large_total, TYPE_ID_OBJECT);
             assert!(denied.is_null());
@@ -5105,13 +5099,7 @@ mod tests {
                 max_memory: Some(plan.alloc_size),
                 ..Default::default()
             })));
-            struct TrackerReset;
-            impl Drop for TrackerReset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let denied = alloc_object(_py, total, TYPE_ID_GENERATOR);
             assert!(
@@ -5486,15 +5474,10 @@ mod tests {
                 .expect("builtin str class");
             let class_header = unsafe { super::header_from_obj_ptr(class_ptr) };
             let old_flags = unsafe { (*class_header).load_metadata_flags() };
-            struct RestoreClassFlags(*mut super::MoltHeader, u32);
-            impl Drop for RestoreClassFlags {
-                fn drop(&mut self) {
-                    unsafe {
-                        (*self.0).store_flags(self.1);
-                    }
-                }
-            }
-            let _restore = RestoreClassFlags(class_header, old_flags);
+            let _restore =
+                std::mem::DropGuard::new((class_header, old_flags), |(header, flags)| unsafe {
+                    (*header).store_flags(flags);
+                });
             unsafe {
                 (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_DECLARES_FINALIZER);
             }

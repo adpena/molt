@@ -1057,13 +1057,9 @@ fn bound_type_shell_uses_runtime_constructor_when_native_tp_new_is_absent() {
     class.tp_flags = Py_TPFLAGS_READY;
     assert!(class.tp_new.is_none());
     let binding = unsafe { BoundType::new(class.as_ptr()) };
-    struct ResetCall;
-    impl Drop for ResetCall {
-        fn drop(&mut self) {
-            FAKE_CALL_ENABLED.store(false, Ordering::Relaxed);
-        }
-    }
-    let _reset_call = ResetCall;
+    let _reset_call = std::mem::DropGuard::new((), |()| {
+        FAKE_CALL_ENABLED.store(false, Ordering::Relaxed);
+    });
     FAKE_CALLS.store(0, Ordering::Relaxed);
     FAKE_CALL_ENABLED.store(true, Ordering::Relaxed);
     unsafe {

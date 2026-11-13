@@ -1127,14 +1127,10 @@ unsafe fn raised_exception_transfer_cases(py: &crate::PyToken<'_>) {
         assert_eq!(payload_type.ready(), 0);
         // A failed assertion must retire any pending payload before its native
         // type storage leaves scope, even when the transfer itself is defective.
-        struct RaisedCleanup;
-        impl Drop for RaisedCleanup {
-            fn drop(&mut self) {
-                DROP_OBSERVES.store(false, Ordering::SeqCst);
-                unsafe { errors::PyErr_Clear() };
-            }
-        }
-        let _cleanup = RaisedCleanup;
+        let _cleanup = std::mem::DropGuard::new((), |()| {
+            DROP_OBSERVES.store(false, Ordering::SeqCst);
+            errors::PyErr_Clear();
+        });
         DROP_OBSERVES.store(true, Ordering::SeqCst);
         let drops_before = DROPS.load(Ordering::SeqCst);
         let trace_class = crate::obj_from_bits(crate::builtin_classes(py).traceback)
@@ -4214,14 +4210,10 @@ fn fallible_c_preparation_retires_runtime_prior_under_the_selected_native_failur
                 NativeType::subtype(&raw mut PyBaseObject_Type, c"PreparationPriorPayload");
             payload_type.tp_dealloc = Some(payload_drop);
             assert_eq!(payload_type.ready(), 0);
-            struct ClearRaised;
-            impl Drop for ClearRaised {
-                fn drop(&mut self) {
-                    DROP_OBSERVES.store(false, Ordering::SeqCst);
-                    unsafe { errors::PyErr_Clear() };
-                }
-            }
-            let _clear = ClearRaised;
+            let _clear = std::mem::DropGuard::new((), |()| {
+                DROP_OBSERVES.store(false, Ordering::SeqCst);
+                errors::PyErr_Clear();
+            });
             let payload = OwnedPyObject::from_owned(Box::into_raw(Box::new(PyObject {
                 ob_refcnt: 1,
                 ob_type: &raw mut *payload_type,
@@ -5205,14 +5197,10 @@ mod decimal_output_limits {
     fn rejected_decimal_magnitude_does_not_allocate_decimal_storage() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let value = BigInt::from(1u8) << 1_000_000usize;
-        struct StopTracking;
-        impl Drop for StopTracking {
-            fn drop(&mut self) {
-                crate::attestation_probe::set_tracking(false);
-            }
-        }
         crate::attestation_probe::reset();
-        let tracking = StopTracking;
+        let tracking = std::mem::DropGuard::new((), |()| {
+            crate::attestation_probe::set_tracking(false);
+        });
         crate::attestation_probe::set_tracking(true);
         let result = molt_runtime_core::integer_decimal::decimal_magnitude(&value, || 640);
         drop(tracking);
@@ -5628,13 +5616,9 @@ fn managed_comparison_result_truth_failure_keeps_the_same_exception_instance() {
 
             // Clear this borrowed pointer before its owning ExceptionValue can
             // retire, including if a callback or assertion unwinds.
-            struct HeldFailure;
-            impl Drop for HeldFailure {
-                fn drop(&mut self) {
-                    COMPLETION_MANAGED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
-                }
-            }
-            let held_failure = HeldFailure;
+            let held_failure = std::mem::DropGuard::new((), |()| {
+                COMPLETION_MANAGED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            });
             COMPLETION_MANAGED_ERROR.store(failure_ptr, Ordering::SeqCst);
             COMPLETION_CALLS.store(0, Ordering::SeqCst);
             crate::inc_ref_bits(py, result.bits());

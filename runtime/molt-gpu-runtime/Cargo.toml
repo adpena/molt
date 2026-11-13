@@ -10,9 +10,13 @@ license = "Apache-2.0"
 molt-gpu = { path = "../molt-gpu", default-features = false }
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
-serde_json.workspace = true
 wgpu = { version = "30", optional = true }
 pollster = { version = "1.0", optional = true }
+# Launch records are JSON on WASM and on the Metal and WebGPU backends only.
+serde_json = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+serde_json.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -22,12 +26,15 @@ objc2-metal = "0.3"
 [features]
 default = ["cpu-backend"]
 cpu-backend = ["molt-gpu/cpu-backend"]
-metal-backend = ["molt-gpu/metal-backend"]
+metal-backend = ["molt-gpu/metal-backend", "dep:serde_json"]
 metal4 = ["metal-backend", "molt-gpu/metal4"]
 wasm-backend = ["cpu-backend", "molt-gpu/wasm-backend"]
-webgpu-backend = ["molt-gpu/webgpu-backend", "dep:wgpu", "dep:pollster"]
+webgpu-backend = ["molt-gpu/webgpu-backend", "dep:wgpu", "dep:pollster", "dep:serde_json"]
 cuda-backend = ["molt-gpu/cuda-backend"]
 hip-backend = ["molt-gpu/hip-backend"]
 webgl2-backend = ["molt-gpu/webgl2-backend"]
 opencl-backend = ["molt-gpu/opencl-backend"]
 ane-backend = ["molt-gpu/ane-backend"]
+
+[lints]
+workspace = true

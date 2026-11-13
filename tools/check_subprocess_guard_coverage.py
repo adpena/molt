@@ -293,10 +293,11 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/ci_cargo_cache.py",
-        "_cargo_metadata",
+        "prune_workspace_artifacts",
         "run",
-        "bounded cargo metadata probe in the CI cache save step, which runs "
-        "under the runner's bare python3 outside the project environment",
+        "bounded `cargo clean --workspace` runs (one per profile) in the CI "
+        "cache save step, which runs under the runner's bare python3 outside "
+        "the project environment",
     ),
     AllowedRawSubprocessUse(
         "tools/ci_cargo_cache.py",

@@ -21,3 +21,6 @@ required-features = ["rust-backend"]
 [[test]]
 name = "float_repr_cpython_parity"
 required-features = ["rust-backend"]
+
+[lints]
+workspace = true

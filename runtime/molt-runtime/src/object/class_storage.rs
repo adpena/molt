@@ -1520,13 +1520,7 @@ mod tests {
 
     #[test]
     fn static_module_capture_is_owned_traced_and_failure_atomic() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
@@ -1607,7 +1601,7 @@ mod tests {
                     max_memory: Some(0),
                     ..Default::default()
                 })));
-                let reset = RestoreTracker;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 assert!(!ClassSemanticPolicy::static_type(true).apply(py, class));
                 drop(reset);
                 assert!(crate::exception_pending(py));

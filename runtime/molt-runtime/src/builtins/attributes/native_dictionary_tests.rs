@@ -765,17 +765,12 @@ fn native_spec_module_preserves_descriptors_and_retires_warning_failures() {
     use molt_cpython_abi::api::{errors, mapping, modules, object, strings, typeobj};
     use std::ptr;
 
-    struct ResetWarnings<'py>(&'py crate::PyToken<'py>);
-    impl Drop for ResetWarnings<'_> {
-        fn drop(&mut self) {
-            crate::molt_warnings_resetwarnings_attached_body(self.0);
-        }
-    }
-
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::cpython_abi_hooks::register_cpython_hooks();
     crate::with_gil_entry_nopanic!(py, {
-        let _reset = ResetWarnings(py);
+        let _reset = std::mem::DropGuard::new(py, |state| {
+            crate::molt_warnings_resetwarnings_attached_body(state);
+        });
         unsafe {
             static GETSETS: [PyGetSetDef; 2] = [
                 PyGetSetDef {

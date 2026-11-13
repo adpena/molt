@@ -338,16 +338,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
-name = "filetime"
-version = "0.2.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
-dependencies = [
- "cfg-if",
- "libc",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -614,12 +604,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "507460a910eb7b32ee961886ff48539633b788a36b65692b95f225b844c82553"
 
 [[package]]
-name = "lazy_static"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
-
-[[package]]
 name = "libbz2-rs-sys"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -785,7 +769,6 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "objc2-metal",
- "serde_json",
 ]
 
 [[package]]
@@ -818,7 +801,6 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "glob",
- "lazy_static",
  "libc",
  "libm",
  "memchr",
@@ -844,7 +826,6 @@ dependencies = [
  "molt-runtime-itertools",
  "molt-runtime-logging",
  "molt-runtime-math",
- "molt-runtime-net",
  "molt-runtime-path",
  "molt-runtime-platform",
  "molt-runtime-regex",
@@ -1034,24 +1015,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-runtime-net"
-version = "0.1.0"
-dependencies = [
- "mio",
- "molt-lang-obj-model",
- "molt-runtime-core",
- "rustls",
- "rustls-pemfile",
- "socket2",
- "tungstenite",
- "webpki-roots 1.0.10",
-]
-
-[[package]]
 name = "molt-runtime-path"
 version = "0.1.0"
 dependencies = [
- "filetime",
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-capi",
@@ -1102,7 +1068,6 @@ dependencies = [
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",
- "serde_json",
 ]
 
 [[package]]

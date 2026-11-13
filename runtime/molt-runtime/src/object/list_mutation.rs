@@ -1652,15 +1652,6 @@ mod tests {
         });
     }
 
-    struct RestoreReserveObserver;
-    impl Drop for RestoreReserveObserver {
-        fn drop(&mut self) {
-            crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
-            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-            RESERVE_TARGET.with(|target| target.set(0));
-        }
-    }
-
     #[test]
     fn list_growth_failure_retires_prior_after_unlocking_without_partial_mutation() {
         use crate::builtins::exceptions::ExceptionValue;
@@ -1678,7 +1669,13 @@ mod tests {
                             let ptr = alloc_list(py, &[MoltObject::from_int(7).bits()]);
                             assert!(!ptr.is_null());
                             let list = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
-                            let reset = RestoreReserveObserver;
+                            let reset = std::mem::DropGuard::new((), |()| {
+                                crate::resource::set_tracker(Box::new(
+                                    crate::resource::UnlimitedTracker,
+                                ));
+                                molt_cpython_abi::api::errors::PyErr_Clear();
+                                RESERVE_TARGET.with(|target| target.set(0));
+                            });
                             RESERVE_TARGET.with(|target| target.set(list.bits()));
                             let capacity = (&*seq_vec_ptr(ptr)).capacity();
                             while list_len(ptr) < capacity {

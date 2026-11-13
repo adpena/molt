@@ -1,6 +1,6 @@
 //! Core API surface for molt-runtime subcrates.
 //!
-//! Extracted crates (molt-runtime-crypto, molt-runtime-net, etc.)
+//! Extracted crates (molt-runtime-crypto, molt-runtime-http, etc.)
 //! depend on this crate instead of the full molt-runtime.
 
 // Re-export the object model.

@@ -940,14 +940,10 @@ fn test_pylong_as_byte_array_rejects_unsigned_negative() {
 fn test_pylong_from_unsigned_longlong_reads_physical_digits_without_runtime_adoption() {
     use molt_cpython_abi::api::{errors, numbers, refcount::OwnedPyObject};
     let _abi_test = init();
-    struct ResetDenial;
-    impl Drop for ResetDenial {
-        fn drop(&mut self) {
-            DENY_NUMERIC_ADOPTION.with(|value| value.set(false));
-            DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(false));
-        }
-    }
-    let _reset = ResetDenial;
+    let _reset = std::mem::DropGuard::new((), |()| {
+        DENY_NUMERIC_ADOPTION.with(|value| value.set(false));
+        DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(false));
+    });
     DENY_NUMERIC_ADOPTION.with(|value| value.set(true));
     DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(true));
     let adoptions = NUMERIC_ADOPTIONS.with(Cell::get);
@@ -1952,14 +1948,10 @@ fn test_complex_parts_versioned_non_numeric_refusal_and_recovery() {
 // Warning transport is shared with member tests; this scope also retires
 // numeric-specific protocol controls when a case unwinds.
 fn with_numeric_warning_provider(run: impl FnOnce()) {
-    struct ResetNumericCallbacks;
-    impl Drop for ResetNumericCallbacks {
-        fn drop(&mut self) {
-            DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(false));
-            SLOT_RESULT.with(|value| value.set(0));
-        }
-    }
-    let _reset = ResetNumericCallbacks;
+    let _reset = std::mem::DropGuard::new((), |()| {
+        DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(false));
+        SLOT_RESULT.with(|value| value.set(0));
+    });
     support::warnings::with_provider(run);
 }
 
@@ -2292,13 +2284,9 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
 fn indexed_integer_conversion_retires_at_the_cpython_publication_phase() {
     use molt_cpython_abi::api::{errors, numbers, refcount};
     let _abi_test = init();
-    struct ResetOutput;
-    impl Drop for ResetOutput {
-        fn drop(&mut self) {
-            INDEX_OVERFLOW_OUTPUT.with(|output| output.set(ptr::null_mut()));
-        }
-    }
-    let _reset_output = ResetOutput;
+    let _reset_output = std::mem::DropGuard::new((), |()| {
+        INDEX_OVERFLOW_OUTPUT.with(|output| output.set(ptr::null_mut()));
+    });
     with_numeric_warning_provider(|| unsafe {
         let mut slots: PyNumberMethods = std::mem::zeroed();
         slots.nb_index = owned_index_slot_result as *const () as *mut c_void;
@@ -2418,15 +2406,11 @@ fn indexed_integer_conversion_retires_at_the_cpython_publication_phase() {
 fn native_integer_byte_constructors_share_cpython_flags_and_error_ownership() {
     use molt_cpython_abi::api::{errors, numbers, refcount};
     let _abi_test = init();
-    struct ResetFailure;
-    impl Drop for ResetFailure {
-        fn drop(&mut self) {
-            DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(false));
-            NUMERIC_BYTE_RUNTIME_FAILURE.with(|value| value.set(None));
-            NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
-        }
-    }
-    let _reset = ResetFailure;
+    let _reset = std::mem::DropGuard::new((), |()| {
+        DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(false));
+        NUMERIC_BYTE_RUNTIME_FAILURE.with(|value| value.set(None));
+        NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
+    });
     unsafe {
         let bytes = [0x80u8, 0x01];
         let native_signed = i16::from_ne_bytes(bytes) as i64;
@@ -2536,21 +2520,17 @@ fn managed_numeric_hook_failures_preserve_runtime_error_before_projection() {
     use molt_cpython_abi::api::{abstract_number, errors, numbers, refcount};
     use molt_cpython_abi::hooks::NumberUnaryOp;
     let _abi_test = init();
-    struct ResetFailure;
-    impl Drop for ResetFailure {
-        fn drop(&mut self) {
-            NUMERIC_UNARY_OUTCOME.with(|value| value.set(None));
-            NUMERIC_UNARY_OPERATION.with(|value| value.set(None));
-            NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
-        }
-    }
     unsafe {
         // A managed complex object reaches all three conversion hooks without
         // taking a physical integer or float identity shortcut.
         let bits = support::fake_runtime::heap_complex(3.5, 2.0);
         let object = refcount::OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(bits));
         assert!(!object.as_ptr().is_null());
-        let _reset = ResetFailure;
+        let _reset = std::mem::DropGuard::new((), |()| {
+            NUMERIC_UNARY_OUTCOME.with(|value| value.set(None));
+            NUMERIC_UNARY_OPERATION.with(|value| value.set(None));
+            NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
+        });
         let count = (*object.as_ptr()).ob_refcnt;
         type Conversion = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
         let conversions: [(NumberUnaryOp, Conversion); 3] = [
@@ -2811,13 +2791,6 @@ fn numeric_result_class_failure_preserves_exact_error_and_owned_results() {
         );
         let failure = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert!(!failure.as_ptr().is_null());
-        struct ClearFailure;
-        impl Drop for ClearFailure {
-            fn drop(&mut self) {
-                CLASS_CALLBACK_ERROR.with(|value| value.set(None));
-                SLOT_RESULT.with(|value| value.set(0));
-            }
-        }
         for (kind, bits) in [
             (0, support::fake_runtime::heap_integer(42)),
             (0, support::fake_runtime::heap_integer((1i128 << 100) + 13)),
@@ -2830,7 +2803,10 @@ fn numeric_result_class_failure_preserves_exact_error_and_owned_results() {
             assert!(!result.as_ptr().is_null());
             let count = (*result.as_ptr()).ob_refcnt;
             let imports = NUMERIC_BYTE_IMPORTS.with(Cell::get);
-            let _failure_slot = ClearFailure;
+            let _failure_slot = std::mem::DropGuard::new((), |()| {
+                CLASS_CALLBACK_ERROR.with(|value| value.set(None));
+                SLOT_RESULT.with(|value| value.set(0));
+            });
             SLOT_RESULT.with(|value| value.set(result.as_ptr() as usize));
             CLASS_CALLBACK_ERROR.with(|value| value.set(Some((bits, failure.as_ptr() as usize))));
             let check_error = || {

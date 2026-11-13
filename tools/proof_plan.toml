@@ -756,10 +756,10 @@ version_args = ["--version", "--verbose"]
 content_path_command = ["rustup", "which", "rustc"]
 linker_process_helpers = { "link.exe" = ["vctip.exe"] }
 linker_build_tools = { "link.exe" = { "cl.exe" = "rust-build-c-compiler", "lib.exe" = "rust-build-archiver" } }
-version_pattern = '^rustc 1\.99\.1\b'
-setup_value = "1.99.1"
+version_pattern = '^rustc 1\.100\.0\b'
+setup_value = "1.100.0"
 setup_evidence = [
-  "rust-toolchain.toml::channel = \"1.99.1\"",
+  "rust-toolchain.toml::channel = \"1.100.0\"",
   ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
 ]
@@ -771,10 +771,10 @@ dependencies = ["rustc", "git"]
 fingerprint_domain = "rustup"
 version_args = ["--version"]
 content_path_command = ["rustup", "which", "cargo"]
-version_pattern = '^cargo 1\.99\.1\b'
-setup_value = "1.99.1"
+version_pattern = '^cargo 1\.100\.0\b'
+setup_value = "1.100.0"
 setup_evidence = [
-  "rust-toolchain.toml::channel = \"1.99.1\"",
+  "rust-toolchain.toml::channel = \"1.100.0\"",
   ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
 ]
@@ -796,8 +796,8 @@ executable = "rustfmt"
 fingerprint_domain = "rustup"
 version_args = ["--version"]
 content_path_command = ["rustup", "which", "rustfmt"]
-version_pattern = '^rustfmt 1\.10\.0-stable\b'
-setup_value = "1.10.0"
+version_pattern = '^rustfmt 1\.11\.0-stable\b'
+setup_value = "1.11.0"
 setup_evidence = [
   "rust-toolchain.toml::components = [\"rustfmt\", \"clippy\"]",
   ".github/workflows/ci.yml::components: rustfmt, clippy",

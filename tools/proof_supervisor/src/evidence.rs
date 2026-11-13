@@ -814,6 +814,14 @@ fn sync_parent_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Read admitted policy/receipt bytes from one retained generation; event logs
+/// use the same owner with bounded streaming instead of retaining the full log.
+pub fn read_bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    OpenedRegularFile::open(path)
+        .and_then(|opened| opened.read_all(limit))
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1474,8 +1482,7 @@ pub(crate) mod tests {
         let row: ProcessEvent = serde_json::from_slice(
             accepted
                 .split(|b| *b == b'\n')
-                .filter(|row| !row.is_empty())
-                .last()
+                .rfind(|row| !row.is_empty())
                 .unwrap(),
         )
         .unwrap();
@@ -1709,7 +1716,7 @@ pub(crate) mod tests {
 
     fn completed_journal<'a>(receipt: &Path, policy: &'a ValidatedPolicy) -> EventJournal<'a> {
         let capability = test_capability(policy.policy.mode);
-        let mut journal = EventJournal::create(receipt, &policy, &capability).unwrap();
+        let mut journal = EventJournal::create(receipt, policy, &capability).unwrap();
         journal
             .record_transition(
                 41,
@@ -2516,12 +2523,4 @@ pub(crate) mod tests {
         );
         let _ = fs::remove_file(path);
     }
-}
-
-/// Read admitted policy/receipt bytes from one retained generation; event logs
-/// use the same owner with bounded streaming instead of retaining the full log.
-pub fn read_bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
-    OpenedRegularFile::open(path)
-        .and_then(|opened| opened.read_all(limit))
-        .map_err(|error| error.to_string())
 }

@@ -46,3 +46,6 @@ object = { version = "0.40", default-features = false, features = ["read", "std"
 [dev-dependencies]
 cc = "1"
 object = { version = "0.40", default-features = false, features = ["read", "std"] }
+
+[lints]
+workspace = true

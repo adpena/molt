@@ -583,18 +583,8 @@ include!("../attached_exports_generated/object/buffer2d.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::{
-        OperationEstimate, ResourceError, ResourceTracker, UnlimitedTracker, set_tracker,
-    };
+    use crate::resource::{OperationEstimate, ResourceError, ResourceTracker, set_tracker};
     use std::{cell::Cell, rc::Rc};
-
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
 
     #[derive(Default)]
     struct TrackerUsage {
@@ -798,7 +788,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let usage = install_inspectable_tracker();
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
             let sentinel = tracked_vec_box_with_capacity::<u8>(8).expect("sentinel");
             let baseline_allocations = usage.used_allocations.get();
             let baseline_bytes = usage.used_bytes.get();
@@ -831,7 +821,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let usage = install_inspectable_tracker();
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
             let sentinel = tracked_vec_box_with_capacity::<u8>(8).expect("sentinel");
             let max_bits = owned_i64_bits(_py, i64::MAX).expect("i64::MAX bits");
             let buffer_bits = molt_buffer2d_new_attached_body(_py, inline(1), inline(3), max_bits);
@@ -904,7 +894,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let usage = install_inspectable_tracker();
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
             let sentinel = tracked_vec_box_with_capacity::<u8>(8).expect("sentinel");
             let max_bits = owned_i64_bits(_py, i64::MAX).expect("i64::MAX bits");
             let left = molt_buffer2d_new_attached_body(_py, inline(1), inline(1), max_bits);

@@ -6,3 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
 description = "Embeddable Python-to-WASM/native compilation SDK for Molt"
+
+[lints]
+workspace = true

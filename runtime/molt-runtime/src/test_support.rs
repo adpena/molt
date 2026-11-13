@@ -122,6 +122,17 @@ pub(crate) fn restore_pending_channels(
     saved.restore();
 }
 
+/// Restores the unlimited allocation tracker when dropped.
+pub(crate) type UnlimitedTrackerRestore = std::mem::DropGuard<(), fn(())>;
+
+/// Returns a guard that restores the unlimited allocation tracker when it
+/// drops, so a test that installs a limited tracker cannot leak it.
+pub(crate) fn restore_unlimited_tracker_on_drop() -> UnlimitedTrackerRestore {
+    std::mem::DropGuard::new((), |()| {
+        crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
+    })
+}
+
 /// Observe the allocation-free raised channel through the real C API. Callers
 /// install the hooks before denying allocation and keep the denial active here.
 pub(crate) fn assert_and_clear_emergency_memory_error(py: &crate::PyToken<'_>) {

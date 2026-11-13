@@ -12,3 +12,6 @@ description = "Regex intrinsics for the Molt runtime (compile, execute, match gr
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 indexmap = "2.14.2"
+
+[lints]
+workspace = true

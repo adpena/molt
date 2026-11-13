@@ -624,19 +624,13 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
         // A failed lazy materialization selects its allocation error, rather
         // than returning absence or reviving the admitted incoming exception.
         {
-            use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-            struct RestoreBudget;
-            impl Drop for RestoreBudget {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
+            use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
             crate::record_exception(py, obj_from_bits(prior.bits()).as_ptr().unwrap());
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_allocations: Some(0),
                 ..Default::default()
             })));
-            let budget = RestoreBudget;
+            let budget = crate::test_support::restore_unlimited_tracker_on_drop();
             let failed = traceback_payload_to_traceback_bits(py, lazy);
             drop(budget);
             assert_eq!(failed, None);

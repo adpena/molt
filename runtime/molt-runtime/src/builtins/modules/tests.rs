@@ -466,13 +466,7 @@ fn import_from_publishes_owned_metadata_and_versioned_origin() {
 
 #[test]
 fn import_error_allocation_denial_never_publishes_partial_fields() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-    struct RestoreBudget;
-    impl Drop for RestoreBudget {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
@@ -491,7 +485,7 @@ fn import_error_allocation_denial_never_publishes_partial_fields() {
             // Warm each concrete class, then deny the real allocator.
             let _ = raise(b"warm");
             clear_exception(py);
-            let budget = RestoreBudget;
+            let budget = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
                 ..Default::default()

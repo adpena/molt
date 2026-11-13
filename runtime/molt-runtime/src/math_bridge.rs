@@ -1072,19 +1072,11 @@ mod numeric_protocol_tests {
         unsafe { numbers::PyLong_FromLong(23) }
     }
 
-    struct CallbackState;
-    impl Drop for CallbackState {
-        fn drop(&mut self) {
+    fn callback_state() -> std::mem::DropGuard<(), fn(())> {
+        std::mem::DropGuard::new((), |()| {
             INDEX_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
             RETIRING_FLOAT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
-        }
-    }
-
-    struct WarningPolicy<'scope, 'py>(&'scope crate::PyToken<'py>);
-    impl Drop for WarningPolicy<'_, '_> {
-        fn drop(&mut self) {
-            crate::molt_warnings_resetwarnings_attached_body(self.0);
-        }
+        })
     }
 
     #[test]
@@ -1376,7 +1368,7 @@ mod numeric_protocol_tests {
             for index in 0..41 {
                 digits.add(index).write(u32::from(index == 40));
             }
-            let _callbacks = CallbackState;
+            let _callbacks = callback_state();
             INDEX_RESULT.store(huge.as_ptr(), Ordering::SeqCst);
             for operation in [
                 molt_runtime_math::math::molt_math_log,
@@ -1455,7 +1447,7 @@ mod numeric_protocol_tests {
                 py,
                 GLOBAL_BRIDGE.molt_value_for_pyobj(prior.as_ptr()).unwrap(),
             );
-            let _callbacks = CallbackState;
+            let _callbacks = callback_state();
             INDEX_RESULT.store(integer.as_ptr(), Ordering::SeqCst);
             for runtime_prior in [false, true] {
                 if runtime_prior {
@@ -1526,7 +1518,9 @@ mod numeric_protocol_tests {
         let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
-            let _warning_policy = WarningPolicy(py);
+            let _warning_policy = std::mem::DropGuard::new(py, |state| {
+                crate::molt_warnings_resetwarnings_attached_body(state);
+            });
             crate::molt_warnings_resetwarnings_attached_body(py);
             let mut result_type = NativeType::subtype(&raw mut PyFloat_Type, c"math.RetiringFloat");
             result_type.tp_basicsize = std::mem::size_of::<RetiringFloat>() as Py_ssize_t;
@@ -1555,7 +1549,7 @@ mod numeric_protocol_tests {
                 py,
                 GLOBAL_BRIDGE.molt_value_for_pyobj(prior.as_ptr()).unwrap(),
             );
-            let _callbacks = CallbackState;
+            let _callbacks = callback_state();
             RETIRING_FLOAT_TYPE.store(&raw mut *result_type, Ordering::SeqCst);
             for warning_error in [false, true] {
                 crate::molt_warnings_resetwarnings_attached_body(py);

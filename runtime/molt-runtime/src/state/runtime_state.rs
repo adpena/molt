@@ -2370,13 +2370,9 @@ mod tests {
     fn runtime_relative_vfs_route_keeps_startup_cwd_until_first_use() {
         use super::*;
         crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
-            struct RestoreCwd(std::path::PathBuf);
-            impl Drop for RestoreCwd {
-                fn drop(&mut self) {
-                    std::env::set_current_dir(&self.0).unwrap();
-                }
-            }
-            let cwd = RestoreCwd(std::env::current_dir().unwrap());
+            let cwd = std::mem::DropGuard::new(std::env::current_dir().unwrap(), |state| {
+                std::env::set_current_dir(&state).unwrap();
+            });
             let root = std::env::temp_dir().join(format!(
                 "molt-relative-vfs-{}-{}",
                 std::process::id(),
@@ -2423,13 +2419,9 @@ mod tests {
         // destination whose parent must remain lazy until the first emission.
         for feedback in [None, Some("feedback/data.json")] {
             crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
-                struct RestoreCwd(std::path::PathBuf);
-                impl Drop for RestoreCwd {
-                    fn drop(&mut self) {
-                        std::env::set_current_dir(&self.0).unwrap();
-                    }
-                }
-                let cwd = RestoreCwd(std::env::current_dir().unwrap());
+                let cwd = std::mem::DropGuard::new(std::env::current_dir().unwrap(), |state| {
+                    std::env::set_current_dir(&state).unwrap();
+                });
                 let root = std::env::temp_dir().join(format!(
                     "molt-output-policy-{}-{}",
                     std::process::id(),
@@ -2499,13 +2491,9 @@ mod tests {
     fn relative_output_sink_capture_failure_disables_without_fallback() {
         use super::RuntimePolicy;
         crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
-            struct RestoreCwd(std::path::PathBuf);
-            impl Drop for RestoreCwd {
-                fn drop(&mut self) {
-                    std::env::set_current_dir(&self.0).unwrap();
-                }
-            }
-            let _cwd = RestoreCwd(std::env::current_dir().unwrap());
+            let _cwd = std::mem::DropGuard::new(std::env::current_dir().unwrap(), |cwd| {
+                std::env::set_current_dir(cwd).unwrap();
+            });
             let root = std::env::temp_dir().join(format!(
                 "molt-unlinked-output-cwd-{}-{}",
                 std::process::id(),

@@ -9,3 +9,6 @@ description = "Protobuf serialization for Molt via buffa"
 
 [dependencies]
 buffa = "0.9"
+
+[lints]
+workspace = true

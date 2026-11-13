@@ -527,13 +527,6 @@ unsafe extern "C" fn failing_type_allocate(
     ptr::null_mut()
 }
 
-struct AllocatorFailureBorrow;
-impl Drop for AllocatorFailureBorrow {
-    fn drop(&mut self) {
-        ALLOCATOR_FAILURE.store(ptr::null_mut(), Ordering::SeqCst);
-    }
-}
-
 #[test]
 fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
@@ -692,7 +685,9 @@ fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
         ));
         assert!(!selected.as_ptr().is_null());
         ALLOCATOR_FAILURE.store(selected.as_ptr(), Ordering::SeqCst);
-        let _borrow = AllocatorFailureBorrow;
+        let _borrow = std::mem::DropGuard::new((), |()| {
+            ALLOCATOR_FAILURE.store(ptr::null_mut(), Ordering::SeqCst);
+        });
         NULL_ALLOCATOR_CALLS.store(0, Ordering::SeqCst);
         metaclass.tp_alloc = Some(failing_type_allocate);
         let frees = TYPE_FREES.load(Ordering::SeqCst);
@@ -1168,15 +1163,6 @@ fn native_numeric_tuple_and_bytearray_subclasses_use_their_own_allocator() {
 fn native_list_subclass_resurrection_and_terminal_free_follow_target_python() {
     use molt_cpython_abi::api::sequences;
 
-    struct ResurrectionCleanup;
-    impl Drop for ResurrectionCleanup {
-        fn drop(&mut self) {
-            REPLACEMENT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
-            let retained = RESURRECTED.swap(ptr::null_mut(), Ordering::SeqCst);
-            unsafe { refcount::Py_XDECREF(retained) };
-        }
-    }
-
     let transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         // Pinned CPython list_dealloc calls the type's free slot in 3.12/3.13;
@@ -1215,7 +1201,11 @@ fn native_list_subclass_resurrection_and_terminal_free_follow_target_python() {
                 assert!(!class.as_ptr().is_null());
                 let type_refs = (*class.as_ptr()).ob_refcnt;
                 REPLACEMENT_TYPE.store(class.as_ptr().cast(), Ordering::SeqCst);
-                let _cleanup = ResurrectionCleanup;
+                let _cleanup = std::mem::DropGuard::new((), |()| {
+                    REPLACEMENT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
+                    let retained = RESURRECTED.swap(ptr::null_mut(), Ordering::SeqCst);
+                    refcount::Py_XDECREF(retained);
+                });
                 let instance = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
                     class.as_ptr().cast(),
                     0,

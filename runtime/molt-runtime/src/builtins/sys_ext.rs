@@ -1244,13 +1244,7 @@ mod tests {
 
     #[test]
     fn sys_metadata_owned_publication_releases_fields_on_success_and_failure() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreBudget;
-        impl Drop for RestoreBudget {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let field = str_bits(py, "owned sys metadata field");
@@ -1268,7 +1262,7 @@ mod tests {
                 max_allocations: Some(0),
                 ..Default::default()
             })));
-            let budget = RestoreBudget;
+            let budget = crate::test_support::restore_unlimited_tracker_on_drop();
             assert!(obj_from_bits(sys_tuple_from_owned(py, &[field])).is_none());
             assert!(exception_pending(py));
             assert_eq!(ref_count(ptr), initial);
@@ -1294,13 +1288,7 @@ mod tests {
 
     #[test]
     fn sys_metadata_constructors_never_publish_partial_results_under_denial() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreBudget;
-        impl Drop for RestoreBudget {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for constructor in [
@@ -1326,7 +1314,7 @@ mod tests {
                         max_allocations: Some(limit),
                         ..Default::default()
                     })));
-                    let budget = RestoreBudget;
+                    let budget = crate::test_support::restore_unlimited_tracker_on_drop();
                     let result = unsafe { constructor(py.attached_context()) };
                     if obj_from_bits(result).is_none() {
                         assert!(exception_pending(py), "silent metadata failure at {limit}");

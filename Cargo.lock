@@ -2568,9 +2568,6 @@ dependencies = [
 [[package]]
 name = "molt-harness"
 version = "0.1.0"
-dependencies = [
- "sha2 0.11.1",
-]
 
 [[package]]
 name = "molt-host-process"
@@ -2656,7 +2653,6 @@ dependencies = [
  "libc",
  "molt-host-process",
  "molt-ir",
- "num-integer",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -2674,7 +2670,6 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "glob",
- "lazy_static",
  "libc",
  "libloading 0.9.0",
  "libm",
@@ -2702,7 +2697,6 @@ dependencies = [
  "molt-runtime-itertools",
  "molt-runtime-logging",
  "molt-runtime-math",
- "molt-runtime-net",
  "molt-runtime-path",
  "molt-runtime-platform",
  "molt-runtime-regex",
@@ -2886,24 +2880,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-runtime-net"
-version = "0.1.0"
-dependencies = [
- "mio",
- "molt-lang-obj-model",
- "molt-runtime-core",
- "rustls",
- "rustls-pemfile",
- "socket2",
- "tungstenite",
- "webpki-roots 1.0.10",
-]
-
-[[package]]
 name = "molt-runtime-path"
 version = "0.1.0"
 dependencies = [
- "filetime",
  "libc",
  "molt-codegen-abi",
  "molt-lang-obj-model",
@@ -2962,7 +2941,6 @@ dependencies = [
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",
- "serde_json",
 ]
 
 [[package]]
