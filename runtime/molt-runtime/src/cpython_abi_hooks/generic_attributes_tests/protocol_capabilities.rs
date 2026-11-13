@@ -44,6 +44,9 @@ unsafe fn assert_type_error(status: isize, message: &str) {
 #[test]
 fn native_mapping_proxies_publish_only_their_declared_protocols() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    // Static shells with runtime protocols are readied by hook registration;
+    // the test must not depend on another test having registered first.
+    assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let dictionary = OwnedPyObject::from_owned(mapping::PyDict_New());

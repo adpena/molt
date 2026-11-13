@@ -308,6 +308,9 @@ fn mro_first_publication_returns_a_physically_ready_managed_class() {
 #[test]
 fn static_managed_protocol_tables_dispatch_without_overwriting_object() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    // Static shells with runtime protocols are readied by hook registration;
+    // the test must not depend on another test having registered first.
+    assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let class = crate::builtins::types::mappingproxy_class(py);
