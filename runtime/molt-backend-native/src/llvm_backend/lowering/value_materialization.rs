@@ -199,15 +199,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> BorrowedOperands<'ctx> {
         let adopted_objects = adopted
             .iter()
-            .filter(|&&id| {
-                Self::tir_type_is_dynbox_like(self.values.ty(id).unwrap_or(&TirType::DynBox))
-            })
+            .filter(|&&id| Self::tir_type_is_dynbox_like(&self.repr_ty(id)))
             .map(|&id| self.ensure_i64(self.resolve(id)))
             .collect();
         let adopted_callable = callable
-            .filter(|id| {
-                Self::tir_type_is_dynbox_like(self.values.ty(*id).unwrap_or(&TirType::DynBox))
-            })
+            .filter(|id| Self::tir_type_is_dynbox_like(&self.repr_ty(*id)))
             .map(|id| self.ensure_i64(self.resolve(id)));
         let mut custody = self.begin_borrowed_operands(operands, label);
         custody.adopted_objects = adopted_objects;
@@ -571,7 +567,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let none: BasicValueEnum<'ctx> = self.none_word().into();
                 for &result in &op.results {
                     self.values.set_value(result, none);
-                    self.values.set_type(result, TirType::DynBox);
+                    self.values
+                        .set_repr(result, crate::codegen_ssa::Repr::of(&TirType::DynBox));
                 }
             }
         }
@@ -663,7 +660,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         operand: ValueId,
         _retain_name: &str,
     ) -> inkwell::values::IntValue<'ctx> {
-        let ty = self.values.ty(operand).cloned().unwrap_or(TirType::DynBox);
+        let ty = self.repr_ty(operand);
         let word = self.materialize_dynbox_bits(operand);
         if Self::tir_type_is_dynbox_like(&ty) && !self.repr_facts.boxed_refcount_is_noop(operand) {
             let retain = self
@@ -820,17 +817,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// refined TIR type. Container specialization is derived directly from TIR
     /// types, not from SimpleIR-name lookup.
     pub(super) fn container_len_fn(&self, operand_id: ValueId) -> RuntimeFn {
-        let operand_ty = self
-            .values
-            .ty(operand_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        match operand_ty {
-            TirType::List(_) => RuntimeFn::LenList,
-            TirType::Str => RuntimeFn::LenStr,
-            TirType::Dict(_, _) => RuntimeFn::LenDict,
-            TirType::Tuple(_) => RuntimeFn::LenTuple,
-            TirType::Set(_) => RuntimeFn::LenSet,
+        // The container's exact type is a TIR fact; a boxed word carries none.
+        match self.func.value_types.get(&operand_id) {
+            Some(TirType::List(_)) => RuntimeFn::LenList,
+            Some(TirType::Str) => RuntimeFn::LenStr,
+            Some(TirType::Dict(_, _)) => RuntimeFn::LenDict,
+            Some(TirType::Tuple(_)) => RuntimeFn::LenTuple,
+            Some(TirType::Set(_)) => RuntimeFn::LenSet,
             _ => RuntimeFn::Len,
         }
     }
@@ -847,7 +840,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) {
         let operand = op.operands[0];
         let value = self.resolve(operand);
-        let ty = self.values.ty(operand).cloned().unwrap_or(TirType::DynBox);
+        let ty = self.repr_ty(operand);
         if Self::tir_type_is_dynbox_like(&ty) && !self.repr_facts.carrier_refcount_is_noop(operand)
         {
             let runtime = self.ensure_refcount_site(operation);
@@ -857,7 +850,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if let Some(&result) = op.results.first() {
             if operation == molt_codegen_abi::inline_refcount::RefcountOperation::Retain {
                 self.values.set_value(result, value);
-                self.values.set_type(result, ty);
+                self.values
+                    .set_repr(result, crate::codegen_ssa::Repr::of(&ty));
             } else {
                 let none = self
                     .backend
@@ -865,7 +859,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .i64_type()
                     .const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
                 self.values.set_value(result, none.into());
-                self.values.set_type(result, TirType::None);
+                self.values
+                    .set_repr(result, crate::codegen_ssa::Repr::of(&TirType::None));
             }
         }
     }
@@ -897,7 +892,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// `owned_operand_word`.
     fn materialize_dynbox_bits(&self, operand: ValueId) -> inkwell::values::IntValue<'ctx> {
         let value = self.resolve(operand);
-        let ty = self.values.ty(operand).unwrap_or(&TirType::DynBox);
+        let ty = &self.repr_ty(operand);
         if *ty == TirType::I64 && self.repr_facts.is_inline_safe_int(operand) {
             return nanbox::boxed_word::generate_box_inline_int(
                 &mut self.words(),
@@ -919,7 +914,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// values transfer no owner. It is known before materializing, so custody
     /// can initialize its owner slots before the operation's first failure edge.
     fn materialization_mints_owner(&self, operand_id: ValueId) -> bool {
-        self.values.ty(operand_id) == Some(&TirType::I64)
+        self.values.repr(operand_id) == Some(crate::codegen_ssa::Repr::RawI64)
             && !self.repr_facts.is_inline_safe_int(operand_id)
     }
 
@@ -989,7 +984,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into();
 
         self.values.set_value(result_id, boxed);
-        self.values.set_type(result_id, TirType::DynBox);
+        self.values
+            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
     }
 
     pub(super) fn emit_unbox(&mut self, op: &crate::tir::ops::TirOp) {
@@ -1008,10 +1004,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 _ => TirType::DynBox,
             }
         } else {
+            // The boxed operand's inner type is a TIR fact; read it from TIR,
+            // where a boxed transport cannot have erased it.
             self.values
-                .ty(result_id)
-                .cloned()
-                .or_else(|| match self.values.ty(operand_id) {
+                .repr(result_id)
+                .map(crate::codegen_ssa::Repr::machine_type)
+                .or_else(|| match self.func.value_types.get(&operand_id) {
                     Some(TirType::Box(inner)) => Some(inner.as_ref().clone()),
                     _ => None,
                 })
@@ -1029,7 +1027,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
 
         self.values.set_value(result_id, unboxed);
-        self.values.set_type(result_id, target_ty);
+        self.values
+            .set_repr(result_id, crate::codegen_ssa::Repr::of(&target_ty));
     }
 
     // ── Terminators ──
@@ -1058,7 +1057,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 else_args,
             } => {
                 let cond_val = self.resolve(*cond);
-                let cond_ty = self.values.ty(*cond).cloned().unwrap_or(TirType::DynBox);
+                let cond_ty = self.repr_ty(*cond);
 
                 // Convert condition to i1.
                 let cond_i1 = match &cond_ty {
@@ -1287,11 +1286,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         )
                     });
                     let ret_ty = lower_type(self.backend.context, return_type);
-                    let val_ty = self
-                        .values
-                        .ty(values[0])
-                        .cloned()
-                        .unwrap_or(TirType::DynBox);
+                    let val_ty = self.repr_ty(values[0]);
                     let current_bb = self
                         .backend
                         .builder
@@ -1318,11 +1313,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         )
                     });
                     let ret_ty = lower_type(self.backend.context, return_type);
-                    let val_ty = self
-                        .values
-                        .ty(values[0])
-                        .cloned()
-                        .unwrap_or(TirType::DynBox);
+                    let val_ty = self.repr_ty(values[0]);
                     let current_bb = self
                         .backend
                         .builder
@@ -1416,7 +1407,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     ));
                     continue;
                 };
-                let source_tir_ty = self.values.ty(val_id).cloned().unwrap_or(TirType::DynBox);
+                let source_tir_ty = self.repr_ty(val_id);
                 let coerced = self.coerce_to_tir_type(
                     val,
                     &source_tir_ty,
@@ -1745,6 +1736,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     // ── Helpers ──
+
+    /// The machine-level type of a lowered value: `I64`, `F64` or `Bool` when
+    /// it is held raw, `DynBox` when it is a boxed word. It names a
+    /// representation for lowering helpers, never a proven Python type; that
+    /// is `TirFunction::value_types`.
+    pub(super) fn repr_ty(&self, id: ValueId) -> TirType {
+        self.values
+            .repr(id)
+            .map_or(TirType::DynBox, crate::codegen_ssa::Repr::machine_type)
+    }
 
     /// Resolve a ValueId to its LLVM value.
     ///
