@@ -5050,13 +5050,7 @@ mod tests {
                 max_memory: Some(small_plan.alloc_size),
                 ..Default::default()
             })));
-            struct TrackerReset;
-            impl Drop for TrackerReset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let denied = alloc_object(_py, large_total, TYPE_ID_OBJECT);
             assert!(denied.is_null());
@@ -5082,13 +5076,7 @@ mod tests {
                 max_memory: Some(plan.alloc_size),
                 ..Default::default()
             })));
-            struct TrackerReset;
-            impl Drop for TrackerReset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let denied = alloc_object(_py, total, TYPE_ID_GENERATOR);
             assert!(

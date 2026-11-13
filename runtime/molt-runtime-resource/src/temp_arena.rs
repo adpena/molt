@@ -155,15 +155,7 @@ impl Drop for TempArena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::{LimitedTracker, ResourceLimits, set_tracker};
 
     #[test]
     fn temp_arena_respects_initial_resource_limit_without_aborting() {
@@ -174,7 +166,7 @@ mod tests {
             max_memory: Some(1023),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::restore_unlimited_tracker_on_drop();
 
         let mut arena = TempArena::new(1024);
         assert!(arena.chunks.is_empty());
@@ -191,7 +183,7 @@ mod tests {
             max_memory: Some(1024),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::restore_unlimited_tracker_on_drop();
 
         let mut arena = TempArena::new(1024);
         assert_eq!(arena.chunks.len(), 1);

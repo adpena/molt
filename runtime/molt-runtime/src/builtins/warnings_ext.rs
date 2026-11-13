@@ -1885,12 +1885,6 @@ mod tests {
 
     #[test]
     fn first_use_allocation_failure_leaves_the_state_unset() {
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
-            }
-        }
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let _reset = ResetWarnings;
         crate::with_gil_entry_nopanic!(py, {
@@ -1907,7 +1901,7 @@ mod tests {
                     ..Default::default()
                 },
             )));
-            let denied = RestoreTracker;
+            let denied = crate::test_support::restore_unlimited_tracker_on_drop();
             let result = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert!(obj_from_bits(result.bits()).is_none());
             assert!(exception_pending(py));

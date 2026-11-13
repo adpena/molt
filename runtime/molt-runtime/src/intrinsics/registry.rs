@@ -2260,23 +2260,15 @@ mod tests {
         });
     }
 
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
-        }
-    }
-
     /// Deny every allocation and container growth until the guard drops.
-    fn deny_allocation() -> TrackerReset {
+    fn deny_allocation() -> crate::test_support::UnlimitedTrackerRestore {
         crate::resource::set_tracker(Box::new(crate::resource::LimitedTracker::new(
             &crate::resource::ResourceLimits {
                 max_memory: Some(0),
                 ..Default::default()
             },
         )));
-        TrackerReset
+        crate::test_support::restore_unlimited_tracker_on_drop()
     }
 
     fn runtime_registry(py: &PyToken<'_>) -> *mut u8 {

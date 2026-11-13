@@ -1040,13 +1040,10 @@ pub(crate) fn with_service_spawn_failure_for_test<R>(
     kind: std::io::ErrorKind,
     action: impl FnOnce() -> R,
 ) -> R {
-    struct Restore(Option<std::io::ErrorKind>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            SERVICE_SPAWN_FAILURE.with(|slot| slot.set(self.0));
-        }
-    }
-    let _restore = Restore(SERVICE_SPAWN_FAILURE.with(|slot| slot.replace(Some(kind))));
+    let _restore = std::mem::DropGuard::new(
+        SERVICE_SPAWN_FAILURE.with(|slot| slot.replace(Some(kind))),
+        |previous| SERVICE_SPAWN_FAILURE.with(|slot| slot.set(previous)),
+    );
     let result = action();
     assert!(
         SERVICE_SPAWN_FAILURE.with(|slot| slot.get()).is_none(),

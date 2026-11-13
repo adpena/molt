@@ -37,7 +37,6 @@
     "molt-runtime-itertools": 2,
     "molt-runtime-logging": 2,
     "molt-runtime-math": 2,
-    "molt-runtime-net": 2,
     "molt-runtime-path": 2,
     "molt-runtime-platform": 11,
     "molt-runtime-protobuf": 0,

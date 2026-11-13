@@ -516,16 +516,8 @@ pub fn with_saved_error<T, F: FnOnce() -> Result<T, crate::ErrorIndicatorSet>>(
 /// including during Rust unwind. This is explicit suppression, unlike fallible
 /// preparation, which keeps a callback failure selected.
 pub fn with_preserved_error<T, F: FnOnce() -> T>(cleanup: F) -> T {
-    struct DrainPendingErrors;
-
-    impl Drop for DrainPendingErrors {
-        fn drop(&mut self) {
-            clear_all_pending_errors();
-        }
-    }
-
     match with_saved_error(|| {
-        let _drain = DrainPendingErrors;
+        let _drain = std::mem::DropGuard::new((), |()| clear_all_pending_errors());
         Ok(cleanup())
     }) {
         Ok(result) => result,

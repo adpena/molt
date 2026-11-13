@@ -1211,9 +1211,7 @@ mod tests {
 
         let pattern = ["pkg", "**", "*.py"].map(|part| part.chars().map(u32::from).collect());
         let mut matches = path_glob_matches(&root, &pattern, false, |name| {
-            Ok::<_, std::convert::Infallible>(
-                name.to_str().unwrap().chars().map(u32::from).collect(),
-            )
+            Ok::<_, !>(name.to_str().unwrap().chars().map(u32::from).collect())
         })
         .unwrap();
         matches.sort();
@@ -1244,9 +1242,7 @@ mod tests {
         let parent_pattern = ["..", "a.py"].map(|part| part.chars().map(u32::from).collect());
         assert_eq!(
             path_glob_matches(&root.join("pkg/sub"), &parent_pattern, false, |name| {
-                Ok::<_, std::convert::Infallible>(
-                    name.to_str().unwrap().chars().map(u32::from).collect(),
-                )
+                Ok::<_, !>(name.to_str().unwrap().chars().map(u32::from).collect())
             })
             .unwrap(),
             vec![std::path::PathBuf::from("..").join("a.py")]

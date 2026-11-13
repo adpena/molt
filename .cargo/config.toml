@@ -6,6 +6,11 @@
 # Cargo plans of a --target native build (src/molt/cli/rust_cpu_policy.py).
 # A raw Cargo command takes Cargo's own RUSTFLAGS instead.
 
+# The release-age rule (tools/pin_freshness.py): the resolver skips a crate
+# version published less than 7 days ago unless Cargo.lock already holds it.
+[registry]
+global-min-publish-age = "7 days"
+
 [env]
 # The lockfile owns AWS-LC source bytes. Ambient OpenSSL/pkg-config providers
 # are custom raw-Cargo cells, outside Molt's captured source-build contract.

@@ -11757,13 +11757,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
 
         crate::with_gil_entry_nopanic!(__entry_py, {
-            use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-            struct RestoreTracker;
-            impl Drop for RestoreTracker {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
+            use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
             register_cpython_hooks();
             let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
             unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -11782,7 +11776,7 @@ mod tests {
                 max_memory: Some(0),
                 ..Default::default()
             })));
-            let restore = RestoreTracker;
+            let restore = crate::test_support::restore_unlimited_tracker_on_drop();
             let result = unsafe {
                 molt_cpython_abi::api::object::PyCFunction_NewEx(
                     &mut method,

@@ -348,17 +348,9 @@ include!("attached_exports_generated/wasm_abi_exports.rs");
 
 #[cfg(test)]
 mod tests {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use crate::runtime_flags::{self, RuntimeFlag};
     use std::process::Command;
-
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
 
     #[test]
     fn scratch_alloc_uses_resource_tracker_without_phantom_charge() {
@@ -372,7 +364,7 @@ mod tests {
             max_memory: Some(8),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
         let denied = super::molt_scratch_alloc(16);
         assert_eq!(denied, 0);
@@ -416,7 +408,7 @@ mod tests {
                 max_memory: Some(8),
                 ..Default::default()
             })));
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
             // Both layout/host-width refusal and the real resource budget
             // return the raw null sentinel without creating Python state.
             assert_eq!(super::molt_scratch_alloc(u64::MAX), 0);

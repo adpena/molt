@@ -1640,11 +1640,7 @@ fn protocol_check_impl(
         }
         Ok(IterVisit::Continue)
     })?;
-    if missing_attr {
-        return Ok(false);
-    }
-
-    Ok(true)
+    Ok(!missing_attr)
 }
 
 /// `molt_protocol_check(proto_cls, obj) -> bool`

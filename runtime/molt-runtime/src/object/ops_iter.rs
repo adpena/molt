@@ -3075,14 +3075,7 @@ mod tests {
     #[test]
     fn map_and_zip_construction_denial_releases_references_and_backing() {
         use crate::object::backing::{tracked_vec_box_from_raw, tracked_vec_box_with_capacity};
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-
-        struct ResetTracker;
-        impl Drop for ResetTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
@@ -3102,7 +3095,7 @@ mod tests {
                     // result cache, aggregate object. A failed constructor must
                     // return all references and its entire admitted budget.
                     for allowed in 0..if map { 2 } else { 3 } {
-                        let reset = ResetTracker;
+                        let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                             max_allocations: Some(allowed),
                             ..Default::default()

@@ -23,3 +23,6 @@ xz2 = { version = "0.1", optional = true, features = ["static"] }
 [features]
 flate2 = ["dep:flate2", "dep:libz-rs-sys"]
 default = ["bzip2", "flate2", "xz2", "zip"]
+
+[lints]
+workspace = true

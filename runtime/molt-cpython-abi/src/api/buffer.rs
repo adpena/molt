@@ -169,18 +169,13 @@ pub unsafe fn with_buffer_descriptor<T>(
     object: *mut PyObject,
     consume: impl FnOnce(&MoltBufferView) -> T,
 ) -> Result<T, crate::ErrorIndicatorSet> {
-    struct Release(*mut Py_buffer);
-    impl Drop for Release {
-        fn drop(&mut self) {
-            unsafe { PyBuffer_Release(self.0) };
-        }
-    }
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
     let status =
         unsafe { PyObject_GetBuffer(object, &raw mut view, crate::abi_types::PyBUF_FULL_RO) };
     // A failed exporter owns its cleanup. A completed export is ours even if
     // its callback incorrectly returned success with an exception pending.
-    let _release = (status >= 0).then(|| Release(&raw mut view));
+    let _release = (status >= 0)
+        .then(|| std::mem::DropGuard::new(&raw mut view, |view| unsafe { PyBuffer_Release(view) }));
     if unsafe { crate::api::errors::check_native_status(status, "native buffer callback") } < 0 {
         return Err(crate::ErrorIndicatorSet);
     }
@@ -256,18 +251,16 @@ pub unsafe fn descriptor_from_pybuffer(
         }
         descriptor.shape[0] = info.len;
     } else if !info.shape.is_null() {
-        for i in 0..ndim {
+        for (i, slot) in descriptor.shape[..ndim].iter_mut().enumerate() {
             let dim = unsafe { *info.shape.add(i) };
             if dim < 0 {
                 return Err(InvalidBufferDescriptor);
             }
-            descriptor.shape[i] = dim;
+            *slot = dim;
         }
     } else {
         descriptor.shape[0] = info.len / info.itemsize;
-        for i in 1..ndim {
-            descriptor.shape[i] = 1;
-        }
+        descriptor.shape[1..ndim].fill(1);
     }
 
     if ndim == 0 {
@@ -278,8 +271,8 @@ pub unsafe fn descriptor_from_pybuffer(
         }
         descriptor.strides[0] = info.itemsize;
     } else if !info.strides.is_null() {
-        for i in 0..ndim {
-            descriptor.strides[i] = unsafe { *info.strides.add(i) };
+        for (i, slot) in descriptor.strides[..ndim].iter_mut().enumerate() {
+            *slot = unsafe { *info.strides.add(i) };
         }
     } else {
         let mut stride = info.itemsize;

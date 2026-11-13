@@ -2502,10 +2502,11 @@ unifies features across selected roots. The locked dependency projection
 therefore selects existing commands; it does not rewrite their feature context.
 
 
-The pinned Cargo 1.99.1 has an output-mode limitation:
+The pinned Cargo has an output-mode limitation:
 [Cargo issue #17519](https://github.com/rust-lang/cargo/issues/17519) records
 that JSON diagnostics bypass `build.warnings` enforcement, including cached
-warnings. The upstream fix is not assumed present. Proof-plan admission rejects
+warnings. Cargo 1.100.0 still has it (checked 2026-11-12: a rustc warning under
+`--message-format=json` exits 0; a Cargo manifest lint is denied). Proof-plan admission rejects
 JSON message formats for structured Clippy commands and local gate strings;
 the DX declaration inventory enforces the same boundary. Human output remains
 the supported warning-enforcement contract. Control runs must preserve that

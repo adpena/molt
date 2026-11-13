@@ -3650,7 +3650,7 @@ mod tests {
         zip_set_result_bits, zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use crate::{alloc_function_obj, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
     use molt_obj_model::MoltObject;
 
@@ -3696,8 +3696,6 @@ mod tests {
         dec_ref_bits(_py, empty_tuple_bits);
         code_ptr
     }
-
-    struct TrackerReset;
 
     #[test]
     fn function_type_code_declaration_publication_is_atomic_and_once_only() {
@@ -3880,12 +3878,6 @@ mod tests {
         });
     }
 
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
-
     #[test]
     fn list_int_storage_denied_growth_keeps_original_buffer() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -3896,7 +3888,7 @@ mod tests {
             max_memory: Some(owner_bytes + initial_buffer + replacement_buffer - 1),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
         let ptr = ListIntStorage::with_capacity(4).expect("storage");
         for value in [1, 2, 3, 4] {

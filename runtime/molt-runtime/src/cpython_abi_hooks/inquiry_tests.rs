@@ -2491,14 +2491,8 @@ fn c_dict_subclass_storage_and_merge_iterator_override_share_admission() {
 fn c_dict_lazy_backing_failures_preserve_original_errors() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         use molt_cpython_abi::api::mapping;
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
         struct RestoreSlot(*mut u64);
         impl Drop for RestoreSlot {
             fn drop(&mut self) {
@@ -2535,7 +2529,7 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
         for operation in 0..11 {
             assert_eq!(*slot, 0);
             {
-                let _restore = RestoreTracker;
+                let _restore = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_memory: Some(0),
                     max_allocations: Some(0),
@@ -2593,7 +2587,7 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
             crate::object::ops_dict::molt_dict_popitem,
         ] {
             {
-                let _restore = RestoreTracker;
+                let _restore = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_memory: Some(0),
                     max_allocations: Some(0),

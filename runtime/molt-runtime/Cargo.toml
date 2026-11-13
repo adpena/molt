@@ -54,7 +54,9 @@ required-features = ["l7-attestation-probe"]
 
 # One image carrying the runtime and the CPython-ABI exports for native
 # C-extension tests (`tests/cext_dlopen_smoke.rs`). Build it explicitly in the
-# test's target/profile: `cargo build --example cext_host --features cext_loader`.
+# test's target/profile with `cargo build --example cext_host --features
+# cext_loader --message-format=json`, and pass the reported cdylib to the test
+# as MOLT_CEXT_HOST_LIBRARY.
 [[example]]
 name = "cext_host"
 path = "examples/cext_host.rs"
@@ -150,7 +152,7 @@ stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 stdlib_tk = ["dep:molt-runtime-tk", "molt-runtime-tk/tk"]
 # Networking fd watchers use the select readiness primitive when a descriptor
 # cannot enter the I/O driver; every networking provider must include it.
-stdlib_net = ["stdlib_select", "dep:molt-runtime-net", "dep:mio", "dep:socket2", "dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:tungstenite"]
+stdlib_net = ["stdlib_select", "dep:mio", "dep:socket2", "dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:tungstenite"]
 stdlib_asyncio = ["dep:molt-runtime-asyncio"]
 stdlib_email = ["stdlib_serial"]
 stdlib_math = ["dep:molt-runtime-math"]
@@ -212,7 +214,6 @@ molt-runtime-core = { path = "../molt-runtime-core" }
 molt-runtime-crypto = { path = "../molt-runtime-crypto", optional = true }
 molt-runtime-tk = { path = "../molt-runtime-tk", optional = true, default-features = false }
 molt-runtime-compression = { path = "../molt-runtime-compression", optional = true }
-molt-runtime-net = { path = "../molt-runtime-net", optional = true }
 molt-runtime-asyncio = { path = "../molt-runtime-asyncio", optional = true }
 molt-runtime-math = { path = "../molt-runtime-math", optional = true }
 molt-runtime-path = { path = "../molt-runtime-path", optional = true }
@@ -240,7 +241,6 @@ serde_json = { workspace = true }
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"
 num_cpus = "1.17"
-lazy_static = "1.5"
 once_cell = "1.21"
 memchr = "2.8"
 num-bigint = "0.5"

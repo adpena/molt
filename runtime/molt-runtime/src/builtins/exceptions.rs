@@ -2083,10 +2083,7 @@ pub(crate) fn exception_materialized_args_bits(_py: &PyToken<'_>, ptr: *mut u8) 
         } else {
             alloc_tuple(_py, &[])
         };
-        if tuple_ptr.is_null() {
-            return false;
-        }
-        true
+        !tuple_ptr.is_null()
     });
     if tuple_ptr.is_null() {
         return None;

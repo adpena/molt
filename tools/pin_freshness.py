@@ -9,6 +9,10 @@ Each resolver applies the rule itself:
   uv.lock      `[tool.uv] exclude-newer = "7 days"` in pyproject.toml; uv
                records the span in the lock, so `uv lock --check` holds.
   npm locks    `min-release-age=7` in each project's `.npmrc`.
+  Cargo.lock   `[registry] global-min-publish-age = "7 days"` in
+               .cargo/config.toml; Cargo's resolver skips a younger version
+               unless the lock already holds it, and leaves
+               `[resolver] incompatible-publish-age` at its `deny` default.
   Dependabot   `cooldown: default-days: 7`. Its security updates skip the
                cooldown, but uv and npm still refuse a fix younger than 7
                days: such a fix enters only through an exemption.
@@ -123,12 +127,14 @@ USER_AGENT = "molt-pin-freshness"
 TIMEOUT_SECONDS = 60
 LOCK_TIMEOUT_SECONDS = 900
 
-# The owner's release-age rule. pyproject.toml, every npm project's .npmrc
-# and .github/dependabot.yml state the same number of days; the tests and
-# `--check` hold them to it.
+# The owner's release-age rule. pyproject.toml, every npm project's .npmrc,
+# .cargo/config.toml and .github/dependabot.yml state the same number of
+# days; the tests and `--check` hold them to it.
 MIN_RELEASE_AGE = timedelta(days=7)
 UV_EXCLUDE_NEWER = f"{MIN_RELEASE_AGE.days} days"
 NPM_MIN_RELEASE_AGE = str(MIN_RELEASE_AGE.days)
+CARGO_MIN_PUBLISH_AGE = f"{MIN_RELEASE_AGE.days} days"
+CARGO_CONFIG = Path(".cargo/config.toml")
 # An exemption may admit files up to this long after the exempt release's
 # newest file, and no later, so it cannot admit a newer release.
 EXEMPTION_SLACK = timedelta(minutes=1)
@@ -1151,6 +1157,34 @@ def _uv_exemption_pin(text: str, name: str, version: str) -> int | None:
     return found[0] if len(found) == 1 else None
 
 
+def cargo_policy(root: Path) -> Policy:
+    """Cargo's resolver applies the release-age rule to every crate.
+
+    Cargo has no per-crate exemption: an advisory fix younger than the rule
+    enters through `cargo update --precise` with the policy relaxed for that
+    one command, and Cargo.lock then holds it.
+    """
+    config = tomllib.loads((root / CARGO_CONFIG).read_text(encoding="utf-8"))
+    problems = []
+    if (
+        config.get("registry", {}).get("global-min-publish-age")
+        != CARGO_MIN_PUBLISH_AGE
+    ):
+        problems.append(
+            f'{CARGO_CONFIG}: [registry] global-min-publish-age must be "{CARGO_MIN_PUBLISH_AGE}"'
+        )
+    if config.get("resolver", {}).get("incompatible-publish-age", "deny") != "deny":
+        problems.append(
+            f'{CARGO_CONFIG}: [resolver] incompatible-publish-age must stay "deny"'
+        )
+    for name, registry in config.get("registries", {}).items():
+        if "min-publish-age" in registry:
+            problems.append(
+                f"{CARGO_CONFIG}: [registries.{name}] min-publish-age overrides the global rule"
+            )
+    return Policy((), tuple(problems))
+
+
 def uv_policy(root: Path, open_rows: set[str] | None = None) -> Policy:
     """The uv release-age setting and its exemptions, checked against uv.lock.
 
@@ -1751,6 +1785,7 @@ def prune_expired(
             uv_policy(root, open_rows),
             npm_policy(root, open_rows=open_rows),
             pin_policy(root, open_rows),
+            cargo_policy(root),
         ):
             if policy.problems:
                 raise PinFreshnessError("; ".join(policy.problems))
@@ -2249,6 +2284,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             uv_policy(args.root, open_rows),
             npm_policy(args.root, npm_published(fetchers.fetch), open_rows=open_rows),
             records,
+            cargo_policy(args.root),
         ]
         pins = functools.cache(
             lambda: collect_pins(args.root, fetch=fetchers.fetch, post=fetchers.post)

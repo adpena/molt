@@ -1705,6 +1705,40 @@ refcount correctness; generator and coroutine semantics; C-API frame and excepti
 - PEP 590 (vectorcall), PEP 683 (immortal objects), PEP 703 (biased reference counting), PEP 669
   (instrument only enabled events), PEP 667 (`f_locals` proxy).
 
+## 8a. Rust 1.100: what the toolchain now offers (2026-11-12)
+
+Molt pins Rust 1.100.0 (owner directive 2026-11-12). Three features change
+what later stages can do. Each line is a lead, not an implementation:
+
+- `-Cprofile-sample-use` is stable: sample PGO for the runtime from a `perf`/`sample`
+  profile of the benchmark corpus, without an instrumented build.
+- `extern "custom"` is stable: a function with no Rust calling convention, so the
+  runtime-entry trampolines of section 4.2 can be Rust items with naked bodies.
+- `wasm32-wasip3` is Tier 2: a component-model WASI target for the WASM backend.
+
+### Rust 1.100 Allocator API: candidate sites
+
+1.100 stabilizes `std::alloc::Allocator`, `Box::new_in` and `Vec::with_capacity_in`.
+The migration crosses the runtime and every backend, so the integrator designs it
+first. These sites hold a hand-written allocator today:
+
+- `runtime/molt-runtime/src/arena.rs:29-130`: `ArenaChunk`/`ScopeArena`, a chunked
+  bump arena over `alloc_zeroed`. An `Allocator` impl lets `Vec<T, &ScopeArena>`
+  and `Box<T, &ScopeArena>` live in it and drops the raw `alloc` pointer API.
+- `runtime/molt-runtime-resource/src/temp_arena.rs:7`: `TempArena`, chunked
+  `Vec<Vec<u8>>` storage with tracker charging. The same `Allocator` impl would
+  carry the resource-tracker charge that each call site now pairs by hand.
+- `runtime/molt-runtime/src/object/layout.rs:291` and `:554`: `ListIntStorage` and
+  `ListBoolStorage` allocate their owner with `std::alloc::alloc` and charge the
+  tracker separately. A tracking allocator makes `Box::new_in` charge and release
+  in one place.
+- `runtime/molt-runtime/src/object/aux_header.rs:409`: the aux sidecar's raw
+  `alloc`, same pattern.
+- `runtime/molt-ir/src/tir/blocks.rs:38` (`TirBlock::ops: Vec<TirOp>`) and
+  `runtime/molt-ir/src/tir/function.rs:42` (`TirFunction::blocks`): every TIR op and
+  block is a separate global-heap allocation. A per-function arena frees a
+  function's IR in one release and keeps its ops adjacent.
+
 ## 9. Programs and reproduction
 
 Each program prints its result, so a run checks its output against CPython's before its count

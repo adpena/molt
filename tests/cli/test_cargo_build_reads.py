@@ -32,7 +32,7 @@ def _env_line(name: str, value: str) -> str:
 
 
 def _unit(
-    deps: Path,
+    build: Path,
     package: Path | None,
     crate: str,
     entries: list[str],
@@ -41,10 +41,13 @@ def _unit(
     environment: dict[str, str | None] | None = None,
     registry: str | None = None,
 ) -> str:
-    """A compiler-artifact message and the rustc dep-info beside its outputs."""
+    """A compiler-artifact message and the rustc dep-info beside its outputs,
+    in the unit's ``out/`` under Cargo's ``<profile>/build`` root."""
     stem = f"{crate}-0123456789abcdef"
-    output = deps / (f"lib{stem}.rlib" if kind == "lib" else stem)
-    dep_info = deps / f"{stem}.d"
+    package_name = registry.partition("@")[0] if registry else crate
+    unit = build / package_name / "0123456789abcdef" / "out"
+    output = unit / (f"lib{stem}.rlib" if kind == "lib" else stem)
+    dep_info = unit / f"{stem}.d"
     lines = [f"{_escape(os.fspath(output))}: {' '.join(map(_escape, entries))}", ""]
     lines += [f"{_escape(entry)}:" for entry in entries]
     lines += [""] + [
@@ -79,8 +82,9 @@ def _script(
     generated: dict[str, str] | None = None,
     registry: str | None = None,
 ) -> str:
-    out_dir = build / f"{name}-1" / "out"
-    _write(out_dir.parent / "output", "".join(f"{line}\n" for line in lines))
+    package_name = registry.partition("@")[0] if registry else name
+    out_dir = build / package_name / "fedcba9876543210" / "out"
+    _write(out_dir.parent / "run" / "stdout", "".join(f"{line}\n" for line in lines))
     return json.dumps(
         {
             "reason": "build-script-executed",
@@ -196,7 +200,7 @@ def test_coverage_query_work_does_not_multiply_by_declared_roots(
     roots = tuple(tmp_path / f"unrelated-{i}" for i in range(512)) + (root / "runtime",)
     toolchain_roots = (*roots[:-1], header)
     unit = _unit(
-        target / "deps", crate, "crate", [os.fspath(p) for p in (*paths, header)]
+        target / "build", crate, "crate", [os.fspath(p) for p in (*paths, header)]
     )
     comparisons = 0
     original_equal = PurePath.__eq__
@@ -257,8 +261,10 @@ def test_coverage_retains_windows_drive_case_and_unc_boundaries(path, root, cove
 
 def test_each_local_unit_contributes_what_rustc_read(workspace) -> None:
     root, crate, target = workspace
-    deps = target / "debug" / "deps"
-    generated = _write(target / "debug" / "build" / "crate-1" / "out" / "tables.rs")
+    deps = target / "debug" / "build"
+    generated = _write(
+        target / "debug" / "build" / "crate" / "fedcba9876543210" / "out" / "tables.rs"
+    )
     messages = [
         _unit(
             deps,
@@ -312,7 +318,7 @@ def test_each_local_unit_contributes_what_rustc_read(workspace) -> None:
 def test_build_scripts_contribute_their_declared_inputs(workspace) -> None:
     root, crate, target = workspace
     build = target / "debug" / "build"
-    deps = target / "debug" / "deps"
+    deps = target / "debug" / "build"
     vendored = root / "vendor" / "object"
     for path in (
         vendored / "Cargo.toml",
@@ -358,7 +364,7 @@ def test_build_scripts_contribute_their_declared_inputs(workspace) -> None:
 def test_a_read_of_another_workspace_is_refused(workspace, tmp_path) -> None:
     _root, crate, target = workspace
     foreign = _write(tmp_path / "other checkout" / "lib.rs")
-    unit = _unit(target / "deps", crate, "crate", [os.fspath(foreign)])
+    unit = _unit(target / "build", crate, "crate", [os.fspath(foreign)])
     with pytest.raises(reads.CargoBuildReadsError, match="outside"):
         _read(workspace, unit)
 
@@ -367,7 +373,10 @@ def test_a_toolchain_root_is_left_to_the_plan_identity(workspace, tmp_path) -> N
     root, crate, target = workspace
     header = _write(tmp_path / "wasi-sdk" / "include" / "stdio.h")
     unit = _unit(
-        target / "deps", crate, "crate", ["runtime/crate/src/lib.rs", os.fspath(header)]
+        target / "build",
+        crate,
+        "crate",
+        ["runtime/crate/src/lib.rs", os.fspath(header)],
     )
     result = _read(workspace, unit, toolchain_roots=(tmp_path / "wasi-sdk",))
     assert _relative(root, result.files) == ["runtime/crate/src/lib.rs"]
@@ -384,10 +393,10 @@ def test_complete_successful_build_retains_all_units_and_allows_tool_text(
     workspace, rule, separator
 ) -> None:
     _root, crate, target = workspace
-    local = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    local = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     external = json.loads(
         _unit(
-            target / "deps",
+            target / "build",
             None,
             "external",
             ["/registry/external/src/lib.rs"],
@@ -448,7 +457,7 @@ def test_a_valid_unit_prefix_cannot_establish_a_complete_successful_build(
     workspace, tail, error
 ) -> None:
     _root, crate, target = workspace
-    unit = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    unit = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     with pytest.raises(reads.CargoBuildReadsError, match=error):
         _read_transcript(workspace, unit + "\n" + tail)
 
@@ -459,10 +468,10 @@ def test_a_later_transitive_environment_unit_cannot_be_silently_omitted(
     workspace, corruption, unit_kind
 ) -> None:
     _root, crate, target = workspace
-    local = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    local = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     external = (
         _unit(
-            target / "deps",
+            target / "build",
             None,
             "external",
             ["/registry/external/src/lib.rs"],
@@ -508,7 +517,7 @@ def test_a_local_unit_without_dep_info_is_refused(workspace) -> None:
 def _native_plan(tmp_path: Path, entries: list[str]):
     target = tmp_path / "target"
     unit = _unit(
-        target / "dev-fast" / "deps",
+        target / "dev-fast" / "build",
         ROOT / "runtime" / "molt-runtime",
         "molt_runtime",
         entries,
@@ -590,17 +599,17 @@ def test_publication_refuses_a_build_input_the_identity_misses(
 
 
 def test_uplifted_units_resolve_to_the_dep_info_this_build_used(workspace) -> None:
-    """Cargo's real layouts: a build script reported as its uplifted
-    ``build-script-build``, and a root staticlib reported only in the profile
-    directory, with one dep-info candidate per feature lane."""
+    """Cargo 1.100's layout: a build script reported in its unit's ``out/``,
+    and a root staticlib reported only in the profile directory, with one
+    dep-info candidate per feature lane in its package's units."""
     root, crate, target = workspace
     build_dir = target / ".build" / "dev-fast"
-    script_dir = build_dir / "build" / "crate-988acd9c2b90addb"
-    _write(script_dir / "build-script-build")
-    _write(script_dir / "build_script_build-988acd9c2b90addb")
+    units = build_dir / "build" / "crate"
+    script_out = units / "988acd9c2b90addb" / "out"
+    _write(script_out / "build_script_build")
     _write(
-        script_dir / "build_script_build-988acd9c2b90addb.d",
-        f"{_escape(os.fspath(script_dir / 'build_script_build-988acd9c2b90addb'))}:"
+        script_out / "build_script_build.d",
+        f"{_escape(os.fspath(script_out / 'build_script_build'))}:"
         " runtime/crate/build.rs\n",
     )
     script = json.dumps(
@@ -608,24 +617,29 @@ def test_uplifted_units_resolve_to_the_dep_info_this_build_used(workspace) -> No
             "reason": "compiler-artifact",
             "package_id": f"path+{crate.as_uri()}#crate@0.1.0",
             "target": {"kind": ["custom-build"], "name": "build-script-build"},
-            "filenames": [os.fspath(script_dir / "build-script-build")],
+            "filenames": [os.fspath(script_out / "build_script_build")],
         }
     )
-    deps = build_dir / "deps"
-    lane_out = os.fspath(build_dir / "build" / "crate-3376a64776671bc0" / "out")
-    other_out = os.fspath(build_dir / "build" / "crate-60afce28417c3601" / "out")
+    lane_out = os.fspath(units / "3376a64776671bc0" / "out")
+    other_out = os.fspath(units / "60afce28417c3601" / "out")
     for metadata, out_dir, source in (
         ("f092e115d9c64469", lane_out, "runtime/crate/src/lib.rs"),
         ("0987fd8fa999fa1f", other_out, "runtime/crate/src/data file.json"),
     ):
-        _write(deps / f"libcrate-{metadata}.a")
+        unit = units / metadata / "out"
+        _write(unit / f"libcrate-{metadata}.a")
         _write(
-            deps / f"crate-{metadata}.d",
-            f"{_escape(os.fspath(deps / f'libcrate-{metadata}.a'))}: {_escape(source)}\n"
+            unit / f"crate-{metadata}.d",
+            f"{_escape(os.fspath(unit / f'libcrate-{metadata}.a'))}: {_escape(source)}\n"
             "\n" + _env_line("OUT_DIR", out_dir) + "\n",
         )
-    # Another local unit in deps tells the reader where this build's units live.
-    helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
+    # Another local unit tells the reader where this build's units live.
+    helper = _unit(
+        build_dir / "build",
+        root / "vendor" / "zlib",
+        "zlib",
+        ["vendor/zlib/src/lib.rs"],
+    )
     uplifted = _write(target / "dev-fast" / "libcrate.a")
     root_unit = json.dumps(
         {
@@ -635,11 +649,16 @@ def test_uplifted_units_resolve_to_the_dep_info_this_build_used(workspace) -> No
             "filenames": [os.fspath(uplifted)],
         }
     )
-    executed = _script(
-        build_dir / "build", crate, "crate", ["cargo:rerun-if-changed=build.rs"]
+    executed = json.dumps(
+        {
+            "reason": "build-script-executed",
+            "package_id": f"path+{crate.as_uri()}#crate@0.1.0",
+            "out_dir": lane_out,
+        }
     )
-    executed = json.dumps({**json.loads(executed), "out_dir": lane_out})
-    _write(Path(lane_out).parent / "output", "cargo:rerun-if-changed=build.rs\n")
+    _write(
+        Path(lane_out).parent / "run" / "stdout", "cargo:rerun-if-changed=build.rs\n"
+    )
 
     result = _read(workspace, script, helper, executed, root_unit)
 
@@ -653,21 +672,22 @@ def test_uplifted_units_resolve_to_the_dep_info_this_build_used(workspace) -> No
 
 def test_an_ambiguous_uplifted_unit_is_refused(workspace) -> None:
     root, crate, target = workspace
-    deps = target / "deps"
-    out_dir = os.fspath(target / "build" / "crate-1" / "out")
+    deps = target / "build"
+    out_dir = os.fspath(deps / "crate" / "1111111111111111" / "out")
     for metadata, source in (
         ("aaaaaaaaaaaaaaaa", "runtime/crate/src/lib.rs"),
         ("bbbbbbbbbbbbbbbb", "runtime/crate/src/data file.json"),
     ):
-        output = _write(deps / f"libcrate-{metadata}.a")
+        unit = deps / "crate" / metadata / "out"
+        output = _write(unit / f"libcrate-{metadata}.a")
         _write(
-            deps / f"crate-{metadata}.d",
+            unit / f"crate-{metadata}.d",
             f"{_escape(os.fspath(output))}: {_escape(source)}\n\n"
             + _env_line("OUT_DIR", out_dir)
             + "\n",
         )
     helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
-    _write(Path(out_dir).parent / "output", "cargo:rerun-if-changed=build.rs\n")
+    _write(Path(out_dir).parent / "run" / "stdout", "cargo:rerun-if-changed=build.rs\n")
     executed = json.dumps(
         {
             "reason": "build-script-executed",
@@ -720,7 +740,8 @@ def test_unhashed_combined_wasm_reads_bind_every_uplifted_product(
     workspace, different_output
 ):
     root, crate, target = workspace
-    deps = target / "captured-generation" / "wasm32-wasip1" / "dev-fast" / "deps"
+    build = target / "captured-generation" / "wasm32-wasip1" / "dev-fast" / "build"
+    deps = build / "crate" / "cafecafecafecafe" / "out"
     final = target / "wasm32-wasip1" / "dev-fast"
     sources = ["runtime/crate/src/lib.rs", "runtime/crate/src/data file.json"]
     dep_info = deps / "crate.d"
@@ -728,7 +749,7 @@ def test_unhashed_combined_wasm_reads_bind_every_uplifted_product(
         _write(deps / "libcrate.a", "archive bytes"),
         _write(deps / "crate.wasm", "module bytes"),
     ]
-    out_dir = target / "build" / "crate-1" / "out"
+    out_dir = target / "build" / "crate" / "fedcba9876543210" / "out"
     _write(
         dep_info,
         "\n".join(
@@ -751,7 +772,7 @@ def test_unhashed_combined_wasm_reads_bind_every_uplifted_product(
     ]
     # Cargo reports this root only uplifted; a sibling unit establishes where
     # this invocation actually put intermediate outputs, independently of final.
-    helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
+    helper = _unit(build, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
     executed = _script(
         target / "build", crate, "crate", ["cargo:rerun-if-changed=build.rs"]
     )
@@ -778,24 +799,24 @@ def test_unhashed_combined_wasm_reads_bind_every_uplifted_product(
 
 def test_copied_output_selects_actual_unit_despite_equal_out_dir_and_size(workspace):
     root, crate, target = workspace
-    deps = target / "dev-fast" / "deps"
-    out_dir = os.fspath(target / "build" / "crate-1" / "out")
+    build = target / "dev-fast" / "build"
+    out_dir = os.fspath(target / "build" / "crate" / "fedcba9876543210" / "out")
     _uplifted_candidate(
-        deps,
+        build / "crate" / "old" / "out",
         "old",
         ["runtime/crate/src/data file.json"],
         {".a": "old bytes"},
         environment={"OUT_DIR": out_dir},
     )
     _uplifted_candidate(
-        deps,
+        build / "crate" / "new" / "out",
         "new",
         ["runtime/crate/src/lib.rs"],
         {".a": "new bytes"},
         environment={"OUT_DIR": out_dir},
     )
     uplifted = _write(target / "dev-fast" / "libcrate.a", "new bytes")
-    helper = _unit(deps, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
+    helper = _unit(build, root / "vendor" / "zlib", "zlib", ["vendor/zlib/src/lib.rs"])
     executed = _script(
         target / "build", crate, "crate", ["cargo:rerun-if-changed=build.rs"]
     )
@@ -806,7 +827,10 @@ def test_copied_output_selects_actual_unit_despite_equal_out_dir_and_size(worksp
     }
 
     # A newer competing output must not win; nor may equal file sizes bind it.
-    os.utime(deps / "libcrate-old.a", ns=(2_000_000_000_000_000_000,) * 2)
+    os.utime(
+        build / "crate" / "old" / "out" / "libcrate-old.a",
+        ns=(2_000_000_000_000_000_000,) * 2,
+    )
     result = _read(workspace, helper, executed, json.dumps(root_unit))
     assert _relative(root, result.files) == [
         "runtime/crate/build.rs",
@@ -873,7 +897,7 @@ def test_arbitrary_ambient_inputs_bind_frozen_values_and_absence(
         rule=rule,
     )
     message = _unit(
-        target / "deps",
+        target / "build",
         crate,
         "crate",
         ["runtime/crate/src/lib.rs"],
@@ -905,7 +929,7 @@ def test_generated_override_keeps_its_declaration_provenance(workspace, rule, de
     _root, crate, target = workspace
     environment = ProcessEnvironment({"VALUE": "ambient"}, rule=rule)
     unit = _unit(
-        target / "deps",
+        target / "build",
         crate,
         "crate",
         ["runtime/crate/src/lib.rs"],
@@ -936,9 +960,9 @@ def test_registry_script_and_rustc_inputs_are_both_observed(workspace, rule):
     _root, crate, target = workspace
     registry = "external@1.2.3"
     environment = ProcessEnvironment({"TRANSITIVE": "one", "DECLARED": ""}, rule=rule)
-    local = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    local = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     external = _unit(
-        target / "deps",
+        target / "build",
         None,
         "external",
         ["/registry/external/src/lib.rs"],
@@ -967,7 +991,7 @@ def test_conflicting_ambient_unit_facts_cannot_be_last_wins(workspace, rule):
     _root, crate, target = workspace
     messages = [
         _unit(
-            target / "deps",
+            target / "build",
             crate,
             name,
             ["runtime/crate/src/lib.rs"],
@@ -986,7 +1010,7 @@ def test_conflicting_ambient_unit_facts_cannot_be_last_wins(workspace, rule):
 def test_out_dir_must_belong_to_the_actual_package_script(workspace):
     _root, crate, target = workspace
     unit = _unit(
-        target / "deps",
+        target / "build",
         crate,
         "crate",
         ["runtime/crate/src/lib.rs"],
@@ -1002,7 +1026,7 @@ def test_out_dir_must_belong_to_the_actual_package_script(workspace):
 def test_cargo_manifest_and_target_values_have_closed_owners(workspace):
     _root, crate, target = workspace
     unit = _unit(
-        target / "deps",
+        target / "build",
         crate,
         "crate",
         ["runtime/crate/src/lib.rs"],
@@ -1017,7 +1041,7 @@ def test_cargo_manifest_and_target_values_have_closed_owners(workspace):
     result = _read(workspace, unit)
     assert result.environment.variables == ()
     forged = _unit(
-        target / "deps",
+        target / "build",
         crate,
         "crate",
         ["runtime/crate/src/lib.rs"],
@@ -1029,11 +1053,18 @@ def test_cargo_manifest_and_target_values_have_closed_owners(workspace):
 
 def test_registry_unit_without_dep_info_cannot_attest_environment_coverage(workspace):
     _root, crate, target = workspace
-    local = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    local = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     external = json.loads(
-        _unit(target / "deps", None, "external", [], registry="external@1.0.0")
+        _unit(target / "build", None, "external", [], registry="external@1.0.0")
     )
-    (target / "deps" / "external-0123456789abcdef.d").unlink()
+    (
+        target
+        / "build"
+        / "external"
+        / "0123456789abcdef"
+        / "out"
+        / "external-0123456789abcdef.d"
+    ).unlink()
     with pytest.raises(reads.CargoBuildReadsError, match="no dep-info"):
         _read(workspace, local, json.dumps(external))
 
@@ -1046,7 +1077,7 @@ def test_relative_dep_info_uses_explicit_nested_base_and_admits_sibling_sources(
     local_source = _write(nested / "src" / "main.rs")
     sibling = _write(root / "runtime" / "sibling.rs")
     message = _unit(
-        target / "deps",
+        target / "build",
         nested,
         "supervisor",
         ["src/main.rs", "../../runtime/sibling.rs"],
@@ -1096,7 +1127,7 @@ def test_generated_values_do_not_leak_between_packages(workspace):
         messages.extend(
             [
                 _unit(
-                    target / "deps",
+                    target / "build",
                     package,
                     name,
                     [source],
@@ -1133,19 +1164,21 @@ def test_out_dir_selects_generated_values_from_the_same_package_unit(workspace):
         script["package_id"] = package_id
         scripts.append(json.dumps(script))
     unit = _unit(
-        target / "deps",
+        target / "build",
         crate,
         "crate",
         ["runtime/crate/src/lib.rs"],
         environment={
             "VALUE": "one",
-            "OUT_DIR": os.fspath(target / "build" / "first-1" / "out"),
+            "OUT_DIR": os.fspath(
+                target / "build" / "first" / "fedcba9876543210" / "out"
+            ),
         },
     )
     result = _read(workspace, unit, *reversed(scripts))
     assert result.environment.variables == ()
     ambiguous = _unit(
-        target / "deps",
+        target / "build",
         crate,
         "crate",
         ["runtime/crate/src/lib.rs"],
@@ -1159,7 +1192,7 @@ def test_build_script_compilation_does_not_receive_its_runtime_overrides(workspa
     _root, crate, target = workspace
     unit = json.loads(
         _unit(
-            target / "build" / "crate-0123456789abcdef",
+            target / "build",
             crate,
             "build_script_build",
             ["runtime/crate/build.rs"],
@@ -1184,7 +1217,7 @@ def test_build_script_compilation_does_not_receive_its_runtime_overrides(workspa
 
 def test_generated_case_alias_conflicts_follow_the_frozen_name_rule(workspace):
     _root, crate, target = workspace
-    unit = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    unit = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     script = _script(
         target / "build",
         crate,
@@ -1355,7 +1388,7 @@ def test_publication_requires_the_watched_root_not_only_present_files(
     covered = tuple(path for path in root.rglob("*") if path.is_file())
     roots = tuple((path.relative_to(root).as_posix(), path) for path in covered)
     before = runtime_build_identity._tree_identity(roots, require_all=True)
-    message = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    message = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     script = _script(
         target / "build",
         crate,
@@ -1446,13 +1479,20 @@ def test_dep_info_preserves_literal_separators_in_observed_environment(
     workspace, rule, ending
 ) -> None:
     _root, crate, target = workspace
-    message = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    message = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     output = json.loads(message)["filenames"][0]
     name = "INPUT\u2028NAME"
     value = "one\u0085two\u2029three\vfour\ffive\x1csix\x1dseven\x1eeight"
     # Physical rustc records use LF/CRLF; these other separators are literal
     # UTF-8 data, not line endings or escapes in the dep-info protocol.
-    (target / "deps" / "crate-0123456789abcdef.d").write_bytes(
+    (
+        target
+        / "build"
+        / "crate"
+        / "0123456789abcdef"
+        / "out"
+        / "crate-0123456789abcdef.d"
+    ).write_bytes(
         (
             f"{_escape(output)}: runtime/crate/src/lib.rs{ending}"
             f"# env-dep:{name}={value}{ending}"
@@ -1534,7 +1574,7 @@ def test_uninspectable_candidate_cannot_establish_uplifted_uniqueness(tmp_path) 
 
 def test_build_script_trimming_retains_every_declared_input(workspace) -> None:
     root, crate, target = workspace
-    message = _unit(target / "deps", crate, "crate", ["runtime/crate/src/lib.rs"])
+    message = _unit(target / "build", crate, "crate", ["runtime/crate/src/lib.rs"])
     script = _script(
         target / "build",
         crate,
@@ -1660,7 +1700,9 @@ def test_gitignored_include_is_refused_using_real_rustc_dep_info(tmp_path):
     _write(root / ".gitignore", "ignored.rs\nproducts/\n")
     _git(root, "add", ".")
     target = root / "products"
-    deps = target / "deps"
+    deps = target / "build"
+    deps.mkdir(parents=True)
+    deps = deps / "crate" / "0123456789abcdef" / "out"
     deps.mkdir(parents=True)
     rustc = shutil.which("rustc")
     assert rustc is not None, "the Cargo identity proof cell requires rustc"
@@ -1701,3 +1743,93 @@ def test_gitignored_include_is_refused_using_real_rustc_dep_info(tmp_path):
         )
         is None
     )
+
+
+def test_a_real_cargo_build_names_every_read_through_its_unit_layout(
+    tmp_path: Path,
+) -> None:
+    """Real Cargo, real rustc: a root staticlib Cargo reports only uplifted,
+    its build script and a path dependency. A Cargo whose build-directory
+    layout moved fails here, not in a user's build."""
+    from tests.process_guard_common import run_guarded_test_process
+    from tests.cli.test_cli_file_hashing import _git
+    import shutil
+
+    root = tmp_path.resolve()
+    _git(root, "init", "-q")
+    crate = root / "runtime" / "crate"
+    leaf = root / "runtime" / "leaf"
+    _write(
+        root / "Cargo.toml",
+        '[workspace]\nmembers = ["runtime/crate", "runtime/leaf"]\nresolver = "2"\n',
+    )
+    _write(
+        crate / "Cargo.toml",
+        '[package]\nname = "crate"\nversion = "0.1.0"\nedition = "2024"\n'
+        '[lib]\ncrate-type = ["staticlib"]\n'
+        '[dependencies]\nleaf = { path = "../leaf" }\n',
+    )
+    _write(
+        crate / "build.rs",
+        'fn main() {\n    println!("cargo:rerun-if-changed=build.rs");\n'
+        '    println!("cargo:rerun-if-env-changed=MOLT_PROBE_SCRIPT_INPUT");\n}\n',
+    )
+    _write(
+        crate / "src" / "lib.rs",
+        "pub fn probe() -> usize {\n"
+        '    leaf::leaf() + option_env!("MOLT_PROBE_CRATE_INPUT").map_or(0, str::len)\n'
+        "}\n",
+    )
+    _write(leaf / "Cargo.toml", '[package]\nname = "leaf"\nversion = "0.1.0"\n')
+    _write(leaf / "src" / "lib.rs", "pub fn leaf() -> usize { 7 }\n")
+    _write(root / ".gitignore", "products/\n")
+    _git(root, "add", ".")
+    (root / "rust-toolchain.toml").write_bytes(
+        (Path(__file__).resolve().parents[2] / "rust-toolchain.toml").read_bytes()
+    )
+    target = root / "products"
+    cargo = shutil.which("cargo")
+    assert cargo is not None, "the Cargo identity proof cell requires cargo"
+    result = run_guarded_test_process(
+        [
+            cargo,
+            "build",
+            "--offline",
+            "-p",
+            "crate",
+            "--message-format=json",
+        ],
+        cwd=root,
+        env={**os.environ, "CARGO_TARGET_DIR": str(target)},
+    )
+    assert result.returncode == 0, result.stderr
+    reported = [
+        json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")
+    ]
+    staticlib = next(
+        message
+        for message in reported
+        if message.get("reason") == "compiler-artifact"
+        and message["target"]["name"] == "crate"
+        and "staticlib" in message["target"]["kind"]
+    )
+    # Cargo reports the root only uplifted: the reader must find its unit.
+    assert all(Path(name).parent == target / "debug" for name in staticlib["filenames"])
+
+    observed = reads.cargo_build_reads(
+        result.stdout,
+        workspace_root=root,
+        dep_info_base=root,
+        product_roots=(target,),
+        toolchain_roots=(),
+        environment=ProcessEnvironment({}),
+    )
+    assert _relative(root, observed.files) == [
+        "runtime/crate/build.rs",
+        "runtime/crate/src/lib.rs",
+        "runtime/leaf/src/lib.rs",
+    ]
+    assert {name for name, _digest in observed.environment.variables} >= {
+        "MOLT_PROBE_CRATE_INPUT",
+        "MOLT_PROBE_SCRIPT_INPUT",
+    }

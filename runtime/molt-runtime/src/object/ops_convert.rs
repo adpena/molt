@@ -1899,13 +1899,7 @@ mod int_literal_tests {
 
     #[test]
     fn bigint_literal_budget_failures_cover_i64_and_arbitrary_width_materialization() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             // Both full-width and arbitrary-width binary literals must propagate
@@ -1918,7 +1912,7 @@ mod int_literal_tests {
                 max_memory: Some(0),
                 ..Default::default()
             })));
-            let reset = RestoreTracker;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             for bytes in payloads {
                 let bits = unsafe {
                     super::molt_bigint_from_bytes_attached_body(

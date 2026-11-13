@@ -29,3 +29,6 @@ postgres = [
     "rustls-pemfile",
 ]
 sqlite = ["rusqlite"]
+
+[lints]
+workspace = true

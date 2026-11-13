@@ -58,3 +58,6 @@ harness = false
 [[bench]]
 name = "bench_metal"
 harness = false
+
+[lints]
+workspace = true

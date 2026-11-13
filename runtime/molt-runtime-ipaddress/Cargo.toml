@@ -11,3 +11,6 @@ description = "IP address intrinsics for the Molt runtime (ipaddress module)"
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 num-bigint = "0.5"
+
+[lints]
+workspace = true

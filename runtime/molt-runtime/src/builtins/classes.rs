@@ -1706,14 +1706,7 @@ mod tests {
 
     #[test]
     fn builtin_metadata_failure_preserves_namespace_and_owned_references() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -1734,7 +1727,7 @@ mod tests {
                 let baseline = (refs(class_ptr), refs(dict), refs(key_ptr));
                 assert_eq!(unsafe { dict_len(dict) }, 0);
                 {
-                    let _restore = RestoreTracker;
+                    let _restore = crate::test_support::restore_unlimited_tracker_on_drop();
                     set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                         max_memory: Some(0),
                         max_allocations: Some(0),

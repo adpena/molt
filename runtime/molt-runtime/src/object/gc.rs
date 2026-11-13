@@ -335,20 +335,14 @@ impl GcRuntimeState {
     #[inline(always)]
     fn with_membership<R>(&self, _py: &PyToken<'_>, body: impl FnOnce(&mut Membership) -> R) -> R {
         #[cfg(debug_assertions)]
-        struct Borrow<'a>(&'a std::sync::atomic::AtomicBool);
-        #[cfg(debug_assertions)]
-        impl Drop for Borrow<'_> {
-            fn drop(&mut self) {
-                self.0.store(false, AtomicOrdering::Relaxed);
-            }
-        }
-        #[cfg(debug_assertions)]
         let _borrow = {
             assert!(
                 !self.membership_borrowed.swap(true, AtomicOrdering::Relaxed),
                 "GC membership re-entered"
             );
-            Borrow(&self.membership_borrowed)
+            std::mem::DropGuard::new(&self.membership_borrowed, |borrowed| {
+                borrowed.store(false, AtomicOrdering::Relaxed);
+            })
         };
         // SAFETY: the GIL serializes every access, and no body re-enters.
         body(unsafe { &mut *self.membership.get() })

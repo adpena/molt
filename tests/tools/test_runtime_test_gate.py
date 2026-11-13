@@ -1969,12 +1969,18 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
         monkeypatch.setenv("NODE_OPTIONS", inherited_options)
 
     node = support.make_image(tmp_path / "node")
-    wasm = tmp_path / "target/wasm32-wasip1/debug/deps/zlib_rs.wasm"
+    # Cargo 1.100 writes test executables to the build directory's unit out/.
+    wasm = (
+        tmp_path
+        / "build/wasm32-wasip1/debug/build/zlib-rs/0123456789abcdef/out"
+        / "zlib_rs-0123456789abcdef.wasm"
+    )
     wasm.parent.mkdir(parents=True)
     wasm.write_bytes(b"\0asm\x01\0\0\0provider test")
     package_id = "path+file:///vendor/zlib-rs#0.6.8"
     metadata = {
         "target_directory": str(tmp_path / "target"),
+        "build_directory": str(tmp_path / "build"),
         "packages": [
             {
                 "id": package_id,

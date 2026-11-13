@@ -27,3 +27,6 @@ molt-codegen-abi = { path = "../molt-codegen-abi" }
 [dev-dependencies]
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 toml = "1"
+
+[lints]
+workspace = true

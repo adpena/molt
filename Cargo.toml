@@ -3,7 +3,6 @@ members = [
     "runtime/molt-runtime",
     "runtime/molt-runtime-core",
     "runtime/molt-runtime-capi",
-    "runtime/molt-runtime-net",
     "runtime/molt-runtime-asyncio",
     "runtime/molt-runtime-math",
     "runtime/molt-runtime-serial",
@@ -78,7 +77,16 @@ regalloc2 = { path = "vendor/rust/regalloc2" }
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
+
+# Cargo's own lints. Members inherit them with `[lints] workspace = true`; a
+# member with its own `[lints]` table runs them at Cargo's default level,
+# which is the same `warn`. The CI clippy cells deny every finding through
+# `build.warnings = "deny"`. The lint sees only the targets a build selects
+# on its host, so a dependency used under one platform cfg belongs in that
+# platform's target table.
+[workspace.lints.cargo]
+unused_dependencies = "warn"
 
 [workspace.dependencies]
 # Correctly rounded decimal float parsing for JSON IR/runtime values.

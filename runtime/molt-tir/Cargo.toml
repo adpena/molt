@@ -39,3 +39,6 @@ wasm-backend = ["molt-ir/wasm-backend", "molt-passes/wasm-backend"]
 # molt-backend's own test suites can reach them. molt-backend activates this via
 # its [dev-dependencies] entry; it is never part of any shipped build.
 test-util = ["molt-ir/test-util", "molt-passes/test-util"]
+
+[lints]
+workspace = true

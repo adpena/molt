@@ -87,3 +87,6 @@ native-backend = [
 jit = ["native-backend", "dep:cranelift-jit"]
 llvm = ["dep:inkwell", "inkwell/llvm22-1-no-llvm-linking", "dep:molt-llvm-link", "molt-llvm-link/native-link", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm", "dep:llvm-sys"]
+
+[lints]
+workspace = true

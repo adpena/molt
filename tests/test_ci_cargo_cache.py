@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -8,8 +10,10 @@ from tools.ci_cargo_cache import (
     configure_cargo_cache,
     prune_workspace_artifacts,
     superseded_cache_ids,
-    workspace_crate_names,
+    workspace_clean_commands,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("selection", ["default", "relative", "absolute", "external"])
@@ -70,62 +74,56 @@ def test_cache_projection_rejects_environment_file_injection(
     assert not (tmp_path / "github-output").exists()
 
 
-def test_prune_keeps_dependency_units_and_drops_workspace_units(tmp_path: Path):
-    workspace = workspace_crate_names(
-        {
-            "packages": [
-                {
-                    "name": "molt-runtime",
-                    "targets": [
-                        {"name": "molt_runtime", "kind": ["lib"]},
-                        {"name": "build-script-build", "kind": ["custom-build"]},
-                    ],
-                },
-                {"name": "molt-backend", "targets": [{"name": "molt-backend"}]},
-            ]
-        }
+def _cargo_units(workspace: Path, target: Path) -> dict[str, bool]:
+    """Build the workspace; map each unit's target name to Cargo's ``fresh``."""
+    from tests.process_guard_common import run_guarded_test_process
+
+    completed = run_guarded_test_process(
+        ["cargo", "build", "--offline", "--message-format=json"],
+        cwd=workspace,
+        env={**os.environ, "CARGO_TARGET_DIR": str(target)},
+        timeout=300,
+        check=True,
     )
-    assert "build_script_build" not in workspace
-    hash_ = "0123456789abcdef"
-    kept = [
-        f"debug/deps/libserde-{hash_}.rlib",
-        f"debug/deps/serde-{hash_}.d",
-        f"debug/deps/libc-{hash_}.rmeta",
-        f"debug/.fingerprint/serde-{hash_}/lib-serde",
-        f"debug/build/libc-{hash_}/out/marker",
-        f"wasm32-wasip1/release-output/deps/libhashbrown-{hash_}.rlib",
-    ]
-    dropped = [
-        f"debug/deps/libmolt_runtime-{hash_}.rlib",
-        f"debug/deps/molt_backend-{hash_}.exe",
-        f"debug/deps/molt_backend-{hash_}.pdb",
-        "debug/deps/molt_backend.exe",
-        "debug/deps/libmolt_runtime.rlib",
-        f"debug/.fingerprint/molt-runtime-{hash_}/lib-molt_runtime",
-        f"debug/build/molt-runtime-{hash_}/out/generated.rs",
-        "debug/incremental/molt_runtime-x/s-1",
-        "debug/molt-backend.exe",
-        "debug/libmolt_runtime.d",
-        f"wasm32-wasip1/release-output/deps/libmolt_runtime-{hash_}.rlib",
-        "wasm32-wasip1/release-output/molt_runtime.wasm",
-    ]
-    for relative in (*kept, *dropped):
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x")
-    (tmp_path / "wasm32-wasip1" / "release-output" / ".fingerprint").mkdir()
-
-    assert prune_workspace_artifacts(tmp_path, workspace) > 0
-
-    for relative in kept:
-        assert (tmp_path / relative).is_file(), relative
-    for relative in dropped:
-        assert not (tmp_path / relative).exists(), relative
+    return {
+        message["target"]["name"]: message["fresh"]
+        for line in completed.stdout.splitlines()
+        if (message := json.loads(line)).get("reason") == "compiler-artifact"
+    }
 
 
-def test_workspace_names_require_cargo_package_metadata():
-    with pytest.raises(ValueError, match="no package list"):
-        workspace_crate_names({})
+def test_prune_drops_workspace_units_and_keeps_dependency_units(tmp_path: Path) -> None:
+    """Cargo itself decides what the prune removed: after it, the workspace
+    member recompiles and its path dependency outside the workspace stays fresh."""
+    workspace = tmp_path / "workspace"
+    for path, text in {
+        "Cargo.toml": '[workspace]\nmembers = ["app"]\nresolver = "2"\n'
+        '[profile.ci-fast]\ninherits = "dev"\n',
+        # The repository's pinned toolchain, so the test installs nothing.
+        "rust-toolchain.toml": (REPO_ROOT / "rust-toolchain.toml").read_text(
+            encoding="utf-8"
+        ),
+        "app/Cargo.toml": '[package]\nname = "app"\nversion = "0.1.0"\n'
+        'edition = "2024"\n[dependencies]\nleaf = { path = "../../leaf" }\n',
+        "app/src/lib.rs": "pub fn app() -> u32 { leaf::leaf() }\n",
+        "../leaf/Cargo.toml": '[package]\nname = "leaf"\nversion = "0.1.0"\n'
+        'edition = "2024"\n[workspace]\n',
+        "../leaf/src/lib.rs": "pub fn leaf() -> u32 { 7 }\n",
+    }.items():
+        (workspace / path).parent.mkdir(parents=True, exist_ok=True)
+        (workspace / path).write_text(text, encoding="utf-8")
+    target = tmp_path / "target"
+    assert _cargo_units(workspace, target) == {"leaf": False, "app": False}
+
+    commands = workspace_clean_commands(workspace, target)
+    assert {command[command.index("--profile") + 1] for command in commands} == {
+        "ci-fast",
+        "dev",
+        "release",
+    }
+    assert prune_workspace_artifacts(workspace, target) == len(commands)
+
+    assert _cargo_units(workspace, target) == {"leaf": True, "app": False}
 
 
 def test_retention_keeps_the_newest_main_entry_per_cache_group():

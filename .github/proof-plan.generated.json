@@ -14657,16 +14657,16 @@
       },
       "name": "rustc",
       "setup_evidence": [
-        "rust-toolchain.toml::channel = \"1.99.1\"",
+        "rust-toolchain.toml::channel = \"1.100.0\"",
         ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
         ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain"
       ],
-      "setup_value": "1.99.1",
+      "setup_value": "1.100.0",
       "version_args": [
         "--version",
         "--verbose"
       ],
-      "version_pattern": "^rustc 1\\.99\\.1\\b"
+      "version_pattern": "^rustc 1\\.100\\.0\\b"
     },
     {
       "content_path_command": [
@@ -14682,15 +14682,15 @@
       "fingerprint_domain": "rustup",
       "name": "cargo",
       "setup_evidence": [
-        "rust-toolchain.toml::channel = \"1.99.1\"",
+        "rust-toolchain.toml::channel = \"1.100.0\"",
         ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
         ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain"
       ],
-      "setup_value": "1.99.1",
+      "setup_value": "1.100.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^cargo 1\\.99\\.1\\b"
+      "version_pattern": "^cargo 1\\.100\\.0\\b"
     },
     {
       "executable": "git",
@@ -14723,11 +14723,11 @@
         ".github/workflows/ci.yml::components: rustfmt, clippy",
         ".github/workflows/ci.yml::targets: wasm32-wasip1"
       ],
-      "setup_value": "1.10.0",
+      "setup_value": "1.11.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^rustfmt 1\\.10\\.0-stable\\b"
+      "version_pattern": "^rustfmt 1\\.11\\.0-stable\\b"
     },
     {
       "executable": "clang",

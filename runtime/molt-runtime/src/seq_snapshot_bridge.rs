@@ -136,14 +136,7 @@ include!(concat!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-
-    struct TrackerReset;
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 
     fn owners(bits: u64) -> u32 {
         unsafe {
@@ -169,7 +162,7 @@ mod tests {
                 assert!(!empty.is_null());
                 let mut ptr = std::ptr::dangling();
                 let mut len = 99;
-                let reset = TrackerReset;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()
@@ -190,7 +183,7 @@ mod tests {
                 };
                 assert!(!sequence.is_null());
                 assert_eq!(owners(value), 3);
-                let reset = TrackerReset;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()
@@ -415,7 +408,7 @@ mod tests {
             // Zero denies the canonical snapshot reservation; one admits it
             // but denies the independent exported-buffer reservation.
             for admitted_allocations in [0, 1] {
-                let reset = TrackerReset;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_allocations: Some(admitted_allocations),
                     ..ResourceLimits::default()
