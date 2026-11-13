@@ -98,6 +98,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
+@pytest.fixture(autouse=True)
+def _private_host_work_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A landing under test takes a slot of its own, not this host's (HF-623)."""
+    from molt import host_capacity
+
+    monkeypatch.setattr(
+        host_capacity, "host_work_dir", lambda _repo: tmp_path / "host-work"
+    )
+
+
 from tools import controller_source, detached_execution  # noqa: E402
 from tools import harness_memory_guard, memory_guard, molt_dev_gates  # noqa: E402
 from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402

@@ -10,10 +10,12 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _CGROUP_MEMBERSHIP = Path("/proc/self/cgroup")
@@ -599,3 +601,155 @@ def darwin_available_bytes(page_size: int, pages: Mapping[str, int]) -> int | No
     if page_size <= 0 or available_pages <= 0:
         return None
     return available_pages * page_size
+
+
+# --------------------------------------------------------------------------
+# Host work admission
+# --------------------------------------------------------------------------
+
+# Each tool above sizes its own workers from the memory free when it starts,
+# so two suites started together each claim the whole machine and both slow
+# down past their budgets (HF-623). Heavy work therefore takes this host's one
+# slot first; a second heavy job waits for it instead of sharing the machine.
+HOST_WORK_DIRNAME = "host-work"
+_HEAVY_LOCK = "heavy.lock"
+# Held by a landing from the moment it queues for the slot until it releases
+# it, so a landing goes ahead of every heavy job that has not started yet.
+_LANDING_LOCK = "landing.lock"
+_POLL_SECONDS = 5.0
+_REPORT_SECONDS = 60.0
+# The slot directory the current process tree already holds. The holder
+# exports it for its body; its descendants inherit it.
+HOST_WORK_HELD_ENV = "MOLT_HOST_WORK_SLOT_HELD"
+
+
+def host_work_dir(repo_root: Path) -> Path:
+    """This host's work-slot directory: disk control state every checkout of
+    the install shares (``molt.dx.control_state_dir``)."""
+    from molt.dx import control_state_dir
+
+    return control_state_dir(repo_root, HOST_WORK_DIRNAME)
+
+
+@dataclass(frozen=True, slots=True)
+class HostWorkAdmission:
+    """What admission cost: the seconds spent waiting for the slot."""
+
+    waited_seconds: float
+
+
+def _try_exclusive(handle: BinaryIO) -> bool:
+    """One non-blocking exclusive lock attempt on an open file."""
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _holder(lock: Path) -> str:
+    try:
+        return lock.with_suffix(".holder").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "an unrecorded holder"
+
+
+def _acquire(
+    lock: Path, label: str, say: Callable[[str], None], clock: Callable[[], float]
+) -> BinaryIO:
+    """Block until this process holds ``lock``; report the holder while waiting."""
+    handle = open(lock, "a+b")  # noqa: SIM115 - the caller owns its lifetime
+    started = reported = clock()
+    first = True
+    while not _try_exclusive(handle):
+        now = clock()
+        if first or now - reported >= _REPORT_SECONDS:
+            say(f"host-work: {label} waits for {_holder(lock)} ({now - started:.0f} s)")
+            reported, first = now, False
+        time.sleep(_POLL_SECONDS)
+    lock.with_suffix(".holder").write_text(
+        f"{label} (pid {os.getpid()}, since {time.strftime('%H:%M:%S')})\n",
+        encoding="utf-8",
+    )
+    return handle
+
+
+def _release(lock: Path, handle: BinaryIO) -> None:
+    try:
+        lock.with_suffix(".holder").unlink(missing_ok=True)
+    finally:
+        _unlock(handle)
+        handle.close()
+
+
+@contextmanager
+def host_work_slot(
+    state_dir: Path,
+    *,
+    label: str,
+    landing: bool,
+    say: Callable[[str], None],
+    clock: Callable[[], float] = time.monotonic,
+) -> Generator[HostWorkAdmission]:
+    """Hold this host's one heavy-work slot for the body.
+
+    A landing first holds the landing lock, then waits for the slot. Any other
+    heavy job first waits until no landing holds or awaits the slot, then takes
+    it. The operating system releases both locks when a holder dies, so a
+    crashed job never leaves the slot taken. A job that took the slot just
+    before a landing queued finishes first; the landing waits for that one job.
+
+    Work the holder starts is part of the holder's job: the body runs with
+    ``MOLT_HOST_WORK_SLOT_HELD`` naming this slot, and a descendant that asks
+    for the same slot is admitted at once. Without that rule a landing's tests
+    that run a consumer gate would wait for their own landing.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    slot = str(state_dir.resolve())
+    if os.environ.get(HOST_WORK_HELD_ENV) == slot:
+        yield HostWorkAdmission(0.0)
+        return
+    heavy = state_dir / _HEAVY_LOCK
+    landing_lock = state_dir / _LANDING_LOCK
+    started = clock()
+    held: list[tuple[Path, BinaryIO]] = []
+    outer = os.environ.get(HOST_WORK_HELD_ENV)
+    try:
+        if landing:
+            held.append((landing_lock, _acquire(landing_lock, label, say, clock)))
+        else:
+            probe = _acquire(landing_lock, label, say, clock)
+            _release(landing_lock, probe)
+        held.append((heavy, _acquire(heavy, label, say, clock)))
+        os.environ[HOST_WORK_HELD_ENV] = slot
+        yield HostWorkAdmission(clock() - started)
+    finally:
+        if outer is None:
+            os.environ.pop(HOST_WORK_HELD_ENV, None)
+        else:
+            os.environ[HOST_WORK_HELD_ENV] = outer
+        for lock, handle in reversed(held):
+            _release(lock, handle)

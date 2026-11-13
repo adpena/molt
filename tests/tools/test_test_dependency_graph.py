@@ -1528,3 +1528,119 @@ def test_direct_cli_lists_importers_and_data_readers_separately(capsys) -> None:
     shown = capsys.readouterr().out
     assert shown.startswith("# importers (")
     assert "# data readers (" in shown
+
+
+# --------------------------------------------------------------------------
+# Presubmit refinement to the definitions a change touches (HF-623)
+# --------------------------------------------------------------------------
+
+
+def test_a_module_change_touches_only_the_definitions_it_changes() -> None:
+    from tools.test_dependency_graph import changed_module_nodes
+
+    before = b"LIMIT = 3\n\ndef used():\n    return LIMIT\n\ndef other():\n    return 1\n\ndef body():\n    return 2\n"
+    # A body edit touches that definition alone.
+    change = changed_module_nodes(
+        "m.py", before, before.replace(b"return 2", b"return 5")
+    )
+    assert change is not None
+    assert change.definitions == {"m.py::body"} and not change.import_time
+    # A constant edit touches the definitions that name it, and import-time code.
+    change = changed_module_nodes(
+        "m.py", before, before.replace(b"LIMIT = 3", b"LIMIT = 4")
+    )
+    assert change is not None
+    assert change.definitions == {"m.py::used"} and change.import_time
+    # A comment or a formatting edit touches nothing.
+    change = changed_module_nodes("m.py", before, b"# note\n" + before)
+    assert change is not None
+    assert change.definitions == frozenset() and not change.import_time
+    # A module-level call is an import-time effect beyond bindings: unrefined.
+    assert changed_module_nodes("m.py", before, before + b"print('x')\n") is None
+    # A module that no longer parses is unrefined.
+    assert changed_module_nodes("m.py", before, b"def (:\n") is None
+
+
+def test_presubmit_selects_tests_that_reach_the_changed_definition(
+    tmp_path: Path,
+) -> None:
+    from tools.test_dependency_graph import git_blob_reader
+
+    root = _repository(
+        tmp_path / "repo",
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\n",
+            "src/pkg/__init__.py": "",
+            "src/pkg/helpers.py": """
+                def fixture_value():
+                    return 1
+
+                def leaf():
+                    return 2
+            """,
+            "tests/conftest.py": """
+                import pytest
+                from pkg.helpers import fixture_value
+
+                @pytest.fixture(autouse=True)
+                def every_test():
+                    return fixture_value()
+            """,
+            "tests/test_leaf.py": """
+                from pkg.helpers import leaf
+
+                def test_leaf():
+                    assert leaf() == 2
+            """,
+            "tests/test_other.py": """
+                def test_other():
+                    assert True
+            """,
+        },
+    )
+    module = root / "src/pkg/helpers.py"
+    module.write_text(
+        module.read_text(encoding="utf-8").replace("return 2", "return 3"),
+        encoding="utf-8",
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    changed = ["src/pkg/helpers.py"]
+    # File level, the conftest's use selects every test below it.
+    assert set(graph.direct_readers(changed).importers) >= {
+        "tests/test_leaf.py",
+        "tests/test_other.py",
+    }
+    # Node level, only the test that reaches `leaf` runs in presubmit.
+    refined = graph.direct_readers(changed, before=git_blob_reader(root, "HEAD"))
+    assert "tests/test_leaf.py" in refined.importers
+    assert "tests/test_other.py" not in refined.importers
+    # Postsubmit still selects every dependent.
+    assert "tests/test_other.py" in graph.select(changed)
+    # A conftest that holds the whole module (an attribute call the graph
+    # cannot resolve) keeps every test below it: unresolved stays whole.
+    conftest = root / "tests/conftest.py"
+    conftest.write_text(
+        "import pytest\nfrom pkg import helpers\n\n"
+        "@pytest.fixture(autouse=True)\ndef every_test():\n"
+        "    return helpers.fixture_value()\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "-A")
+    _git(
+        root,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "whole-module conftest",
+    )
+    module.write_text(
+        module.read_text(encoding="utf-8").replace("return 3", "return 4"),
+        encoding="utf-8",
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    refined = graph.direct_readers(changed, before=git_blob_reader(root, "HEAD"))
+    assert "tests/test_other.py" in refined.importers
