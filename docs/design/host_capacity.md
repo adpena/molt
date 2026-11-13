@@ -234,7 +234,10 @@ cut.
 Heavy work therefore takes the host's one slot first
 (`host_capacity.host_work_slot`): an exclusive lock in the install's shared
 control state (`host_work_dir`, `control_state_dir(..., "host-work")`), held
-for the consumer gate's importer run and for a landing's try run. A second
+for the consumer gate's importer run and for the heavy block of every gate run
+(`molt_dev_gates.run_selected_gates`: a `land --fast` try run, a batch-queue
+run, postsubmit, a receipt rerun); a presubmit run takes it as a landing. A
+landing's try run takes it before its budget clock starts. A second
 heavy job waits and names the holder instead of sharing the machine. A landing
 also holds a landing lock from the moment it queues, and a non-landing job
 waits while any landing holds or awaits the slot, so a queued landing goes
