@@ -383,8 +383,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     } else if representation_plan.is_float_unboxed(name) {
         let var = *vars.get(name)?;
         let val = builder.use_var(var);
-        let nbc = crate::NanBoxConsts::new();
-        let bits = box_float_value(builder, val, &nbc);
+        let bits = box_float_value(builder, val);
         Some(VarValue(bits))
     } else {
         var_get(builder, vars, name)
@@ -828,7 +827,7 @@ impl CapturedScalarTransport {
                     sealed_blocks,
                     self.value,
                 ),
-                MergeRebindStorageKind::RawF64 => box_float_value(builder, self.value, nbc),
+                MergeRebindStorageKind::RawF64 => box_float_value(builder, self.value),
                 MergeRebindStorageKind::RawBool => box_raw_bool_value(builder, self.value, nbc),
                 MergeRebindStorageKind::BoxedI64 => unreachable!(),
             };

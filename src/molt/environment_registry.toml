@@ -2682,6 +2682,15 @@ owner = "tools/throughput_env.sh"
 summary = "tools/molt_shell_env.sh exports it from molt_init_shell_context as the repo root in the selected Python's path form (cygpath or wslpath host form when that Python uses Windows paths); tools/throughput_env.sh and tools/witness_cycle.sh read it as their ROOT."
 
 [[variable]]
+name = "MOLT_HOST_WORK_SLOT_HELD"
+audience = "internal"
+kind = "path"
+output_neutral = true
+default = ""
+owner = "src/molt/host_capacity.py"
+summary = "The resolved host-work slot directory an ancestor process holds: molt.host_capacity.host_work_slot exports it for the body it admits, so a heavy job that the holder starts (a landing's tests running a consumer gate, say) belongs to the holder's job and is admitted at once instead of waiting for its own ancestor."
+
+[[variable]]
 name = "MOLT_INLINE_STATS"
 audience = "user"
 kind = "bool"

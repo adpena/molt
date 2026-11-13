@@ -221,6 +221,36 @@ Benchmark executable-image attribution and scheduler cost qualification remain
 HF-334/V1-07 obligations; lifetime RSS alone cannot satisfy those claims. The
 guest binary pays none of this test-observer cost.
 
+## Cross-job admission (2026-11-12, HF-623)
+
+Each tool above sizes its workers from the memory free when it starts, so two
+suite-sized jobs started near each other each claim the whole machine. On
+2026-11-12 two consumer gates (`-n auto`, about 16,000 tests each), two
+landings and benchmark builds shared this host: the C6 and HF-833 landings
+both ran past `land --fast`'s 90-minute try-run budget (5,490 s), which
+cancelled their crate-test gate, and no landing completed until the load was
+cut.
+
+Heavy work therefore takes the host's one slot first
+(`host_capacity.host_work_slot`): an exclusive lock in the install's shared
+control state (`host_work_dir`, `control_state_dir(..., "host-work")`), held
+for the consumer gate's importer run and for a landing's try run. A second
+heavy job waits and names the holder instead of sharing the machine. A landing
+also holds a landing lock from the moment it queues, and a non-landing job
+waits while any landing holds or awaits the slot, so a queued landing goes
+before every heavy job that has not started. The landing's budget clock starts
+at admission, so waiting never spends it. The operating system releases both
+locks when a holder dies.
+
+Work the holder starts belongs to the holder's job. The holder exports
+`MOLT_HOST_WORK_SLOT_HELD` (the resolved slot directory) for its body, and a
+descendant that asks for the same slot is admitted at once; otherwise a
+landing's tests that run a consumer gate would wait for their own landing. The
+tests that drive a landing or a gate directly (`tests/test_molt_dev.py`,
+`tests/tools/test_consumer_gate.py`) take a slot directory of their own. Prior
+art: Bazel's single server lock per output base, Cargo's build-directory lock,
+GNU make's jobserver, which its sub-makes inherit through the environment.
+
 ## Storage
 
 Capacity includes where state lives. The frontend's source record store

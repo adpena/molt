@@ -525,15 +525,24 @@ pub(crate) unsafe fn heap_float_value(ptr: *mut u8) -> f64 {
     unsafe { *(ptr as *const f64) }
 }
 
-/// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
-/// inline (zero overhead); NaN values are heap-allocated.
+/// The boxed word for a float, keeping its bits (runtime spec 2.1.1, HF-833):
+/// `float_inline_word`, else a heap float for a NaN whose tag field is set.
 #[inline(always)]
 pub(crate) fn float_result_bits(_py: &PyToken<'_>, value: f64) -> u64 {
-    if value.is_nan() {
-        alloc_heap_float(_py, value)
-    } else {
-        MoltObject::from_float(value).bits()
+    match molt_codegen_abi::float_inline_word(value) {
+        Some(word) => word,
+        None => heap_nan_float_bits(_py, value),
     }
+}
+
+/// The heap float for a NaN with a set tag field. Cold and out of line, so
+/// inlining the allocator does not make every float result save callee-saved
+/// registers on its hot path (measured: +0.27% instructions on LLVM
+/// mandelbrot, d8/d9 saved in each float slot).
+#[cold]
+#[inline(never)]
+fn heap_nan_float_bits(_py: &PyToken<'_>, value: f64) -> u64 {
+    alloc_heap_float(_py, value)
 }
 
 /// Float storage recognition, including inherited tagged scalar payloads.

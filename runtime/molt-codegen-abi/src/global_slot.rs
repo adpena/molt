@@ -16,28 +16,20 @@
 
 use crate::NAMESPACE_SLOT_UNBOUND;
 use crate::boxed_word::generate_unbox_inline_int;
-use crate::word::{WordBuilder, WordComparison};
+use crate::word::{BranchBuilder, WordComparison};
 
 /// The slot words' address is published as an inline int of `address >>
 /// GLOBAL_SLOT_BASE_SHIFT`: slot words are 8-byte aligned, and the shifted
 /// address fits the inline payload on every target.
 pub const GLOBAL_SLOT_BASE_SHIFT: u32 = 3;
 
-/// Backend spelling for a slot read: one raw 64-bit load, a two-armed
-/// choice that yields one word, and the backend's own retain of a value
-/// word (its instantiation of the shared refcount generator). Everything
-/// else comes from `WordBuilder`.
-pub trait SlotBuilder: WordBuilder {
+/// Backend spelling for a slot read: one raw 64-bit load and the backend's
+/// own retain of a value word (its instantiation of the shared refcount
+/// generator). The choice comes from `BranchBuilder`, everything else from
+/// `WordBuilder`.
+pub trait SlotBuilder: BranchBuilder {
     /// The 64-bit word at `address + offset`; `address` is a raw address.
     fn load_word(&mut self, address: Self::Word, offset: i32) -> Self::Word;
-    /// Run `yes` when `condition` holds, else `no`; the result is the word
-    /// the taken arm returned, in the arms' common continuation.
-    fn choose(
-        &mut self,
-        condition: Self::Predicate,
-        yes: impl FnOnce(&mut Self) -> Self::Word,
-        no: impl FnOnce(&mut Self) -> Self::Word,
-    ) -> Self::Word;
     /// Take one owned reference to the value `word`.
     fn retain(&mut self, word: Self::Word);
 }
@@ -70,6 +62,7 @@ pub fn generate_global_slot_read<B: SlotBuilder>(
 mod tests {
     extern crate std;
     use super::*;
+    use crate::word::WordBuilder;
     use std::vec;
     use std::vec::Vec;
 
@@ -119,12 +112,7 @@ mod tests {
         }
     }
 
-    impl SlotBuilder for Interp {
-        fn load_word(&mut self, address: u64, offset: i32) -> u64 {
-            let at = address.wrapping_add(offset as i64 as u64) - BASE;
-            assert_eq!(at % 8, 0);
-            self.memory[(at / 8) as usize]
-        }
+    impl crate::word::BranchBuilder for Interp {
         fn choose(
             &mut self,
             condition: bool,
@@ -132,6 +120,14 @@ mod tests {
             no: impl FnOnce(&mut Self) -> u64,
         ) -> u64 {
             if condition { yes(self) } else { no(self) }
+        }
+    }
+
+    impl SlotBuilder for Interp {
+        fn load_word(&mut self, address: u64, offset: i32) -> u64 {
+            let at = address.wrapping_add(offset as i64 as u64) - BASE;
+            assert_eq!(at % 8, 0);
+            self.memory[(at / 8) as usize]
         }
         fn retain(&mut self, word: u64) {
             self.retained.push(word);

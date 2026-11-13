@@ -13,6 +13,7 @@ use crate::wasm_binary::{Function, emit_call};
 use crate::{OpIR, SimpleIR};
 use molt_codegen_abi::global_slot::{SlotBuilder, generate_global_slot_read};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_codegen_abi::word::BranchBuilder;
 use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
 const BASE_PARAM: u32 = 1;
@@ -97,17 +98,7 @@ pub(in crate::wasm) fn emit_global_slot_get(
     func.instruction(&Instruction::LocalSet(out));
 }
 
-impl SlotBuilder for WasmRefcountBuilder<'_, '_> {
-    fn load_word(&mut self, address: u32, offset: i32) -> u32 {
-        self.address(address, offset);
-        self.sink.push(Instruction::I64Load(MemArg {
-            align: 3,
-            offset: 0,
-            memory_index: 0,
-        }));
-        self.word()
-    }
-
+impl BranchBuilder for WasmRefcountBuilder<'_, '_> {
     fn choose(
         &mut self,
         condition: u32,
@@ -123,6 +114,18 @@ impl SlotBuilder for WasmRefcountBuilder<'_, '_> {
         let fallback = no(self);
         self.get(fallback);
         self.sink.push(Instruction::End);
+        self.word()
+    }
+}
+
+impl SlotBuilder for WasmRefcountBuilder<'_, '_> {
+    fn load_word(&mut self, address: u32, offset: i32) -> u32 {
+        self.address(address, offset);
+        self.sink.push(Instruction::I64Load(MemArg {
+            align: 3,
+            offset: 0,
+            memory_index: 0,
+        }));
         self.word()
     }
 

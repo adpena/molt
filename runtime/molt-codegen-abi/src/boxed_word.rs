@@ -65,13 +65,13 @@ pub fn generate_unbox_bool<B: WordBuilder>(b: &mut B, word: B::Word) -> B::Predi
     b.compare(WordComparison::NotEqual, bit, zero)
 }
 
-/// True iff `word` is a float: its quiet-NaN prefix is not the tag space.
-/// A boxed float is its own IEEE bits (NaN canonicalized), so the payload is
-/// the word itself, read as an f64 by the backend's bit cast.
+/// True iff `word` is a float (`is_float_bits`, runtime spec 2.1.1): its
+/// exponent and tag field are below the first tag. A float is its own IEEE
+/// bits, read as an f64 by the backend's bit cast, and boxed by identity.
 pub fn generate_is_float<B: WordBuilder>(b: &mut B, word: B::Word) -> B::Predicate {
-    let prefix = b.and(word, QNAN);
-    let quiet_nan = b.constant(QNAN);
-    b.compare(WordComparison::NotEqual, prefix, quiet_nan)
+    let shifted = b.shift_left(word, 1);
+    let first_tag = b.constant(crate::SHIFTED_FIRST_TAG_BOUNDARY);
+    b.compare(WordComparison::UnsignedLessThan, shifted, first_tag)
 }
 
 /// The inline-int word for `value`. Requires: `value` fits (a dominating

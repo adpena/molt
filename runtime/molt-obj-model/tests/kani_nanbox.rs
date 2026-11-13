@@ -10,25 +10,24 @@
 
 #[cfg(kani)]
 mod kani_proofs {
-    use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MAX_INLINE, INT_MIN_INLINE, QNAN};
+    use molt_codegen_abi::{
+        DEFAULT_NAN_BITS, FLOAT_SIGN_BIT, INT_MAX_INLINE, INT_MIN_INLINE, QNAN, TAG_MASK,
+    };
     use molt_lang_obj_model::MoltObject;
 
     // =================================================================
     // Float harnesses
     // =================================================================
 
-    /// Any f64 round-trips through from_float / as_float (or is canonicalized NaN).
+    /// Every non-NaN f64 round-trips through from_float / as_float bit for bit.
     #[kani::proof]
     fn float_roundtrip() {
         let f: f64 = kani::any();
+        kani::assume(!f.is_nan());
         let obj = MoltObject::from_float(f);
-        if f.is_nan() {
-            assert_eq!(obj.bits(), CANONICAL_NAN_BITS);
-        } else {
-            assert!(obj.is_float());
-            let out = obj.as_float().unwrap();
-            assert_eq!(f.to_bits(), out.to_bits());
-        }
+        assert!(obj.is_float());
+        let out = obj.as_float().unwrap();
+        assert_eq!(f.to_bits(), out.to_bits());
     }
 
     /// A non-NaN float is never mistaken for any tagged type.
@@ -363,18 +362,27 @@ mod kani_proofs {
     }
 
     // =================================================================
-    // from_float canonical NaN
+    // from_float NaN payloads
     // =================================================================
 
-    /// All NaN variants (positive, negative, signaling, quiet) produce
-    /// the same canonical MoltObject.
+    /// A NaN keeps its bits iff its tag field (bits 48-50) is clear; a NaN with
+    /// a set tag field boxes to the default NaN with its sign. Either result
+    /// tests as a float and as no tag (runtime spec 2.1.1, HF-833).
     #[kani::proof]
-    fn from_float_canonical_nan() {
+    fn from_float_nan_keeps_bits_iff_tag_field_clear() {
         let bits: u64 = kani::any();
         let f = f64::from_bits(bits);
         kani::assume(f.is_nan());
         let obj = MoltObject::from_float(f);
-        assert_eq!(obj.bits(), CANONICAL_NAN_BITS);
+        if bits & TAG_MASK == 0 {
+            assert_eq!(obj.bits(), bits);
+        } else {
+            assert_eq!(obj.bits(), DEFAULT_NAN_BITS | (bits & FLOAT_SIGN_BIT));
+        }
+        assert!(obj.is_float());
+        assert!(obj.as_float().unwrap().is_nan());
+        assert!(!obj.is_int() && !obj.is_bool() && !obj.is_none() && !obj.is_ptr());
+        assert!(!obj.is_pending());
     }
 
     // =================================================================

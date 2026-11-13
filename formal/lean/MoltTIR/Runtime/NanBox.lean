@@ -27,18 +27,27 @@ def TAG_MASK  : UInt64 := 0x0007000000000000
 def INT_MASK  : UInt64 := 0x00007fffffffffff
 def INT_SIGN  : UInt64 := 0x0000400000000000
 
-/-- The combined mask used by all tagged type predicates. -/
+/-- The combined mask used by all tagged type predicates: the exponent and
+    the NaN tag field (bits 48-50). -/
 def TAG_CHECK : UInt64 := QNAN ||| TAG_MASK
+
+/-- The first tagged word, `QNAN ||| TAG_INT` (runtime spec 2.1.1). A word is a
+    float iff its exponent and tag field lie below it (SpiderMonkey punboxing). -/
+def FIRST_TAG_BOUNDARY : UInt64 := QNAN ||| TAG_INT
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Prop-based type predicates
 -- ══════════════════════════════════════════════════════════════════
 
-/-- A value is a float if the quiet NaN bits are NOT fully set. -/
-def IsFloat (v : UInt64) : Prop := v &&& QNAN ≠ QNAN
+/-- A value is a float iff its exponent and tag field lie below the first tag;
+    molt-codegen-abi `is_float_bits` is this test. It admits every non-NaN,
+    every signaling NaN and every quiet NaN whose tag field is clear. The float
+    box produces only non-NaNs and NaNs with a clear tag field
+    (NanBoxCorrect.boxFloat_keeps_untagged). -/
+def IsFloat (v : UInt64) : Prop := v &&& TAG_CHECK < FIRST_TAG_BOUNDARY
 
-/-- A value is tagged if the quiet NaN bits ARE fully set. -/
-def IsTagged (v : UInt64) : Prop := v &&& QNAN = QNAN
+/-- A value is tagged iff it is not a float. -/
+def IsTagged (v : UInt64) : Prop := ¬IsFloat v
 
 /-- A value is an int if the tag check matches INT. -/
 def IsInt (v : UInt64) : Prop := v &&& TAG_CHECK = QNAN ||| TAG_INT
@@ -95,64 +104,27 @@ theorem tag_ptr_ne_pending : QNAN ||| TAG_PTR  ≠ QNAN ||| TAG_PEND  := by nati
 -- ══════════════════════════════════════════════════════════════════
 
 theorem tagged_not_float (v : UInt64) : IsTagged v → ¬IsFloat v := by
-  intro ht hf; exact hf ht
+  intro ht hf; exact ht hf
 
 theorem float_not_tagged (v : UInt64) : IsFloat v → ¬IsTagged v := by
-  intro hf ht; exact hf ht
+  intro hf ht; exact ht hf
 
-/-- Concrete: TAG_CHECK &&& QNAN = QNAN (QNAN is a submask of TAG_CHECK). -/
-private theorem tag_check_and_qnan : TAG_CHECK &&& QNAN = QNAN := by native_decide
-
-/-- Concrete: (QNAN ||| TAG_X) &&& QNAN = QNAN for each tag. -/
-private theorem qnan_or_int_and_qnan  : (QNAN ||| TAG_INT)  &&& QNAN = QNAN := by native_decide
-private theorem qnan_or_bool_and_qnan : (QNAN ||| TAG_BOOL) &&& QNAN = QNAN := by native_decide
-private theorem qnan_or_none_and_qnan : (QNAN ||| TAG_NONE) &&& QNAN = QNAN := by native_decide
-private theorem qnan_or_ptr_and_qnan  : (QNAN ||| TAG_PTR)  &&& QNAN = QNAN := by native_decide
-private theorem qnan_or_pend_and_qnan : (QNAN ||| TAG_PEND) &&& QNAN = QNAN := by native_decide
-
-/-- All tagged types have QNAN bits set.
-    Proof: TAG_CHECK &&& QNAN = QNAN (submask property), so
-    (v &&& TAG_CHECK) &&& QNAN = v &&& QNAN by associativity.
-    Then h gives the tag value, and masking with QNAN yields QNAN. -/
+/-- Every tagged type is tagged: its masked word `QNAN ||| TAG_X` (tag 1-5)
+    is at or above the first tag boundary, so it is not a float. -/
 theorem isInt_tagged (v : UInt64) : IsInt v → IsTagged v := by
-  unfold IsInt IsTagged; intro h
-  have step1 : (v &&& TAG_CHECK) &&& QNAN = v &&& QNAN := by
-    rw [uint64_and_assoc, tag_check_and_qnan]
-  have step2 : (v &&& TAG_CHECK) &&& QNAN = QNAN := by
-    rw [h, qnan_or_int_and_qnan]
-  exact step1.symm.trans step2
+  unfold IsInt IsTagged IsFloat; intro h; rw [h]; native_decide
 
 theorem isBool_tagged (v : UInt64) : IsBool v → IsTagged v := by
-  unfold IsBool IsTagged; intro h
-  have step1 : (v &&& TAG_CHECK) &&& QNAN = v &&& QNAN := by
-    rw [uint64_and_assoc, tag_check_and_qnan]
-  have step2 : (v &&& TAG_CHECK) &&& QNAN = QNAN := by
-    rw [h, qnan_or_bool_and_qnan]
-  exact step1.symm.trans step2
+  unfold IsBool IsTagged IsFloat; intro h; rw [h]; native_decide
 
 theorem isNone_tagged (v : UInt64) : IsNone_ v → IsTagged v := by
-  unfold IsNone_ IsTagged; intro h
-  have step1 : (v &&& TAG_CHECK) &&& QNAN = v &&& QNAN := by
-    rw [uint64_and_assoc, tag_check_and_qnan]
-  have step2 : (v &&& TAG_CHECK) &&& QNAN = QNAN := by
-    rw [h, qnan_or_none_and_qnan]
-  exact step1.symm.trans step2
+  unfold IsNone_ IsTagged IsFloat; intro h; rw [h]; native_decide
 
 theorem isPtr_tagged (v : UInt64) : IsPtr v → IsTagged v := by
-  unfold IsPtr IsTagged; intro h
-  have step1 : (v &&& TAG_CHECK) &&& QNAN = v &&& QNAN := by
-    rw [uint64_and_assoc, tag_check_and_qnan]
-  have step2 : (v &&& TAG_CHECK) &&& QNAN = QNAN := by
-    rw [h, qnan_or_ptr_and_qnan]
-  exact step1.symm.trans step2
+  unfold IsPtr IsTagged IsFloat; intro h; rw [h]; native_decide
 
 theorem isPending_tagged (v : UInt64) : IsPending v → IsTagged v := by
-  unfold IsPending IsTagged; intro h
-  have step1 : (v &&& TAG_CHECK) &&& QNAN = v &&& QNAN := by
-    rw [uint64_and_assoc, tag_check_and_qnan]
-  have step2 : (v &&& TAG_CHECK) &&& QNAN = QNAN := by
-    rw [h, qnan_or_pend_and_qnan]
-  exact step1.symm.trans step2
+  unfold IsPending IsTagged IsFloat; intro h; rw [h]; native_decide
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: All 15 type disjointness pairs

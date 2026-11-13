@@ -107,6 +107,7 @@ macro_rules! attached_symbol {
     ("__molt_crypto_require_random_entropy") => { "__molt_crypto_require_random_entropy__molt_context_047a33b55bc1b76d" };
     ("__molt_crypto_seq_snapshot") => { "__molt_crypto_seq_snapshot__molt_context_047a33b55bc1b76d" };
     ("__molt_crypto_type_name") => { "__molt_crypto_type_name__molt_context_047a33b55bc1b76d" };
+    ("__molt_float_result_bits") => { "__molt_float_result_bits__molt_context_047a33b55bc1b76d" };
     ("__molt_gpu_alloc_bytearray") => { "__molt_gpu_alloc_bytearray__molt_context_047a33b55bc1b76d" };
     ("__molt_gpu_alloc_instance_for_class") => { "__molt_gpu_alloc_instance_for_class__molt_context_047a33b55bc1b76d" };
     ("__molt_gpu_alloc_list_owned") => { "__molt_gpu_alloc_list_owned__molt_context_047a33b55bc1b76d" };
@@ -219,7 +220,6 @@ macro_rules! attached_symbol {
     ("__molt_math_exact_float_value") => { "__molt_math_exact_float_value__molt_context_047a33b55bc1b76d" };
     ("__molt_math_exception_pending") => { "__molt_math_exception_pending__molt_context_047a33b55bc1b76d" };
     ("__molt_math_float_as_double") => { "__molt_math_float_as_double__molt_context_047a33b55bc1b76d" };
-    ("__molt_math_float_result_bits") => { "__molt_math_float_result_bits__molt_context_047a33b55bc1b76d" };
     ("__molt_math_format_obj") => { "__molt_math_format_obj__molt_context_047a33b55bc1b76d" };
     ("__molt_math_format_obj_str") => { "__molt_math_format_obj_str__molt_context_047a33b55bc1b76d" };
     ("__molt_math_hash_builtin") => { "__molt_math_hash_builtin__molt_context_047a33b55bc1b76d" };

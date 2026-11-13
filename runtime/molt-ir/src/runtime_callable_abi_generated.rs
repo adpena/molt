@@ -12547,6 +12547,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_crypto_type_name__molt_context_047a33b55bc1b76d",
         },
+        "__molt_float_result_bits" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "__molt_float_result_bits__molt_context_047a33b55bc1b76d",
+        },
         "__molt_gpu_alloc_bytearray" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_gpu_alloc_bytearray__molt_context_047a33b55bc1b76d",
@@ -13106,10 +13110,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "__molt_math_float_as_double" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_math_float_as_double__molt_context_047a33b55bc1b76d",
-        },
-        "__molt_math_float_result_bits" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "__molt_math_float_result_bits__molt_context_047a33b55bc1b76d",
         },
         "__molt_math_format_obj" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

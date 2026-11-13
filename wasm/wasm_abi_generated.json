@@ -1972,6 +1972,10 @@
       "context": "Attached",
       "physical_symbol": "__molt_crypto_type_name__molt_context_047a33b55bc1b76d"
     },
+    "__molt_float_result_bits": {
+      "context": "Attached",
+      "physical_symbol": "__molt_float_result_bits__molt_context_047a33b55bc1b76d"
+    },
     "__molt_gpu_alloc_bytearray": {
       "context": "Attached",
       "physical_symbol": "__molt_gpu_alloc_bytearray__molt_context_047a33b55bc1b76d"
@@ -2531,10 +2535,6 @@
     "__molt_math_float_as_double": {
       "context": "Attached",
       "physical_symbol": "__molt_math_float_as_double__molt_context_047a33b55bc1b76d"
-    },
-    "__molt_math_float_result_bits": {
-      "context": "Attached",
-      "physical_symbol": "__molt_math_float_result_bits__molt_context_047a33b55bc1b76d"
     },
     "__molt_math_format_obj": {
       "context": "Attached",
@@ -18209,6 +18209,7 @@
     "__molt_crypto_string_obj_to_owned": "__molt_crypto_string_obj_to_owned",
     "__molt_crypto_to_i64": "__molt_crypto_to_i64",
     "__molt_crypto_type_name__molt_context_047a33b55bc1b76d": "__molt_crypto_type_name__molt_context_047a33b55bc1b76d",
+    "__molt_float_result_bits__molt_context_047a33b55bc1b76d": "__molt_float_result_bits__molt_context_047a33b55bc1b76d",
     "__molt_gpu_alloc_bytearray__molt_context_047a33b55bc1b76d": "__molt_gpu_alloc_bytearray__molt_context_047a33b55bc1b76d",
     "__molt_gpu_alloc_instance_for_class__molt_context_047a33b55bc1b76d": "__molt_gpu_alloc_instance_for_class__molt_context_047a33b55bc1b76d",
     "__molt_gpu_alloc_list_owned__molt_context_047a33b55bc1b76d": "__molt_gpu_alloc_list_owned__molt_context_047a33b55bc1b76d",
@@ -18349,7 +18350,6 @@
     "__molt_math_exception_pending__molt_context_047a33b55bc1b76d": "__molt_math_exception_pending__molt_context_047a33b55bc1b76d",
     "__molt_math_fill_os_random": "__molt_math_fill_os_random",
     "__molt_math_float_as_double__molt_context_047a33b55bc1b76d": "__molt_math_float_as_double__molt_context_047a33b55bc1b76d",
-    "__molt_math_float_result_bits__molt_context_047a33b55bc1b76d": "__molt_math_float_result_bits__molt_context_047a33b55bc1b76d",
     "__molt_math_format_obj__molt_context_047a33b55bc1b76d": "__molt_math_format_obj__molt_context_047a33b55bc1b76d",
     "__molt_math_format_obj_str__molt_context_047a33b55bc1b76d": "__molt_math_format_obj_str__molt_context_047a33b55bc1b76d",
     "__molt_math_hash_builtin__molt_context_047a33b55bc1b76d": "__molt_math_hash_builtin__molt_context_047a33b55bc1b76d",

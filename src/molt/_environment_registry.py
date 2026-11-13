@@ -4200,6 +4200,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_HOST_WORK_SLOT_HELD",
+      "output_neutral": true,
+      "owner": "src/molt/host_capacity.py",
+      "summary": "The resolved host-work slot directory an ancestor process holds: molt.host_capacity.host_work_slot exports it for the body it admits, so a heavy job that the holder starts (a landing's tests running a consumer gate, say) belongs to the holder's job and is admitted at once instead of waiting for its own ancestor.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "0",
       "kind": "bool",

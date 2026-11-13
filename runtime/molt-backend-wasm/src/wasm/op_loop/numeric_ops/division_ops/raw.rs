@@ -14,7 +14,6 @@ pub(super) fn emit_nonzero_rhs_raw_division_or_boxed(
     operands: BinaryOperands,
     import_ids: &TrackedImportIds,
     const_cache: &ConstantCache,
-    f64_scratch_local: u32,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     import_name: crate::wasm_abi_generated::WasmRuntimeImport,
@@ -25,7 +24,7 @@ pub(super) fn emit_nonzero_rhs_raw_division_or_boxed(
     func.instruction(&Instruction::I64Ne);
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
     match division_op {
-        WasmNumericOpLoopKind::TrueDiv => emit_raw_true_div(func, temps, f64_scratch_local),
+        WasmNumericOpLoopKind::TrueDiv => emit_raw_true_div(func, temps),
         WasmNumericOpLoopKind::FloorDiv => emit_raw_floor_div(
             func,
             operands,
@@ -53,13 +52,13 @@ pub(super) fn emit_nonzero_rhs_raw_division_or_boxed(
     func.instruction(&Instruction::End);
 }
 
-fn emit_raw_true_div(func: &mut Function, temps: IntBinaryTemps, scratch: u32) {
+fn emit_raw_true_div(func: &mut Function, temps: IntBinaryTemps) {
     func.instruction(&Instruction::LocalGet(temps.lhs));
     func.instruction(&Instruction::F64ConvertI64S);
     func.instruction(&Instruction::LocalGet(temps.rhs));
     func.instruction(&Instruction::F64ConvertI64S);
     func.instruction(&Instruction::F64Div);
-    emit_plain_f64_arithmetic_result(func, scratch);
+    emit_plain_f64_arithmetic_result(func);
 }
 
 fn emit_raw_floor_div(

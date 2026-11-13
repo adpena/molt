@@ -62,9 +62,9 @@ pub(super) fn emit_additive_numeric_op(
         emit_inline_int_result(func, temps.result, known_raw_ints);
     } else if direct_lane == Some(WasmScalarDirectNumericLane::Float) {
         numeric_lane_stats.record_op_loop_additive_float_raw_site();
-        emit_plain_f64_binary_result(func, operands, locals, |func, scratch_local| {
+        emit_plain_f64_binary_result(func, operands, |func| {
             emit_f64_additive(func, selection.op_loop_kind);
-            emit_plain_f64_arithmetic_result(func, scratch_local);
+            emit_plain_f64_arithmetic_result(func);
         });
     } else if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
         numeric_lane_stats.record_op_loop_additive_guarded_int_site();
@@ -122,11 +122,10 @@ pub(super) fn emit_additive_numeric_op(
             import_ids,
             import_name,
             selection.op_loop_kind,
-            locals,
             reloc_enabled,
-            |func, scratch_local| {
+            |func| {
                 emit_f64_additive(func, selection.op_loop_kind);
-                emit_plain_f64_arithmetic_result(func, scratch_local);
+                emit_plain_f64_arithmetic_result(func);
             },
         );
     }

@@ -232,43 +232,91 @@ fn bool_words_unbox_to_their_runtime_truth_value() {
     }
 }
 
+/// Words at every IEEE class edge, both signs, each NaN family, and tags.
+const FLOAT_EDGES: [u64; 15] = [
+    0x0000_0000_0000_0000, // +0.0
+    0x8000_0000_0000_0000, // -0.0
+    0x0000_0000_0000_0001, // smallest subnormal
+    0x3ff8_0000_0000_0000, // 1.5
+    0x7fef_ffff_ffff_ffff, // f64::MAX
+    0x7ff0_0000_0000_0000, // +inf
+    0xfff0_0000_0000_0000, // -inf
+    0x7ff8_0000_0000_0000, // default quiet NaN
+    0xfff8_0000_0000_0000, // negative default NaN (x86 arithmetic)
+    0x7ff8_0000_0000_079a, // quiet NaN, payload below 2^48
+    0x7fff_f800_0000_079a, // quiet NaN with the tag field set (a heap NaN)
+    0x7ff0_0000_0000_0001, // signaling NaN, payload 1
+    0x7ff4_0000_0000_0002, // signaling NaN with the tag field set
+    0xfff4_0000_0000_0002, // negative signaling NaN with the tag field set
+    0xffff_ffff_ffff_ffff, // all ones: negative quiet NaN, tag field set
+];
+
 #[test]
-fn is_float_matches_the_scalar_authority_on_every_kind_of_word() {
-    let floats = [
-        0.0f64,
-        -0.0,
-        1.5,
-        -2.25,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::MIN_POSITIVE,
-        f64::MAX,
-    ];
-    let tagged = [
-        crate::box_float_bits(f64::NAN) as u64,
+fn the_float_test_is_the_tag_boundary_and_tags_never_test_as_floats() {
+    for bits in FLOAT_EDGES {
+        let value = f64::from_bits(bits);
+        // Independent oracle: a word is a tag iff its sign-free high 16 bits
+        // are QNAN's with a nonzero tag field.
+        let high = (bits >> 48) & 0x7fff;
+        let tagged = high >= 0x7ff9;
+        assert_eq!(crate::is_float_bits(bits), !tagged, "{bits:#x}");
+        assert_eq!(generate_is_float(&mut Evaluate, bits), !tagged, "{bits:#x}");
+        // Every non-NaN is inline as its bits; inline NaNs are exactly those
+        // whose tag field is clear.
+        if !value.is_nan() {
+            assert_eq!(crate::float_inline_word(value), Some(bits), "{bits:#x}");
+        }
+        if value.is_nan() {
+            let inline = bits & 0x0007_0000_0000_0000 == 0;
+            assert_eq!(
+                crate::float_inline_word(value),
+                inline.then_some(bits),
+                "{bits:#x}"
+            );
+            if inline {
+                assert!(crate::is_float_bits(bits), "{bits:#x}");
+            }
+        }
+        // The allocation-free box keeps every inline value's bits.
+        let boxed = crate::box_float_bits(value) as u64;
+        assert!(crate::is_float_bits(boxed), "{boxed:#x}");
+        if !value.is_nan() || bits & 0x0007_0000_0000_0000 == 0 {
+            assert_eq!(boxed, bits, "{bits:#x}");
+        } else {
+            assert_eq!(boxed, f64::NAN.to_bits() | (bits & (1 << 63)), "{bits:#x}");
+        }
+    }
+    for tag in [
         box_int_bits(0) as u64,
         box_int_bits(-1) as u64,
         box_bool_bits(1) as u64,
         crate::QNAN | TAG_NONE,
         crate::QNAN | TAG_PTR | 0x1000,
         crate::QNAN | TAG_PENDING | 1,
-    ];
-    let words = floats
-        .iter()
-        .map(|f| crate::box_float_bits(*f) as u64)
-        .chain(tagged);
-    for word in words {
-        assert_eq!(
-            generate_is_float(&mut Evaluate, word),
-            crate::is_float_bits(word),
-            "{word:#x}"
-        );
+    ] {
+        assert!(!crate::is_float_bits(tag), "{tag:#x}");
+        assert!(!generate_is_float(&mut Evaluate, tag), "{tag:#x}");
     }
-    // A boxed float's payload is its own bits.
-    for f in floats {
-        assert_eq!(
-            f64::from_bits(crate::box_float_bits(f) as u64).to_bits(),
-            f.to_bits()
-        );
+}
+
+#[test]
+fn arithmetic_on_inline_nans_stays_inline() {
+    // Compiled code boxes by identity: quieting a NaN sets bit 51 and keeps
+    // the tag field, and the default NaNs have it clear.
+    for bits in FLOAT_EDGES {
+        let value = f64::from_bits(bits);
+        if !value.is_nan() || bits & 0x0007_0000_0000_0000 != 0 {
+            continue;
+        }
+        let quieted = bits | (1 << 51);
+        assert!(crate::is_float_bits(quieted), "{quieted:#x}");
+        let computed = (value + 1.0).to_bits();
+        assert!(crate::is_float_bits(computed), "{computed:#x}");
+    }
+    for default in [
+        f64::NAN.to_bits(),
+        (f64::INFINITY - f64::INFINITY).to_bits(),
+    ] {
+        assert!(crate::is_float_bits(default), "{default:#x}");
     }
 }

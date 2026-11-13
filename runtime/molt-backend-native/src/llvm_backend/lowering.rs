@@ -33,8 +33,6 @@ use crate::llvm_backend::runtime_imports::runtime_function;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
-use inkwell::FloatPredicate;
-#[cfg(feature = "llvm")]
 use inkwell::attributes::AttributeLoc;
 
 #[cfg(feature = "llvm")]
@@ -245,6 +243,76 @@ impl<'ctx> nanbox::word::WordBuilder for LlvmWords<'_, 'ctx> {
     }
 }
 
+/// The LLVM builder a word builder spells into.
+#[cfg(feature = "llvm")]
+pub(super) trait LlvmBranchWords<'ctx> {
+    fn llvm(&self) -> LlvmWords<'_, 'ctx>;
+}
+
+#[cfg(feature = "llvm")]
+impl<'ctx> LlvmBranchWords<'ctx> for LlvmWords<'_, 'ctx> {
+    fn llvm(&self) -> LlvmWords<'_, 'ctx> {
+        *self
+    }
+}
+
+/// `BranchBuilder::choose` in LLVM: a conditional branch to two blocks of the
+/// current function that join in one i64 phi. Every LLVM word builder uses it.
+#[cfg(feature = "llvm")]
+pub(super) fn llvm_choose<'ctx, S: LlvmBranchWords<'ctx>>(
+    s: &mut S,
+    condition: inkwell::values::IntValue<'ctx>,
+    yes: impl FnOnce(&mut S) -> inkwell::values::IntValue<'ctx>,
+    no: impl FnOnce(&mut S) -> inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let (context, function) = {
+        let words = s.llvm();
+        let block = words
+            .builder
+            .get_insert_block()
+            .expect("choose inside a block");
+        (
+            words.context,
+            block.get_parent().expect("a block has a function"),
+        )
+    };
+    let yes_block = context.append_basic_block(function, "choose_yes");
+    let no_block = context.append_basic_block(function, "choose_no");
+    let join = context.append_basic_block(function, "choose_join");
+    s.llvm()
+        .builder
+        .build_conditional_branch(condition, yes_block, no_block)
+        .unwrap();
+    s.llvm().builder.position_at_end(yes_block);
+    let taken = yes(s);
+    let taken_end = s.llvm().builder.get_insert_block().unwrap();
+    s.llvm().builder.build_unconditional_branch(join).unwrap();
+    s.llvm().builder.position_at_end(no_block);
+    let fallback = no(s);
+    let fallback_end = s.llvm().builder.get_insert_block().unwrap();
+    s.llvm().builder.build_unconditional_branch(join).unwrap();
+    s.llvm().builder.position_at_end(join);
+    let phi = s
+        .llvm()
+        .builder
+        .build_phi(context.i64_type(), "choose_value")
+        .unwrap();
+    phi.add_incoming(&[(&taken, taken_end), (&fallback, fallback_end)]);
+    phi.as_basic_value().into_int_value()
+}
+
+#[cfg(feature = "llvm")]
+impl<'ctx> nanbox::word::BranchBuilder for LlvmWords<'_, 'ctx> {
+    fn choose(
+        &mut self,
+        condition: Self::Predicate,
+        yes: impl FnOnce(&mut Self) -> Self::Word,
+        no: impl FnOnce(&mut Self) -> Self::Word,
+    ) -> Self::Word {
+        llvm_choose(self, condition, yes, no)
+    }
+}
+
 /// Full-range runtime integer boxing (`molt_int_from_i64`): the inline box when
 /// the value fits, otherwise one fresh heap BigInt owner, or None with
 /// MemoryError pending when that allocation fails.
@@ -346,18 +414,8 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
                 .build_bit_cast(float_val, i64_ty, "f64_to_i64")
                 .unwrap()
                 .into_int_value();
-            let is_nan = builder
-                .build_float_compare(FloatPredicate::UNO, float_val, float_val, "f64_is_nan")
-                .unwrap();
-            builder
-                .build_select(
-                    is_nan,
-                    i64_ty.const_int(nanbox::CANONICAL_NAN_BITS, false),
-                    raw_bits,
-                    "f64_nan_canonical_bits",
-                )
-                .unwrap()
-                .into_int_value()
+            // A float is its own word (runtime spec 2.1.1): boxing is the cast.
+            raw_bits
         }
         // A None annotation still carries the actual boxed word. Only a
         // ConstNone producer can supply the singleton, including in homes.
