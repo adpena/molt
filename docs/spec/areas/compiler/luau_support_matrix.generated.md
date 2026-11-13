@@ -13,8 +13,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 - `compile-error`: `86`
 - `implemented-exact`: `192`
 - `implemented-target-limited`: `19`
-- `not-admitted`: `237`
-- `total`: `534`
+- `not-admitted`: `238`
+- `total`: `535`
 
 ## Matrix
 
@@ -359,6 +359,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `list_pop` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `list_remove` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `list_reverse` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `list_reverse_slice` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `load` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `load_attr` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `load_const` | `implemented-target-limited` | Shared target contract admits only concrete integer literals exactly representable by Luau's numeric carrier. |

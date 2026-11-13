@@ -660,14 +660,14 @@ simpleir_host_capability_semantics_kinds = [
 callback_free_copy_kinds = [
     "binding_alias", "call_async", "guard_bool", "guard_float", "guard_int",
     "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
-    "line", "missing", "nop", "print_newline",
+    "line", "list_reverse_slice", "missing", "nop", "print_newline",
 ]
 
 # Preserved Copy carriers that cannot introduce a pending exception. Line is
 # metadata under terminal TIR ownership. Native legacy cleanup may release at
 # this marker, but finalizers report unraisable errors and restore prior state.
 # This is not purity: keep the Copy effect-free/consistent floor unchanged.
-nothrow_copy_kinds = ["line"]
+nothrow_copy_kinds = ["line", "list_reverse_slice"]
 
 # Preserved primitives whose successful result is an exact `int` of any
 # magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact
@@ -999,6 +999,7 @@ classifier_owned_value = [
     "list_pop",
     "list_remove",
     "list_reverse",
+    "list_reverse_slice",
     "matmul",
     "module_import_star",
     "module_new",

@@ -2510,6 +2510,10 @@ name = "list_reverse"
 type = 2
 
 [[import]]
+name = "list_reverse_slice"
+type = 8
+
+[[import]]
 name = "list_sort"
 return_contract = "owned_object"
 type = 4
@@ -6142,6 +6146,7 @@ kinds = [
   "string_count_slice",
   "bytes_count_slice",
   "bytearray_count_slice",
+  "list_reverse_slice",
 ]
 
 # Import-name prefixes omitted by the backend Pure profile.

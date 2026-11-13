@@ -3738,7 +3738,9 @@ def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
     assert sorted(direct_calls - runtime_exports) == []
 
 
-def test_shared_boxed_ops_admit_only_complete_text_predicate_family() -> None:
+def test_shared_boxed_ops_admit_only_declared_complete_families() -> None:
+    # The complete text predicate family, plus the in-place reverse the TIR
+    # transform emits for a proven reversed slice store (HF-837).
     data = manifest.load_manifest()
     rows = manifest.runtime_boxed_op_specs(data)
     expected = {
@@ -3747,6 +3749,7 @@ def test_shared_boxed_ops_admit_only_complete_text_predicate_family() -> None:
         for method in ("find", "startswith", "endswith", "count")
         for suffix in ("", "_slice")
     }
+    expected["list_reverse_slice"] = 6
     assert {row["kind"]: len(row["args"]) for row in rows} == expected
     abi = {row["runtime_name"]: row for row in manifest.runtime_boxed_call_specs(data)}
     for row in rows:

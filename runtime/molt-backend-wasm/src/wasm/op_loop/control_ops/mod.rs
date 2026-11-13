@@ -391,6 +391,7 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::ListPop
         | molt_ir::OpKind::ListRemove
         | molt_ir::OpKind::ListReverse
+        | molt_ir::OpKind::ListReverseSlice
         | molt_ir::OpKind::Load
         | molt_ir::OpKind::LoadAttr
         | molt_ir::OpKind::LoadConst

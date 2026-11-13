@@ -410,6 +410,7 @@ pub(crate) enum WasmRuntimeImport {
     ListPop,
     ListRemove,
     ListReverse,
+    ListReverseSlice,
     ListSort,
     MapBuiltin,
     RangeNew,

@@ -5769,6 +5769,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "0",
+      "kind": "bool",
+      "name": "MOLT_SLICE_REVERSE_REPORT",
+      "output_neutral": false,
+      "owner": "runtime/molt-passes/src/tir/passes/slice_reverse.rs",
+      "summary": "Set to exactly 1 to print, to stderr during the build, each slice store of a reversed slice of the same list that the slice_reverse pass could not prove reverses one range, with the missing proof; unset or any other value prints nothing.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "",
       "kind": "path",
       "name": "MOLT_SOURCE_EXTENSION_SET_REGISTRY_CONFIG",

@@ -3925,6 +3925,14 @@ owner = "src/molt/cargo_execution_policy.py"
 summary = "Forbids source builds and provenance refreshes of runtime and backend artifacts when set to exactly 1, so a build that needs one fails with a message naming the variable; default off; release verification refuses it."
 
 [[variable]]
+name = "MOLT_SLICE_REVERSE_REPORT"
+audience = "user"
+kind = "bool"
+default = "0"
+owner = "runtime/molt-passes/src/tir/passes/slice_reverse.rs"
+summary = "Set to exactly 1 to print, to stderr during the build, each slice store of a reversed slice of the same list that the slice_reverse pass could not prove reverses one range, with the missing proof; unset or any other value prints nothing."
+
+[[variable]]
 name = "MOLT_SOURCE_EXTENSION_SET_REGISTRY_CONFIG"
 audience = "user"
 kind = "path"

@@ -21575,6 +21575,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_list_reverse__molt_context_047a33b55bc1b76d",
         },
+        "molt_list_reverse_slice" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_list_reverse_slice__molt_context_047a33b55bc1b76d",
+        },
         "molt_list_richcompare" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,
             physical_symbol: "molt_list_richcompare",

@@ -695,6 +695,8 @@ pub enum OpKind {
     ListRemove,
     #[serde(rename = "list_reverse")]
     ListReverse,
+    #[serde(rename = "list_reverse_slice")]
+    ListReverseSlice,
     #[serde(rename = "load")]
     Load,
     #[serde(rename = "load_attr")]
@@ -1428,6 +1430,7 @@ impl OpKind {
         Self::ListPop,
         Self::ListRemove,
         Self::ListReverse,
+        Self::ListReverseSlice,
         Self::Load,
         Self::LoadAttr,
         Self::LoadConst,
@@ -1966,6 +1969,7 @@ impl OpKind {
             Self::ListPop => "list_pop",
             Self::ListRemove => "list_remove",
             Self::ListReverse => "list_reverse",
+            Self::ListReverseSlice => "list_reverse_slice",
             Self::Load => "load",
             Self::LoadAttr => "load_attr",
             Self::LoadConst => "load_const",
@@ -2515,6 +2519,7 @@ impl std::str::FromStr for OpKind {
             "list_pop" => Ok(Self::ListPop),
             "list_remove" => Ok(Self::ListRemove),
             "list_reverse" => Ok(Self::ListReverse),
+            "list_reverse_slice" => Ok(Self::ListReverseSlice),
             "load" => Ok(Self::Load),
             "load_attr" => Ok(Self::LoadAttr),
             "load_const" => Ok(Self::LoadConst),
@@ -3069,6 +3074,7 @@ pub const fn simpleir_backend_private_owner(kind: OpKind) -> Option<&'static str
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -3645,6 +3651,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -4274,6 +4281,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -4824,6 +4832,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -5369,6 +5378,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -5911,6 +5921,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -6450,6 +6461,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -6997,6 +7009,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -7538,6 +7551,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -8083,6 +8097,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -8625,6 +8640,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -9155,6 +9171,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -9710,6 +9727,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -10246,6 +10264,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -10797,6 +10816,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -11338,6 +11358,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -11879,6 +11900,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -12421,6 +12443,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -12959,6 +12982,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -13507,6 +13531,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -14050,6 +14075,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -14586,6 +14612,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -15134,6 +15161,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -15681,6 +15709,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -16226,6 +16255,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -16761,6 +16791,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -17309,6 +17340,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -17856,6 +17888,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -18394,6 +18427,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -18944,6 +18978,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -19646,6 +19681,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -20204,6 +20240,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadLocal
@@ -20834,6 +20871,7 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Issubclass
         | OpKind::ListFromRange
         | OpKind::ListIntNew
+        | OpKind::ListReverseSlice
         | OpKind::LoadLocal
         | OpKind::LoopCarryInit
         | OpKind::LoopCarryUpdate
@@ -21594,6 +21632,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -22145,6 +22184,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -22687,6 +22727,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -23231,6 +23272,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -23778,6 +23820,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -24242,6 +24285,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::LoadLocal
         | OpKind::LoopBreak
         | OpKind::LoopBreakIfException
@@ -25117,6 +25161,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::LoadConst
             | OpKind::LoadLocal
             | OpKind::LoadMethod
@@ -25809,6 +25854,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Matmul
         | OpKind::ModuleImportStar
         | OpKind::ModuleNew
@@ -26220,6 +26266,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -26756,6 +26803,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -27294,6 +27342,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -27832,6 +27881,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -28376,6 +28426,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -28917,6 +28968,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -29459,6 +29511,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -30927,6 +30980,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::GuardTag
         | OpKind::GuardType
         | OpKind::Line
+        | OpKind::ListReverseSlice
         | OpKind::Missing
         | OpKind::Nop
         | OpKind::PrintNewline => true,
@@ -31469,7 +31523,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => false,
-        OpKind::Line => true,
+        OpKind::Line | OpKind::ListReverseSlice => true,
     }
 }
 
@@ -31813,6 +31867,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -32354,6 +32409,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -32885,6 +32941,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -33435,6 +33492,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -33978,6 +34036,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -34519,6 +34578,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -35061,6 +35121,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -35603,6 +35664,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -36144,6 +36206,7 @@ impl OpKind {
             | OpKind::ListPop
             | OpKind::ListRemove
             | OpKind::ListReverse
+            | OpKind::ListReverseSlice
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
@@ -47741,6 +47804,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -48276,6 +48340,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -48818,6 +48883,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -49363,6 +49429,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -50054,6 +50121,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -50593,6 +50661,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -51139,6 +51208,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::ListNew
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst

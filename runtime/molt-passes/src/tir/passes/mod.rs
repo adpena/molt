@@ -42,6 +42,7 @@ mod reachability;
 pub mod refcount_elim;
 pub mod sccp;
 pub mod scev;
+pub mod slice_reverse;
 pub mod sroa;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
@@ -226,6 +227,7 @@ mod tests {
                 "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
+                "slice_reverse",
                 "fast_math",
                 "branchless_count",
                 "bce",

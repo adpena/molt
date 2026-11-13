@@ -363,6 +363,7 @@ FrontendOpKind = Literal[
     'LIST_POP',
     'LIST_REMOVE',
     'LIST_REVERSE',
+    'LIST_REVERSE_SLICE',
     'LOAD',
     'LOAD_ATTR',
     'LOAD_CLOSURE',
@@ -893,6 +894,7 @@ WireOpKind = Literal[
     'list_pop',
     'list_remove',
     'list_reverse',
+    'list_reverse_slice',
     'load',
     'load_attr',
     'load_const',
@@ -1430,6 +1432,7 @@ class FrontendKinds:
     LIST_POP: Final = 'LIST_POP'
     LIST_REMOVE: Final = 'LIST_REMOVE'
     LIST_REVERSE: Final = 'LIST_REVERSE'
+    LIST_REVERSE_SLICE: Final = 'LIST_REVERSE_SLICE'
     LOAD: Final = 'LOAD'
     LOAD_ATTR: Final = 'LOAD_ATTR'
     LOAD_CLOSURE: Final = 'LOAD_CLOSURE'
@@ -1960,6 +1963,7 @@ class WireKinds:
     LIST_POP: Final = 'list_pop'
     LIST_REMOVE: Final = 'list_remove'
     LIST_REVERSE: Final = 'list_reverse'
+    LIST_REVERSE_SLICE: Final = 'list_reverse_slice'
     LOAD: Final = 'load'
     LOAD_ATTR: Final = 'load_attr'
     LOAD_CONST: Final = 'load_const'
@@ -2488,6 +2492,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'LIST_POP': 'list_pop',
     'LIST_REMOVE': 'list_remove',
     'LIST_REVERSE': 'list_reverse',
+    'LIST_REVERSE_SLICE': 'list_reverse_slice',
     'LOAD': 'load',
     'LOAD_ATTR': 'load_attr',
     'LOAD_CLOSURE': 'closure_load',
@@ -3022,6 +3027,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "list_pop",
         "list_remove",
         "list_reverse",
+        "list_reverse_slice",
         "load",
         "load_attr",
         "load_const",
@@ -3592,6 +3598,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "LIST_POP",
         "LIST_REMOVE",
         "LIST_REVERSE",
+        "LIST_REVERSE_SLICE",
         "LOAD",
         "LOAD_ATTR",
         "LOAD_CLOSURE",
@@ -5511,6 +5518,7 @@ BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[WireOpKind] = frozenset(
         "list_pop",
         "list_remove",
         "list_reverse",
+        "list_reverse_slice",
         "matmul",
         "module_import_star",
         "module_new",

@@ -128,7 +128,7 @@ builder trait and walker with LLVM as its first implementation; Cranelift onto f
 native backends already call runtime entries only by typed `RuntimeFn`, decoded once at the TIR
 lift ([typed runtime imports](typed_runtime_imports.md), 2026-11-12). Measured reason the order matters (2026-11-11, LLVM release,
 macOS arm64, instructions retired, managed CPython 3.12.16 -I): the worst gaps are fannkuch 8.2x
-CPython (27.0 G excess; 4.7x since HF-837, below), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
+CPython (27.0 G excess; below CPython's count since HF-837, below), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
 mandelbrot 4.7x (6.6 G), `bench_dict` and `bench_list` 2.3x; their buckets (object lifecycle,
 container access) are fast paths every backend needs, so each is written once on the foundation.
 
@@ -181,14 +181,28 @@ main 49242cd306 built in its own worktree, output identical: `fannkuch_redux.py 
 CPython 3.12.16 -I runs it in 3.97 G and 0.16 s. `bench_list` LLVM -7.4%, Cranelift -5.6%;
 `bench_dict` LLVM 0.0%, Cranelift +1.0%. The same profile on the lane (LLVM, 5,995 self samples
 against 9,165): list destroy 18.0%, allocation 18.9%, slicing 11.8%, index get/set 10.1%,
-iteration 9.9%, GC membership 6.0%, compiled code 2.3%. Most of what remains is the flip
-`perm[:k + 1] = perm[k::-1]`, which still builds two slice objects and a list per flip. Its next
-slice is a TIR transform: a slice store whose value is a step -1 slice of the same SSA list over a
-range the bounds facts prove equal becomes one in-place reverse. After it, the call-threaded
-shape remains: every list index is a runtime call on LLVM and WASM (Cranelift keeps a
-backend-local fast path), `for r in rxrange` iterates a range object through the runtime, and
-`perm1[:]` allocates a list per permutation; these move to the codegen
-foundation as compiled list and range primitives.
+iteration 9.9%, GC membership 6.0%, compiled code 2.3%.
+
+The flip `perm[:k + 1] = perm[k::-1]` is the TIR pass `slice_reverse` (after SCCP, every backend):
+a `StoreIndex` whose value is an `Index` of the same SSA list by a step -1 slice becomes one
+in-place reverse when the bounds name one range. Each bound decomposes into a base value plus a
+constant offset through copies and `Add`/`Sub` of int constants, and the target's offset must be
+the source's plus one (or both None), so `seq[:k + 1] = seq[k::-1]`, `n = k + 1; seq[:n] =
+seq[n - 1::-1]`, `seq[i:j] = seq[j - 1:i - 1:-1]` and `seq[:] = seq[::-1]` qualify and a near
+miss does not. The pass emits `list_reverse_slice(seq, start base, offset, stop base, offset,
+shape)`, a shared boxed runtime call every backend lowers from the generated table, before the
+statement's chain of blocks: the kernel reverses in place for an exact list without a C view whose
+bases are inline ints and whose bounds are `>= 0`, and otherwise declines to the statement as
+written. A shape whose proof is missing is reported under `MOLT_SLICE_REVERSE_REPORT=1`. Release,
+macOS arm64, minimum of 7 interleaved runs against main 388c6de982 in its own worktree, output
+identical: `fannkuch_redux.py 9` LLVM 18.76 G to 3.63 G (-80.7%, 0.65 to 0.12 s), Cranelift
+19.13 G to 4.09 G (-78.6%, 0.67 to 0.14 s), below CPython's 3.97 G and 0.16 s; `bench_list` and
+`bench_dict` within 0.3%. Profile (LLVM, 1,216 self samples against 9,165 on ee6d276030): list
+destroy 11.9%, allocation 16.4%, slicing and the in-place reverse 14.9%, index get/set 20.0%,
+iteration 1.5%, GC membership 3.4%, compiled code 9.8%. What remains is the call-threaded shape:
+every list index is a runtime call on LLVM and WASM (Cranelift keeps a backend-local fast path),
+`for r in rxrange` iterates a range object through the runtime, and `perm1[:]` allocates a list per
+permutation; these move to the codegen foundation as compiled list and range primitives.
 
 P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against

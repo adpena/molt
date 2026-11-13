@@ -1058,6 +1058,7 @@ def test_call_sites_share_effect_authority() -> None:
         "guard_tag",
         "guard_type",
         "line",
+        "list_reverse_slice",
         "missing",
         "nop",
         "print_newline",
@@ -1119,7 +1120,8 @@ def test_nothrow_copy_effect_rejects_unknown_duplicate_or_typed_opcode(
     table = tmp_path / "nothrow_copy.toml"
     table.write_text(
         TABLE.read_text(encoding="utf-8").replace(
-            'nothrow_copy_kinds = ["line"]', f"nothrow_copy_kinds = {kinds}"
+            'nothrow_copy_kinds = ["line", "list_reverse_slice"]',
+            f"nothrow_copy_kinds = {kinds}",
         ),
         encoding="utf-8",
     )

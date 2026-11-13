@@ -1635,6 +1635,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "list_reverse",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ListReverseSlice,
+        name: "list_reverse_slice",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ListSort,
         name: "list_sort",
     },
@@ -12107,6 +12111,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_list_remove" => Some(WasmRuntimeImport::ListRemove),
         "list_reverse" => Some(WasmRuntimeImport::ListReverse),
         "molt_list_reverse" => Some(WasmRuntimeImport::ListReverse),
+        "list_reverse_slice" => Some(WasmRuntimeImport::ListReverseSlice),
+        "molt_list_reverse_slice" => Some(WasmRuntimeImport::ListReverseSlice),
         "list_sort" => Some(WasmRuntimeImport::ListSort),
         "molt_list_sort" => Some(WasmRuntimeImport::ListSort),
         "map_builtin" => Some(WasmRuntimeImport::MapBuiltin),

@@ -78,6 +78,29 @@ pub unsafe extern "C" fn molt_list_reverse(__context: u64, list_bits: u64) -> u6
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_list_reverse_attached_body(_py, list_bits)
 }
+#[unsafe(export_name = "molt_list_reverse_slice__molt_context_047a33b55bc1b76d")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_list_reverse_slice(
+    __context: u64,
+    seq_bits: u64,
+    start_base_bits: u64,
+    start_offset_bits: u64,
+    stop_base_bits: u64,
+    stop_offset_bits: u64,
+    shape_bits: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_list_reverse_slice_attached_body(
+        _py,
+        seq_bits,
+        start_base_bits,
+        start_offset_bits,
+        stop_base_bits,
+        stop_offset_bits,
+        shape_bits,
+    )
+}
 #[unsafe(export_name = "molt_list_sort__molt_context_047a33b55bc1b76d")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_list_sort(

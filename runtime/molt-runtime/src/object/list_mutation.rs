@@ -855,6 +855,35 @@ pub(crate) unsafe fn reverse(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     true
 }
 
+/// Reverse one range of a generic list without a C view, in place, without
+/// allocation or reference-count churn. `range` maps the live length, read
+/// under the list's mutation lock, to the range. Returns false, having
+/// changed nothing, for any other receiver.
+pub(crate) unsafe fn reverse_range(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    range: impl FnOnce(usize) -> std::ops::Range<usize>,
+) -> bool {
+    crate::gil_assert();
+    if ptr.is_null()
+        || unsafe { object_type_id(ptr) } != TYPE_ID_LIST
+        || unsafe { (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) }
+    {
+        return false;
+    }
+    let base = unsafe { seq_vec_ptr(ptr) };
+    if base.is_null() {
+        return false;
+    }
+    let mutation_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
+    let items = unsafe { &mut *base };
+    let range = range(items.len());
+    items[range].reverse();
+    unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
+    drop(mutation_guard);
+    true
+}
+
 /// Replace one contiguous range through the sole published-list mutation
 /// authority. Allocation and replacement ownership are prepared before the
 /// live vector changes. The new canonical shape and generation are published
