@@ -403,9 +403,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_load(i64_ty, self_slot, &format!("{lane}_self_or_null"))
             .unwrap();
         self.values.set_value(callable_id, callable.into());
-        self.values.set_type(callable_id, TirType::DynBox);
+        self.values.set_repr(
+            callable_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
         self.values.set_value(self_id, self_or_null);
-        self.values.set_type(self_id, TirType::DynBox);
+        self.values.set_repr(
+            self_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     /// Consume a loaded receiver before evaluating user arguments. The builder
@@ -710,7 +716,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                             .into(),
                     );
-                    self.values.set_type(result_id, TirType::DynBox);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
             }
         } else if !op.operands.is_empty() {
@@ -725,7 +734,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                     .into();
                 self.values.set_value(result_id, none_val);
-                self.values.set_type(result_id, TirType::DynBox);
+                self.values.set_repr(
+                    result_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
             }
         }
     }
@@ -780,7 +792,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_int_compare(inkwell::IntPredicate::EQ, code, expected, "code_is")
             .unwrap();
         self.values.set_value(op.results[0], same.into());
-        self.values.set_type(op.results[0], TirType::Bool);
+        self.values.set_repr(
+            op.results[0],
+            crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+        );
     }
 
     /// `DirectCall` (HF-821 D4): hand the callable to the callee's frame entry
@@ -850,10 +865,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap_or(TirType::DynBox)
             })
             .collect();
-        let source_tir_types: Vec<TirType> = operands
-            .iter()
-            .map(|id| self.values.ty(*id).cloned().unwrap_or(TirType::DynBox))
-            .collect();
+        let source_tir_types: Vec<TirType> = operands.iter().map(|id| self.repr_ty(*id)).collect();
         let boxes_for_parameter = |idx: usize| {
             Self::tir_type_is_dynbox_like(&param_tir_types[idx])
                 && !Self::tir_type_is_dynbox_like(&source_tir_types[idx])
@@ -958,7 +970,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let result =
                 self.finish_borrowed_operands(custody, result, "direct_call_result", |_| {});
             self.values.set_value(result_id, result.into());
-            self.values.set_type(result_id, TirType::DynBox);
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
         } else if !target_return_tir_ty.is_unboxed()
             && let Some(result) = returned
         {
@@ -997,7 +1012,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         runtime_name: RuntimeFn,
         owned_callable: bool,
     ) -> inkwell::values::IntValue<'ctx> {
-        let builder_ty = self.values.ty(builder).cloned().unwrap_or(TirType::DynBox);
+        let builder_ty = self.repr_ty(builder);
         assert!(
             Self::tir_type_is_dynbox_like(&builder_ty),
             "{lane} builder %{} must be an object carrier, not {builder_ty:?}",
@@ -1106,7 +1121,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.finish_borrowed_operands(custody, none, "print_result", |_| {});
             if let Some(&result_id) = op.results.first() {
                 self.values.set_value(result_id, none.into());
-                self.values.set_type(result_id, TirType::DynBox);
+                self.values.set_repr(
+                    result_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
             }
         } else if call.wire_kind == OpKind::RangeNew {
             // `range(...)` is a dedicated frontend op (`RANGE_NEW`), not a

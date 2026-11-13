@@ -81,6 +81,34 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   lost fact silently selects the boxed runtime path. W1 replaces them with one accessor that
   records a fatal lowering diagnostic for a missing type, as `resolve` already does for a missing
   value, in its own measured commit.
+- **W1b. Types from TIR; the table holds representation (measured 2026-11-13).** The LLVM table's
+  one `TirType` field carries two facts: the type TIR proved and the representation the backend
+  chose (a raw machine word or a boxed word). Experiment: seed the table from
+  `TirFunction::value_types` and log each of the 102 per-op `set_type` records (LLVM release, 17
+  programs with their stdlib modules, about 306,000 records). TIR types every value (each function
+  seeds N of N+1, the remaining slot being function-level). 84% of the records only restate TIR's
+  type. The other 16% overwrite a proven type with `DynBox`; attributed by op on
+  `bench_math_numeric`: block parameters 11,159 (`I64` phis boxed because one incoming edge does not
+  prove the raw carrier: stage 6's loop carriers), `Copy` results about 8,400 (preserved runtime
+  ops whose results TIR typed `Tuple` 5,788, `I64` 1,656, `Dict` 546, `List` 151, `Str` 147,
+  travelling as boxed words), `GlobalSlotBase` 866 (a raw slot address). Each overwrite drops the
+  exact-type fact every later op needs for its fast path, and makes a value that only passed
+  through a phi read as unknown.
+  Design: the slot holds the backend value and its held carrier (`HeldCarrier`: `RawI64`,
+  `RawF64`, `RawBool`, `Never`, `Boxed`); the type is read from `TirFunction::value_types`, the
+  one authority. The held carrier is not the planned carrier: `molt_ir::repr::Repr` (the
+  representation plan, `repr_facts`) is the proof-level lattice of what a value may be held as,
+  and the held carrier is the instruction-selection fact of what the backend holds. Measured
+  against the plan (bench_math_numeric, bench_calls, fannkuch): 98.6% agree; the backend holds
+  1,782 planned-boxed ints and 1,188 planned-boxed comparison results raw and 268 planned-raw
+  values boxed. Each deviation converges on the plan or moves into it; then the held carrier is
+  the plan's carrier and the table stops recording it. The restating `set_type` calls are
+  deleted; each remaining site states a representation decision. A boxed word of a proven
+  `Tuple` stays a `Tuple`. Proof: the experiment's agreement table re-run shows no type overwrite;
+  LLVM release objects of the 10 benchmarks identical, or instructions retired and output
+  identical where only representation records move; molt_diff basic on `--backend llvm`; the
+  LLVM lowering tests; consumer gate. Stage 6 then unboxes the block-parameter carriers, measured
+  on `bench_math_numeric` and fannkuch.
 - **W2. LLVM op families onto the trait**, largest call-site count first (value
   materialization, numeric, callable, call lowering, object, frame record, the rest). Each family
   lands when its inkwell calls are inside the impl and its logic is in the walker. Same proof.
