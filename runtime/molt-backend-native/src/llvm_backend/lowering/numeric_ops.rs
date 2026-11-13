@@ -61,21 +61,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
             self.values.set_value(sum_id, sum);
             self.values
-                .set_repr(sum_id, crate::codegen_ssa::Repr::of(&TirType::I64));
+                .set_repr(sum_id, crate::codegen_ssa::HeldCarrier::of(&TirType::I64));
             self.values.set_value(flag_id, flag);
             // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
             // branch condition (no truthiness call, no NaN-box round-trip).
             self.values
-                .set_repr(flag_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         } else {
             let sum = self.emit_boxed_binary_fallback(RuntimeFn::Add, lhs_id, rhs_id);
             self.values.set_value(sum_id, sum);
-            self.values
-                .set_repr(sum_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+            self.values.set_repr(
+                sum_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
             let false_flag = self.backend.context.bool_type().const_zero();
             self.values.set_value(flag_id, false_flag.into());
             self.values
-                .set_repr(flag_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         }
     }
 
@@ -137,21 +139,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
             self.values.set_value(prod_id, prod);
             self.values
-                .set_repr(prod_id, crate::codegen_ssa::Repr::of(&TirType::I64));
+                .set_repr(prod_id, crate::codegen_ssa::HeldCarrier::of(&TirType::I64));
             self.values.set_value(flag_id, flag);
             // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
             // branch condition (no truthiness call, no NaN-box round-trip).
             self.values
-                .set_repr(flag_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         } else {
             let prod = self.emit_boxed_binary_fallback(RuntimeFn::Mul, lhs_id, rhs_id);
             self.values.set_value(prod_id, prod);
-            self.values
-                .set_repr(prod_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+            self.values.set_repr(
+                prod_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
             let false_flag = self.backend.context.bool_type().const_zero();
             self.values.set_value(flag_id, false_flag.into());
             self.values
-                .set_repr(flag_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         }
     }
 
@@ -657,7 +661,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         self.values.set_value(result_id, val);
         self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&out_ty));
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 
     // ── Type-specialized comparison ──
@@ -728,7 +732,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         self.values.set_value(result_id, val);
         self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&out_ty));
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 
     // ── Identity (is / is not) ──
@@ -771,8 +775,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             )
             .unwrap();
         self.values.set_value(result_id, val.into());
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+        );
     }
 
     // ── Containment (in / not in) ──
@@ -834,8 +840,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             release.emit(&self.backend.builder, val.into());
         }
         self.values.set_value(result_id, not_in.into());
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+        );
     }
 
     /// The boxed runtime lane of a binary operator: both operands are borrowed
@@ -965,8 +973,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             phi.as_basic_value().into_int_value()
         };
         self.values.set_value(result_id, selected.into());
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     /// Python truthiness of an operand, read from its physical carrier.
@@ -1112,7 +1122,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         self.values.set_value(result_id, val);
         self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&out_ty));
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 
     // ── Unary ops ──
@@ -1196,7 +1206,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         self.values.set_value(result_id, val);
         self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&out_ty));
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 }
 

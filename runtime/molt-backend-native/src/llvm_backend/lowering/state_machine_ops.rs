@@ -54,8 +54,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             "task_new",
         );
         self.values.set_value(result_id, task_bits);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     pub(super) fn lower_preserved_call_async_op(&mut self, op: &TirOp) -> bool {
@@ -109,8 +111,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             "call_async_task_new",
         );
         self.values.set_value(result_id, task_bits);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
         true
     }
 
@@ -260,8 +264,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap();
         if let Some(&result_id) = op.results.first() {
             self.values.set_value(result_id, is_pending.into());
-            self.values
-                .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+            );
         }
     }
 

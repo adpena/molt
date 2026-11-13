@@ -76,8 +76,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "get_attr_name_dyn",
             );
             self.values.set_value(result_id, val.into());
-            self.values
-                .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
             return;
         }
         if matches!(original_kind, Some(OpKind::Load | OpKind::GuardedLoad))
@@ -201,8 +203,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 |_| {},
             );
             self.values.set_value(result_id, loaded.into());
-            self.values
-                .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
             return;
         }
         if matches!(original_kind, Some(OpKind::GuardedFieldGet)) {
@@ -251,8 +255,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "guarded_field_get",
             );
             self.values.set_value(result_id, val.into());
-            self.values
-                .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
             return;
         }
         // Attribute name is stored in attrs["name"], not as a second operand.
@@ -311,8 +317,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // a backend-side retain would leak bound-method receivers.
         let val = self.finish_borrowed_operands(custody, val, "get_attr_result", |_| {});
         self.values.set_value(result_id, val.into());
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     pub(super) fn emit_store_attr(&mut self, op: &TirOp) {
@@ -446,7 +454,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.set_value(op.results[0], none.into());
                 self.values.set_repr(
                     op.results[0],
-                    crate::codegen_ssa::Repr::of(&TirType::DynBox),
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
                 );
             }
             return;
@@ -560,7 +568,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.values.set_value(op.results[0], result.into());
             self.values.set_repr(
                 op.results[0],
-                crate::codegen_ssa::Repr::of(&TirType::DynBox),
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
             );
         }
     }
@@ -616,7 +624,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.values.set_value(op.results[0], val.into());
             self.values.set_repr(
                 op.results[0],
-                crate::codegen_ssa::Repr::of(&TirType::DynBox),
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
             );
         }
     }
@@ -643,8 +651,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             symbol.symbol(),
         );
         self.values.set_value(result_id, val.into());
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     /// Item assignment and deletion borrow their operands; the container

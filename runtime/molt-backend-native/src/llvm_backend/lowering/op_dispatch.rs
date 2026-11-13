@@ -108,8 +108,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                 };
                 self.values.set_value(result_id, bool_val.into());
-                self.values
-                    .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+                self.values.set_repr(
+                    result_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                );
             }
 
             // -- Late-TIR representation primitives and the cold runtime edge
@@ -122,22 +124,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     nanbox::boxed_word::BoxTag::Int,
                 );
                 self.values.set_value(op.results[0], is_int.into());
-                self.values
-                    .set_repr(op.results[0], crate::codegen_ssa::Repr::of(&TirType::Bool));
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                );
             }
             OpCode::UnboxInlineInt => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
                 let raw = nanbox::boxed_word::generate_unbox_inline_int(&mut self.words(), word);
                 self.values.set_value(op.results[0], raw.into());
-                self.values
-                    .set_repr(op.results[0], crate::codegen_ssa::Repr::of(&TirType::I64));
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::I64),
+                );
             }
             OpCode::IsFloatWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
                 let is_float = nanbox::boxed_word::generate_is_float(&mut self.words(), word);
                 self.values.set_value(op.results[0], is_float.into());
-                self.values
-                    .set_repr(op.results[0], crate::codegen_ssa::Repr::of(&TirType::Bool));
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                );
             }
             OpCode::UnboxFloatWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
@@ -147,8 +155,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_bit_cast(word, self.backend.context.f64_type(), "unbox_float")
                     .unwrap();
                 self.values.set_value(op.results[0], raw);
-                self.values
-                    .set_repr(op.results[0], crate::codegen_ssa::Repr::of(&TirType::F64));
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::F64),
+                );
             }
             OpCode::IntToFloat => {
                 let payload = self.ensure_i64(self.resolve(op.operands[0]));
@@ -162,8 +172,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     )
                     .unwrap();
                 self.values.set_value(op.results[0], raw.into());
-                self.values
-                    .set_repr(op.results[0], crate::codegen_ssa::Repr::of(&TirType::F64));
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::F64),
+                );
             }
             OpCode::IsBoolWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
@@ -173,15 +185,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     nanbox::boxed_word::BoxTag::Bool,
                 );
                 self.values.set_value(op.results[0], is_bool.into());
-                self.values
-                    .set_repr(op.results[0], crate::codegen_ssa::Repr::of(&TirType::Bool));
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                );
             }
             OpCode::UnboxBoolWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
                 let truth = nanbox::boxed_word::generate_unbox_bool(&mut self.words(), word);
                 self.values.set_value(op.results[0], truth.into());
-                self.values
-                    .set_repr(op.results[0], crate::codegen_ssa::Repr::of(&TirType::Bool));
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                );
             }
             OpCode::CodeIs => self.emit_code_is(op),
             OpCode::DirectCall => self.emit_guarded_direct_call(op),
@@ -191,7 +207,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.set_value(op.results[0], word.into());
                 self.values.set_repr(
                     op.results[0],
-                    crate::codegen_ssa::Repr::of(&TirType::DynBox),
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
                 );
             }
             OpCode::CallRuntime => {
@@ -216,7 +232,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.set_value(result_id, val);
                 let ty = self.repr_ty(op.operands[0]);
                 self.values
-                    .set_repr(result_id, crate::codegen_ssa::Repr::of(&ty));
+                    .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty));
             }
 
             // -- Refcount --
@@ -256,7 +272,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     for &result_id in &op.results {
                         self.values.set_value(result_id, val);
                         self.values
-                            .set_repr(result_id, crate::codegen_ssa::Repr::of(&ty.clone()));
+                            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty.clone()));
                     }
                 } else {
                     let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
@@ -268,8 +284,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .into();
                     for &result_id in &op.results {
                         self.values.set_value(result_id, none_val);
-                        self.values
-                            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                        self.values.set_repr(
+                            result_id,
+                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                        );
                     }
                 }
             }
@@ -385,8 +403,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .into();
                     for &result_id in &op.results {
                         self.values.set_value(result_id, none_val);
-                        self.values
-                            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                        self.values.set_repr(
+                            result_id,
+                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                        );
                     }
                 } else {
                     // Standard copy: pass through first operand.
@@ -395,7 +415,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     for &result_id in &op.results {
                         self.values.set_value(result_id, val);
                         self.values
-                            .set_repr(result_id, crate::codegen_ssa::Repr::of(&ty.clone()));
+                            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty.clone()));
                     }
                 }
             }
@@ -422,8 +442,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 self.values.set_value(result_id, result);
-                self.values
-                    .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                self.values.set_repr(
+                    result_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
             }
 
             // -- Calls --
@@ -560,8 +582,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         )
                         .unwrap();
                     self.values.set_value(result_id, pending.into());
-                    self.values
-                        .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                    );
                 }
             }
 
@@ -572,8 +596,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let pending = self.emit_async_work_pending();
                 if let Some(&result_id) = op.results.first() {
                     self.values.set_value(result_id, pending.into());
-                    self.values
-                        .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::Bool));
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                    );
                 }
             }
 
@@ -619,8 +645,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 if let Some(&result_id) = op.results.first() {
                     self.values.set_value(result_id, result);
-                    self.values
-                        .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 let Some(target_block_id) = self
                     .func
@@ -764,8 +792,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .into_int_value()
                 };
                 self.values.set_value(result_id, result.into());
-                self.values
-                    .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                self.values.set_repr(
+                    result_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
             }
 
             // -- ImportFrom: from module import name --

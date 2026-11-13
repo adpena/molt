@@ -747,12 +747,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if let Some(&result) = op.results.first() {
                     if boxed_view {
                         self.values.set_value(result, view.into());
-                        self.values
-                            .set_repr(result, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                        self.values.set_repr(
+                            result,
+                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                        );
                     } else {
                         self.values.set_value(result, value);
                         self.values
-                            .set_repr(result, crate::codegen_ssa::Repr::of(&value_ty));
+                            .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&value_ty));
                     }
                 }
                 true
@@ -860,8 +862,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 loaded.add_incoming(&[(&inline_bits, inline_bb), (&slow_bits, slow_bb)]);
                 if let Some(&result) = op.results.first() {
                     self.values.set_value(result, loaded.as_basic_value());
-                    self.values
-                        .set_repr(result, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                    self.values.set_repr(
+                        result,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }

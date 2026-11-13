@@ -567,8 +567,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let none: BasicValueEnum<'ctx> = self.none_word().into();
                 for &result in &op.results {
                     self.values.set_value(result, none);
-                    self.values
-                        .set_repr(result, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+                    self.values.set_repr(
+                        result,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
             }
         }
@@ -851,7 +853,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             if operation == molt_codegen_abi::inline_refcount::RefcountOperation::Retain {
                 self.values.set_value(result, value);
                 self.values
-                    .set_repr(result, crate::codegen_ssa::Repr::of(&ty));
+                    .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&ty));
             } else {
                 let none = self
                     .backend
@@ -860,7 +862,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
                 self.values.set_value(result, none.into());
                 self.values
-                    .set_repr(result, crate::codegen_ssa::Repr::of(&TirType::None));
+                    .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&TirType::None));
             }
         }
     }
@@ -914,7 +916,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// values transfer no owner. It is known before materializing, so custody
     /// can initialize its owner slots before the operation's first failure edge.
     fn materialization_mints_owner(&self, operand_id: ValueId) -> bool {
-        self.values.repr(operand_id) == Some(crate::codegen_ssa::Repr::RawI64)
+        self.values.repr(operand_id) == Some(crate::codegen_ssa::HeldCarrier::RawI64)
             && !self.repr_facts.is_inline_safe_int(operand_id)
     }
 
@@ -984,8 +986,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into();
 
         self.values.set_value(result_id, boxed);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&TirType::DynBox));
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     pub(super) fn emit_unbox(&mut self, op: &crate::tir::ops::TirOp) {
@@ -1008,7 +1012,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // where a boxed transport cannot have erased it.
             self.values
                 .repr(result_id)
-                .map(crate::codegen_ssa::Repr::machine_type)
+                .map(crate::codegen_ssa::HeldCarrier::machine_type)
                 .or_else(|| match self.func.value_types.get(&operand_id) {
                     Some(TirType::Box(inner)) => Some(inner.as_ref().clone()),
                     _ => None,
@@ -1028,7 +1032,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         self.values.set_value(result_id, unboxed);
         self.values
-            .set_repr(result_id, crate::codegen_ssa::Repr::of(&target_ty));
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&target_ty));
     }
 
     // ── Terminators ──
@@ -1742,9 +1746,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// representation for lowering helpers, never a proven Python type; that
     /// is `TirFunction::value_types`.
     pub(super) fn repr_ty(&self, id: ValueId) -> TirType {
-        self.values
-            .repr(id)
-            .map_or(TirType::DynBox, crate::codegen_ssa::Repr::machine_type)
+        self.values.repr(id).map_or(
+            TirType::DynBox,
+            crate::codegen_ssa::HeldCarrier::machine_type,
+        )
     }
 
     /// Resolve a ValueId to its LLVM value.

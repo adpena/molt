@@ -1,21 +1,28 @@
-//! The lowered value of every TIR SSA value in one function, with the machine
-//! representation the backend chose for it.
+//! The lowered value of every TIR SSA value in one function, with the carrier
+//! the backend holds it in.
 //!
 //! One dense slot per `ValueId` (TIR numbers values `0..next_value`), so a
-//! lookup is an index, not a hash. A value's *type* is not stored here: TIR
-//! proved it, and `TirFunction::value_types` is its one authority. The table
-//! records only what the backend decides, the representation: a raw machine
-//! word or a boxed word. Storing the type here as well let a boxed transport
-//! overwrite a proven type (measured 2026-11-13: 16% of the backend's type
-//! records replaced a TIR type with `DynBox`; docs/design/foundation/
-//! codegen_walker.md, W1b).
+//! lookup is an index, not a hash. Three facts, three owners:
+//! - A value's *type* is TIR's proof; `TirFunction::value_types` owns it and
+//!   this table does not store it. Storing it here let a boxed transport
+//!   overwrite a proven type (measured 2026-11-13: 16% of the backend's type
+//!   records replaced a TIR type with `DynBox`).
+//! - The *planned carrier* is `molt_ir::repr::Repr`, the representation plan's
+//!   proof-level lattice of what a value may be held as (`repr_facts`).
+//! - The *held carrier* (`HeldCarrier`, here) is what the backend actually
+//!   holds now: an instruction-selection fact. Measured 2026-11-13 on
+//!   bench_math_numeric, bench_calls and fannkuch: 98.6% of values are held
+//!   in their planned carrier; the backend holds 1,782 planned-boxed ints and
+//!   1,188 planned-boxed comparison results raw, and 268 planned-raw values
+//!   boxed. Those deviations are open work (docs/design/foundation/
+//!   codegen_walker.md, W1b): each converges on the plan or moves into it.
 
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-/// How a lowered value is held at the machine level.
+/// The machine carrier the backend holds a lowered value in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Repr {
+pub(crate) enum HeldCarrier {
     /// A raw 64-bit integer.
     RawI64,
     /// A raw 64-bit float.
@@ -28,7 +35,7 @@ pub(crate) enum Repr {
     Boxed,
 }
 
-impl Repr {
+impl HeldCarrier {
     /// The representation a value of `ty` has when the backend holds it as
     /// that type: raw for `I64`, `F64` and `Bool`, boxed for everything else
     /// (the machine mapping of `llvm_backend::types::lower_type`).
@@ -58,7 +65,7 @@ impl Repr {
 #[derive(Clone)]
 struct Slot<V> {
     value: Option<V>,
-    repr: Option<Repr>,
+    repr: Option<HeldCarrier>,
 }
 
 impl<V> Default for Slot<V> {
@@ -101,7 +108,7 @@ impl<V: Copy> ValueTable<V> {
     }
 
     /// Record how the lowered value of `id` is held.
-    pub(crate) fn set_repr(&mut self, id: ValueId, repr: Repr) {
+    pub(crate) fn set_repr(&mut self, id: ValueId, repr: HeldCarrier) {
         self.slot_mut(id).repr = Some(repr);
     }
 
@@ -111,7 +118,7 @@ impl<V: Copy> ValueTable<V> {
     }
 
     /// The representation recorded for `id`, if any.
-    pub(crate) fn repr(&self, id: ValueId) -> Option<Repr> {
+    pub(crate) fn repr(&self, id: ValueId) -> Option<HeldCarrier> {
         self.slots.get(id.0 as usize).and_then(|slot| slot.repr)
     }
 }
@@ -126,9 +133,9 @@ mod tests {
         assert_eq!(table.value(ValueId(0)), None);
         assert_eq!(table.repr(ValueId(0)), None);
         table.set_value(ValueId(1), 7);
-        table.set_repr(ValueId(1), Repr::RawI64);
+        table.set_repr(ValueId(1), HeldCarrier::RawI64);
         assert_eq!(table.value(ValueId(1)), Some(7));
-        assert_eq!(table.repr(ValueId(1)), Some(Repr::RawI64));
+        assert_eq!(table.repr(ValueId(1)), Some(HeldCarrier::RawI64));
         table.set_value(ValueId(0), 3);
         assert_eq!(table.value(ValueId(0)), Some(3));
         assert_eq!(table.repr(ValueId(0)), None);
@@ -140,10 +147,10 @@ mod tests {
     fn every_type_maps_to_the_machine_representation_lower_type_gives_it() {
         // Raw only for the three scalar types; every object, None, a boxed
         // int and a union travel as one boxed word.
-        assert_eq!(Repr::of(&TirType::I64), Repr::RawI64);
-        assert_eq!(Repr::of(&TirType::F64), Repr::RawF64);
-        assert_eq!(Repr::of(&TirType::Bool), Repr::RawBool);
-        assert_eq!(Repr::of(&TirType::Never), Repr::Never);
+        assert_eq!(HeldCarrier::of(&TirType::I64), HeldCarrier::RawI64);
+        assert_eq!(HeldCarrier::of(&TirType::F64), HeldCarrier::RawF64);
+        assert_eq!(HeldCarrier::of(&TirType::Bool), HeldCarrier::RawBool);
+        assert_eq!(HeldCarrier::of(&TirType::Never), HeldCarrier::Never);
         for boxed in [
             TirType::DynBox,
             TirType::None,
@@ -151,8 +158,8 @@ mod tests {
             TirType::Str,
             TirType::Box(Box::new(TirType::I64)),
         ] {
-            assert_eq!(Repr::of(&boxed), Repr::Boxed, "{boxed:?}");
-            assert_eq!(Repr::of(&boxed).machine_type(), TirType::DynBox);
+            assert_eq!(HeldCarrier::of(&boxed), HeldCarrier::Boxed, "{boxed:?}");
+            assert_eq!(HeldCarrier::of(&boxed).machine_type(), TirType::DynBox);
         }
     }
 

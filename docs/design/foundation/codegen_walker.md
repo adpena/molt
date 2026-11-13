@@ -94,9 +94,15 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   travelling as boxed words), `GlobalSlotBase` 866 (a raw slot address). Each overwrite drops the
   exact-type fact every later op needs for its fast path, and makes a value that only passed
   through a phi read as unknown.
-  Design: the slot holds the backend value and its representation (`Raw(I64)`, `Raw(F64)`,
-  `Raw(Bool)`, `Boxed`); the type is read from `TirFunction::value_types`, the one authority, and
-  a value TIR left untyped is a fatal lowering diagnostic. The restating `set_type` calls are
+  Design: the slot holds the backend value and its held carrier (`HeldCarrier`: `RawI64`,
+  `RawF64`, `RawBool`, `Never`, `Boxed`); the type is read from `TirFunction::value_types`, the
+  one authority. The held carrier is not the planned carrier: `molt_ir::repr::Repr` (the
+  representation plan, `repr_facts`) is the proof-level lattice of what a value may be held as,
+  and the held carrier is the instruction-selection fact of what the backend holds. Measured
+  against the plan (bench_math_numeric, bench_calls, fannkuch): 98.6% agree; the backend holds
+  1,782 planned-boxed ints and 1,188 planned-boxed comparison results raw and 268 planned-raw
+  values boxed. Each deviation converges on the plan or moves into it; then the held carrier is
+  the plan's carrier and the table stops recording it. The restating `set_type` calls are
   deleted; each remaining site states a representation decision. A boxed word of a proven
   `Tuple` stays a `Tuple`. Proof: the experiment's agreement table re-run shows no type overwrite;
   LLVM release objects of the 10 benchmarks identical, or instructions retired and output
