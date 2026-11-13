@@ -206,7 +206,7 @@ def presubmit_pytest_argv(root: Path, tests: Sequence[str]) -> list[str]:
 
 
 def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
-    from tools.test_dependency_graph import load_graph
+    from tools.test_dependency_graph import git_blob_reader, load_graph
 
     tree = commit_tree(root, paths)
     changed = changed_paths(root, tree)
@@ -220,7 +220,11 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
             file=sys.stderr,
         )
         return 1
-    readers = load_graph(root).direct_readers(changed)
+    # A changed module selects the tests that reach the definitions it
+    # changes, not every test below a conftest that uses one of its functions.
+    readers = load_graph(root).direct_readers(
+        changed, before=git_blob_reader(root, "HEAD")
+    )
     landing_built = landing_built_tests(root, readers.importers)
     run_now = [test for test in readers.importers if test not in landing_built]
     print(f"consumer-gate: {len(changed)} changed path(s), tree {tree[:12]}")
@@ -240,8 +244,24 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
             argv = presubmit_pytest_argv(root, run_now)
         else:
             argv = [sys.executable, "-m", "pytest", "-q", *pytest_args, *run_now]
-        print("consumer-gate: " + " ".join(argv), flush=True)
-        if _COMMANDS.run(argv, cwd=root).returncode != 0:
+        from molt import host_capacity
+
+        # The importer run is suite-sized: it takes the host's one heavy-work
+        # slot, behind any landing, instead of sharing the machine with it.
+        with host_capacity.host_work_slot(
+            host_capacity.host_work_dir(root),
+            label=f"consumer gate ({root.name}, {len(run_now)} test files)",
+            landing=False,
+            say=lambda message: print(message, flush=True),
+        ) as admission:
+            if admission.waited_seconds >= 1:
+                print(
+                    f"consumer-gate: admitted after {admission.waited_seconds:.0f} s",
+                    flush=True,
+                )
+            print("consumer-gate: " + " ".join(argv), flush=True)
+            failed = _COMMANDS.run(argv, cwd=root).returncode != 0
+        if failed:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
     if commit_tree(root, paths) != tree:
