@@ -186,6 +186,10 @@ def _run_backend_pipeline(
     if prepared_backend_ir_error is not None:
         return return_after_build_diagnostics(prepared_backend_ir_error)
     assert prepared_backend_ir is not None
+    if prepared_build_preamble.diagnostics_enabled:
+        prepared_frontend_run_ticket.frontend_parallel_details[
+            "closed_world_binding_fallbacks"
+        ] = list(prepared_backend_ir.binding_diagnostics)
     ir = prepared_backend_ir.ir
     function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
     # The one addressed form of this IR every backend transport writes (HF-516).

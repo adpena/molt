@@ -51,6 +51,7 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
+from molt.cli.closed_world_bindings import bind_closed_world_calls
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
 from molt.cli.module_registry import (
     ModuleRegistry,
@@ -76,6 +77,9 @@ class _PreparedBackendIR:
     # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
     # native lane; None on lanes that keep the legacy isolate dispatch.
     module_registry: Any | None = None
+    # One line per qualifying module attribute call that keeps the generic
+    # path, naming what blocked its closed-world binding.
+    binding_diagnostics: tuple[str, ...] = ()
 
 
 def _build_version_info_ops(
@@ -2224,6 +2228,15 @@ def _prepare_backend_ir(
             "ops": isolate_bootstrap_ops,
         }
     )
+    # Closed-world bindings (call_anatomy.md 4.5): proven module attribute
+    # calls become direct intrinsic calls; every frontend module guess is
+    # consumed here, on every lane.
+    binding_diagnostics = bind_closed_world_calls(
+        functions,
+        integration_state.module_functions,
+        integration_state.module_namespace_facts,
+        integration_state.module_dep_closures,
+    )
     module_registry: ModuleRegistry | None = None
     if catalog_lane:
         # Import bedrock (design doc 69, PR1): the ModuleRegistry replaces the
@@ -2366,4 +2379,5 @@ def _prepare_backend_ir(
         },
         required_link_features=required_link_features,
         module_registry=module_registry,
+        binding_diagnostics=tuple(binding_diagnostics),
     ), None
