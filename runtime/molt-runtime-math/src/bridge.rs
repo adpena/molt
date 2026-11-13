@@ -175,8 +175,6 @@ unsafe extern "C" {
     fn __molt_math_string_bytes(ptr: *mut u8, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_math_string_len(ptr: *mut u8) -> usize;
     fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32;
-    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_float_result_bits")]
-    fn __molt_math_float_result_bits(__molt_context: u64, val: f64) -> u64;
 }
 
 /// # Safety
@@ -272,12 +270,6 @@ pub fn as_float_extended(obj: MoltObject) -> Option<f64> {
     let mut out: f64 = 0.0;
     let ok = unsafe { __molt_math_as_float_extended(obj.bits(), &mut out) };
     if ok != 0 { Some(out) } else { None }
-}
-
-/// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
-/// inline; NaN values are heap-allocated.
-pub fn float_result_bits(_py: &PyToken, val: f64) -> u64 {
-    unsafe { __molt_math_float_result_bits(_py.attached_context(), val) }
 }
 
 // ---------------------------------------------------------------------------

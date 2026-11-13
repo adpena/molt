@@ -1160,7 +1160,9 @@ mod sleep_payload_tests {
             for delay in [
                 MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, b"0"))
                     .bits(),
-                crate::object::ops::float_result_bits(py, f64::NAN),
+                // The one float the heap still holds (HF-833): a NaN whose
+                // payload overlaps the tag bits.
+                crate::object::ops::float_result_bits(py, f64::from_bits(0x7ff9_0000_0000_0001)),
             ] {
                 let before = owners(delay);
                 assert_eq!(

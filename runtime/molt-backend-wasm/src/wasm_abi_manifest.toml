@@ -39,7 +39,6 @@ static_type = [
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "ptr", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "ptr", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "ptr"], results = ["ptr"] },
   { params = [], results = ["ptr"] },
@@ -585,7 +584,7 @@ callable_arity = 1
 
 [[import]]
 name = "arena_new"
-type = 31
+type = 30
 
 [[import]]
 name = "arena_alloc_object"
@@ -1408,20 +1407,22 @@ name = "call_bind_ic_owned"
 return_contract = "owned_object"
 type = 4
 
-# CPython's LOAD_ATTR in method form: (site, receiver, name, name length,
-# self-or-null out address). Returns the callable; the entry writes the
-# receiver or the null sentinel to the out word as its last action.
+# A compiled method site's load miss, CPython's LOAD_ATTR in method form:
+# (site record address, receiver, self-or-null out address); the record
+# names the attribute.
+# Returns the callable; the entry writes the receiver or the null sentinel to
+# the out word as its last action (molt_codegen_abi::method_site).
 [[import]]
-name = "load_method"
+name = "method_site_load"
 return_contract = "owned_object"
-type = 28
+type = 4
 
 # CPython's LOAD_SUPER_ATTR in method form for zero-argument `super()`:
 # (site, class, first argument, name, name length, self-or-null out address).
 [[import]]
 name = "load_super_method"
 return_contract = "owned_object"
-type = 29
+type = 28
 
 # CPython's CALL after a method load: (callable, self_or_null, arguments...).
 # The call adopts every word.
@@ -2190,7 +2191,7 @@ callable_arity = 3
 [[import]]
 name = "set_attr_object_ic"
 return_contract = "owned_object"
-type = 32
+type = 31
 
 [[import]]
 name = "set_attr_ptr"
@@ -3447,7 +3448,7 @@ type = 16
 
 [[import]]
 name = "bytes_as_ptr"
-type = 30
+type = 29
 
 [[import]]
 name = "bytes_from_obj"
@@ -7772,7 +7773,7 @@ type = 14
 
 [[import]]
 name = "float_as_f64"
-type = 33
+type = 32
 
 [[import]]
 name = "debug_trace"

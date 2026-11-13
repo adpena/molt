@@ -15,6 +15,7 @@ mod function_emitter;
 mod function_frame;
 pub(crate) mod global_slot;
 mod local_analysis;
+pub(crate) mod method_site;
 mod module_abi;
 mod module_registry;
 mod op_loop;

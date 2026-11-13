@@ -222,10 +222,10 @@ pub extern "C" fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32
     }
 }
 
-/// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
-/// inline; NaN values are heap-allocated.
-#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_math_float_result_bits"))]
-pub extern "C" fn __molt_math_float_result_bits(__molt_context: u64, val: f64) -> u64 {
+/// The boxed word for a float that keeps its bits (runtime spec 2.1.1), for
+/// satellite crates: `molt_runtime_core::rt_float_result_bits`.
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_float_result_bits"))]
+pub extern "C" fn __molt_float_result_bits(__molt_context: u64, val: f64) -> u64 {
     {
         let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         crate::object::ops::float_result_bits(_py, val)

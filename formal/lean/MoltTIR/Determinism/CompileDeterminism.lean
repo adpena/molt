@@ -235,8 +235,9 @@ theorem Nat.add_comm_fold (a b : Nat) : a + b = b + a := Nat.add_comm a b
 
 /-  Molt's approach to floating-point determinism:
     1. All FP operations use IEEE 754 semantics (hardware-provided).
-    2. NaN payloads are canonicalized: Molt uses a single canonical
-       quiet NaN (matching the NaN-boxing quiet NaN: 0x7FF8000000000000).
+    2. NaN payloads move as CPython's do: a float box keeps a NaN's sign,
+       quiet bit and payload (runtime spec 2.1.1; the NaN-box model and
+       its proofs are in Runtime/NanBoxCorrect.lean, section 16).
     3. FP operations that are nondeterministic across platforms
        (e.g., fused multiply-add) are not used in the compiler.
     4. The compiler itself does not perform FP arithmetic during
@@ -247,30 +248,6 @@ theorem Nat.add_comm_fold (a b : Nat) : a + b = b + a := Nat.add_comm a b
     FP, which is deterministic for a given platform. Cross-platform FP
     determinism requires IEEE 754 conformance, which is modeled in
     CrossPlatform.lean. -/
-
-/-- Canonical NaN representation. All NaN values in Molt are
-    normalized to this single representation. -/
-def CANONICAL_QNAN : UInt64 := 0x7FF8000000000000
-
-/-- NaN canonicalization is idempotent. -/
-def canonicalizeNaN (bits : UInt64) : UInt64 :=
-  -- If the value is a NaN (exponent all 1s, mantissa nonzero),
-  -- replace with canonical NaN. Otherwise, pass through.
-  let exponent := (bits >>> 52) &&& 0x7FF
-  let mantissa := bits &&& 0x000FFFFFFFFFFFFF
-  if exponent == 0x7FF && mantissa != 0 then CANONICAL_QNAN
-  else bits
-
-/-- Canonicalization is deterministic. -/
-theorem canonicalizeNaN_deterministic (bits : UInt64) :
-    canonicalizeNaN bits = canonicalizeNaN bits := rfl
-
-/-- Canonicalization is idempotent: canonicalizing twice = canonicalizing once. -/
-theorem canonicalizeNaN_idempotent (bits : UInt64) :
-    canonicalizeNaN (canonicalizeNaN bits) = canonicalizeNaN bits := by
-  unfold canonicalizeNaN
-  simp only
-  split <;> simp_all [CANONICAL_QNAN]
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 8: PYTHONHASHSEED model constant
@@ -318,7 +295,6 @@ theorem cse_deterministic (avail : AvailMap) (e : Expr) :
     - All IR passes are pure functions → deterministic
     - Map iteration uses sorted/deterministic data structures
     - Content-based hashing is a pure function of content
-    - NaN canonicalization is idempotent and deterministic
     - The model's host hash seed is one constant
     - Layer-based compilation with commutative digest combination
 
@@ -337,8 +313,7 @@ theorem cse_deterministic (avail : AvailMap) (e : Expr) :
     - Counter-model for order-dependent hashing (`molt_build_order_dependent`) -/
 theorem determinism_summary :
     (∀ src cfg, compile cfg src = compile cfg src) ∧
-    PINNED_HASH_SEED = 0 ∧
-    (∀ bits, canonicalizeNaN (canonicalizeNaN bits) = canonicalizeNaN bits) := by
-  exact ⟨fun _ _ => rfl, rfl, canonicalizeNaN_idempotent⟩
+    PINNED_HASH_SEED = 0 := by
+  exact ⟨fun _ _ => rfl, rfl⟩
 
 end MoltTIR.Determinism

@@ -380,7 +380,9 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         ir.contains_execution("f64_to_i64") || ir.contains_execution("bitcast double"),
         "{ir}"
     );
-    assert!(ir.contains_execution("fcmp uno"), "{ir}");
+    // A float is its own word (HF-833): a compiled f64 is never a tagged NaN,
+    // so boxing is the cast and canonicalizes no NaN payload.
+    assert!(!ir.contains_execution("fcmp uno"), "{ir}");
     assert!(ir.contains_execution("ret i64"), "{ir}");
 }
 

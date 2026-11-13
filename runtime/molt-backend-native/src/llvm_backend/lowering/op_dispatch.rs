@@ -149,6 +149,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.set_value(op.results[0], raw);
                 self.values.set_type(op.results[0], TirType::F64);
             }
+            OpCode::IntToFloat => {
+                let payload = self.ensure_i64(self.resolve(op.operands[0]));
+                let raw = self
+                    .backend
+                    .builder
+                    .build_signed_int_to_float(
+                        payload,
+                        self.backend.context.f64_type(),
+                        "int_to_float",
+                    )
+                    .unwrap();
+                self.values.insert(op.results[0], raw.into());
+                self.value_types.insert(op.results[0], TirType::F64);
+            }
             OpCode::IsBoolWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
                 let is_bool = nanbox::boxed_word::generate_has_tag(

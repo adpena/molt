@@ -41,6 +41,10 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) func_index: u32,
     pub(super) func_import_count: u32,
     pub(super) table_relocations: &'m mut WasmTableRelocations,
+    /// Data pointers of the method site records the function's loads made.
+    pub(super) data_segments: &'m mut crate::wasm_data::WasmDataSegments,
+    pub(super) method_site_records:
+        &'a std::collections::BTreeMap<(u32, u32), crate::wasm_data::DataSegmentRef>,
     pub(super) frame: &'a WasmFunctionFrame,
     pub(super) tail_call_enabled: bool,
     pub(super) tail_call_eligible: bool,

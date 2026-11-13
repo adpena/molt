@@ -615,6 +615,12 @@ pub struct OpIR {
     /// the generated `GLOBAL_SLOT_KINDS` carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_slot: Option<GlobalSlotRef>,
+    /// The compiled method site a method load, or the call that consumes its
+    /// loaded pair, belongs to (call_anatomy.md 4.5 "Methods"): the site's
+    /// index within its function, which names the site's record. Only the
+    /// generated `METHOD_SITE_KINDS` carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_site: Option<u32>,
 }
 
 /// One module global slot: the owning module's registry name and the slot's
@@ -695,6 +701,7 @@ impl OpIR {
             source_line: Default::default(),
             bce_safe: Default::default(),
             global_slot: None,
+            method_site: None,
         }
     }
 }
@@ -2176,6 +2183,7 @@ mod json_parse_tests {
                 module: "demo".to_string(),
                 index: 4,
             }),
+            method_site: Some(6),
         };
 
         let encoded = serde_json::to_value(&op).expect("serialize OpIR transport");
@@ -3114,6 +3122,38 @@ mod json_parse_tests {
 
         assert!(err.contains("invalid SimpleIR contract"));
         assert!(err.contains("unsupported container_type `list_int`"));
+    }
+
+    #[test]
+    fn method_site_is_typed_kind_scoped_and_survives_the_tir_round_trip() {
+        let accepted = SimpleIR::from_json_str(
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":["o"],"ops":[{"kind":"load_method","args":["o"],"s_value":"m","var":"c","out":"s","method_site":2},{"kind":"call_loaded_method","args":["c","s"],"argument_custody":["transferred","transferred"],"out":"r","method_site":2},{"kind":"ret_void"}]}]}"#,
+        )
+        .expect("a method site's load and call parse");
+        let sites: Vec<_> = accepted.functions[0].ops[..2]
+            .iter()
+            .map(|op| op.method_site)
+            .collect();
+        assert_eq!(sites, [Some(2), Some(2)]);
+        let mut tir = crate::tir::ops::TirOp {
+            origin: None,
+            runtime: None,
+            dialect: crate::tir::ops::Dialect::Molt,
+            opcode: crate::tir::ops::OpCode::LoadMethod,
+            operands: Vec::new(),
+            results: Vec::new(),
+            attrs: Default::default(),
+            source_span: None,
+        };
+        tir.set_method_site(Some(2));
+        assert_eq!(tir.method_site(), Some(2));
+        tir.set_method_site(None);
+        assert_eq!(tir.method_site(), None);
+        let wrong_op = SimpleIR::from_json_str(
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":[],"ops":[{"kind":"const_none","method_site":0,"out":"value"}]}]}"#,
+        )
+        .expect_err("a method site must not leak onto other op families");
+        assert!(wrong_op.contains("cannot carry method_site"), "{wrong_op}");
     }
 
     #[test]

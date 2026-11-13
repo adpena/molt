@@ -13,11 +13,12 @@ use crate::{FunctionIR, OpIR};
 use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 use wasm_encoder::Instruction;
 
-/// `load_method(site, receiver, name, len, self_out)` or
-/// `load_super_method(site, class, first_arg, name, len, self_out)`: the entry
-/// returns the callable and writes `self_or_null` (the receiver or the null
-/// sentinel) through the out-parameter. Both words are owned; a discarded one
-/// is released, which is a no-op for the sentinel.
+/// A method site's load body `(record, receiver, self_out)`, whose miss is
+/// `molt_method_site_load`, or `load_super_method(site, class, first_arg,
+/// name, len, self_out)`: the load returns the callable and writes
+/// `self_or_null` (the receiver or the null sentinel) through the
+/// out-parameter. Both words are owned; a discarded one is released, which is
+/// a no-op for the sentinel.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_method_load_op(
     backend: &mut WasmBackend,
@@ -31,9 +32,9 @@ pub(super) fn emit_method_load_op(
     op_idx: usize,
     scratch_base: u32,
 ) -> bool {
-    let (import, operand_count) = match op.kind {
-        molt_ir::OpKind::LoadMethod => (WasmRuntimeImport::LoadMethod, 1),
-        molt_ir::OpKind::LoadSuperMethod => (WasmRuntimeImport::LoadSuperMethod, 2),
+    let operand_count = match op.kind {
+        molt_ir::OpKind::LoadMethod => 1,
+        molt_ir::OpKind::LoadSuperMethod => 2,
         _ => return false,
     };
     let args = op
@@ -46,23 +47,39 @@ pub(super) fn emit_method_load_op(
         .as_ref()
         .unwrap_or_else(|| panic!("{} has no attribute name", op.kind));
     let bytes = name.as_bytes();
-    let data = backend.add_data_segment(reloc_enabled, bytes);
-    let source_op_idx = op.required_source_op_index(op_idx, op.kind);
-    let site_bits = box_int(stable_ic_site_id(
-        func_ir.name.as_str(),
-        source_op_idx,
-        op.kind.as_str(),
-    ));
     let self_out = WasmOutParam::at(scratch_base);
-    func.instruction(&Instruction::I64Const(site_bits));
-    for operand in args {
-        func.instruction(&Instruction::LocalGet(locals[operand]));
+    if op.kind == molt_ir::OpKind::LoadMethod {
+        let site = op
+            .method_site
+            .unwrap_or_else(|| panic!("a method load in {} is a method site", func_ir.name));
+        let record = backend.method_site_record(reloc_enabled, func_index, site, Some(bytes));
+        backend.emit_data_ptr(reloc_enabled, func_index, func, record);
+        func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+        self_out.push_address(func);
+        func.instruction(&Instruction::LocalGet(locals.refcount().admission));
+        emit_call(func, reloc_enabled, import_ids.method_site_bodies().load());
+    } else {
+        let data = backend.add_data_segment(reloc_enabled, bytes);
+        let source_op_idx = op.required_source_op_index(op_idx, op.kind);
+        let site_bits = box_int(stable_ic_site_id(
+            func_ir.name.as_str(),
+            source_op_idx,
+            op.kind.as_str(),
+        ));
+        func.instruction(&Instruction::I64Const(site_bits));
+        for operand in args {
+            func.instruction(&Instruction::LocalGet(locals[operand]));
+        }
+        backend.emit_data_ptr(reloc_enabled, func_index, func, data);
+        func.instruction(&Instruction::I32WrapI64);
+        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+        self_out.push_address(func);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[WasmRuntimeImport::LoadSuperMethod],
+        );
     }
-    backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-    func.instruction(&Instruction::I32WrapI64);
-    func.instruction(&Instruction::I64Const(bytes.len() as i64));
-    self_out.push_address(func);
-    emit_call(func, reloc_enabled, import_ids[import]);
 
     let mut results = [None, None];
     visit_simple_ir_results(op, |result| match result.field {

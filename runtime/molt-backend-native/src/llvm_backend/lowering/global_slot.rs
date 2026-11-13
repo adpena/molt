@@ -15,13 +15,29 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 
 struct LlvmSlotBuilder<'a, 'ctx> {
     words: LlvmWords<'a, 'ctx>,
-    function: FunctionValue<'ctx>,
     retain: FunctionValue<'ctx>,
     admission: IntValue<'ctx>,
 }
 
 impl<'a, 'ctx> molt_codegen_abi::word::WordBuilder for LlvmSlotBuilder<'a, 'ctx> {
     molt_codegen_abi::forward_word_builder!(words: LlvmWords<'a, 'ctx>);
+}
+
+impl<'ctx> super::LlvmBranchWords<'ctx> for LlvmSlotBuilder<'_, 'ctx> {
+    fn llvm(&self) -> LlvmWords<'_, 'ctx> {
+        self.words
+    }
+}
+
+impl<'ctx> molt_codegen_abi::word::BranchBuilder for LlvmSlotBuilder<'_, 'ctx> {
+    fn choose(
+        &mut self,
+        condition: IntValue<'ctx>,
+        yes: impl FnOnce(&mut Self) -> IntValue<'ctx>,
+        no: impl FnOnce(&mut Self) -> IntValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        super::llvm_choose(self, condition, yes, no)
+    }
 }
 
 impl<'ctx> SlotBuilder for LlvmSlotBuilder<'_, 'ctx> {
@@ -46,38 +62,6 @@ impl<'ctx> SlotBuilder for LlvmSlotBuilder<'_, 'ctx> {
             .build_load(context.i64_type(), pointer, "slot_word")
             .unwrap()
             .into_int_value()
-    }
-
-    fn choose(
-        &mut self,
-        condition: IntValue<'ctx>,
-        yes: impl FnOnce(&mut Self) -> IntValue<'ctx>,
-        no: impl FnOnce(&mut Self) -> IntValue<'ctx>,
-    ) -> IntValue<'ctx> {
-        let context = self.words.context;
-        let yes_block = context.append_basic_block(self.function, "slot_bound");
-        let no_block = context.append_basic_block(self.function, "slot_unbound");
-        let join = context.append_basic_block(self.function, "slot_join");
-        self.words
-            .builder
-            .build_conditional_branch(condition, yes_block, no_block)
-            .unwrap();
-        self.words.builder.position_at_end(yes_block);
-        let taken = yes(self);
-        let taken_end = self.words.builder.get_insert_block().unwrap();
-        self.words.builder.build_unconditional_branch(join).unwrap();
-        self.words.builder.position_at_end(no_block);
-        let fallback = no(self);
-        let fallback_end = self.words.builder.get_insert_block().unwrap();
-        self.words.builder.build_unconditional_branch(join).unwrap();
-        self.words.builder.position_at_end(join);
-        let phi = self
-            .words
-            .builder
-            .build_phi(context.i64_type(), "slot_value")
-            .unwrap();
-        phi.add_incoming(&[(&taken, taken_end), (&fallback, fallback_end)]);
-        phi.as_basic_value().into_int_value()
     }
 
     fn retain(&mut self, word: IntValue<'ctx>) {
@@ -170,7 +154,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
                 context: self.backend.context,
                 builder: &builder,
             },
-            function,
             retain,
             admission,
         };

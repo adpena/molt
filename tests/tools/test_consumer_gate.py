@@ -13,6 +13,16 @@ from tools import consumer_gate
 from tools.test_dependency_graph import DirectReaders
 
 
+@pytest.fixture(autouse=True)
+def _private_host_work_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gate under test takes a slot of its own, not this host's (HF-623)."""
+    from molt import host_capacity
+
+    monkeypatch.setattr(
+        host_capacity, "host_work_dir", lambda _repo: tmp_path / "host-work"
+    )
+
+
 def _git(root: Path, *args: str) -> str:
     return run_guarded_test_process(["git", "-C", str(root), *args], check=True).stdout
 
@@ -54,7 +64,9 @@ def _graph(monkeypatch, importers: tuple[str, ...]) -> list[list[str]]:
     seen: list[list[str]] = []
 
     class Graph:
-        def direct_readers(self, changed):
+        def direct_readers(
+            self, changed: list[str], *, before: object = None
+        ) -> DirectReaders:
             seen.append(list(changed))
             return DirectReaders(importers=importers, data_readers=())
 

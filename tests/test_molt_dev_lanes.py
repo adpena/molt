@@ -22,6 +22,7 @@ import pytest
 
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
+
 from tests.integration_driver_fixture import (
     clone_tree,
     isolated_checkout_artifacts as isolated_checkout_artifacts,
@@ -33,6 +34,18 @@ from tools import molt_dev, molt_dev_lanes as lanes
 from tools.molt_dev_change_ids import landing_representation, read_commit_records
 from tools.driver_errors import EXIT_OK, EXIT_FAIL, EXIT_USAGE, DriverError  # noqa: E402
 from tests.integration_driver_fixture import FIXTURE_LEDGER  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _private_host_work_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lane's gates under test take a slot of their own, not this host's
+    (HF-623)."""
+    from molt import host_capacity
+
+    monkeypatch.setattr(
+        host_capacity, "host_work_dir", lambda _repo: tmp_path / "host-work"
+    )
+
 
 CHANGE_A = "I" + "a1" * 20
 CHANGE_B = "I" + "b2" * 20

@@ -312,17 +312,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         trampoline_fn
     }
 
-    /// CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form:
-    /// `molt_load_method(site, receiver, name, len, self_out)` or
+    /// CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form: a method site's
+    /// load body (`method_site.rs`), whose miss is
+    /// `molt_method_site_load(record, receiver, self_out)`, or
     /// `molt_load_super_method(site, class, first_arg, name, len, self_out)`.
-    /// The runtime returns the callable and writes `self_or_null` (the
-    /// receiver or the null sentinel) to an entry-block slot. Operands are
-    /// borrowed; both results are owned.
+    /// The load returns the callable and writes `self_or_null` (the receiver
+    /// or the null sentinel) to an entry-block slot. Operands are borrowed;
+    /// both results are owned.
     pub(super) fn emit_load_method(&mut self, op: &TirOp) {
-        let (symbol, lane, operand_count) = if op.opcode == OpCode::LoadSuperMethod {
-            (RuntimeFn::LoadSuperMethod, "load_super_method", 2)
+        let (lane, operand_count) = if op.opcode == OpCode::LoadSuperMethod {
+            ("load_super_method", 2)
         } else {
-            (RuntimeFn::LoadMethod, "load_method", 1)
+            ("load_method", 1)
         };
         let Some(AttrValue::Str(name)) = op.attrs.get("name") else {
             self.record_fatal(format!(
@@ -346,33 +347,50 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // The slot holds the null sentinel until the runtime writes it, so a
         // call that raises before its write leaves a releasable word.
         self.backend.builder.build_store(self_slot, null).unwrap();
-        let call_fn = self.ensure_runtime_import(symbol);
-        let site_bits = self.next_call_site_bits(lane);
-        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(name);
         let mut custody = self.begin_borrowed_operands(&op.operands, lane);
-        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-            vec![site_bits.into()];
-        for &operand in &op.operands {
-            call_args.push(self.borrowed_operand(&mut custody, operand).into());
-        }
+        let operands: Vec<inkwell::values::IntValue<'ctx>> = op
+            .operands
+            .iter()
+            .map(|&operand| self.borrowed_operand(&mut custody, operand))
+            .collect();
         let self_out = self
             .backend
             .builder
             .build_ptr_to_int(self_slot, i64_ty, &format!("{lane}_self_ptr"))
             .unwrap();
-        call_args.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 3]>([
-            name_ptr.into(),
-            name_len_bits.into(),
-            self_out.into(),
-        ]);
-        let callable = self
-            .backend
-            .builder
-            .build_execution_call(call_fn, &call_args, lane)
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
+        let callable = if op.opcode == OpCode::LoadMethod {
+            let Some(site) = op.method_site() else {
+                self.record_fatal(format!("{op:?}: a method load is a method site"));
+                return;
+            };
+            let Some(callable) = self.emit_method_site_load_call(site, operands[0], self_out)
+            else {
+                self.record_fatal(format!("{op:?}: method site {site} has no record"));
+                return;
+            };
+            callable
+        } else {
+            let call_fn = self.ensure_runtime_import(RuntimeFn::LoadSuperMethod);
+            let site_bits = self.next_call_site_bits(lane);
+            let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(name);
+            let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                vec![site_bits.into()];
+            call_args.extend(operands.iter().map(
+                |&operand| -> inkwell::values::BasicMetadataValueEnum<'ctx> { operand.into() },
+            ));
+            call_args.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 3]>([
+                name_ptr.into(),
+                name_len_bits.into(),
+                self_out.into(),
+            ]);
+            self.backend
+                .builder
+                .build_execution_call(call_fn, &call_args, lane)
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_int_value()
+        };
         // A receiver that could not be boxed was never loaded: its pair is
         // None and the null sentinel, never a previous load's words.
         let callable =
@@ -486,6 +504,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .iter()
             .map(|&operand| self.borrowed_operand(&mut custody, operand))
             .collect();
+        // A method site's call: the shared call body adopts every word too.
+        if let Some(site) = op.method_site()
+            && Self::method_site_call_admits(words.len() - 2)
+        {
+            self.surrender_borrowed_owners(&custody, &op.operands, &[]);
+            let Some(result) = self.emit_method_site_call(site, &words) else {
+                self.record_fatal(format!("{op:?}: method site {site} has no record"));
+                return;
+            };
+            let result =
+                self.finish_borrowed_operands(custody, result, "call_loaded_method_result", |_| {});
+            self.bind_owned_runtime_result(op, result.into());
+            return;
+        }
         let (symbol, call_args): (
             RuntimeFn,
             Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,

@@ -316,15 +316,31 @@ pub(super) fn emit_dynamic_call_op(
                 &live_object_locals,
                 call_ctx.locals.refcount(),
             );
-            let import = match args_names.len() - 2 {
-                0 => WasmRuntimeImport::CallLoadedMethod0,
-                1 => WasmRuntimeImport::CallLoadedMethod1,
-                2 => WasmRuntimeImport::CallLoadedMethod2,
-                3 => WasmRuntimeImport::CallLoadedMethod3,
-                4 => WasmRuntimeImport::CallLoadedMethod4,
-                _ => WasmRuntimeImport::CallLoadedMethodSpilled,
-            };
-            if import == WasmRuntimeImport::CallLoadedMethodSpilled {
+            let nargs = args_names.len() - 2;
+            let import = crate::wasm::method_site::COLD_CALLS
+                .get(nargs)
+                .copied()
+                .unwrap_or(WasmRuntimeImport::CallLoadedMethodSpilled);
+            let site_body = op
+                .method_site
+                .and_then(|site| Some((site, import_ids.method_site_bodies().call(nargs)?)));
+            if let Some((site, body)) = site_body {
+                // A method site's call: the shared call body, whose miss is
+                // the same runtime call.
+                let record = *call_ctx
+                    .method_site_records
+                    .get(&(call_ctx.func_index, site))
+                    .expect("a method site's load precedes its call");
+                let defined = call_ctx.func_index - call_ctx.func_import_count;
+                call_ctx
+                    .data_segments
+                    .emit_ptr(reloc_enabled, defined, func, record);
+                for name in args_names {
+                    func.instruction(&Instruction::LocalGet(locals[name]));
+                }
+                func.instruction(&Instruction::LocalGet(locals.refcount().admission));
+                emit_call(func, reloc_enabled, body);
+            } else if import == WasmRuntimeImport::CallLoadedMethodSpilled {
                 func.instruction(&Instruction::LocalGet(locals[&args_names[0]]));
                 func.instruction(&Instruction::LocalGet(locals[&args_names[1]]));
                 push_spilled_arguments(
@@ -333,12 +349,13 @@ pub(super) fn emit_dynamic_call_op(
                     call_site_abi.call_func_spill_offset(),
                     &args_names[2..],
                 );
+                emit_call(func, reloc_enabled, import_ids[import]);
             } else {
                 for name in args_names {
                     func.instruction(&Instruction::LocalGet(locals[name]));
                 }
+                emit_call(func, reloc_enabled, import_ids[import]);
             }
-            emit_call(func, reloc_enabled, import_ids[import]);
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
             release_live_object_locals(
                 func,

@@ -26,6 +26,7 @@ pub mod c_width;
 pub mod frame_record;
 pub mod global_slot;
 pub mod inline_refcount;
+pub mod method_site;
 pub mod word;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,7 +92,6 @@ pub const SPECIAL_TAG_BASE: i64 = 0x7ff9;
 pub const SPECIAL_TAG_LIMIT: i64 = 5;
 
 pub const QNAN: u64 = 0x7ff8_0000_0000_0000;
-pub const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
 pub const TAG_INT: u64 = 0x0001_0000_0000_0000;
 pub const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
 pub const TAG_NONE: u64 = 0x0003_0000_0000_0000;
@@ -464,7 +464,7 @@ pub struct GeneratedObjectAbiFacts {
     pub flag_contains_refs: u32,
     pub flag_gc_unpublished: u32,
     pub qnan: u64,
-    pub canonical_nan: u64,
+    pub float_first_tag_boundary: u64,
     pub tag_mask: u64,
     pub tag_ptr: u64,
     pub pointer_mask: u64,
@@ -541,7 +541,7 @@ impl GeneratedObjectAbiFacts {
             self.flag_contains_refs as u64,
             self.flag_gc_unpublished as u64,
             self.qnan,
-            self.canonical_nan,
+            self.float_first_tag_boundary,
             self.tag_mask,
             self.tag_ptr,
             self.pointer_mask,
@@ -637,7 +637,7 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     flag_contains_refs: HEADER_FLAG_CONTAINS_REFS,
     flag_gc_unpublished: HEADER_FLAG_GC_UNPUBLISHED,
     qnan: QNAN,
-    canonical_nan: CANONICAL_NAN_BITS,
+    float_first_tag_boundary: FIRST_TAG_BOUNDARY,
     tag_mask: TAG_MASK,
     tag_ptr: TAG_PTR,
     pointer_mask: POINTER_MASK,
@@ -716,18 +716,19 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// schema, hidden machine argument and permanent context header, and corrected
 /// raw buffer-close/native-completion classification. Revision 10 joins main's
 /// revision 8 with lane HF-198's revision 9; every older binding fails link
-/// admission. Revision 11 binds the attached-context schema without the WASM
+/// admission. Revision 12 binds the tag-boundary float test (runtime spec 2.1.1,
+/// HF-833). Revision 11 bound the attached-context schema without the WASM
 /// table-base setter: runtime callables are keys, so no host publishes a
 /// table base (HF-699 E2).
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V11: u64 = 0xa229_df9b_e5a8_e025;
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V12: u64 = 0xebf9_7f98_74de_84e5;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V11,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V12,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_a229df9be5a8e025_gil_v11";
+    "molt_generated_object_abi_ebf97f9874de84e5_gil_v12";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_a229df9be5a8e025_free_threaded_v11";
+    "molt_generated_object_abi_ebf97f9874de84e5_free_threaded_v12";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1423,7 +1424,6 @@ pub struct NanBoxConsts {
     pub special_limit: i64,
     pub int_tag_16: i64,
     pub int_mask: i64,
-    pub canonical_nan: i64,
 }
 
 impl NanBoxConsts {
@@ -1441,7 +1441,6 @@ impl NanBoxConsts {
             special_limit: SPECIAL_TAG_LIMIT,
             int_tag_16: ((QNAN | TAG_INT) >> 48) as i64,
             int_mask: INT_MASK as i64,
-            canonical_nan: CANONICAL_NAN_BITS as i64,
         }
     }
 }
@@ -1457,11 +1456,37 @@ pub fn box_int_bits(val: i64) -> i64 {
     (QNAN | TAG_INT | masked) as i64
 }
 
-pub fn box_float_bits(val: f64) -> i64 {
-    if val.is_nan() {
-        CANONICAL_NAN_BITS as i64
+/// The default NaN: what `float('nan')` and ARM arithmetic produce.
+pub const DEFAULT_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
+
+/// The sign bit of a double.
+pub const FLOAT_SIGN_BIT: u64 = 1u64 << 63;
+
+/// The inline word for `value`, or `None` when it needs a heap float (runtime
+/// spec 2.1.1, HF-833): a double is inline, as its exact bits, unless it is a
+/// NaN whose tag field (bits 48-50) is set. Quieting sets bit 51 only, so
+/// arithmetic on an inline NaN stays inline and compiled code boxes by
+/// identity. The NaN test is the float compare `value != value`: with the tag
+/// test it costs `fcmp; and; ccmp; b`, what the old canonicalizing select did,
+/// with no constant register.
+#[inline(always)]
+pub const fn float_inline_word(value: f64) -> Option<u64> {
+    let bits = value.to_bits();
+    if !value.is_nan() || bits & TAG_MASK == 0 {
+        Some(bits)
     } else {
-        val.to_bits() as i64
+        None
+    }
+}
+
+/// The allocation-free box of a float, for `MoltObject::from_float`, which
+/// has no runtime token to allocate with: its bits, except that a heap NaN
+/// (tag field set) becomes the default NaN with its sign. Every site that can
+/// see one boxes through the runtime's `float_result_bits` (HF-833).
+pub const fn box_float_bits(val: f64) -> i64 {
+    match float_inline_word(val) {
+        Some(word) => word as i64,
+        None => (DEFAULT_NAN_BITS | (val.to_bits() & FLOAT_SIGN_BIT)) as i64,
     }
 }
 
@@ -1537,8 +1562,25 @@ pub fn unbox_int_or_bool_bits(bits: u64) -> Option<i64> {
     }
 }
 
+/// The first word that is a tag (`QNAN | 1 << TAG_FIELD_SHIFT`), sign clear.
+pub const FIRST_TAG_BOUNDARY: u64 = QNAN | (1u64 << 48);
+/// `FIRST_TAG_BOUNDARY` without its (clear) sign bit, shifted left by one: the
+/// float test's right operand. Its low 49 bits are zero.
+pub const SHIFTED_FIRST_TAG_BOUNDARY: u64 = FIRST_TAG_BOUNDARY << 1;
+
+/// True iff `bits` is a float (runtime spec 2.1.1): a tag boundary, as
+/// SpiderMonkey's punboxing uses. Tags are `QNAN | tag << 48`, tag 1-5, sign
+/// clear; every other word, a quiet NaN with tag field 0 included, is a
+/// float as its own bits.
+///
+/// The shift drops the sign; since `SHIFTED_FIRST_TAG_BOUNDARY`'s low 49 bits
+/// are zero, the compare reads only the exponent and the tag field, so this is
+/// `bits & 0x7fff_0000_0000_0000 < FIRST_TAG_BOUNDARY` (the Lean model's
+/// `IsFloat`, proven equal in `NanBoxCorrect.isFloat_iff_shifted`). It is the shift
+/// form because AArch64 folds the shift into its compare (`cmp c, x, lsl #1`):
+/// one instruction and one constant register, as the old `bics` test.
 pub const fn is_float_bits(bits: u64) -> bool {
-    (bits & QNAN) != QNAN
+    bits << 1 < SHIFTED_FIRST_TAG_BOUNDARY
 }
 
 pub const fn is_int_bits(bits: u64) -> bool {
@@ -1722,14 +1764,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V11
+            GENERATED_OBJECT_ABI_FINGERPRINT_V12
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V11,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V12,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1737,13 +1779,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V11);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V12);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v11"), "{symbol}");
+            assert!(symbol.ends_with("_v12"), "{symbol}");
         }
     }
 

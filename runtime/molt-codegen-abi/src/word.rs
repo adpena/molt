@@ -32,6 +32,20 @@ pub trait WordBuilder: Sized {
     fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate;
 }
 
+/// A two-armed choice that yields one word: the control flow a generator
+/// needs for a hot arm and a cold arm (a slot read's by-name path). The `no`
+/// arm is the cold one.
+pub trait BranchBuilder: WordBuilder {
+    /// Run `yes` when `condition` holds, else `no`; the result is the word
+    /// the taken arm returned, in the arms' common continuation.
+    fn choose(
+        &mut self,
+        condition: Self::Predicate,
+        yes: impl FnOnce(&mut Self) -> Self::Word,
+        no: impl FnOnce(&mut Self) -> Self::Word,
+    ) -> Self::Word;
+}
+
 /// Implements `WordBuilder` for a wrapper by forwarding to one field that
 /// already implements it, so a backend spells its word instructions once and
 /// every builder that extends `WordBuilder` (for example `RefcountBuilder`)

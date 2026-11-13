@@ -98,12 +98,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
+@pytest.fixture(autouse=True)
+def _private_host_work_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A landing under test takes a slot of its own, not this host's (HF-623)."""
+    from molt import host_capacity
+
+    monkeypatch.setattr(
+        host_capacity, "host_work_dir", lambda _repo: tmp_path / "host-work"
+    )
+
+
 from tools import controller_source, detached_execution  # noqa: E402
 from tools import harness_memory_guard, memory_guard, molt_dev_gates  # noqa: E402
 from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402
 from tools.molt_dev_policy import (  # noqa: E402
     GateConfig,
     GateEnvironment,
+    LandingMode,
     PreparedGates,
     SelectedGate,
 )
@@ -3313,6 +3324,72 @@ def test_integrate_cancels_later_gates_after_an_earlier_failure(
     finally:
         stop_test_processes_carrying(marker)
     assert still_running == [], "the cancelled gate still runs"
+
+
+@pytest.mark.parametrize("mode", [LandingMode.PRESUBMIT, LandingMode.POSTSUBMIT])
+def test_every_gate_run_holds_the_host_slot_for_its_heavy_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: LandingMode
+) -> None:
+    # 2026-11-12: a batch-queue run started its heavy gates while a land
+    # --fast try run held the host's slot, because only the try run took it.
+    # The slot now wraps the heavy block of every gate run.
+    from molt import host_capacity
+
+    monkeypatch.delenv(host_capacity.HOST_WORK_HELD_ENV, raising=False)
+    slot = tmp_path / "host-work"
+    seen: dict[tuple[str, ...], tuple[str | None, bool]] = {}
+
+    def run_captured_gate(
+        command: Sequence[str],
+        repo: Path,
+        environment: object,
+        cancelled: object,
+        streams: object = None,
+    ) -> molt_dev_gates.GateOutcome:
+        seen[tuple(command)] = (
+            os.environ.get(host_capacity.HOST_WORK_HELD_ENV),
+            (slot / "landing.holder").is_file(),
+        )
+        return _gate_outcome(0, "", "", None)
+
+    class Progress:
+        def emit(self, event: str, **details: object) -> None:
+            pass
+
+    environment = GateEnvironment(ProcessEnvironment(os.environ), None, False)
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={("python",): environment, ("cargo",): environment},
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=lambda message: None,
+        ok=lambda message: None,
+        mode=mode,
+    )
+    gates = [
+        SelectedGate(command=("light",), toolchains=("python",)),
+        SelectedGate(command=("heavy",), toolchains=("cargo",)),
+    ]
+    molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+
+    assert seen[("light",)] == (None, False)
+    assert seen[("heavy",)] == (
+        str(slot.resolve()),
+        mode is LandingMode.PRESUBMIT,  # a landing goes ahead of other work
+    )
+    assert host_capacity.HOST_WORK_HELD_ENV not in os.environ
 
 
 @pytest.mark.parametrize("cause", ["gate exit", "outside writer"])
