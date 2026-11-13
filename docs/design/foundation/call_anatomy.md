@@ -128,7 +128,7 @@ builder trait and walker with LLVM as its first implementation; Cranelift onto f
 native backends already call runtime entries only by typed `RuntimeFn`, decoded once at the TIR
 lift ([typed runtime imports](typed_runtime_imports.md), 2026-11-12). Measured reason the order matters (2026-11-11, LLVM release,
 macOS arm64, instructions retired, managed CPython 3.12.16 -I): the worst gaps are fannkuch 8.2x
-CPython (27.0 G excess), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
+CPython (27.0 G excess; 4.7x since HF-837, below), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
 mandelbrot 4.7x (6.6 G), `bench_dict` and `bench_list` 2.3x; their buckets (object lifecycle,
 container access) are fast paths every backend needs, so each is written once on the foundation.
 
@@ -153,6 +153,42 @@ which raises the int message. `spectral_norm` (whose `eval_A` divides ints and a
 int), LLVM release, macOS arm64, instructions retired, min of 2: 11.50 to 8.27 billion (-28.1%,
 output identical), below Cranelift's 9.58 billion; `bench_float`, `nbody` and `mandelbrot` within
 0.13%. Cranelift keeps its backend-local mixed paths until it consumes final TIR.
+
+fannkuch list lifecycle (2026-11-12, HF-837). The 8.2x gap was the runtime, not the call path: a
+symbolized profile of `fannkuch_redux.py 10` on main (LLVM release, 9,165 self samples) held list
+destroy 27.0%, allocation 17.4%, slicing 12.4%, index get/set 8.6%, range and list iteration
+6.6%, GC membership 4.1% and compiled code 1.6%. The general causes are fixed once for every
+backend:
+
+- Destroy: a terminal release built an edge sink, counted its capacity by walking the payload,
+  and detached every item, for a list of inline ints with nothing to release.
+  `heap_lifecycle::retires_without_edges` proves the empty case from the header (no C view, weak
+  reference, scheduler retain, sidecar or owned class edge) and one tag test per item of a list,
+  tuple, slice or range; such an object frees its storage directly.
+- Slicing: every slice bound became a `BigInt` (`DecodedSlice`); an inline int now stays an
+  `i64`. A list slice copied the whole list, built an index vector, then copied again;
+  `seq_access::snapshot_slice` copies only the selected items into the new list's own backing. An
+  equal-length slice store of non-heap words overwrites in place.
+- Index get/set: `index_impl` and `store_index_impl` serve the exact builtin containers first, on
+  one header load: an exact list at an inline int in range is one locked bounds check and load or
+  one item replacement, and an exact dict goes straight to its table.
+- Parallel assignment `a, b = x, y` no longer builds and unpacks a tuple: the values evaluate left
+  to right, then the targets, as CPython compiles it.
+
+Release, macOS arm64, instructions retired and user time, minimum of 7 interleaved runs against
+main 49242cd306 built in its own worktree, output identical: `fannkuch_redux.py 9` LLVM 27.75 G to
+18.77 G (-32.4%, 0.95 to 0.63 s), Cranelift 28.03 G to 19.14 G (-31.7%, 0.96 to 0.65 s); managed
+CPython 3.12.16 -I runs it in 3.97 G and 0.16 s. `bench_list` LLVM -7.4%, Cranelift -5.6%;
+`bench_dict` LLVM 0.0%, Cranelift +1.0%. The same profile on the lane (LLVM, 5,995 self samples
+against 9,165): list destroy 18.0%, allocation 18.9%, slicing 11.8%, index get/set 10.1%,
+iteration 9.9%, GC membership 6.0%, compiled code 2.3%. Most of what remains is the flip
+`perm[:k + 1] = perm[k::-1]`, which still builds two slice objects and a list per flip. Its next
+slice is a TIR transform: a slice store whose value is a step -1 slice of the same SSA list over a
+range the bounds facts prove equal becomes one in-place reverse. After it, the call-threaded
+shape remains: every list index is a runtime call on LLVM and WASM (Cranelift keeps a
+backend-local fast path), `for r in rxrange` iterates a range object through the runtime, and
+`perm1[:]` allocates a list per permutation; these move to the codegen
+foundation as compiled list and range primitives.
 
 P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
