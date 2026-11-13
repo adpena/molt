@@ -21587,10 +21587,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_load_intrinsic_runtime__molt_context_047a33b55bc1b76d",
         },
-        "molt_load_method" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_load_method__molt_context_047a33b55bc1b76d",
-        },
         "molt_load_super_method" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_load_super_method__molt_context_047a33b55bc1b76d",
@@ -22170,6 +22166,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_method_ne" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_method_ne__molt_context_047a33b55bc1b76d",
+        },
+        "molt_method_site_load" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_method_site_load__molt_context_047a33b55bc1b76d",
         },
         "molt_min_builtin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

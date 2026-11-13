@@ -1334,22 +1334,54 @@ pub(crate) unsafe fn get_attr_object_ic_with_mode(
             None => dynamic_attr_name_bits(py, name),
         }
         .ok_or(())?;
-        if let Some(site_id) = site_id
-            && field_sites::remember_field_site(
+        let out = get_attr_object_site_uncached(py, obj_bits, name_bits, site_id, mode);
+        dec_ref_bits(py, name_bits);
+        out
+    }
+}
+
+/// An attribute load at a site with a name object: the site's cached field
+/// first, else the full lookup, which records a plain field for the site.
+///
+/// # Safety
+/// `name_bits` is a live `str`; the GIL is held.
+pub(crate) unsafe fn get_attr_object_site_with_mode(
+    py: &PyToken<'_>,
+    obj_bits: u64,
+    name_bits: u64,
+    site_id: u64,
+    mode: AttributeLookupMode<'_>,
+) -> Result<u64, ()> {
+    unsafe {
+        if let Some(bits) = field_sites::read_cached_field(py, site_id, obj_bits) {
+            if exception_pending(py) {
+                dec_ref_bits(py, bits);
+                return Err(());
+            }
+            return Ok(bits);
+        }
+        get_attr_object_site_uncached(py, obj_bits, name_bits, Some(site_id), mode)
+    }
+}
+
+unsafe fn get_attr_object_site_uncached(
+    py: &PyToken<'_>,
+    obj_bits: u64,
+    name_bits: u64,
+    site_id: Option<u64>,
+    mode: AttributeLookupMode<'_>,
+) -> Result<u64, ()> {
+    unsafe {
+        if let Some(site_id) = site_id {
+            field_sites::remember_field_site(
                 py,
                 field_sites::FieldAccess::Read,
                 site_id,
                 obj_bits,
                 name_bits,
-            )
-            .is_err()
-        {
-            dec_ref_bits(py, name_bits);
-            return Err(());
+            )?;
         }
-        let out = get_attr_name_with_mode(py, obj_bits, name_bits, mode);
-        dec_ref_bits(py, name_bits);
-        out
+        get_attr_name_with_mode(py, obj_bits, name_bits, mode)
     }
 }
 

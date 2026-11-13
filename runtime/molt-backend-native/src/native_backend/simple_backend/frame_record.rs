@@ -21,11 +21,14 @@ pub(crate) struct NativeFrameSites {
     pub(crate) exit: FuncRef,
 }
 
-struct NativeFrameBuilder<'a, 'b> {
-    words: NativeWords<'a, 'b>,
-    sites: NativeFrameSites,
+/// Cranelift's spelling of the shared control and word primitives, inline in
+/// the function being compiled. The method site generators reuse it
+/// (`method_site.rs`).
+pub(crate) struct NativeFrameBuilder<'a, 'b> {
+    pub(crate) words: NativeWords<'a, 'b>,
+    pub(crate) sites: NativeFrameSites,
     /// The cold block of each open `attempt`, innermost last.
-    slow_blocks: Vec<Block>,
+    pub(crate) slow_blocks: Vec<Block>,
 }
 
 impl<'a, 'b> WordBuilder for NativeFrameBuilder<'a, 'b> {

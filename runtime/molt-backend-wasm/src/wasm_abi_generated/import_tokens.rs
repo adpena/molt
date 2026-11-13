@@ -194,7 +194,7 @@ pub(crate) enum WasmRuntimeImport {
     CallBind,
     CallBindIc,
     CallBindIcOwned,
-    LoadMethod,
+    MethodSiteLoad,
     LoadSuperMethod,
     CallLoadedMethod0,
     CallLoadedMethod1,

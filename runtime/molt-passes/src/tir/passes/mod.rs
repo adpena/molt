@@ -32,6 +32,7 @@ pub mod liveness;
 pub mod loop_unroll;
 pub mod mem_gvn;
 pub mod memory_ssa;
+pub mod method_sites;
 pub mod module_slot_promotion;
 pub mod overflow_peel;
 pub mod ownership_lattice_min;

@@ -24,6 +24,8 @@ mod block_builder;
 pub(crate) use block_builder::*;
 mod frame_record;
 pub(crate) use frame_record::*;
+mod method_site;
+pub(crate) use method_site::*;
 mod refcount;
 pub(crate) use refcount::*;
 mod variables;
