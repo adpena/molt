@@ -1435,6 +1435,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "IsBoolWord": "bool",
         "UnboxBoolWord": "bool",
         "BoxInlineInt": "dynbox",
+        "IntToFloat": "f64",
         "CodeIs": "bool",
         "GlobalSlotBase": "i64",
         "GlobalSlotGet": "dynbox",
@@ -2678,6 +2679,7 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "IsBoolWord",
         "UnboxBoolWord",
         "BoxInlineInt",
+        "IntToFloat",
         "ModuleSlot",
         "GlobalSlotBase",
     }
