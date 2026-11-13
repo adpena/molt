@@ -5180,6 +5180,7 @@ def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
     assert not lane.exists(), "the controller survives the worktree it retires"
 
 
+@pytest.mark.slow
 def test_lane_start_and_retire_run_through_mains_controller_by_default(
     driver_origin_and_clone,
 ):
