@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -13,6 +14,7 @@ from molt import host_capacity
 from tests.process_guard_common import (
     check_output_guarded_test_process,
     install_module_view,
+    run_guarded_test_process,
 )
 
 
@@ -371,3 +373,127 @@ def test_executor_cpu_budget_prefers_performance_cores_within_affinity(
         lambda name: performance if name == "hw.perflevel0.physicalcpu" else None,
     )
     assert host_capacity.execution_cpu_count() == expected
+
+
+# --------------------------------------------------------------------------
+# Host work admission (HF-623)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(host_capacity, "_POLL_SECONDS", 0.01)
+
+
+def _held_elsewhere(state_dir: Path, name: str) -> BinaryIO:
+    """An exclusive lock taken through a separate open, as another job's is."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(state_dir / name, "a+b")  # noqa: SIM115
+    assert host_capacity._try_exclusive(handle)
+    (state_dir / name).with_suffix(".holder").write_text(
+        "landing try run (abc123)\n", encoding="utf-8"
+    )
+    return handle
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_a_heavy_job_waits_for_the_holder_and_names_it(
+    tmp_path: Path, fast_poll: None
+) -> None:
+    import threading
+
+    state = tmp_path / "host-work"
+    holder = _held_elsewhere(state, "heavy.lock")
+    said: list[str] = []
+    admitted = threading.Event()
+
+    def job() -> None:
+        with host_capacity.host_work_slot(
+            state, label="consumer gate", landing=False, say=said.append
+        ):
+            admitted.set()
+
+    worker = threading.Thread(target=job)
+    worker.start()
+    assert not admitted.wait(0.2)  # the slot is taken: the job waits
+    host_capacity._release(state / "heavy.lock", holder)
+    worker.join(5)
+    assert admitted.is_set()
+    assert said and "waits for landing try run (abc123)" in said[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_a_queued_landing_goes_before_a_heavy_job_that_has_not_started(
+    tmp_path: Path, fast_poll: None
+) -> None:
+    import threading
+
+    state = tmp_path / "host-work"
+    # The heavy slot is free, but a landing holds the landing lock (it is
+    # queued or running), so an ordinary heavy job must not start.
+    landing = _held_elsewhere(state, "landing.lock")
+    admitted = threading.Event()
+
+    def job() -> None:
+        with host_capacity.host_work_slot(
+            state, label="consumer gate", landing=False, say=lambda _: None
+        ):
+            admitted.set()
+
+    worker = threading.Thread(target=job)
+    worker.start()
+    assert not admitted.wait(0.2)
+    host_capacity._release(state / "landing.lock", landing)
+    worker.join(5)
+    assert admitted.is_set()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_work_the_holder_starts_is_admitted_inside_the_holders_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A landing holds the slot and its tests run a consumer gate in a child
+    # process. The child opens the lock files itself, so without the inherited
+    # mark it would wait for its own ancestor until the landing's budget ended.
+    monkeypatch.delenv(host_capacity.HOST_WORK_HELD_ENV, raising=False)
+    state = tmp_path / "host-work"
+    child = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from molt import host_capacity\n"
+        "with host_capacity.host_work_slot(Path(sys.argv[1]), label='gate',"
+        " landing=False, say=print, clock=time.monotonic) as a:\n"
+        "    print(f'admitted {a.waited_seconds}')\n"
+    )
+    with host_capacity.host_work_slot(
+        state, label="landing try run", landing=True, say=lambda _: None
+    ):
+        assert os.environ[host_capacity.HOST_WORK_HELD_ENV] == str(state.resolve())
+        nested = run_guarded_test_process(
+            [sys.executable, "-c", child, str(state)], check=True, timeout=30
+        )
+    assert nested.stdout.strip() == "admitted 0.0"
+    # The mark ends with the holder's body.
+    assert host_capacity.HOST_WORK_HELD_ENV not in os.environ
+
+
+def test_a_landing_is_admitted_at_once_and_releases_both_locks(tmp_path: Path) -> None:
+    state = tmp_path / "host-work"
+    with pytest.raises(RuntimeError, match="gate failed"):
+        with host_capacity.host_work_slot(
+            state, label="landing try run", landing=True, say=lambda _: None
+        ) as admission:
+            assert admission.waited_seconds < 1
+            assert (
+                (state / "heavy.holder")
+                .read_text(encoding="utf-8")
+                .startswith("landing try run")
+            )
+            raise RuntimeError("gate failed")
+    # Both locks are free again and no stale holder record remains.
+    for name in ("heavy.lock", "landing.lock"):
+        handle = open(state / name, "a+b")  # noqa: SIM115
+        assert host_capacity._try_exclusive(handle)
+        host_capacity._release(state / name, handle)
+    assert not (state / "heavy.holder").exists()
+    assert not (state / "landing.holder").exists()

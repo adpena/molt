@@ -1078,6 +1078,113 @@ def node_path(node: str) -> str:
 
 
 @dataclass(frozen=True)
+class ModuleChange:
+    """The definitions a module change touches, and whether its import-time
+    (module-level) code changed."""
+
+    definitions: frozenset[str]
+    import_time: bool
+
+
+def git_blob_reader(root: Path, revision: str) -> Callable[[str], bytes | None]:
+    """Each path's content at ``revision``, or None where it did not exist."""
+
+    def read(path: str) -> bytes | None:
+        result = _COMMANDS.run(
+            ["git", "-C", str(root), "show", f"{revision}:{path}"],
+            capture_output=True,
+            check=False,
+        )
+        return result.stdout if result.returncode == 0 else None
+
+    return read
+
+
+def _bound_names(statement: ast.stmt) -> set[str] | None:
+    """The module names a top-level statement binds, or None when it does
+    something else at import time (a call, an assert): an unknown effect."""
+    names: set[str] = set()
+    for node in ast.walk(statement):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update(
+                (alias.asname or alias.name).partition(".")[0] for alias in node.names
+            )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+    if names:
+        return names
+    # A bare string (a module docstring) binds nothing and does nothing.
+    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+        return names
+    return None
+
+
+def changed_module_nodes(
+    path: str, before: bytes, after: bytes
+) -> "ModuleChange | None":
+    """What one Python module's change from ``before`` to ``after`` touches.
+
+    Each top-level definition whose syntax differs is touched, and so is each
+    definition that names a module-level binding (an assignment target or an
+    import) whose statement differs. ``import_time`` says whether module-level
+    code differs at all. Positions, comments and formatting are not syntax.
+    None means the change cannot be refined (a module that does not parse, a
+    top-level name defined twice, or a changed module-level statement with an
+    import-time effect beyond binding names), so the caller keeps the file.
+    """
+
+    def split(source: bytes) -> tuple[dict[str, ast.stmt], list[ast.stmt]] | None:
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            return None
+        definitions: dict[str, ast.stmt] = {}
+        rest: list[ast.stmt] = []
+        for statement in tree.body:
+            if isinstance(
+                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                if statement.name in definitions:
+                    return None
+                definitions[statement.name] = statement
+            else:
+                rest.append(statement)
+        return definitions, rest
+
+    old, new = split(before), split(after)
+    if old is None or new is None:
+        return None
+    touched = {
+        name
+        for name in old[0].keys() | new[0].keys()
+        if name not in old[0]
+        or name not in new[0]
+        or ast.dump(old[0][name]) != ast.dump(new[0][name])
+    }
+    old_rest = {ast.dump(statement): statement for statement in old[1]}
+    new_rest = {ast.dump(statement): statement for statement in new[1]}
+    changed_bindings: set[str] = set()
+    for key in old_rest.keys() ^ new_rest.keys():
+        bound = _bound_names(old_rest.get(key) or new_rest[key])
+        if bound is None:
+            return None
+        changed_bindings |= bound
+    if changed_bindings:
+        for name, definition in new[0].items():
+            used = {
+                node.id for node in ast.walk(definition) if isinstance(node, ast.Name)
+            }
+            if used & changed_bindings:
+                touched.add(name)
+    return ModuleChange(
+        frozenset(function_node(path, name) for name in touched),
+        import_time=bool(old_rest.keys() ^ new_rest.keys()),
+    )
+
+
+@dataclass(frozen=True)
 class Dependencies:
     """What one node reads: executed sources and data files or directories."""
 
@@ -1404,8 +1511,58 @@ class DependencyGraph:
                 selected.append(test)
         return tuple(selected)
 
+    def changed_nodes(
+        self, changed: Iterable[str], before: Callable[[str], bytes | None]
+    ) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+        """Split a change into the definitions it touches, the paths kept
+        whole, and the modules whose import-time code changed.
+
+        A changed Python module that existed before and parses on both sides is
+        refined (``changed_module_nodes``) to the definitions the change
+        touches, closed over the module's own callers, plus the module node a
+        whole-module dependent holds. Every other path stays whole: a new or
+        deleted module, a test, a stdlib source, data.
+        """
+        nodes: set[str] = set()
+        whole: set[str] = set()
+        import_time: set[str] = set()
+        candidates = [
+            path
+            for path in changed
+            if path.endswith(".py")
+            and path in self.tree.blobs
+            and not is_test_file(path)
+            and not path.startswith("src/molt/stdlib/")
+        ]
+        current = self.tree.read(candidates)
+        for path in changed:
+            prior = before(path) if path in current else None
+            change = (
+                changed_module_nodes(path, prior, current[path])
+                if prior is not None
+                else None
+            )
+            if change is None:
+                whole.add(path)
+                continue
+            if change.import_time:
+                import_time.add(path)
+            if change.definitions or change.import_time:
+                nodes.add(path)
+            if change.definitions:
+                nodes.update(
+                    node
+                    for node in self.affected(change.definitions)
+                    if node_path(node) == path
+                )
+        return frozenset(nodes), frozenset(whole), frozenset(import_time)
+
     def direct_readers(
-        self, changed: Iterable[str], *, observations: ObservedTestInputs | None = None
+        self,
+        changed: Iterable[str],
+        *,
+        observations: ObservedTestInputs | None = None,
+        before: Callable[[str], bytes | None] | None = None,
     ) -> "DirectReaders":
         """Tests at the first hop, without walking their import closure.
 
@@ -1417,8 +1574,20 @@ class DependencyGraph:
         that reads a changed path as data, through a directory, or compiles a
         changed stdlib source): presubmit runs importers only (owner decision
         2026-11-06, docs/design/landing_queue.md section 9.10).
+
+        With ``before``, the prior content of each changed path, a changed
+        module selects only the tests whose first hop reaches a definition the
+        change touches (``changed_nodes``): a module that a conftest uses for
+        one fixture no longer selects every test below that conftest when an
+        unrelated function in it changes (HF-623). Without it, every changed
+        path is whole, as before.
         """
         changed = frozenset(changed)
+        touched_nodes, whole, import_time = (
+            self.changed_nodes(changed, before)
+            if before is not None
+            else (frozenset(), changed, frozenset())
+        )
         read = {path for path in changed if not is_test_file(path)}
         directories = {
             str(parent) for path in read for parent in PurePosixPath(path).parents
@@ -1435,16 +1604,19 @@ class DependencyGraph:
         data_readers: list[str] = []
         for test in self.tests:
             inputs = self.inputs[test]
-            sources = {
-                node_path(node)
-                for node in inputs.roots | self.nodes.get(test, Dependencies()).execs
-            }
+            own = self.nodes.get(test, Dependencies()).execs
+            reached = inputs.roots | own
+            sources = {node_path(node) for node in reached}
             if (
                 test in changed
                 or any(
-                    not path.startswith("src/molt/stdlib/")
-                    for path in sources & changed
+                    not path.startswith("src/molt/stdlib/") for path in sources & whole
                 )
+                or bool(reached & touched_nodes)
+                # Module-level code runs when a module is imported: the tests
+                # that import it themselves cover that; tests reaching it only
+                # through a conftest run it the same way, in postsubmit.
+                or bool({node_path(node) for node in own} & import_time)
                 or any(conftest in changed for conftest in self.conftests[test])
             ):
                 importers.append(test)
@@ -1955,8 +2127,12 @@ def graph_selection(
     recent_failures: Iterable[str] = (),
     foreign_cells: frozenset[str] = frozenset(),
     observations: ObservedTestInputs | None = None,
+    base: str | None = None,
 ) -> GraphSelection:
+    """``base``, the revision the change applies to, lets presubmit refine a
+    changed module to the definitions it touches (``direct_readers``)."""
     commands = tuple(commands)
+    before = git_blob_reader(graph.tree.root, base) if base is not None else None
     build_bound = build_bound_commands(commands)
     envelopes, others = landing_envelopes(
         commands, mode=mode, foreign_cells=foreign_cells, build_bound=build_bound
@@ -1971,7 +2147,9 @@ def graph_selection(
                 for target in recent_failures
                 if target.partition("::")[0] in graph.tests
             }
-            readers = graph.direct_readers(changed, observations=observations)
+            readers = graph.direct_readers(
+                changed, observations=observations, before=before
+            )
             # A data reader that recently failed postsubmit stays in presubmit:
             # this change touches what it reads.
             selected = tuple(
