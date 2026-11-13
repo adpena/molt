@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::wasm::frame_record::WasmFrameBodies;
+use crate::wasm::method_site::WasmMethodSiteBodies;
 use crate::wasm::refcount::WasmRefcountBodies;
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
@@ -19,6 +20,8 @@ pub(crate) struct TrackedImportIds {
     frame_bodies: Option<WasmFrameBodies>,
     /// The module's generated global slot read bodies, by slot index.
     global_slot_bodies: Option<BTreeMap<u32, u32>>,
+    /// The module's generated method site load and call bodies.
+    method_site_bodies: Option<WasmMethodSiteBodies>,
 }
 
 impl TrackedImportIds {
@@ -34,6 +37,7 @@ impl TrackedImportIds {
             refcount_bodies: None,
             frame_bodies: None,
             global_slot_bodies: None,
+            method_site_bodies: None,
         }
     }
 
@@ -83,6 +87,20 @@ impl TrackedImportIds {
             .as_ref()
             .and_then(|bodies| bodies.get(&index))
             .expect("global slot read bodies must be emitted before any function body")
+    }
+
+    pub(crate) fn set_method_site_bodies(&mut self, bodies: WasmMethodSiteBodies) {
+        assert!(
+            self.method_site_bodies.replace(bodies).is_none(),
+            "a WASM module emits its method site bodies once"
+        );
+    }
+
+    /// The module's generated method site bodies.
+    pub(crate) fn method_site_bodies(&self) -> &WasmMethodSiteBodies {
+        self.method_site_bodies
+            .as_ref()
+            .expect("method site bodies must be emitted before any function body")
     }
 
     pub(crate) fn set_frame_bodies(&mut self, bodies: WasmFrameBodies) {

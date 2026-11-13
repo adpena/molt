@@ -191,9 +191,9 @@ fn non_word_signatures_keep_their_machine_classes() {
     );
     let resolve = imports.get(&ctx, &module, RuntimeFn::HandleResolve);
     assert_eq!(resolve.get_type().get_return_type(), Some(ptr.into()));
-    let load_method = imports.get(&ctx, &module, RuntimeFn::LoadMethod);
+    let load_super_method = imports.get(&ctx, &module, RuntimeFn::LoadSuperMethod);
     assert!(
-        load_method
+        load_super_method
             .get_type()
             .get_param_types()
             .contains(&ptr.into())

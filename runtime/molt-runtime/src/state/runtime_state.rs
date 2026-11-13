@@ -1450,6 +1450,11 @@ pub(crate) fn owns_process_cpython_state(state: &RuntimeState) -> bool {
     }
 }
 
+/// Whether `state` is the process's primary runtime, not an isolate.
+pub(crate) fn runtime_is_primary(state: &RuntimeState) -> bool {
+    runtime_ready_ptr().is_some_and(|ptr| std::ptr::eq(state, ptr))
+}
+
 pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
     admitted_runtime_state_in(crate::state::execution_tls())
 }

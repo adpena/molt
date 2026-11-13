@@ -2627,15 +2627,26 @@ unsafe fn object_attr_lookup_inner(
     }
 }
 
-/// Resolution outcome for the per-site method inline cache.
+/// Class-side resolution of a method load at a compiled method site
+/// (`call/bind/method_site.rs`).
 pub(crate) struct MethodIcResolution {
     pub(crate) class_bits: u64,
     pub(crate) class_version: u64,
     pub(crate) func_bits: u64,
-    /// Whether an instance of this class could carry an OWN attribute of this
-    /// name (an instance dictionary or an inferred field slot). When false, instance-shadow checks may be skipped on IC hits:
-    /// a non-data class method can never be shadowed.
-    pub(crate) can_shadow: bool,
+    /// Instances of the class may carry an attribute dictionary, which may
+    /// shadow the method.
+    pub(crate) allows_dict: bool,
+    /// The name is an inferred field of the class layout, which an instance
+    /// may hold and which then shadows the method.
+    pub(crate) field_shadow: bool,
+}
+
+impl MethodIcResolution {
+    /// Whether an instance of this class could carry an own attribute of
+    /// this name. When false, no instance can shadow the class function.
+    pub(crate) fn can_shadow(&self) -> bool {
+        self.allows_dict || self.field_shadow
+    }
 }
 
 /// Class-side resolution for the fused method fast path (everything except the
@@ -2723,16 +2734,16 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
             crate::object::layout::class_field_offsets_bits(class_ptr),
             attr_bits,
         );
-        let can_shadow = slots.allows_dict
-            || offset.is_some_and(|offset| {
-                crate::object::class_layout::field_at_offset(class_ptr, offset)
-                    .is_some_and(|field| field.kind.is_inferred())
-            });
+        let field_shadow = offset.is_some_and(|offset| {
+            crate::object::class_layout::field_at_offset(class_ptr, offset)
+                .is_some_and(|field| field.kind.is_inferred())
+        });
         Ok(Some(consume(MethodIcResolution {
             class_bits,
             class_version,
             func_bits: owner.bits(),
-            can_shadow,
+            allows_dict: slots.allows_dict,
+            field_shadow,
         })))
     }
 }

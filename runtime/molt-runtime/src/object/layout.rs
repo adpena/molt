@@ -2890,17 +2890,28 @@ pub(crate) unsafe fn class_mro_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::Mro.load(ptr) }
 }
 
-pub(crate) unsafe fn class_layout_version_bits(ptr: *mut u8) -> u64 {
+/// The class layout version word, which compiled method sites read inline
+/// (`molt_codegen_abi::method_site::CLASS_LAYOUT_VERSION_OFFSET`).
+pub(crate) const CLASS_LAYOUT_VERSION_WORD: usize = 4;
+const _: () = assert!(
+    molt_codegen_abi::method_site::CLASS_LAYOUT_VERSION_OFFSET as usize
+        == CLASS_LAYOUT_VERSION_WORD * std::mem::size_of::<u64>()
+);
+
+unsafe fn class_layout_version_word<'a>(ptr: *mut u8) -> &'a std::sync::atomic::AtomicU64 {
     unsafe {
-        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
-            .load(std::sync::atomic::Ordering::Acquire)
+        &*(ptr.add(CLASS_LAYOUT_VERSION_WORD * std::mem::size_of::<u64>())
+            as *const std::sync::atomic::AtomicU64)
     }
+}
+
+pub(crate) unsafe fn class_layout_version_bits(ptr: *mut u8) -> u64 {
+    unsafe { class_layout_version_word(ptr).load(std::sync::atomic::Ordering::Acquire) }
 }
 
 pub(crate) unsafe fn class_set_layout_version_bits(ptr: *mut u8, bits: u64) {
     unsafe {
-        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
-            .fetch_max(bits, std::sync::atomic::Ordering::AcqRel);
+        class_layout_version_word(ptr).fetch_max(bits, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -3161,7 +3172,7 @@ pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bi
 
 unsafe fn advance_class_layout_version(ptr: *mut u8) {
     unsafe {
-        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
+        class_layout_version_word(ptr)
             .try_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,

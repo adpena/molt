@@ -23,27 +23,6 @@ pub unsafe extern "C" fn molt_call_bind_ic_owned(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_call_bind_ic_owned_attached_body(_py, site_bits, call_bits, builder_bits)
 }
-#[unsafe(export_name = "molt_load_method__molt_context_047a33b55bc1b76d")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_load_method(
-    __context: u64,
-    site_bits: u64,
-    recv_bits: u64,
-    name_ptr: *const u8,
-    name_len_bits: u64,
-    self_out_bits: u64,
-) -> u64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_load_method_attached_body(
-        _py,
-        site_bits,
-        recv_bits,
-        name_ptr,
-        name_len_bits,
-        self_out_bits,
-    )
-}
 #[unsafe(export_name = "molt_load_super_method__molt_context_047a33b55bc1b76d")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_load_super_method(

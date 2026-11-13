@@ -305,6 +305,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::IsBoolWord => "is_bool_word",
         OpCode::IsFloatWord => "is_float_word",
         OpCode::UnboxFloatWord => "unbox_float_word",
+        OpCode::IntToFloat => "int_to_float",
         OpCode::UnboxBoolWord => "unbox_bool_word",
         OpCode::BoxInlineInt => "box_inline_int",
         OpCode::CodeIs => "code_is",

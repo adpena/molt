@@ -29,7 +29,7 @@ use crate::builtins::types::{
     types_clear_runtime_callbacks, types_clear_runtime_state, types_runtime_class_roots,
 };
 use crate::c_api::c_api_module_clear_state;
-use crate::call::bind::{clear_call_bind_ic_cache, clear_method_ic_cache, clear_super_ic_cache};
+use crate::call::bind::{clear_call_bind_ic_cache, clear_super_ic_cache};
 use crate::const_data_cache::clear_const_data_literal_caches;
 use crate::object::builders::clear_builder_singletons;
 use crate::object::class_storage::{ClassOrigin, RuntimeClassRetirement};
@@ -509,6 +509,7 @@ fn clear_runtime_callback_roots(
     changed |= drain_dynamic_exception_type_cache(py, state);
     changed |= types_clear_runtime_callbacks(py, state);
     changed |= clear_stateful_locals(py, state);
+    changed |= crate::call::bind::release_method_site_records(py, state);
     changed |= clear_method_cache(py, state);
     changed |= attributes_clear_runtime_state(py, state);
     changed |= clear_special_cache(py, state);
@@ -601,7 +602,6 @@ fn clear_async_hang_probe(state: &RuntimeState) {
 fn clear_thread_local_state(_py: &PyToken<'_>) -> bool {
     crate::gil_assert();
     let mut changed = clear_call_bind_ic_cache(_py);
-    changed |= clear_method_ic_cache(_py);
     changed |= clear_super_ic_cache(_py);
     #[cfg(test)]
     trace_thread_local_drop("ic_caches_cleared");
@@ -1840,6 +1840,7 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     struct WorkerIcWitness {
         class: u64,
+        leaf: u64,
         method: u64,
         receiver: u64,
     }
@@ -1866,11 +1867,20 @@ pub(crate) mod tests {
             let name = crate::dynamic_attr_name_bits(py, b"cached").unwrap();
             crate::molt_set_attr_name_attached_body(py, class, name, method);
             crate::dec_ref_bits(py, name);
-            let receiver = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+            // A subclass: the worker's zero-argument `super()` load from it
+            // selects the base's method and caches it on the worker thread.
+            let name = crate::dynamic_attr_name_bits(py, b"WorkerIcLeaf").unwrap();
+            let leaf = crate::molt_class_new_attached_body(py, name);
+            crate::dec_ref_bits(py, name);
+            crate::molt_class_set_base_attached_body(py, leaf, class);
+            let leaf_ptr = crate::obj_from_bits(leaf).as_ptr().unwrap();
+            unsafe { crate::object::class_finish_definition(py, leaf_ptr) }.unwrap();
+            let receiver = unsafe { crate::alloc_instance_for_class(py, leaf_ptr) };
             assert!(crate::obj_from_bits(receiver).as_ptr().is_some());
             assert!(!crate::exception_pending(py));
             Self {
                 class,
+                leaf,
                 method,
                 receiver,
             }
@@ -1881,7 +1891,7 @@ pub(crate) mod tests {
     impl Drop for WorkerIcWitness {
         fn drop(&mut self) {
             crate::with_gil_entry_nopanic!(py, {
-                for bits in [self.receiver, self.class, self.method] {
+                for bits in [self.receiver, self.leaf, self.class, self.method] {
                     crate::dec_ref_bits(py, bits);
                 }
             });
@@ -1910,6 +1920,7 @@ pub(crate) mod tests {
         // the public method call must add a distinct cache-owned reference.
         let method = witness.method;
         let receiver = witness.receiver;
+        let leaf = witness.leaf;
         let (id_tx, id_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
         let (stage_tx, stage_rx) = std::sync::mpsc::channel();
@@ -1920,14 +1931,19 @@ pub(crate) mod tests {
                 super::run_runtime_worker(origin, || {
                     crate::with_gil_entry_nopanic!(py, {
                         let mut self_or_null = molt_codegen_abi::loaded_method_null_bits() as u64;
-                        let callable = crate::call::bind::molt_load_method_attached_body(
+                        let class_cell = crate::object::cells::alloc_cell(py, leaf);
+                        assert!(!class_cell.is_null());
+                        let class_cell = MoltObject::from_ptr(class_cell).bits();
+                        let callable = crate::call::bind::molt_load_super_method_attached_body(
                             py,
                             MoltObject::from_int(819).bits(),
+                            class_cell,
                             receiver,
                             b"cached".as_ptr(),
                             6,
                             (&raw mut self_or_null) as usize as u64,
                         );
+                        crate::dec_ref_bits(py, class_cell);
                         // The load owns both words; the call adopts them.
                         let result = crate::call::bind::molt_call_loaded_method0_attached_body(
                             py,

@@ -199,6 +199,7 @@ pub enum OpCode {
     IsBoolWord,
     IsFloatWord,
     UnboxFloatWord,
+    IntToFloat,
     UnboxBoolWord,
     BoxInlineInt,
     CodeIs,
@@ -556,6 +557,9 @@ pub const ARGUMENT_CUSTODY_ATTR: &str = "argument_custody";
 /// typed accessor pair reads and writes them; nothing else spells them.
 const GLOBAL_SLOT_MODULE_ATTR: &str = "global_slot_module";
 const GLOBAL_SLOT_INDEX_ATTR: &str = "global_slot_index";
+/// The compiled method site of a method load or of the call that consumes its
+/// pair (`OpIR::method_site`); only its typed accessor pair spells it.
+const METHOD_SITE_ATTR: &str = "method_site";
 
 /// Executable builtin identity, separate from positional arguments. A name
 /// selects runtime builtin lookup; it does not prove a fixed callable, purity,
@@ -859,6 +863,30 @@ impl TirOp {
             other => panic!("{:?}: malformed global slot index {other:?}", self.opcode),
         };
         Some(crate::ir::GlobalSlotRef { module, index })
+    }
+
+    /// The compiled method site this op belongs to (call_anatomy.md 4.5).
+    pub fn method_site(&self) -> Option<u32> {
+        match self.attrs.get(METHOD_SITE_ATTR)? {
+            &AttrValue::Int(site) => {
+                Some(u32::try_from(site).unwrap_or_else(|_| {
+                    panic!("{:?}: method site {site} out of range", self.opcode)
+                }))
+            }
+            other => panic!("{:?}: malformed method site {other:?}", self.opcode),
+        }
+    }
+
+    pub fn set_method_site(&mut self, site: Option<u32>) {
+        match site {
+            Some(site) => {
+                self.attrs
+                    .insert(METHOD_SITE_ATTR.into(), AttrValue::Int(i64::from(site)));
+            }
+            None => {
+                self.attrs.remove(METHOD_SITE_ATTR);
+            }
+        }
     }
 
     pub fn set_global_slot(&mut self, slot: Option<&crate::ir::GlobalSlotRef>) {
