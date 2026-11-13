@@ -50,6 +50,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.cli.closed_world_bindings import ModuleNamespaceFacts
     from molt.compiler_analysis.python_import_scan import SourceImportPurpose
     from molt.tool_releases import ToolDiscovery
     from molt.backend_protocol import BackendEmissionOrigin
@@ -149,6 +150,12 @@ class _ModuleSourceScanAuthority:
     uses_runtime_import_protocol: bool = False
     deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
     namespace_premise: PythonNamespacePremise | None = None
+    # The globals the module's own deferred code may rebind
+    # (``PythonNamespaceSummary.own_names``): None when it reflects its own
+    # namespace dynamically or no module-level scan has run yet. With the
+    # premise's foreign writes it decides which globals no code can rebind
+    # after initialization (closed-world bindings, call_anatomy.md 4.5).
+    namespace_own_names: frozenset[str] | None = None
     source_sha256: str | None = None
     package_paths: tuple[Path, ...] = ()
 
@@ -266,6 +273,13 @@ class _ModuleGraphScanAuthority:
                 namespace_premise = join_python_namespace_premises(
                     prior.namespace_premise, source.namespace_premise
                 )
+                # Both scans read the same source bytes, so a known own-name
+                # set from either one is the module's.
+                namespace_own_names = (
+                    prior.namespace_own_names
+                    if prior.namespace_own_names is not None
+                    else source.namespace_own_names
+                )
                 if ranks[prior.mode] >= ranks[source.mode]:
                     source = prior
                 if (
@@ -275,6 +289,7 @@ class _ModuleGraphScanAuthority:
                     or uses_runtime_import_protocol
                     != source.uses_runtime_import_protocol
                     or namespace_premise != source.namespace_premise
+                    or namespace_own_names != source.namespace_own_names
                     or source_sha256 != source.source_sha256
                     or body_selection != source.body_selection
                 ):
@@ -284,6 +299,7 @@ class _ModuleGraphScanAuthority:
                         uses_runtime_import_protocol=uses_runtime_import_protocol,
                         deferred_owners=deferred_owners,
                         namespace_premise=namespace_premise,
+                        namespace_own_names=namespace_own_names,
                         source_sha256=source_sha256,
                         body_selection=body_selection,
                     )
@@ -339,6 +355,11 @@ class _ModuleGraphScanAuthority:
                     None
                     if source.namespace_premise is None
                     else asdict(source.namespace_premise)
+                ),
+                "namespace_own_names": (
+                    None
+                    if source.namespace_own_names is None
+                    else sorted(source.namespace_own_names)
                 ),
             }
             for source in sorted(self.sources, key=lambda source: source.module_name)
@@ -662,6 +683,13 @@ class _FrontendIntegrationState:
     global_layouts: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Each module's own function bodies, for the global slot stamps.
     module_functions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Closed-world bindings (call_anatomy.md 4.5): each module's namespace
+    # write facts (own deferred writes and its graph premise) and its
+    # transitive import closure.
+    module_namespace_facts: dict[str, ModuleNamespaceFacts] = field(
+        default_factory=dict
+    )
+    module_dep_closures: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 @dataclass

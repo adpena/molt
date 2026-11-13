@@ -840,6 +840,14 @@ def _discover_module_graph_from_paths(
             if summary is None:
                 merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
             else:
+                if (
+                    summary.own_names is not None
+                    and scan_sources[module_name].namespace_own_names is None
+                ):
+                    scan_sources[module_name] = replace(
+                        scan_sources[module_name],
+                        namespace_own_names=summary.own_names,
+                    )
                 known = state.namespace_writes.setdefault(module_name, set())
                 pending = pending_namespace_writes.setdefault(module_name, {})
                 for write in summary.foreign_writes:

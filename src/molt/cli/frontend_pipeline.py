@@ -20,6 +20,7 @@ from typing import (
 
 from molt.type_facts import TypeFacts, load_type_facts
 
+from molt.cli.closed_world_bindings import ModuleNamespaceFacts
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import frontend_execution as _frontend_execution
 from molt.cli import frontend_parallel as _frontend_parallel
@@ -1243,6 +1244,15 @@ def _prepare_frontend_pipeline(
         frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         frontend_layer_execution_context=frontend_layer_execution_context,
         frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,
+    )
+    integration_state.module_namespace_facts = {
+        module: ModuleNamespaceFacts(
+            authority.namespace_own_names, authority.namespace_premise
+        )
+        for module, authority in import_plan.scan_authority.by_module.items()
+    }
+    integration_state.module_dep_closures = (
+        prepared_frontend_analysis.module_dep_closures
     )
     return (
         _PreparedFrontendPipelineBundle(
