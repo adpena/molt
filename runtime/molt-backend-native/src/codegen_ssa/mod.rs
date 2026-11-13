@@ -5,4 +5,4 @@
 
 pub(crate) mod value_table;
 
-pub(crate) use value_table::ValueTable;
+pub(crate) use value_table::{HeldCarrier, ValueTable};
