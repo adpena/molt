@@ -1744,7 +1744,7 @@ mod tests {
 
     #[test]
     fn value_decoder_pins_tuple_without_allocation_and_accounts_list_snapshot() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
@@ -1761,13 +1761,7 @@ mod tests {
                 let bits = MoltObject::from_ptr(ptr).bits();
                 let child_refs = refcount(child);
                 let sequence_refs = refcount(bits);
-                struct Reset;
-                impl Drop for Reset {
-                    fn drop(&mut self) {
-                        set_tracker(Box::new(UnlimitedTracker));
-                    }
-                }
-                let reset = Reset;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()

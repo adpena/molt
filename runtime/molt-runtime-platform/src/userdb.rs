@@ -182,19 +182,14 @@ pub fn group_name_by_gid(gid: libc::gid_t) -> Result<Option<Option<Vec<u8>>>> {
 
 static ENUMERATION: Mutex<()> = Mutex::new(());
 
-struct Cursor;
-impl Drop for Cursor {
-    fn drop(&mut self) {
-        unsafe { libc::endpwent() };
-    }
-}
-
 pub fn all() -> Result<Vec<Passwd>> {
     let _lock = ENUMERATION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     unsafe { libc::setpwent() };
-    let _cursor = Cursor;
+    let _cursor = std::mem::DropGuard::new((), |()| {
+        unsafe { libc::endpwent() };
+    });
     let mut entries = Vec::new();
     // POSIX does not specify getpwent_r; macOS has only the cursor API. The
     // shared cursor lock and immediate owned copy are also CPython 3.15's

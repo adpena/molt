@@ -189,13 +189,9 @@ fn attached_python_export_does_not_alias_a_runtime_linker_symbol() {
             .as_nanos()
     ));
     fs::create_dir(&temp).expect("create symbol collision test directory");
-    struct RemoveTemp(std::path::PathBuf);
-    impl Drop for RemoveTemp {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    let _remove_temp = RemoveTemp(temp.clone());
+    let _remove_temp = std::mem::DropGuard::new(temp.clone(), |state| {
+        let _ = fs::remove_dir_all(&state);
+    });
     let input = temp.join("input.wasm");
     fs::write(&input, object).expect("write symbol collision object");
     let output = Command::new(wasm_ld_path())
@@ -677,13 +673,9 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
             .as_nanos()
     ));
     fs::create_dir_all(&temp).expect("create wasm-ld integration temp dir");
-    struct RemoveTemp(std::path::PathBuf);
-    impl Drop for RemoveTemp {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    let _remove_temp = RemoveTemp(temp.clone());
+    let _remove_temp = std::mem::DropGuard::new(temp.clone(), |state| {
+        let _ = fs::remove_dir_all(&state);
+    });
     let object_path = temp.join("callable.o.wasm");
     let linked_path = temp.join("callable.wasm");
     fs::write(&object_path, object).expect("write relocatable wasm object");

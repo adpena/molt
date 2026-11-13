@@ -3107,20 +3107,19 @@ mod tests {
     #[cfg_attr(miri, ignore = "app resolver function address exposure")]
     fn gpu_compiled_body_requires_registered_executable_identity_and_shape() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        struct RestoreResolver(usize);
-        impl Drop for RestoreResolver {
-            fn drop(&mut self) {
-                test_app_resolver_address().store(self.0, Ordering::SeqCst);
-            }
-        }
         let resolver =
             crate::provenance::abi::expose_function_address(fake_app_resolver as *const ());
         crate::with_gil_entry_nopanic!(py, {
             let function_class = crate::builtin_classes(py).function;
-            let _resolver = RestoreResolver(test_app_resolver_address().swap(
-                usize::try_from(resolver).expect("function address fits"),
-                Ordering::SeqCst,
-            ));
+            let _resolver = std::mem::DropGuard::new(
+                test_app_resolver_address().swap(
+                    usize::try_from(resolver).expect("function address fits"),
+                    Ordering::SeqCst,
+                ),
+                |state| {
+                    test_app_resolver_address().store(state, Ordering::SeqCst);
+                },
+            );
             unsafe {
                 // Production shape: `molt_func_new` publishes no class edge.
                 let function = crate::alloc_function_obj(py, 0xDEAD_BEEF, 0);

@@ -3193,7 +3193,9 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
         if gc_running.swap(true, AtomicOrdering::AcqRel) {
             return CollectStats::failure(py, GcCollectStatus::ReentrantNoop);
         }
-        let _guard = GcRunningGuard(gc_running);
+        let _guard = std::mem::DropGuard::new(gc_running, |running| {
+            running.store(false, AtomicOrdering::Release);
+        });
         crate::runtime_state(py)
             .gc_last_failure
             .store(0, AtomicOrdering::Release);
@@ -3565,14 +3567,6 @@ unsafe fn run_node_finalizer_once(py: &PyToken<'_>, node: GcNode) {
                 _ => std::process::abort(),
             }
         }
-    }
-}
-
-/// Reentrancy flag for `collect_cycles` (CPython `gcstate->collecting`).
-struct GcRunningGuard(&'static std::sync::atomic::AtomicBool);
-impl Drop for GcRunningGuard {
-    fn drop(&mut self) {
-        self.0.store(false, AtomicOrdering::Release);
     }
 }
 

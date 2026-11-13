@@ -437,14 +437,10 @@ fn exercise_native_namespaces(
             ))
             .bits();
             let _failure_owner = ExceptionValue::adopt(py, failure);
-            struct ResetObservations;
-            impl Drop for ResetObservations {
-                fn drop(&mut self) {
-                    FAILURE.with(|slot| slot.set(0));
-                    ASSIGNED.with(|slot| slot.set(0));
-                }
-            }
-            let _observations = ResetObservations;
+            let _observations = std::mem::DropGuard::new((), |()| {
+                FAILURE.with(|slot| slot.set(0));
+                ASSIGNED.with(|slot| slot.set(0));
+            });
             FAILURE.with(|slot| slot.set(failure));
             for operation in 0..3 {
                 if operation == 0 {
@@ -956,12 +952,6 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
         use molt_runtime_core::OwnedRuntimeValue;
-        struct ResetFailure;
-        impl Drop for ResetFailure {
-            fn drop(&mut self) {
-                FAILURE.with(|failure| failure.set(0));
-            }
-        }
         FAILURE.with(|failure| failure.set(0));
         let class_owner = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
@@ -1076,7 +1066,9 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
                 OwnedRuntimeValue::from_owned_bits(py.core_token(), pending_error(py, kind));
             let failure = failure_owner.bits();
             FAILURE.with(|slot| slot.set(failure));
-            let _reset = ResetFailure;
+            let _reset = std::mem::DropGuard::new((), |()| {
+                FAILURE.with(|failure| failure.set(0));
+            });
             for lookup_dictionary in [ptr::null_mut(), dictionary] {
                 for name in [data, nondata.as_ptr()] {
                     for suppress in [0, 1] {
@@ -2062,15 +2054,11 @@ fn getattribute_callable_retires_under_its_exact_error_before_fallback() {
                 errors::PyException_SetTraceback(error_view.as_ptr(), trace.as_ptr()),
                 0
             );
-            struct Reset;
-            impl Drop for Reset {
-                fn drop(&mut self) {
-                    LOOKUP_RETIREMENT.with(|state| state.set([0; 3]));
-                    LOOKUP_PHASE.with(|phase| phase.set(0));
-                    LOOKUP_OBSERVED.with(|seen| seen.set([0; 2]));
-                }
-            }
-            let _reset = Reset;
+            let _reset = std::mem::DropGuard::new((), |()| {
+                LOOKUP_RETIREMENT.with(|state| state.set([0; 3]));
+                LOOKUP_PHASE.with(|phase| phase.set(0));
+                LOOKUP_OBSERVED.with(|seen| seen.set([0; 2]));
+            });
             LOOKUP_RETIREMENT.with(|state| {
                 state.set([
                     class_view.as_ptr().addr(),
@@ -2162,13 +2150,9 @@ fn fallible_type_publication_preserves_prior_on_success_and_selects_new_failure(
             assert!(!failure_ptr.is_null() && !prior_ptr.is_null());
             let failure = ExceptionValue::adopt(py, MoltObject::from_ptr(failure_ptr).bits());
             let prior = ExceptionValue::adopt(py, MoltObject::from_ptr(prior_ptr).bits());
-            struct Reset;
-            impl Drop for Reset {
-                fn drop(&mut self) {
-                    PUBLICATION_PROBE.with(|state| state.set([0; 3]));
-                }
-            }
-            let _reset = Reset;
+            let _reset = std::mem::DropGuard::new((), |()| {
+                PUBLICATION_PROBE.with(|state| state.set([0; 3]));
+            });
             PUBLICATION_PROBE.with(|state| state.set([name.bits(), failure.bits(), 0]));
             let key_class = ExceptionValue::adopt(py, snapshot_class(py, b"PublicationCollision"));
             method(

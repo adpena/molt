@@ -2493,14 +2493,6 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
     with_gil(|py| unsafe {
         use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         use molt_cpython_abi::api::mapping;
-        struct RestoreSlot(*mut u64);
-        impl Drop for RestoreSlot {
-            fn drop(&mut self) {
-                unsafe {
-                    *self.0 = 0;
-                }
-            }
-        }
         let mut owners = Vec::new();
         let class = mapping_owned(
             py,
@@ -2606,7 +2598,7 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
         }
         // Invalid backing is a distinct SystemError and no-error getters preserve
         // an exact caller exception even when admission fails.
-        let _restore_slot = RestoreSlot(slot);
+        let _restore_slot = std::mem::DropGuard::new(slot, |slot| *slot = 0);
         *slot = MoltObject::from_int(99).bits();
         assert!(mapping::PyDict_Keys(view.as_ptr()).is_null());
         let failure = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
@@ -2895,18 +2887,14 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
     with_gil(|py| unsafe {
         use molt_cpython_abi::api::mapping;
         use std::sync::atomic::Ordering::Relaxed;
-        struct ResetKnownProbe;
-        impl Drop for ResetKnownProbe {
-            fn drop(&mut self) {
-                KNOWN_HASH_POISON.store(false, Relaxed);
-                KNOWN_EQ_MODE.store(0, Relaxed);
-                KNOWN_DICT.store(0, Relaxed);
-                KNOWN_REPLACEMENT.store(0, Relaxed);
-                KNOWN_ERROR.store(0, Relaxed);
-            }
-        }
         let mut owners = Vec::new();
-        let _reset = ResetKnownProbe;
+        let _reset = std::mem::DropGuard::new((), |()| {
+            KNOWN_HASH_POISON.store(false, Relaxed);
+            KNOWN_EQ_MODE.store(0, Relaxed);
+            KNOWN_DICT.store(0, Relaxed);
+            KNOWN_REPLACEMENT.store(0, Relaxed);
+            KNOWN_ERROR.store(0, Relaxed);
+        });
         let key_class = mapping_owned(
             py,
             &mut owners,

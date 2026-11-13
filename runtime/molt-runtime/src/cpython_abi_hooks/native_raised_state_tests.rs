@@ -425,12 +425,6 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
         let builtins = crate::alloc_dict_with_pairs(py, &[]);
         assert!(!builtins.is_null());
         let builtins = ExceptionValue::adopt(py, MoltObject::from_ptr(builtins).bits());
-        struct ContextFrame<'a, 'py>(&'a PyToken<'py>);
-        impl Drop for ContextFrame<'_, '_> {
-            fn drop(&mut self) {
-                crate::builtins::frames::frame_stack_pop(self.0);
-            }
-        }
         crate::builtins::frames::frame_stack_push_owned(
             py,
             code.into_bits(),
@@ -438,7 +432,9 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
             builtins.into_bits(),
             0,
         );
-        let frame = ContextFrame(py);
+        let frame = std::mem::DropGuard::new(py, |state| {
+            crate::builtins::frames::frame_stack_pop(state);
+        });
         let payload = crate::builtins::frames::frame_stack_trace_payload_bits(py);
         let payload = ExceptionValue::adopt(py, payload.expect("captured context frame"));
         drop(frame);

@@ -589,12 +589,9 @@ pub(crate) fn reset_type_watchers_for_runtime() {
     TYPE_WATCHER_STATE.lock().callbacks.fill(None);
 }
 
-struct TypeReadyingGuard(*mut PyTypeObject);
-
-impl Drop for TypeReadyingGuard {
-    fn drop(&mut self) {
-        unsafe { (*self.0).tp_flags &= !crate::abi_types::Py_TPFLAGS_READYING };
-    }
+/// Clears Py_TPFLAGS_READYING when a readiness pass ends, on every path.
+fn clear_type_readying(tp: *mut PyTypeObject) {
+    unsafe { (*tp).tp_flags &= !crate::abi_types::Py_TPFLAGS_READYING };
 }
 
 unsafe fn reject_type_readiness(message: &'static std::ffi::CStr) -> c_int {
@@ -786,7 +783,7 @@ pub(crate) unsafe fn ready_type(
         unsafe {
             (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_READYING;
         }
-        Some(TypeReadyingGuard(tp))
+        Some(std::mem::DropGuard::new(tp, clear_type_readying))
     } else {
         None
     };
@@ -838,7 +835,8 @@ pub(crate) unsafe fn ready_type(
         (*tp).tp_flags &= !Py_TPFLAGS_READY;
         (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_READYING;
     }
-    let _readying = early_readying.unwrap_or_else(|| TypeReadyingGuard(tp));
+    let _readying =
+        early_readying.unwrap_or_else(|| std::mem::DropGuard::new(tp, clear_type_readying));
 
     unsafe {
         if (*tp).tp_dict.is_null() {
@@ -5946,7 +5944,7 @@ pub(crate) mod subclass_registry_tests {
         ty.tp_flags =
             crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE | crate::abi_types::Py_TPFLAGS_READYING;
         {
-            let _outer = TypeReadyingGuard(&raw mut *ty);
+            let _outer = std::mem::DropGuard::new(&raw mut *ty, clear_type_readying);
             assert_eq!(unsafe { PyType_Ready(&raw mut *ty) }, -1);
             assert!(!unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
             assert!(ty.tp_dict.is_null() && ty.tp_mro.is_null());

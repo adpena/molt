@@ -1838,19 +1838,6 @@ mod int_literal_tests {
         use crate::builtins::sys_ext::{
             current_int_max_str_digits, molt_sys_set_int_max_str_digits_attached_body,
         };
-        struct RestoreLimit(usize);
-        impl Drop for RestoreLimit {
-            fn drop(&mut self) {
-                {
-                    crate::with_gil_entry_nopanic!(__host_py, {
-                        crate::molt_sys_set_int_max_str_digits_attached_body(
-                            __host_py,
-                            crate::MoltObject::from_int(self.0 as i64).bits(),
-                        )
-                    })
-                };
-            }
-        }
         static PAYLOAD: [u8; 401] = {
             let mut bytes = [0u8; 401];
             bytes[0] = 1;
@@ -1858,7 +1845,16 @@ mod int_literal_tests {
         };
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let _restore = RestoreLimit(current_int_max_str_digits(py));
+            let _restore = std::mem::DropGuard::new(current_int_max_str_digits(py), |state| {
+                {
+                    crate::with_gil_entry_nopanic!(__host_py, {
+                        crate::molt_sys_set_int_max_str_digits_attached_body(
+                            __host_py,
+                            crate::MoltObject::from_int(state as i64).bits(),
+                        )
+                    })
+                };
+            });
             let expected = BigInt::from(1u8) << 3200usize;
             for first_limit in [640, 0] {
                 crate::const_data_cache::clear_const_data_literal_caches(py);

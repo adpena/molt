@@ -223,7 +223,7 @@ fn slot_state_uses_sequential_attribute_protocol_and_propagates_errors() {
 
 #[test]
 fn identity_dict_preserves_allocation_failure_and_input_ownership() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
@@ -237,13 +237,7 @@ fn identity_dict_preserves_allocation_failure_and_input_ownership() {
             let source = MoltObject::from_ptr(source).bits();
             let refs = heap_refcount(value);
             {
-                struct Reset;
-                impl Drop for Reset {
-                    fn drop(&mut self) {
-                        set_tracker(Box::new(UnlimitedTracker));
-                    }
-                }
-                let reset = Reset;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()
@@ -296,15 +290,9 @@ fn assert_owned_construction_refusal(
     allocations: usize,
     operation: impl Fn() -> u64,
 ) {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     for budget in 0..allocations {
-        let reset = Reset;
+        let reset = crate::test_support::restore_unlimited_tracker_on_drop();
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
             max_allocations: Some(budget),
             ..ResourceLimits::default()

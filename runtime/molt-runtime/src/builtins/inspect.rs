@@ -1707,19 +1707,11 @@ mod signature_snapshot_tests {
             // The attribute keys have already been observed above. Deny the
             // resource-accounted snapshot before any defaults callback runs.
             {
-                use crate::resource::{
-                    LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker,
-                };
+                use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
                 assert!(crate::cpython_abi_hooks::register_cpython_hooks());
                 let names = MoltObject::from_ptr(alloc_list(py, &[vararg, varkw])).bits();
                 VARNAMES.store(names, Ordering::SeqCst);
-                struct Reset;
-                impl Drop for Reset {
-                    fn drop(&mut self) {
-                        set_tracker(Box::new(UnlimitedTracker));
-                    }
-                }
-                let reset = Reset;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()

@@ -719,20 +719,14 @@ fn callargs_projection_rejects_a_live_object_of_another_kind() {
 
 #[test]
 fn callargs_construction_refusal_releases_every_prepared_allocation() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
         // Cover refusal before/during keyword backing and after it is prepared.
         // A distinct bigint producer probes every unit of capacity afterwards;
         // retaining a partial builder or dictionary makes that probe fail.
         for budget in 0..=4 {
-            let reset = Reset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_allocations: Some(budget),
                 ..ResourceLimits::default()

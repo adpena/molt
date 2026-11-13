@@ -555,15 +555,9 @@ fn environment_mapping<'a>(
             "environment initialization state changed",
         ));
     }
-    struct Reset<'a>(&'a AtomicU64, u64);
-    impl Drop for Reset<'_> {
-        fn drop(&mut self) {
-            let _ = self
-                .0
-                .compare_exchange(self.1, 0, Ordering::AcqRel, Ordering::Acquire);
-        }
-    }
-    let _reset = Reset(slot, initializing);
+    let _reset = std::mem::DropGuard::new((slot, initializing), |(slot, initializing)| {
+        let _ = slot.compare_exchange(initializing, 0, Ordering::AcqRel, Ordering::Acquire);
+    });
     // The provider releases its process lock before any Python allocation.
     let snapshot = process_env_snapshot();
     let dict = crate::object::builders::alloc_internal_dict(py);

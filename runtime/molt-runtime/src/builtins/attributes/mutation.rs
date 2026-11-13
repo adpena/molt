@@ -273,18 +273,14 @@ impl<'a, 'gil> TypeMutation<'a, 'gil> {
             let Some(native) = self.native.as_mut() else {
                 return true;
             };
-            struct PublicationRetirement<'a>(&'a mut molt_cpython_abi::bridge::RuntimeTypeMutation);
-            impl Drop for PublicationRetirement<'_> {
-                fn drop(&mut self) {
-                    crate::object::foreign::retire_native_reference(|| self.0.retire_published());
-                }
-            }
             // Declared outside the saved-error scope: restoration runs before
             // this guard on both return and unwind, before caller displaced
             // owners. Prepared declaration/registry pins stay in the transaction.
-            let retirement = PublicationRetirement(native);
+            let mut retirement = std::mem::DropGuard::new(native, |native| {
+                crate::object::foreign::retire_native_reference(|| native.retire_published());
+            });
             let mut publish = || {
-                if retirement.0.publish() == 0 {
+                if retirement.publish() == 0 {
                     Ok(())
                 } else {
                     Err(molt_cpython_abi::ErrorIndicatorSet)

@@ -502,13 +502,6 @@ fn protocol_update(update: impl FnOnce(&mut ProtocolObservation)) {
         slot.set(state);
     });
 }
-struct ProtocolReset<'py>(&'py PyToken<'py>);
-impl Drop for ProtocolReset<'_> {
-    fn drop(&mut self) {
-        PROTOCOL.with(|slot| slot.set(ProtocolObservation::EMPTY));
-        crate::molt_warnings_resetwarnings_attached_body(self.0);
-    }
-}
 unsafe fn protocol_drop(value: *mut PyObject, kind: u8) {
     let error = unsafe { errors::PyErr_GetRaisedException() };
     let traceback = if error.is_null() {
@@ -876,7 +869,10 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
                 errors::PyException_SetTraceback(failure.as_ptr(), traceback.as_ptr()),
                 0
             );
-            let _reset = ProtocolReset(py);
+            let _reset = std::mem::DropGuard::new(py, |state| {
+                PROTOCOL.with(|slot| slot.set(ProtocolObservation::EMPTY));
+                crate::molt_warnings_resetwarnings_attached_body(state);
+            });
             protocol_update(|state| {
                 state.callable = &raw mut *callable;
                 state.result = &raw mut *result;

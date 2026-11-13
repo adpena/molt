@@ -935,13 +935,7 @@ mod tests {
 
     #[test]
     fn denied_promotion_keeps_original_flat_payload_and_owners() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let ptr = crate::object::builders::alloc_list_int_from_raw_slice(py, &[1, 2]).unwrap();
@@ -952,7 +946,7 @@ mod tests {
                 max_memory: Some(0),
                 ..Default::default()
             })));
-            let reset = Reset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             molt_list_int_setitem_attached_body(py, bits, MoltObject::from_int(0).bits(), fill);
             assert!(exception_pending(py));
             drop(reset);

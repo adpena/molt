@@ -1886,14 +1886,10 @@ mod float_conversion_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(py, {
-            struct ResetCallbacks<'a, 'py>(&'a crate::PyToken<'py>);
-            impl Drop for ResetCallbacks<'_, '_> {
-                fn drop(&mut self) {
-                    reset_callbacks(0, false);
-                    crate::molt_warnings_resetwarnings_attached_body(self.0);
-                }
-            }
-            let _callbacks = ResetCallbacks(py);
+            let _callbacks = std::mem::DropGuard::new(py, |state| {
+                reset_callbacks(0, false);
+                crate::molt_warnings_resetwarnings_attached_body(state);
+            });
             let int_class = conversion_class(py, builtin_classes(py).int, false, true);
             let producer_class = conversion_class(py, builtin_classes(py).object, false, true);
             let producer = plain_instance(py, producer_class);
@@ -2079,13 +2075,9 @@ mod float_conversion_tests {
     fn integer_trunc_delegation_is_target_versioned_and_warning_precedes_callback() {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            struct ResetWarnings<'a, 'py>(&'a crate::PyToken<'py>);
-            impl Drop for ResetWarnings<'_, '_> {
-                fn drop(&mut self) {
-                    crate::molt_warnings_resetwarnings_attached_body(self.0);
-                }
-            }
-            let _reset = ResetWarnings(py);
+            let _reset = std::mem::DropGuard::new(py, |state| {
+                crate::molt_warnings_resetwarnings_attached_body(state);
+            });
             let class = conversion_class(py, builtin_classes(py).object, false, false);
             install_scalar_test_method(
                 py,
@@ -3358,13 +3350,9 @@ mod float_conversion_tests {
                 let failure = errors::PyErr_GetRaisedException();
                 let failure_owner = refcount::OwnedPyObject::from_owned(failure);
                 assert!(!failure.is_null());
-                struct ResetNativeFloatFailure;
-                impl Drop for ResetNativeFloatFailure {
-                    fn drop(&mut self) {
-                        NATIVE_FLOAT_FAILURE.store(0, Ordering::SeqCst);
-                    }
-                }
-                let failure_slot = ResetNativeFloatFailure;
+                let failure_slot = std::mem::DropGuard::new((), |()| {
+                    NATIVE_FLOAT_FAILURE.store(0, Ordering::SeqCst);
+                });
                 NATIVE_FLOAT_FAILURE.store(failure as usize, Ordering::SeqCst);
                 INDEX_CALLS.store(0, Ordering::SeqCst);
                 let mut methods: PyNumberMethods = std::mem::zeroed();
@@ -3549,13 +3537,9 @@ mod float_conversion_tests {
     fn float_conversion_contract_strict_subclass_warnings_can_raise() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            struct ResetWarnings<'a, 'py>(&'a crate::PyToken<'py>);
-            impl Drop for ResetWarnings<'_, '_> {
-                fn drop(&mut self) {
-                    crate::molt_warnings_resetwarnings_attached_body(self.0);
-                }
-            }
-            let _reset = ResetWarnings(py);
+            let _reset = std::mem::DropGuard::new(py, |py| {
+                crate::molt_warnings_resetwarnings_attached_body(py);
+            });
             crate::molt_warnings_resetwarnings_attached_body(py);
             let category = crate::builtins::exceptions::exception_class_bits(
                 py,

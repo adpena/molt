@@ -840,16 +840,14 @@ mod native_retirement {
         (exception_class, input_class)
     }
 
-    struct PendingReset;
-    impl Drop for PendingReset {
-        fn drop(&mut self) {
+    fn pending_reset() -> std::mem::DropGuard<(), fn(())> {
+        std::mem::DropGuard::new((), |()| {
             unsafe { errors::PyErr_Clear() };
-        }
+        })
     }
 
-    struct ConstructorControl;
-    impl Drop for ConstructorControl {
-        fn drop(&mut self) {
+    fn constructor_control() -> std::mem::DropGuard<(), fn(())> {
+        std::mem::DropGuard::new((), |()| {
             FAILURE.with(|value| value.set(ptr::null_mut()));
             INPUT_TYPE.with(|value| value.set(ptr::null_mut()));
             let external = INPUT_OWNER.with(|value| value.replace(ptr::null_mut()));
@@ -860,7 +858,7 @@ mod native_retirement {
                 refcount::Py_XDECREF(external);
                 refcount::Py_XDECREF(observed);
             });
-        }
+        })
     }
 
     fn observations() -> Vec<Observation> {
@@ -877,7 +875,7 @@ mod native_retirement {
         };
         let prior = unsafe { exception(class.as_ptr(), 0) };
         let next = unsafe { exception(class.as_ptr(), 0) };
-        let _pending = PendingReset;
+        let _pending = pending_reset();
         unsafe {
             assert_eq!(
                 errors::PyException_SetTraceback(prior.as_ptr(), &raw mut traceback),
@@ -965,7 +963,7 @@ mod native_retirement {
     fn failed_saved_error_scope_keeps_partial_provider_failure_selected() {
         let _abi_test = init();
         let (class, _input_class) = classes();
-        let _pending = PendingReset;
+        let _pending = pending_reset();
         for incoming_runtime in [false, true] {
             unsafe {
                 errors::PyErr_SetRaisedException(exception(class.as_ptr(), 0).into_ptr());
@@ -1066,7 +1064,7 @@ mod native_retirement {
             ob_type: &raw mut PyTraceBack_Type,
         };
         let next = unsafe { exception(class.as_ptr(), 0) };
-        let _pending = PendingReset;
+        let _pending = pending_reset();
         unsafe {
             assert_eq!(
                 errors::PyException_SetTraceback(next.as_ptr(), &raw mut traceback),
@@ -1121,8 +1119,8 @@ mod native_retirement {
     fn constructor_entry_clears_prior_only_when_setobject_requires_construction() {
         let _abi_test = init();
         let (class, _input_class) = classes();
-        let _pending = PendingReset;
-        let _control = ConstructorControl;
+        let _pending = pending_reset();
+        let _control = constructor_control();
         RESULT.with(|result| result.set(ConstructorResult::Exception));
         unsafe {
             for operation in ["setnone", "setstring"] {
@@ -1169,8 +1167,8 @@ mod native_retirement {
             ob_type: &raw mut PyTraceBack_Type,
         };
         let failure = unsafe { exception(class.as_ptr(), 0) };
-        let _pending = PendingReset;
-        let _control = ConstructorControl;
+        let _pending = pending_reset();
+        let _control = constructor_control();
         FAILURE.with(|value| value.set(failure.as_ptr()));
         INPUT_TYPE.with(|value| value.set(input_class.as_ptr()));
         unsafe {
@@ -1290,8 +1288,8 @@ mod native_retirement {
         let (requested, _input_class) = classes();
         let (other_class, _other_input_class) = classes();
         let other = unsafe { exception(other_class.as_ptr(), 0) };
-        let _pending = PendingReset;
-        let _control = ConstructorControl;
+        let _pending = pending_reset();
+        let _control = constructor_control();
         FAILURE.with(|value| value.set(other.as_ptr()));
         RESULT.with(|result| result.set(ConstructorResult::OtherException));
         unsafe {
@@ -1386,8 +1384,8 @@ mod native_retirement {
             ob_type: &raw mut PyTraceBack_Type,
         };
         let actual = unsafe { exception(actual_class.as_ptr(), 0) };
-        let _pending = PendingReset;
-        let _control = ConstructorControl;
+        let _pending = pending_reset();
+        let _control = constructor_control();
         FAILURE.with(|value| value.set(actual.as_ptr()));
         RESULT.with(|result| result.set(ConstructorResult::OtherException));
         unsafe {
