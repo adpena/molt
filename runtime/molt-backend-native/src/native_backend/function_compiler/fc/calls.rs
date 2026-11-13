@@ -198,6 +198,8 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
         OpKind::CallLoadedMethod => handle_call_loaded_method_op(
             op,
             &operands,
+            func_name,
+            thread_record_slot,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
@@ -1988,6 +1990,8 @@ const LOADED_METHOD_CALLS: [RuntimeFn; 5] = [
 fn handle_call_loaded_method_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
+    func_name: &str,
+    thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     module: &mut dyn Module,
     import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
@@ -2010,8 +2014,39 @@ fn handle_call_loaded_method_op(
         let callee =
             SimpleBackend::import_runtime_func_id_split(&mut *module, &mut *import_ids, symbol);
         let local = module.declare_func_in_func(callee, builder.func);
-        let call = builder.ins().call(local, &words);
-        builder.inst_results(call)[0]
+        match op.method_site {
+            // A method site's call: the shared call body, whose miss is the
+            // same runtime call.
+            Some(site) => {
+                let record = crate::native_backend::simple_backend::method_site_record(
+                    &mut *module,
+                    &mut *builder,
+                    func_name,
+                    site,
+                    None,
+                );
+                let sites = native_method_site_sites(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                );
+                let thread = builder.ins().stack_load(
+                    types::I64,
+                    types::I64,
+                    thread_record_slot
+                        .expect("a function with method site calls holds its thread record"),
+                    0,
+                );
+                crate::native_backend::simple_backend::emit_method_site_call(
+                    builder, sites, thread, record, &words, local,
+                )
+            }
+            None => {
+                let call = builder.ins().call(local, &words);
+                builder.inst_results(call)[0]
+            }
+        }
     } else {
         let (args_ptr, nargs) =
             spill_call_arguments(&mut *builder, module.target_config().pointer_type(), args);
@@ -2262,5 +2297,44 @@ fn handle_getframe_op(
     let res = builder.inst_results(call)[0];
     if let Some(out__) = op.out.as_ref() {
         def_var_named(&mut *builder, vars, out__, res);
+    }
+}
+
+/// What a method site's inline paths call (`simple_backend::method_site`).
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn native_method_site_sites(
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut NativeFunctionImports,
+) -> crate::native_backend::simple_backend::NativeMethodSiteSites {
+    let mut import = |function| {
+        import_runtime_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            function,
+        )
+    };
+    let (retain, release) = (import(RuntimeFn::IncRefObj), import(RuntimeFn::DecRefObj));
+    let (enter, exit) = (
+        import(RuntimeFn::FrameRecordEnter),
+        import(RuntimeFn::FrameRecordExit),
+    );
+    let (recursion_enter, recursion_exit) = (
+        import(RuntimeFn::RecursionEnterFast),
+        import(RuntimeFn::RecursionExitFast),
+    );
+    use molt_codegen_abi::inline_refcount::RefcountOperation;
+    crate::native_backend::simple_backend::NativeMethodSiteSites {
+        frame: NativeFrameSites {
+            retain: import_refs.refcount_site(retain, RefcountOperation::Retain),
+            release: import_refs.refcount_site(release, RefcountOperation::Release),
+            enter,
+            exit,
+        },
+        recursion_enter,
+        recursion_exit,
     }
 }

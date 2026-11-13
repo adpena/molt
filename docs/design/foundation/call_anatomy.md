@@ -19,7 +19,7 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5) | guarded call promotion design (HF-773 slice D); `module.attr` slot reads and the guarded builtin call (lane module-slots) | HF-507, HF-79, HF-200 |
-| 4 inline caches | not started | - | - | HF-202, HF-206 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
 | 7 TIR inlining | not started | - | - | HF-773 |
@@ -421,6 +421,9 @@ dead int costs `dec_ref_ptr_terminal` 33.7% because a leaf int runs the generic 
 - **Method (q4):** `molt_call_loaded_method1` 58.6% (frame push/pop again inside),
   `molt_load_method` 23.7%. `molt_load_method` takes the name as `(ptr, len)` bytes, so each call
   hashes and validates the name (`hash_string_bytes`, `from_utf8`) and pins an IC entry.
+  Method sites (2026-11-12, section 4.5) replaced both runtime entries on the hit path: p4 runs
+  at 352 instructions per call on LLVM against 2,046 before, and a symbolized profile of
+  `bench_method_defaults` shows no method load, call dispatch or method cache.
 - **Constructor (p5, the perf-gate `struct` row):** `call_type_with_arguments` 51.6%:
   `construct_regular_class` looks up `__init__` through the MRO (`class_namespace_lookup_mro`
   12.3%), allocates a bound method per construction (`molt_bound_method_new` 10.4%), allocates
@@ -1227,6 +1230,43 @@ site's layout, else an all-unbound array) and `GlobalSlotGet`, whose meaning is 
 index (`molt_global_slot_set`). Free-threaded runtimes take the by-name path. The base
 becomes inline loads once the frame record exposes the function's globals (stage 1).
 
+**Implementation (method sites, 2026-11-12).** Every `LoadMethod` and the `CallLoadedMethod`
+that consumes its whole pair share a site index (`method_sites` in the terminal phase, gated by
+the TargetInfo fact `method_sites`: Cranelift, LLVM and WASM). The index names the site's record,
+a writable data object the backend emits with the generated image
+(`molt_codegen_abi::method_site`): class word, header shape (aux kind and size class), class
+layout version, instance-dictionary offset, function, call plan (fixed-arity entry, arity, up to
+two trailing defaults) and the attribute name. The record owns its class, function, defaults and
+interned name. The meaning is two generators that every backend lowers through its frame builder:
+
+- Load: the receiver is an object; its header shape and masked class word equal the record's; the
+  class's layout version equals the record's; its dictionary word, when the class has one, holds
+  no dictionary. Hit: `[record.function, receiver]`, both retained. Miss:
+  `molt_method_site_load(record, receiver, self_out)`, which interns the name on the site's first
+  miss, resolves the method (`object_method_ic_resolve`), checks the instance tier, and fills the
+  record when the resolution can repeat (class-inline header, no inferred field of the name, the
+  primary GIL runtime, the type epoch stable across resolution). An instance dictionary that does
+  not hold the name still sends every load to the miss, which then re-checks only the dictionary.
+- Call: `self` is not NULL, the callable is `record.function`, the record has an entry, and the
+  call supplies `arity - k` words for some `k` within the record's defaults; the recursion limit
+  admits it. Hit: the callable goes into the thread record's invocation word, the entry runs with
+  `self`, the arguments and `k` retained defaults, the handoff and depth are restored, and the
+  callable is released. Miss: `molt_call_loaded_method<N>`, unchanged.
+
+Guard identities: the class layout version (bumped for the class and every subclass on any
+mutation, HF-812) covers rebinding and MRO changes; `__class__` assignment changes the header
+class word; an instance attribute creates the dictionary. A user write of a function's binding
+metadata or code clears every record's entry for that function (`forget_method_site_call_plans`),
+so its calls take the runtime, which reads the live defaults. A free-threaded runtime and an
+isolate never fill a record: the record words are plain memory without a lock that orders their
+writes with another runtime's reads. Runtime teardown empties every record and releases its edges.
+Deleted with the site: `molt_load_method`, the thread-local method cache (`MethodIcEntry`,
+`PinnedMethodIcEntry`, `method_ic_lookup`), and every by-bytes method name on the method path; the
+zero-argument `super()` load keeps its runtime cache (`SuperIcEntry`). One runtime cache remains
+on a site: a load the record cannot answer (a callable stored in an instance field, a descriptor)
+takes the generic lookup, whose field tier (`field_sites`) is keyed by the record's address. It
+goes when attribute sites land (stage 4, attributes).
+
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,
 module slot write, builtins version). Check: mutation tests per guard kind (rebind a global, add a
@@ -1470,6 +1510,17 @@ without the generic edge-visiting cascade (`DetachedEdgeSink`, `clear_cycle_edge
 attribute loop ≤ 150; method loop ≤ 350; `struct` (p5) ≤ 600; `struct.pack` ≤ 2,000 (the
 remaining cost is the format plan and the wrapper, both cacheable). Closes the HF-185 attribute and
 `struct` rows, HF-202; moves HF-206.
+
+Status (2026-11-12): method sites landed (section 4.5). Instructions retired, release, macOS
+arm64, minimum of two interleaved runs, output identical, against main fc28795e05:
+`bench_method_defaults` (5M calls, a default engaged on every call) LLVM 13.79 to 4.97 billion
+(-64%), Cranelift 15.57 to 6.92 billion (-56%); p4 LLVM 10.42 to 1.95 billion (-81%), Cranelift
+11.19 to 2.82 billion (-75%). The managed CPython 3.12.16 (-I) retires 8.36 and 4.25 billion; wall
+time `bench_method_defaults` 0.14 s (LLVM) against 0.30 s. The method loop is 352 instructions
+per call on LLVM, at the stage target before stages 1-3 finish. The recursion check is still two
+runtime calls per site call (stage 2), and the module-level store in the benchmark's loop is now
+its largest cost (`molt_global_slot_set`, 38% of LLVM self samples). Attribute and constructor
+sites remain.
 
 ### Stage 5: exceptions
 

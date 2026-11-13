@@ -1222,6 +1222,7 @@ unsafe fn publish_function_metadata_code(
         // guards. Reentry may already have attached code during initialization.
         if user_mutation || replacing {
             crate::object::layout::bump_function_mutation_version(func_ptr);
+            crate::call::bind::forget_method_site_call_plans(func_ptr);
         }
         let detached = crate::call::bind::detach_callable_ic_caches();
         // All scalar, code, version, and cache-visible derived state is coherent

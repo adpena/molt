@@ -73,6 +73,7 @@ impl WasmBackend {
             reloc_enabled,
             &super::global_slot::read_indices(ir),
         );
+        super::method_site::emit_method_site_bodies(&mut self, reloc_enabled, ir);
 
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.

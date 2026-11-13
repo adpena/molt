@@ -498,10 +498,10 @@ impl SimpleBackend {
         // pure-exception lane in `handle_exception_control_op` and call the
         // eval-breaker observer.
         let inline_exception_checks = function_exception_label_id.is_some();
-        let makes_direct_python_calls = func_ir
-            .ops
-            .iter()
-            .any(|op| matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc));
+        let makes_direct_python_calls = func_ir.ops.iter().any(|op| {
+            matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc)
+                || (op.kind == OpKind::CallLoadedMethod && op.method_site.is_some())
+        });
         let has_async_work_polls = func_ir.ops.iter().any(OpIR::reads_pending_work_word);
         let frame_home_slots = func_ir
             .ops

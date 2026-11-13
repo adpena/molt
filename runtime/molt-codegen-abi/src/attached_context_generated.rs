@@ -2237,7 +2237,6 @@ macro_rules! attached_symbol {
     ("molt_list_reverse") => { "molt_list_reverse__molt_context_047a33b55bc1b76d" };
     ("molt_list_sort") => { "molt_list_sort__molt_context_047a33b55bc1b76d" };
     ("molt_load_intrinsic_runtime") => { "molt_load_intrinsic_runtime__molt_context_047a33b55bc1b76d" };
-    ("molt_load_method") => { "molt_load_method__molt_context_047a33b55bc1b76d" };
     ("molt_load_super_method") => { "molt_load_super_method__molt_context_047a33b55bc1b76d" };
     ("molt_local_drop") => { "molt_local_drop__molt_context_047a33b55bc1b76d" };
     ("molt_local_get_dict") => { "molt_local_get_dict__molt_context_047a33b55bc1b76d" };
@@ -2381,6 +2380,7 @@ macro_rules! attached_symbol {
     ("molt_method_eq") => { "molt_method_eq__molt_context_047a33b55bc1b76d" };
     ("molt_method_hash") => { "molt_method_hash__molt_context_047a33b55bc1b76d" };
     ("molt_method_ne") => { "molt_method_ne__molt_context_047a33b55bc1b76d" };
+    ("molt_method_site_load") => { "molt_method_site_load__molt_context_047a33b55bc1b76d" };
     ("molt_min_builtin") => { "molt_min_builtin__molt_context_047a33b55bc1b76d" };
     ("molt_missing") => { "molt_missing__molt_context_047a33b55bc1b76d" };
     ("molt_mod") => { "molt_mod__molt_context_047a33b55bc1b76d" };

@@ -26,6 +26,7 @@ pub mod c_width;
 pub mod frame_record;
 pub mod global_slot;
 pub mod inline_refcount;
+pub mod method_site;
 pub mod word;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
