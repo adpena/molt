@@ -160,8 +160,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "int_to_float",
                     )
                     .unwrap();
-                self.values.insert(op.results[0], raw.into());
-                self.value_types.insert(op.results[0], TirType::F64);
+                self.values.set_value(op.results[0], raw.into());
+                self.values.set_type(op.results[0], TirType::F64);
             }
             OpCode::IsBoolWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
