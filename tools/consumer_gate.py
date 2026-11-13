@@ -260,7 +260,10 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
                     flush=True,
                 )
             print("consumer-gate: " + " ".join(argv), flush=True)
-            failed = _COMMANDS.run(argv, cwd=root).returncode != 0
+            # The importer tests are the holder's job: a test that runs a
+            # consumer gate in a child is admitted inside this slot.
+            env = {**os.environ, **host_capacity.held_slot_environment()}
+            failed = _COMMANDS.run(argv, cwd=root, env=env).returncode != 0
         if failed:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1

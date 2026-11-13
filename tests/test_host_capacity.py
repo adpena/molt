@@ -468,12 +468,23 @@ def test_work_the_holder_starts_is_admitted_inside_the_holders_slot(
     with host_capacity.host_work_slot(
         state, label="landing try run", landing=True, say=lambda _: None
     ):
-        assert os.environ[host_capacity.HOST_WORK_HELD_ENV] == str(state.resolve())
+        mark = host_capacity.held_slot_environment()
+        assert mark == {host_capacity.HOST_WORK_HELD_ENV: str(state.resolve())}
+        # A nested request in the holder's own process is admitted at once.
+        with host_capacity.host_work_slot(
+            state, label="nested gate", landing=False, say=lambda _: None
+        ) as inner:
+            assert inner.waited_seconds == 0.0
         nested = run_guarded_test_process(
-            [sys.executable, "-c", child, str(state)], check=True, timeout=30
+            [sys.executable, "-c", child, str(state)],
+            check=True,
+            timeout=30,
+            env={**os.environ, **mark},
         )
     assert nested.stdout.strip() == "admitted 0.0"
-    # The mark ends with the holder's body.
+    # The mark ends with the holder's body, and the process environment is
+    # never written (CLI custody).
+    assert host_capacity.held_slot_environment() == {}
     assert host_capacity.HOST_WORK_HELD_ENV not in os.environ
 
 

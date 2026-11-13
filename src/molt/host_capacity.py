@@ -631,6 +631,11 @@ def host_work_dir(repo_root: Path) -> Path:
     return control_state_dir(repo_root, HOST_WORK_DIRNAME)
 
 
+# The slots this process holds. A nested request in the same process is admitted
+# at once; children learn of the hold through ``held_slot_environment``.
+_HELD_SLOTS: set[str] = set()
+
+
 @dataclass(frozen=True, slots=True)
 class HostWorkAdmission:
     """What admission cost: the seconds spent waiting for the slot."""
@@ -722,21 +727,21 @@ def host_work_slot(
     crashed job never leaves the slot taken. A job that took the slot just
     before a landing queued finishes first; the landing waits for that one job.
 
-    Work the holder starts is part of the holder's job: the body runs with
-    ``MOLT_HOST_WORK_SLOT_HELD`` naming this slot, and a descendant that asks
-    for the same slot is admitted at once. Without that rule a landing's tests
-    that run a consumer gate would wait for their own landing.
+    Work the holder starts is part of the holder's job: a nested request in
+    this process is admitted at once, and a child started with
+    ``held_slot_environment()`` carries ``MOLT_HOST_WORK_SLOT_HELD`` naming
+    this slot, so its request is admitted at once too. Without that rule a
+    landing's tests that run a consumer gate would wait for their own landing.
     """
     state_dir.mkdir(parents=True, exist_ok=True)
     slot = str(state_dir.resolve())
-    if os.environ.get(HOST_WORK_HELD_ENV) == slot:
+    if slot in _HELD_SLOTS or os.environ.get(HOST_WORK_HELD_ENV) == slot:
         yield HostWorkAdmission(0.0)
         return
     heavy = state_dir / _HEAVY_LOCK
     landing_lock = state_dir / _LANDING_LOCK
     started = clock()
     held: list[tuple[Path, BinaryIO]] = []
-    outer = os.environ.get(HOST_WORK_HELD_ENV)
     try:
         if landing:
             held.append((landing_lock, _acquire(landing_lock, label, say, clock)))
@@ -744,12 +749,19 @@ def host_work_slot(
             probe = _acquire(landing_lock, label, say, clock)
             _release(landing_lock, probe)
         held.append((heavy, _acquire(heavy, label, say, clock)))
-        os.environ[HOST_WORK_HELD_ENV] = slot
+        _HELD_SLOTS.add(slot)
         yield HostWorkAdmission(clock() - started)
     finally:
-        if outer is None:
-            os.environ.pop(HOST_WORK_HELD_ENV, None)
-        else:
-            os.environ[HOST_WORK_HELD_ENV] = outer
+        _HELD_SLOTS.discard(slot)
         for lock, handle in reversed(held):
             _release(lock, handle)
+
+
+def held_slot_environment() -> dict[str, str]:
+    """The mark a child of this process inherits while the process holds the
+    slot: the child's own request for that slot is then admitted at once.
+
+    The process environment is never written (CLI custody); every spawner of a
+    slot holder's children adds this mark to the environment it builds.
+    """
+    return {HOST_WORK_HELD_ENV: slot for slot in sorted(_HELD_SLOTS)[:1]}

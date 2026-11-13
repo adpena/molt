@@ -3347,7 +3347,7 @@ def test_every_gate_run_holds_the_host_slot_for_its_heavy_block(
         streams: object = None,
     ) -> molt_dev_gates.GateOutcome:
         seen[tuple(command)] = (
-            os.environ.get(host_capacity.HOST_WORK_HELD_ENV),
+            host_capacity.held_slot_environment().get(host_capacity.HOST_WORK_HELD_ENV),
             (slot / "landing.holder").is_file(),
         )
         return _gate_outcome(0, "", "", None)

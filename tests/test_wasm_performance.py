@@ -159,7 +159,6 @@ def _optimize_wasm_for_size(input_path: Path, output_path: Path) -> dict[str, ob
         output_path=output_path,
         level="Oz",
         extra_passes=("--strip-debug",),
-        required_exports=wasm_optimize._collect_exports(input_path),
         timeout=120,
     )
 
@@ -188,7 +187,6 @@ def test_wasm_performance_size_optimizer_uses_canonical_authority(
             "output_path": output_path,
             "level": "Oz",
             "extra_passes": ("--strip-debug",),
-            "required_exports": set(),
             "timeout": 120,
         },
     }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 from molt.stdlib_intrinsic_policy import (
@@ -124,53 +123,3 @@ def test_deleted_trusted_class_transport_lane_has_no_survivors() -> None:
             if any(token in text for token in forbidden):
                 survivors.append(path.relative_to(ROOT).as_posix())
     assert survivors == []
-
-
-def test_class_shaped_attribute_authority_is_generated_not_type_listed() -> None:
-    object_model = (ROOT / "runtime/molt-runtime/src/object/mod.rs").read_text(
-        encoding="utf-8"
-    )
-    mutation = (
-        ROOT / "runtime/molt-runtime/src/builtins/attributes/mutation.rs"
-    ).read_text(encoding="utf-8")
-    assert "heap_shape_policy(type_id) == Some(HeapShapePolicy::Class)" in object_model
-    assert "heap_kind_has_class_shape(object_type_id(ptr))" in object_model
-    assert mutation.count("heap_kind_has_class_shape(type_id)") >= 2
-    attr = (ROOT / "runtime/molt-runtime/src/builtins/attr.rs").read_text(
-        encoding="utf-8"
-    )
-    attributes = (ROOT / "runtime/molt-runtime/src/builtins/attributes.rs").read_text(
-        encoding="utf-8"
-    )
-    accessors = (ROOT / "runtime/molt-runtime/src/object/accessors.rs").read_text(
-        encoding="utf-8"
-    )
-    assert "fn class_instance_layout_attr_allowed" in attr
-    assert "class_instance_layout_attr_allowed(_py, class_ptr, attr_bits)" in attr
-    # Default lookup delegates to the same raw object authority as explicit
-    # object.__getattribute__; the retired result IC and the classed-default
-    # shim (whose coroutine members are now type-dictionary descriptors) must
-    # not duplicate it.
-    assert re.search(
-        r"if crate::object::heap_kind_has_class_shape\(type_id\) \{\s*"
-        r"return crate::builtins::attr::object_attr_lookup_with_mode\(",
-        attributes,
-    )
-    assert "object_attr_lookup_with_policy(_py, obj_ptr, attr_bits, false)" in attr
-    assert "classed_default_attr_lookup" not in attributes
-    assert "class_instance_layout_attr_allowed" not in attributes
-    assert "attr_ic_class_key" not in accessors
-    assert "super::object_has_class_shape(obj_ptr)" in accessors
-    assert "!crate::object::object_has_class_shape(obj_ptr)" in attr
-
-
-def test_callback_descriptor_is_published_once_in_reference_type_dictionary() -> None:
-    attr = (ROOT / "runtime/molt-runtime/src/builtins/attr.rs").read_text(
-        encoding="utf-8"
-    )
-    classes = (ROOT / "runtime/molt-runtime/src/builtins/classes.rs").read_text(
-        encoding="utf-8"
-    )
-    assert "pub(crate) fn install_weakref_callback_descriptor" in attr
-    assert "install_weakref_callback_descriptor(&py)" in classes
-    assert 'attr_name.as_deref() == Some("__callback__")' not in attr

@@ -744,7 +744,10 @@ def _gate_environment(
     cmd: str | tuple[str, ...], repo: Path, context: GateEnvironment
 ) -> tuple[str | tuple[str, ...], ProcessEnvironment]:
     _validate_gate_image(repo, context)
-    env = context.environment
+    from molt import host_capacity
+
+    # A gate that a slot holder starts is part of the holder's job (HF-623).
+    env = context.environment.updated(host_capacity.held_slot_environment())
     shell_syntax = False
     if isinstance(cmd, str):
         try:
