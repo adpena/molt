@@ -946,13 +946,41 @@ pub(crate) unsafe fn replace_range_with_projection(
         };
     }
 
+    let vec_ptr = unsafe { seq_vec_ptr(ptr) };
+    // An equal-length replacement of non-heap words overwrites in place: no
+    // splice, no removed-item vector and no release, since nothing removed
+    // owns a reference.
+    if removed_len == items.len()
+        && !crate::object::refcount_opt::slice_contains_heap_refs(unsafe {
+            &(&*vec_ptr)[low..high]
+        })
+    {
+        for &item in items {
+            inc_ref_bits(py, item);
+        }
+        unsafe { (&mut *vec_ptr)[low..high].copy_from_slice(items) };
+        let contains_refs = unsafe {
+            crate::object::backing::tracked_vec_adjust_heap_edge_count(
+                vec_ptr,
+                0,
+                crate::object::refcount_opt::slice_heap_ref_count(items),
+            )
+        } != 0;
+        let header = unsafe { header_from_obj_ptr(ptr) };
+        unsafe {
+            if contains_refs {
+                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            }
+            note_in_place_mutation(ptr);
+        }
+        return true;
+    }
     let required = result_len;
     let mut removed = Vec::new();
     if removed.try_reserve_exact(removed_len).is_err() {
         crate::record_memory_error_without_allocation(py);
         return false;
     }
-    let vec_ptr = unsafe { seq_vec_ptr(ptr) };
     if !unsafe { crate::object::backing::tracked_vec_reserve_for_len(vec_ptr, required) } {
         crate::record_memory_error_without_allocation(py);
         return false;

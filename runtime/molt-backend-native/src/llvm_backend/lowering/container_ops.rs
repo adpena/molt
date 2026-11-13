@@ -276,8 +276,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ));
             let undef: BasicValueEnum<'ctx> = i64_ty.get_undef().into();
             for &result in &op.results {
-                self.values.insert(result, undef);
-                self.value_types.insert(result, TirType::DynBox);
+                self.values.set_value(result, undef);
+                self.values.set_repr(
+                    result,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
             }
             return;
         }
@@ -380,14 +383,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let release = self
             .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
         if let Some(&value_id) = op.results.first() {
-            self.values.insert(value_id, value_bits);
-            self.value_types.insert(value_id, TirType::DynBox);
+            self.values.set_value(value_id, value_bits);
+            self.values.set_repr(
+                value_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
         } else {
             release.emit(&self.backend.builder, value_bits);
         }
         if let Some(&done_id) = op.results.get(1) {
-            self.values.insert(done_id, done_bits.into());
-            self.value_types.insert(done_id, TirType::DynBox);
+            self.values.set_value(done_id, done_bits.into());
+            self.values.set_repr(
+                done_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
         } else {
             release.emit(&self.backend.builder, done_bits.into());
         }

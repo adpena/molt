@@ -717,11 +717,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return false;
                 };
                 let value = self.resolve(operand);
-                let value_ty = self
-                    .value_types
-                    .get(&operand)
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
+                let value_ty = self.repr_ty(operand);
                 let (home_kind, bits) = match (kind, &value_ty, value) {
                     (OpKind::FrameHomeStore, TirType::I64, BasicValueEnum::IntValue(raw)) => {
                         (molt_codegen_abi::FRAME_HOME_RAW_INT, raw)
@@ -750,11 +746,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // The result borrows the binding until this slot's next write.
                 if let Some(&result) = op.results.first() {
                     if boxed_view {
-                        self.values.insert(result, view.into());
-                        self.value_types.insert(result, TirType::DynBox);
+                        self.values.set_value(result, view.into());
+                        self.values.set_repr(
+                            result,
+                            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                        );
                     } else {
-                        self.values.insert(result, value);
-                        self.value_types.insert(result, value_ty);
+                        self.values.set_value(result, value);
+                        self.values
+                            .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&value_ty));
                     }
                 }
                 true
@@ -861,8 +861,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 loaded.add_incoming(&[(&inline_bits, inline_bb), (&slow_bits, slow_bb)]);
                 if let Some(&result) = op.results.first() {
-                    self.values.insert(result, loaded.as_basic_value());
-                    self.value_types.insert(result, TirType::DynBox);
+                    self.values.set_value(result, loaded.as_basic_value());
+                    self.values.set_repr(
+                        result,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }

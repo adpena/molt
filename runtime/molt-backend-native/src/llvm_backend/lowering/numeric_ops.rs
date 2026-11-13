@@ -26,16 +26,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let flag_id = op.results[1];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
-        let lhs_ty = self
-            .value_types
-            .get(&lhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        let rhs_ty = self
-            .value_types
-            .get(&rhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let lhs_ty = self.repr_ty(lhs_id);
+        let rhs_ty = self.repr_ty(rhs_id);
         let raw_lane = matches!(lhs_ty, TirType::I64)
             && matches!(rhs_ty, TirType::I64)
             && self.repr_facts.is_raw_int_carrier(lhs_id)
@@ -67,19 +59,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_extract_value(pair, 1, "ca_of")
                 .unwrap();
-            self.values.insert(sum_id, sum);
-            self.value_types.insert(sum_id, TirType::I64);
-            self.values.insert(flag_id, flag);
+            self.values.set_value(sum_id, sum);
+            self.values
+                .set_repr(sum_id, crate::codegen_ssa::HeldCarrier::of(&TirType::I64));
+            self.values.set_value(flag_id, flag);
             // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
             // branch condition (no truthiness call, no NaN-box round-trip).
-            self.value_types.insert(flag_id, TirType::Bool);
+            self.values
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         } else {
             let sum = self.emit_boxed_binary_fallback(RuntimeFn::Add, lhs_id, rhs_id);
-            self.values.insert(sum_id, sum);
-            self.value_types.insert(sum_id, TirType::DynBox);
+            self.values.set_value(sum_id, sum);
+            self.values.set_repr(
+                sum_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
             let false_flag = self.backend.context.bool_type().const_zero();
-            self.values.insert(flag_id, false_flag.into());
-            self.value_types.insert(flag_id, TirType::Bool);
+            self.values.set_value(flag_id, false_flag.into());
+            self.values
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         }
     }
 
@@ -106,16 +104,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let flag_id = op.results[1];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
-        let lhs_ty = self
-            .value_types
-            .get(&lhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        let rhs_ty = self
-            .value_types
-            .get(&rhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let lhs_ty = self.repr_ty(lhs_id);
+        let rhs_ty = self.repr_ty(rhs_id);
         let raw_lane = matches!(lhs_ty, TirType::I64)
             && matches!(rhs_ty, TirType::I64)
             && self.repr_facts.is_raw_int_carrier(lhs_id)
@@ -147,19 +137,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_extract_value(pair, 1, "cm_of")
                 .unwrap();
-            self.values.insert(prod_id, prod);
-            self.value_types.insert(prod_id, TirType::I64);
-            self.values.insert(flag_id, flag);
+            self.values.set_value(prod_id, prod);
+            self.values
+                .set_repr(prod_id, crate::codegen_ssa::HeldCarrier::of(&TirType::I64));
+            self.values.set_value(flag_id, flag);
             // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
             // branch condition (no truthiness call, no NaN-box round-trip).
-            self.value_types.insert(flag_id, TirType::Bool);
+            self.values
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         } else {
             let prod = self.emit_boxed_binary_fallback(RuntimeFn::Mul, lhs_id, rhs_id);
-            self.values.insert(prod_id, prod);
-            self.value_types.insert(prod_id, TirType::DynBox);
+            self.values.set_value(prod_id, prod);
+            self.values.set_repr(
+                prod_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
             let false_flag = self.backend.context.bool_type().const_zero();
-            self.values.insert(flag_id, false_flag.into());
-            self.value_types.insert(flag_id, TirType::Bool);
+            self.values.set_value(flag_id, false_flag.into());
+            self.values
+                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
         }
     }
 
@@ -512,16 +508,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let rhs_id = op.operands[1];
         let lhs = self.resolve(lhs_id);
         let rhs = self.resolve(rhs_id);
-        let lhs_ty = self
-            .value_types
-            .get(&lhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        let rhs_ty = self
-            .value_types
-            .get(&rhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let lhs_ty = self.repr_ty(lhs_id);
+        let rhs_ty = self.repr_ty(rhs_id);
         let fast_math = has_attr(op, "fast_math");
         // When the `no_signed_wrap` attribute is set by a TIR analysis pass
         // (for example range_devirt for bounded induction increments), we
@@ -671,8 +659,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
         };
 
-        self.values.insert(result_id, val);
-        self.value_types.insert(result_id, out_ty);
+        self.values.set_value(result_id, val);
+        self.values
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 
     // ── Type-specialized comparison ──
@@ -683,16 +672,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let rhs_id = op.operands[1];
         let lhs = self.resolve(lhs_id);
         let rhs = self.resolve(rhs_id);
-        let lhs_ty = self
-            .value_types
-            .get(&lhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        let rhs_ty = self
-            .value_types
-            .get(&rhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let lhs_ty = self.repr_ty(lhs_id);
+        let rhs_ty = self.repr_ty(rhs_id);
 
         let (val, out_ty) = match (&lhs_ty, &rhs_ty) {
             (TirType::I64, TirType::I64) => {
@@ -749,8 +730,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
         };
 
-        self.values.insert(result_id, val);
-        self.value_types.insert(result_id, out_ty);
+        self.values.set_value(result_id, val);
+        self.values
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 
     // ── Identity (is / is not) ──
@@ -792,8 +774,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "identity_bool",
             )
             .unwrap();
-        self.values.insert(result_id, val.into());
-        self.value_types.insert(result_id, TirType::Bool);
+        self.values.set_value(result_id, val.into());
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+        );
     }
 
     // ── Containment (in / not in) ──
@@ -854,8 +839,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             );
             release.emit(&self.backend.builder, val.into());
         }
-        self.values.insert(result_id, not_in.into());
-        self.value_types.insert(result_id, TirType::Bool);
+        self.values.set_value(result_id, not_in.into());
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+        );
     }
 
     /// The boxed runtime lane of a binary operator: both operands are borrowed
@@ -916,15 +904,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             ("bool_or", op.operands[0], op.operands[1])
         };
-        let object_carrier = |this: &Self, id: ValueId| {
-            Self::tir_type_is_dynbox_like(
-                &this
-                    .value_types
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or(TirType::DynBox),
-            )
-        };
+        let object_carrier =
+            |this: &Self, id: ValueId| Self::tir_type_is_dynbox_like(&this.repr_ty(id));
         let selected = if object_carrier(self, when_true) && object_carrier(self, when_false) {
             let true_bits = self.ensure_i64(self.resolve(when_true));
             let false_bits = self.ensure_i64(self.resolve(when_false));
@@ -991,18 +972,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             phi.as_basic_value().into_int_value()
         };
-        self.values.insert(result_id, selected.into());
-        self.value_types.insert(result_id, TirType::DynBox);
+        self.values.set_value(result_id, selected.into());
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     /// Python truthiness of an operand, read from its physical carrier.
     fn operand_truthiness(&self, operand: ValueId) -> inkwell::values::IntValue<'ctx> {
         let value = self.resolve(operand);
-        let ty = self
-            .value_types
-            .get(&operand)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let ty = self.repr_ty(operand);
         match ty {
             TirType::Bool => value.into_int_value(),
             TirType::I64 => self
@@ -1058,16 +1038,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let rhs_id = op.operands[1];
         let lhs = self.resolve(lhs_id);
         let rhs = self.resolve(rhs_id);
-        let lhs_ty = self
-            .value_types
-            .get(&lhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
-        let rhs_ty = self
-            .value_types
-            .get(&rhs_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let lhs_ty = self.repr_ty(lhs_id);
+        let rhs_ty = self.repr_ty(rhs_id);
 
         // Overflow / shift-validity gate for the raw I64 lane. `bit_and`/
         // `bit_or`/`bit_xor` are unconditionally sound on raw i64 (the result
@@ -1148,8 +1120,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
         };
 
-        self.values.insert(result_id, val);
-        self.value_types.insert(result_id, out_ty);
+        self.values.set_value(result_id, val);
+        self.values
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 
     // ── Unary ops ──
@@ -1158,11 +1131,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result_id = op.results[0];
         let operand_id = op.operands[0];
         let operand = self.resolve(operand_id);
-        let operand_ty = self
-            .value_types
-            .get(&operand_id)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let operand_ty = self.repr_ty(operand_id);
 
         let (val, out_ty) = match (&operand_ty, name) {
             // Negating i64::MIN requires a BigInt. The same result-range proof
@@ -1235,8 +1204,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
         };
 
-        self.values.insert(result_id, val);
-        self.value_types.insert(result_id, out_ty);
+        self.values.set_value(result_id, val);
+        self.values
+            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
     }
 }
 

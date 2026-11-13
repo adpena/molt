@@ -2564,3 +2564,63 @@ fn proven_none_aliases_and_explicit_rc_need_no_transition_or_admission() {
         );
     }
 }
+
+/// HF-840: a leading frame entry with an inline shape pushes its record
+/// through the shared frame generator, which seals its own blocks and leaves
+/// the builder in the last of them. The prologue then seals its current block
+/// as the body entry; before the generator reported its seals, that sealed the
+/// push continuation twice and Cranelift panicked ("Attempting to seal block3
+/// which is already sealed") on every such method in the full stdlib profile.
+#[test]
+fn leading_inline_frame_push_continuation_is_sealed_once() {
+    let name = "leading_inline_frame_method";
+    let compiled = compile_function_to_clif_with_imports(
+        vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            name: name.into(),
+            ops: vec![
+                OpIR {
+                    value: Some(1),
+                    s_value: Some(name.into()),
+                    ..OpIR::new(OpKind::TraceEnterSlot)
+                },
+                OpIR {
+                    value: Some(3),
+                    ..OpIR::new(OpKind::CheckException)
+                },
+                OpIR {
+                    ..OpIR::new(OpKind::TraceExit)
+                },
+                OpIR {
+                    ..OpIR::new(OpKind::RetVoid)
+                },
+                OpIR {
+                    value: Some(3),
+                    ..OpIR::new(OpKind::Label)
+                },
+                OpIR {
+                    ..OpIR::new(OpKind::TraceExit)
+                },
+                OpIR {
+                    ..OpIR::new(OpKind::RetVoid)
+                },
+            ],
+            execution_context: crate::ir::ExecutionContextPolicy::Local,
+            ..FunctionIR::default()
+        }],
+        name,
+    );
+    let function = &compiled.function;
+    // The shaped entry pushes inline: the runtime is called only off the
+    // fast path, and the push's own blocks precede the body.
+    assert!(
+        function.layout.blocks().count() > 3,
+        "an inline frame push emits its own blocks:\n{}",
+        function.display()
+    );
+    cranelift_codegen::verifier::verify_function(
+        function,
+        &cranelift_codegen::settings::Flags::new(cranelift_codegen::settings::builder()),
+    )
+    .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));
+}

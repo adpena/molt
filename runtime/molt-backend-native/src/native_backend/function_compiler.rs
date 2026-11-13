@@ -913,6 +913,7 @@ impl SimpleBackend {
                 thread_record_slot,
                 &mut self.module,
                 &mut builder,
+                &mut sealed_blocks,
             );
         }
 

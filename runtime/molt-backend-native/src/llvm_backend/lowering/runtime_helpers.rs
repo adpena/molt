@@ -139,8 +139,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     molt_ir::runtime_fn_generated::RuntimeReturnContract::RawBits => TirType::I64,
                     _ => TirType::DynBox,
                 };
-                self.values.insert(result, word);
-                self.value_types.insert(result, result_ty);
+                self.values.set_value(result, word);
+                self.values
+                    .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&result_ty));
             }
             return;
         }
@@ -159,8 +160,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// a borrowed runtime result must be explicitly retained first.
     pub(super) fn bind_owned_runtime_result(&mut self, op: &TirOp, result: BasicValueEnum<'ctx>) {
         if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
+            self.values.set_value(result_id, result);
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
         } else {
             let release = self.ensure_refcount_site(
                 molt_codegen_abi::inline_refcount::RefcountOperation::Release,

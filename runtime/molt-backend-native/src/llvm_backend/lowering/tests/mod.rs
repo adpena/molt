@@ -283,8 +283,8 @@ fn make_dummy_lowering<'ctx, 'func>(
         llvm_fn,
         entry_trampoline_bb: None,
         block_map: HashMap::new(),
-        values: HashMap::new(),
-        value_types: HashMap::new(),
+        // Fixture functions name values directly instead of numbering them.
+        values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value.max(256)),
         pending_phis: Vec::new(),
         phi_edges: Vec::new(),
         pgo_branch_weights: None,
