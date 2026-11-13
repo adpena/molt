@@ -147,8 +147,8 @@ fn refcount_uses_lowered_carriers_without_boxing() {
             TirType::Bool => ctx.bool_type().const_int(1, false).into(),
             _ => ctx.i64_type().const_int(i64::MAX as u64, false).into(),
         };
-        lowering.values.insert(ValueId(0), value);
-        lowering.value_types.insert(ValueId(0), ty.clone());
+        lowering.values.set_value(ValueId(0), value);
+        lowering.values.set_type(ValueId(0), ty.clone());
         for opcode in [OpCode::IncRef, OpCode::DecRef, OpCode::DelBoundary] {
             lowering.lower_op(
                 func.entry_block,
@@ -205,8 +205,8 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
     let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
     lowering
         .values
-        .insert(ValueId(0), llvm_fn.get_nth_param(1).unwrap());
-    lowering.value_types.insert(ValueId(0), TirType::DynBox);
+        .set_value(ValueId(0), llvm_fn.get_nth_param(1).unwrap());
+    lowering.values.set_type(ValueId(0), TirType::DynBox);
     let mut op = TirOp {
         origin: None,
         runtime: None,
@@ -221,7 +221,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
     op.opcode = OpCode::UnboxVal;
     op.operands = vec![ValueId(1)];
     op.results = vec![ValueId(2)];
-    lowering.value_types.insert(ValueId(2), TirType::Str);
+    lowering.values.set_type(ValueId(2), TirType::Str);
     lowering.emit_unbox(&op);
     backend
         .builder
@@ -264,8 +264,8 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
         let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
         lowering
             .values
-            .insert(ValueId(0), llvm_fn.get_nth_param(1).unwrap());
-        lowering.value_types.insert(ValueId(0), ty.clone());
+            .set_value(ValueId(0), llvm_fn.get_nth_param(1).unwrap());
+        lowering.values.set_type(ValueId(0), ty.clone());
         if inline {
             lowering
                 .repr_facts
@@ -327,9 +327,9 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     backend.builder.position_at_end(entry);
     let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
     let raw = llvm_fn.get_nth_param(1).unwrap().into_int_value();
-    lowering.values.insert(ValueId(0), raw.into());
-    lowering.value_types.insert(ValueId(0), TirType::DynBox);
-    lowering.value_types.insert(ValueId(1), TirType::I64);
+    lowering.values.set_value(ValueId(0), raw.into());
+    lowering.values.set_type(ValueId(0), TirType::DynBox);
+    lowering.values.set_type(ValueId(1), TirType::I64);
     // Lowerer-only control: the caller guarantees a full-width integer
     // extraction, rather than merely annotating an arbitrary Python object.
     lowering
@@ -428,7 +428,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
                     source_span: None,
                 },
             );
-            assert_eq!(lowering.value_types[&result], result_ty);
+            assert_eq!(*lowering.values.ty(result).unwrap(), result_ty);
             if result == ValueId(0) {
                 lowering.lower_op(
                     func.entry_block,
@@ -445,8 +445,11 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
                 );
             }
         }
-        assert_ne!(lowering.values[&ValueId(0)], lowering.values[&ValueId(1)]);
-        let result = lowering.ensure_i64(lowering.values[&ValueId(1)]);
+        assert_ne!(
+            lowering.values.value(ValueId(0)).unwrap(),
+            lowering.values.value(ValueId(1)).unwrap()
+        );
+        let result = lowering.ensure_i64(lowering.values.value(ValueId(1)).unwrap());
         backend.builder.build_return(Some(&result)).unwrap();
         assert!(lowering.diagnostics.borrow().is_empty());
         backend.module.verify().expect("literal module verifies");
@@ -821,8 +824,8 @@ fn lower_unary_carrier_fixture(
             .into(),
         _ => ctx.i64_type().const_int(operand_bits, false).into(),
     };
-    lowering.values.insert(operand, value);
-    lowering.value_types.insert(operand, operand_ty);
+    lowering.values.set_value(operand, value);
+    lowering.values.set_type(operand, operand_ty);
     if let Some(repr) = result_repr {
         lowering.repr_facts.repr_by_value.insert(result, repr);
     }
@@ -839,8 +842,8 @@ fn lower_unary_carrier_fixture(
             source_span: None,
         },
     );
-    let result_ty = lowering.value_types[&result].clone();
-    let bits = lowering.ensure_i64(lowering.values[&result]);
+    let result_ty = lowering.values.ty(result).unwrap().clone();
+    let bits = lowering.ensure_i64(lowering.values.value(result).unwrap());
     backend.builder.build_return(Some(&bits)).unwrap();
     assert!(lowering.diagnostics.borrow().is_empty());
     backend
@@ -1597,8 +1600,8 @@ fn identity_uses_canonical_object_words() {
                             .repr_by_value
                             .insert(id, molt_ir::repr::Repr::RawI64Safe);
                     }
-                    lowering.values.insert(id, value);
-                    lowering.value_types.insert(id, ty);
+                    lowering.values.set_value(id, value);
+                    lowering.values.set_type(id, ty);
                 }
                 let result = ValueId(2);
                 lowering.lower_op(
@@ -1619,8 +1622,11 @@ fn identity_uses_canonical_object_words() {
                     },
                 );
                 assert!(lowering.diagnostics.borrow().is_empty());
-                assert_eq!(lowering.value_types[&result], TirType::Bool);
-                let actual = lowering.values[&result]
+                assert_eq!(*lowering.values.ty(result).unwrap(), TirType::Bool);
+                let actual = lowering
+                    .values
+                    .value(result)
+                    .unwrap()
                     .into_int_value()
                     .get_zero_extended_constant();
                 let expected = expected_same ^ (opcode == OpCode::IsNot);
@@ -1631,7 +1637,9 @@ fn identity_uses_canonical_object_words() {
                 );
                 backend
                     .builder
-                    .build_return(Some(&lowering.ensure_i64(lowering.values[&result])))
+                    .build_return(Some(
+                        &lowering.ensure_i64(lowering.values.value(result).unwrap()),
+                    ))
                     .unwrap();
                 backend.module.verify().unwrap();
             }

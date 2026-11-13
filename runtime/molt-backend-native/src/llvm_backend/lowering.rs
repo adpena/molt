@@ -470,10 +470,8 @@ struct FunctionLowering<'ctx, 'func> {
     entry_trampoline_bb: Option<BasicBlock<'ctx>>,
     /// Maps TIR BlockId -> LLVM BasicBlock.
     block_map: HashMap<BlockId, BasicBlock<'ctx>>,
-    /// Maps TIR ValueId -> lowered LLVM value.
-    values: HashMap<ValueId, BasicValueEnum<'ctx>>,
-    /// Maps TIR ValueId -> its TirType (for type-specialized dispatch).
-    value_types: HashMap<ValueId, TirType>,
+    /// Every TIR value's lowered LLVM value and its type: one slot per value.
+    values: crate::codegen_ssa::ValueTable<BasicValueEnum<'ctx>>,
     /// Phi nodes that need incoming values wired up after all blocks are emitted.
     /// (target_block, arg_index, phi_node)
     pending_phis: Vec<(BlockId, usize, PhiValue<'ctx>)>,
@@ -609,8 +607,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         llvm_fn,
         entry_trampoline_bb: None,
         block_map: HashMap::new(),
-        values: HashMap::new(),
-        value_types: HashMap::new(),
+        values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         pending_phis: Vec::new(),
         phi_edges: Vec::new(),
         pgo_branch_weights,
@@ -924,8 +921,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         ));
         let undef: BasicValueEnum<'ctx> = self.backend.context.i64_type().get_undef().into();
         for &result_id in &op.results {
-            self.values.insert(result_id, undef);
-            self.value_types.insert(result_id, TirType::DynBox);
+            self.values.set_value(result_id, undef);
+            self.values.set_type(result_id, TirType::DynBox);
         }
     }
 
@@ -975,8 +972,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let value = self.coerce_to_tir_type(value, &linkage_ty, &effective_ty, bb, None);
                 let value =
                     self.coerce_to_type(value, lower_type(self.backend.context, &effective_ty), bb);
-                self.values.insert(arg.id, value);
-                self.value_types.insert(arg.id, effective_ty);
+                self.values.set_value(arg.id, value);
+                self.values.set_type(arg.id, effective_ty);
             }
         } else {
             // Non-entry blocks: create phi nodes for block arguments.
@@ -990,8 +987,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_phi(llvm_ty, &format!("phi_{}", arg.id.0))
                     .unwrap();
-                self.values.insert(arg.id, phi.as_basic_value());
-                self.value_types.insert(arg.id, effective_ty);
+                self.values.set_value(arg.id, phi.as_basic_value());
+                self.values.set_type(arg.id, effective_ty);
                 self.pending_phis.push((block_id, i, phi));
             }
         }

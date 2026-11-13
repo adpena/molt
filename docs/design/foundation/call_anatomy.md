@@ -114,6 +114,8 @@ WASM through LLVM) do:
 2. One codegen walker over final TIR, generic over a builder trait (word ops, loads and stores,
    blocks and branches, block parameters, calls by `RuntimeFn`). `WordBuilder` and `FrameBuilder`
    in molt-codegen-abi are its first parts. Cranelift and LLVM implement the trait and nothing else.
+   Design and migration (W1 walker, W2 LLVM families, W3 Cranelift switch):
+   [codegen_walker.md](codegen_walker.md).
 3. WASM through LLVM's `wasm32` target from the same walker, if a measured spike holds (speed, size,
    build latency, split runtime, attached context, exception handling); molt-backend-wasm then
    keeps host, link and ABI glue, and its op lowerings are deleted, not migrated.

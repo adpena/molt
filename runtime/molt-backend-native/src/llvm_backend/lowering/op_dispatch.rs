@@ -58,8 +58,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let operand_id = op.operands[0];
                 let operand = self.resolve(operand_id);
                 let operand_ty = self
-                    .value_types
-                    .get(&operand_id)
+                    .values
+                    .ty(operand_id)
                     .cloned()
                     .unwrap_or(TirType::DynBox);
 
@@ -111,8 +111,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .unwrap()
                     }
                 };
-                self.values.insert(result_id, bool_val.into());
-                self.value_types.insert(result_id, TirType::Bool);
+                self.values.set_value(result_id, bool_val.into());
+                self.values.set_type(result_id, TirType::Bool);
             }
 
             // -- Late-TIR representation primitives and the cold runtime edge
@@ -124,20 +124,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     word,
                     nanbox::boxed_word::BoxTag::Int,
                 );
-                self.values.insert(op.results[0], is_int.into());
-                self.value_types.insert(op.results[0], TirType::Bool);
+                self.values.set_value(op.results[0], is_int.into());
+                self.values.set_type(op.results[0], TirType::Bool);
             }
             OpCode::UnboxInlineInt => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
                 let raw = nanbox::boxed_word::generate_unbox_inline_int(&mut self.words(), word);
-                self.values.insert(op.results[0], raw.into());
-                self.value_types.insert(op.results[0], TirType::I64);
+                self.values.set_value(op.results[0], raw.into());
+                self.values.set_type(op.results[0], TirType::I64);
             }
             OpCode::IsFloatWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
                 let is_float = nanbox::boxed_word::generate_is_float(&mut self.words(), word);
-                self.values.insert(op.results[0], is_float.into());
-                self.value_types.insert(op.results[0], TirType::Bool);
+                self.values.set_value(op.results[0], is_float.into());
+                self.values.set_type(op.results[0], TirType::Bool);
             }
             OpCode::UnboxFloatWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
@@ -146,8 +146,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_bit_cast(word, self.backend.context.f64_type(), "unbox_float")
                     .unwrap();
-                self.values.insert(op.results[0], raw);
-                self.value_types.insert(op.results[0], TirType::F64);
+                self.values.set_value(op.results[0], raw);
+                self.values.set_type(op.results[0], TirType::F64);
             }
             OpCode::IsBoolWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
@@ -156,22 +156,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     word,
                     nanbox::boxed_word::BoxTag::Bool,
                 );
-                self.values.insert(op.results[0], is_bool.into());
-                self.value_types.insert(op.results[0], TirType::Bool);
+                self.values.set_value(op.results[0], is_bool.into());
+                self.values.set_type(op.results[0], TirType::Bool);
             }
             OpCode::UnboxBoolWord => {
                 let word = self.ensure_i64(self.resolve(op.operands[0]));
                 let truth = nanbox::boxed_word::generate_unbox_bool(&mut self.words(), word);
-                self.values.insert(op.results[0], truth.into());
-                self.value_types.insert(op.results[0], TirType::Bool);
+                self.values.set_value(op.results[0], truth.into());
+                self.values.set_type(op.results[0], TirType::Bool);
             }
             OpCode::CodeIs => self.emit_code_is(op),
             OpCode::DirectCall => self.emit_guarded_direct_call(op),
             OpCode::BoxInlineInt => {
                 let value = self.ensure_i64(self.resolve(op.operands[0]));
                 let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);
-                self.values.insert(op.results[0], word.into());
-                self.value_types.insert(op.results[0], TirType::DynBox);
+                self.values.set_value(op.results[0], word.into());
+                self.values.set_type(op.results[0], TirType::DynBox);
             }
             OpCode::CallRuntime => {
                 let runtime = op
@@ -192,13 +192,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // deopt kicks in (handled elsewhere).
                 let result_id = op.results[0];
                 let val = self.resolve(op.operands[0]);
-                self.values.insert(result_id, val);
+                self.values.set_value(result_id, val);
                 let ty = self
-                    .value_types
-                    .get(&op.operands[0])
+                    .values
+                    .ty(op.operands[0])
                     .cloned()
                     .unwrap_or(TirType::DynBox);
-                self.value_types.insert(result_id, ty);
+                self.values.set_type(result_id, ty);
             }
 
             // -- Refcount --
@@ -234,14 +234,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     // Side-effect-only legacy shapes have no SSA value to bind.
                 } else if let Some(&missing) = op.operands.first() {
                     let val = self.resolve(missing);
-                    let ty = self
-                        .value_types
-                        .get(&missing)
-                        .cloned()
-                        .unwrap_or(TirType::DynBox);
+                    let ty = self.values.ty(missing).cloned().unwrap_or(TirType::DynBox);
                     for &result_id in &op.results {
-                        self.values.insert(result_id, val);
-                        self.value_types.insert(result_id, ty.clone());
+                        self.values.set_value(result_id, val);
+                        self.values.set_type(result_id, ty.clone());
                     }
                 } else {
                     let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
@@ -252,8 +248,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .const_int(none_bits, false)
                         .into();
                     for &result_id in &op.results {
-                        self.values.insert(result_id, none_val);
-                        self.value_types.insert(result_id, TirType::DynBox);
+                        self.values.set_value(result_id, none_val);
+                        self.values.set_type(result_id, TirType::DynBox);
                     }
                 }
             }
@@ -368,20 +364,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .const_int(none_bits, false)
                         .into();
                     for &result_id in &op.results {
-                        self.values.insert(result_id, none_val);
-                        self.value_types.insert(result_id, TirType::DynBox);
+                        self.values.set_value(result_id, none_val);
+                        self.values.set_type(result_id, TirType::DynBox);
                     }
                 } else {
                     // Standard copy: pass through first operand.
                     let val = self.resolve(op.operands[0]);
                     let ty = self
-                        .value_types
-                        .get(&op.operands[0])
+                        .values
+                        .ty(op.operands[0])
                         .cloned()
                         .unwrap_or(TirType::DynBox);
                     for &result_id in &op.results {
-                        self.values.insert(result_id, val);
-                        self.value_types.insert(result_id, ty.clone());
+                        self.values.set_value(result_id, val);
+                        self.values.set_type(result_id, ty.clone());
                     }
                 }
             }
@@ -407,8 +403,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
+                self.values.set_value(result_id, result);
+                self.values.set_type(result_id, TirType::DynBox);
             }
 
             // -- Calls --
@@ -544,8 +540,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             "exc_pending_bool",
                         )
                         .unwrap();
-                    self.values.insert(result_id, pending.into());
-                    self.value_types.insert(result_id, TirType::Bool);
+                    self.values.set_value(result_id, pending.into());
+                    self.values.set_type(result_id, TirType::Bool);
                 }
             }
 
@@ -555,8 +551,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::AsyncWorkPending => {
                 let pending = self.emit_async_work_pending();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, pending.into());
-                    self.value_types.insert(result_id, TirType::Bool);
+                    self.values.set_value(result_id, pending.into());
+                    self.values.set_type(result_id, TirType::Bool);
                 }
             }
 
@@ -601,8 +597,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.emit_exception_pending_word("check_exc").into()
                 };
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_type(result_id, TirType::DynBox);
                 }
                 let Some(target_block_id) = self
                     .func
@@ -745,8 +741,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     })
                     .into_int_value()
                 };
-                self.values.insert(result_id, result.into());
-                self.value_types.insert(result_id, TirType::DynBox);
+                self.values.set_value(result_id, result.into());
+                self.values.set_type(result_id, TirType::DynBox);
             }
 
             // -- ImportFrom: from module import name --

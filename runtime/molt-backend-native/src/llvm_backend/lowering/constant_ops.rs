@@ -7,8 +7,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_module_slot(&mut self, op: &TirOp) {
         let slot = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Module, op);
         let result = op.results[0];
-        self.values.insert(result, slot.into());
-        self.value_types.insert(result, TirType::I64);
+        self.values.set_value(result, slot.into());
+        self.values.set_type(result, TirType::I64);
     }
 
     pub(super) fn emit_const_int(&mut self, op: &TirOp) {
@@ -23,8 +23,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .i64_type()
             .const_int(val as u64, val < 0)
             .into();
-        self.values.insert(result_id, llvm_val);
-        self.value_types.insert(result_id, TirType::I64);
+        self.values.set_value(result_id, llvm_val);
+        self.values.set_type(result_id, TirType::I64);
     }
 
     pub(super) fn emit_const_float(&mut self, op: &TirOp) {
@@ -34,8 +34,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         };
         let result_id = op.results[0];
         let llvm_val = self.backend.context.f64_type().const_float(val).into();
-        self.values.insert(result_id, llvm_val);
-        self.value_types.insert(result_id, TirType::F64);
+        self.values.set_value(result_id, llvm_val);
+        self.values.set_type(result_id, TirType::F64);
     }
 
     pub(super) fn emit_const_bool(&mut self, op: &TirOp) {
@@ -51,8 +51,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .bool_type()
             .const_int(val as u64, false)
             .into();
-        self.values.insert(result_id, llvm_val);
-        self.value_types.insert(result_id, TirType::Bool);
+        self.values.set_value(result_id, llvm_val);
+        self.values.set_type(result_id, TirType::Bool);
     }
 
     pub(super) fn emit_const_none(&mut self, op: &TirOp) {
@@ -64,14 +64,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .i64_type()
             .const_int(none_bits, false)
             .into();
-        self.values.insert(result_id, llvm_val);
-        self.value_types.insert(result_id, TirType::None);
+        self.values.set_value(result_id, llvm_val);
+        self.values.set_type(result_id, TirType::None);
     }
 
     pub(super) fn emit_const_str(&mut self, op: &TirOp) {
         let (result, _) = self.emit_byte_literal(required_tir_literal_bytes(op), TirType::Str);
-        self.values.insert(op.results[0], result);
-        self.value_types.insert(op.results[0], TirType::Str);
+        self.values.set_value(op.results[0], result);
+        self.values.set_type(op.results[0], TirType::Str);
     }
 
     pub(super) fn emit_const_bigint(&mut self, op: &TirOp) {
@@ -93,14 +93,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .basic()
             .expect("molt_bigint_from_bytes returns i64 bits");
-        self.values.insert(result_id, result);
-        self.value_types.insert(result_id, TirType::DynBox);
+        self.values.set_value(result_id, result);
+        self.values.set_type(result_id, TirType::DynBox);
     }
 
     pub(super) fn emit_const_bytes(&mut self, op: &TirOp) {
         let (result, _) = self.emit_byte_literal(required_tir_literal_bytes(op), TirType::Bytes);
-        self.values.insert(op.results[0], result);
-        self.value_types.insert(op.results[0], TirType::Bytes);
+        self.values.set_value(op.results[0], result);
+        self.values.set_type(op.results[0], TirType::Bytes);
     }
 
     /// Every materialization returns one owned reference, even for equal payloads.

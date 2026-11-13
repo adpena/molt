@@ -384,10 +384,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_load(i64_ty, self_slot, &format!("{lane}_self_or_null"))
             .unwrap();
-        self.values.insert(callable_id, callable.into());
-        self.value_types.insert(callable_id, TirType::DynBox);
-        self.values.insert(self_id, self_or_null);
-        self.value_types.insert(self_id, TirType::DynBox);
+        self.values.set_value(callable_id, callable.into());
+        self.values.set_type(callable_id, TirType::DynBox);
+        self.values.set_value(self_id, self_or_null);
+        self.values.set_type(self_id, TirType::DynBox);
     }
 
     /// Consume a loaded receiver before evaluating user arguments. The builder
@@ -672,13 +672,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "direct call target `{target_name}` has no exact native linkage ABI; refusing to invent an i64 signature"
                 ));
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(
+                    self.values.set_value(
                         result_id,
                         i64_ty
                             .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                             .into(),
                     );
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_type(result_id, TirType::DynBox);
                 }
             }
         } else if !op.operands.is_empty() {
@@ -692,8 +692,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let none_val: BasicValueEnum<'ctx> = i64_ty
                     .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                     .into();
-                self.values.insert(result_id, none_val);
-                self.value_types.insert(result_id, TirType::DynBox);
+                self.values.set_value(result_id, none_val);
+                self.values.set_type(result_id, TirType::DynBox);
             }
         }
     }
@@ -747,8 +747,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let same = builder
             .build_int_compare(inkwell::IntPredicate::EQ, code, expected, "code_is")
             .unwrap();
-        self.values.insert(op.results[0], same.into());
-        self.value_types.insert(op.results[0], TirType::Bool);
+        self.values.set_value(op.results[0], same.into());
+        self.values.set_type(op.results[0], TirType::Bool);
     }
 
     /// `DirectCall` (HF-821 D4): hand the callable to the callee's frame entry
@@ -820,7 +820,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .collect();
         let source_tir_types: Vec<TirType> = operands
             .iter()
-            .map(|id| self.value_types.get(id).cloned().unwrap_or(TirType::DynBox))
+            .map(|id| self.values.ty(*id).cloned().unwrap_or(TirType::DynBox))
             .collect();
         let boxes_for_parameter = |idx: usize| {
             Self::tir_type_is_dynbox_like(&param_tir_types[idx])
@@ -925,8 +925,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             };
             let result =
                 self.finish_borrowed_operands(custody, result, "direct_call_result", |_| {});
-            self.values.insert(result_id, result.into());
-            self.value_types.insert(result_id, TirType::DynBox);
+            self.values.set_value(result_id, result.into());
+            self.values.set_type(result_id, TirType::DynBox);
         } else if !target_return_tir_ty.is_unboxed()
             && let Some(result) = returned
         {
@@ -965,11 +965,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         runtime_name: RuntimeFn,
         owned_callable: bool,
     ) -> inkwell::values::IntValue<'ctx> {
-        let builder_ty = self
-            .value_types
-            .get(&builder)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let builder_ty = self.values.ty(builder).cloned().unwrap_or(TirType::DynBox);
         assert!(
             Self::tir_type_is_dynbox_like(&builder_ty),
             "{lane} builder %{} must be an object carrier, not {builder_ty:?}",
@@ -1077,8 +1073,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
             self.finish_borrowed_operands(custody, none, "print_result", |_| {});
             if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, none.into());
-                self.value_types.insert(result_id, TirType::DynBox);
+                self.values.set_value(result_id, none.into());
+                self.values.set_type(result_id, TirType::DynBox);
             }
         } else if call.wire_kind == OpKind::RangeNew {
             // `range(...)` is a dedicated frontend op (`RANGE_NEW`), not a

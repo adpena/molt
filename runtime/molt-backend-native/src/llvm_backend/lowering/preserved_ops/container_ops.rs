@@ -150,8 +150,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .builder
                         .build_load(i64_ty, elem_ptr, "unpack_elem")
                         .unwrap();
-                    self.values.insert(result_id, elem);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, elem);
+                    self.values.set_type(result_id, TirType::DynBox);
                 }
                 true
             }

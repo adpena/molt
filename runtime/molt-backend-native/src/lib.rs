@@ -47,6 +47,8 @@ mod application_ir;
 #[cfg(feature = "native-backend")]
 pub use application_ir::prepare_native_application_ir;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) mod codegen_ssa;
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
 mod exception_observer_abi;
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;
