@@ -46,7 +46,9 @@ pub(crate) mod app_resolver_abi;
 mod application_ir;
 #[cfg(feature = "native-backend")]
 pub use application_ir::prepare_native_application_ir;
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
+// The shared walker's first consumer is LLVM; Cranelift joins it at W3
+// (docs/design/foundation/codegen_walker.md), and the cfg widens then.
+#[cfg(feature = "llvm")]
 pub(crate) mod codegen_ssa;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 mod exception_observer_abi;

@@ -58,13 +58,6 @@ impl<V: Copy> ValueTable<V> {
         self.slot_mut(id).ty = Some(ty);
     }
 
-    /// Record both facts of a produced value at once.
-    pub(crate) fn define(&mut self, id: ValueId, value: V, ty: TirType) {
-        let slot = self.slot_mut(id);
-        slot.value = Some(value);
-        slot.ty = Some(ty);
-    }
-
     /// The lowered value of `id`, if the walk has produced it.
     pub(crate) fn value(&self, id: ValueId) -> Option<V> {
         self.slots.get(id.0 as usize).and_then(|slot| slot.value)
@@ -75,11 +68,6 @@ impl<V: Copy> ValueTable<V> {
         self.slots
             .get(id.0 as usize)
             .and_then(|slot| slot.ty.as_ref())
-    }
-
-    /// Whether the walk has produced a value for `id`.
-    pub(crate) fn contains(&self, id: ValueId) -> bool {
-        self.value(id).is_some()
     }
 }
 
@@ -92,11 +80,12 @@ mod tests {
         let mut table: ValueTable<u64> = ValueTable::with_capacity(2);
         assert_eq!(table.value(ValueId(0)), None);
         assert_eq!(table.ty(ValueId(0)), None);
-        table.define(ValueId(1), 7, TirType::I64);
+        table.set_value(ValueId(1), 7);
+        table.set_type(ValueId(1), TirType::I64);
         assert_eq!(table.value(ValueId(1)), Some(7));
         assert_eq!(table.ty(ValueId(1)), Some(&TirType::I64));
         table.set_value(ValueId(0), 3);
-        assert!(table.contains(ValueId(0)));
+        assert_eq!(table.value(ValueId(0)), Some(3));
         assert_eq!(table.ty(ValueId(0)), None);
         // Absent ids past the end read as absent, never as a default type.
         assert_eq!(table.ty(ValueId(40)), None);
