@@ -2561,6 +2561,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-metal",
  "pollster",
+ "serde_json",
  "wgpu",
 ]
 
