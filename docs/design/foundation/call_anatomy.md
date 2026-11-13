@@ -18,7 +18,7 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5) | guarded call promotion design (HF-773 slice D); closed-world static binding of `module.attr` calls, with a late-TIR `sqrt` (lane module-attr-call-sites, section 4.5a) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a) | guarded call promotion design (HF-773 slice D); module globals as static cells; the late-TIR float `sqrt` (HF-843) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -1268,8 +1268,9 @@ must be equal in hot-path instructions (gate in the anatomy tool).
 - **Constructors.** `C(args)` with a proven or guarded class whose `__new__` is `object.__new__`
   lowers to inline allocation of the class layout and a native call of `C.__init__$n(ctx, self,
   args)` (CPython 3.13 `CALL_ALLOC_AND_ENTER_INIT`).
-- **Module attributes.** `struct.pack` with `struct` a proven module binding is a global slot read
-  of that module: no class MRO walk.
+- **Module attributes.** A closed-world proof binds `m.f` at compile time: a published intrinsic
+  called with its exact arity is one direct call, with no lookup and no guard (section 4.5a,
+  first consumer). Unproven reads keep the generic path, with a build diagnostic naming the blocker.
 - **Names.** Attribute and method names are interned name handles in the op format (typed keys,
   HF-202), never `(ptr, len)` bytes.
 
@@ -1377,13 +1378,31 @@ Measured stakes (release, macOS arm64; profiles and per-op counts from 2026-11-1
 compiled-code share of profile samples, and instructions retired against C, Rust or Go versions of
 the program. CPython is the correctness oracle. It is not the performance bar.
 
-**First consumer (lane module-attr-call-sites).** `m.f(args)` binds statically when four facts
-hold. F1: no writer of `f` in `M`'s namespace in any module. F2: `M`'s body stores `f` once,
-unconditionally, from its intrinsic publication. F3: the receiver is a global of `U` bound only
-by `import M`, and `U` is not reachable from `M`. F4: positional arguments match the intrinsic's
-arity. The attribute read is deleted. The call becomes a direct call of the intrinsic, or a late-TIR
-primitive when one exists (`math.sqrt` on a proven float: one `fsqrt` with a cold domain branch,
-raw `f64` result).
+**First consumer (lane module-attr-call-sites, landed 2026-11-13).** `m.f(args)` binds
+statically when four facts hold. F1: no writer of `f` in `M`'s namespace in any module: `f` is in
+neither `M`'s own deferred writes (`PythonNamespaceSummary.own_names`, carried on the scan
+authority) nor the premise's foreign writes; an unknown set proves nothing. F2: `M`'s body stores
+`f` once, unconditionally (depth 0 of a body chunk that its init calls exactly once,
+unconditionally), from its intrinsic publication, and never deletes it. F3: the receiver is a global
+of `U` bound only by `import M`, stable in `U`, with a canonical import (no reached `sys.modules`,
+import-hook or `__import__` writer), and `U` is not reachable from `M`. F4: positional arguments
+match the intrinsic's arity, and the intrinsic is in `PUBLIC_DIRECT_CALL_BINDINGS` (generated by
+`tools/gen_intrinsics.py`; a runtime test fails if a member declares a call signature).
+Integration (`molt.cli.closed_world_bindings`) deletes the attribute read and makes the call a
+direct call of the intrinsic; the receiver's global read stays, so a read before the import still
+raises `NameError`. The frontend attaches its guess of `M` only to import-bound receivers;
+integration consumes it on every lane. A qualifying site that fails keeps its generic call, and the
+build diagnostics (`closed_world_binding_fallbacks`) name the failed fact and the attribute writers.
+To make F1 hold under `typing`, the namespace-write authority follows a foreign namespace mapping
+that escapes into a local or a call argument through per-function write summaries, to a fixed point:
+a name is written when it is item-written, has a non-read method called on it, is declared
+`global`/`nonlocal`, is captured by a nested scope that does not rebind it, or reaches a written
+parameter; a callee resolves only to an undecorated `def` the module binds once; a call of the
+builtin `eval`/`exec` does not write (spec 0216). Measured on `bench_math_numeric` at 20 times its
+size, interleaved against the base, output identical: LLVM 119.0 G → 12.46 G instructions retired
+(-89.5%), 3.8 s → 0.35 s user; Cranelift 124.3 G → 16.34 G (-86.9%), 4.0 s → 0.45 s. Compiled code
+rose from 2.5% to 20.5% of samples; the module-global stores (54%) are the next consumer, and the
+late-TIR float `sqrt` (about 15%) waits for the shared lowering (HF-843).
 
 ### 4.6 Reference counts
 

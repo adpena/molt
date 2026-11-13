@@ -82,6 +82,7 @@ class SimpleIROp(TypedDict):
     f_value: NotRequired[Any]
     global_slot: NotRequired[Any]
     method_site: NotRequired[Any]
+    module_attribute: NotRequired[str]
     native_callable_abi: NotRequired[Any]
     native_callable_binding: NotRequired[Any]
     native_callable_export: NotRequired[Any]

@@ -1070,3 +1070,83 @@ def test_same_line_namespace_cache_writes_keep_source_site_order():
     )
     assert [write.source_site for write in refined.foreign_writes] == [first, second]
     assert reversed_input == refined
+
+
+@pytest.mark.parametrize(
+    ("body", "written"),
+    [
+        # typing.get_type_hints' shape: an alias passed to same-module readers
+        # and an eval sink writes nothing.
+        (
+            "def look(ns, key):\n    return ns[key] if key in ns else None\n"
+            "def evaluate(value, ns):\n"
+            "    found = look(ns, value)\n"
+            "    return found if found is not None else eval(value, ns)\n"
+            "def hints(name):\n"
+            "    ns = sys.modules[name].__dict__\n"
+            "    return evaluate('x', ns)\n",
+            False,
+        ),
+        # A resolved callee that item-writes its parameter writes the mapping.
+        (
+            "def put(ns):\n    ns['x'] = 1\n"
+            "def run(name):\n    ns = sys.modules[name].__dict__\n    put(ns)\n",
+            True,
+        ),
+        # A parameter passed on to a writing parameter is written (fixed point).
+        (
+            "def put(ns):\n    ns.update(x=1)\n"
+            "def relay(ns):\n    put(ns)\n"
+            "def run(name):\n    relay(sys.modules[name].__dict__)\n",
+            True,
+        ),
+        # A callee this module does not define may write through its argument.
+        ("def run(name):\n    other.write(sys.modules[name].__dict__)\n", True),
+        # An alias that escapes any other way (returned) is a write.
+        ("def run(name):\n    ns = sys.modules[name].__dict__\n    return ns\n", True),
+        # A direct item write on the namespace stays a write.
+        ("def run(name):\n    sys.modules[name].__dict__['x'] = 1\n", True),
+    ],
+)
+def test_foreign_namespace_escape_follows_parameter_write_summaries(
+    body: str, written: bool
+) -> None:
+    source = "import sys\n" + body
+    namespace_rows = [
+        write
+        for write in _summary(source).foreign_writes
+        if write.construct == "namespace"
+    ]
+    assert bool(namespace_rows) is written, namespace_rows
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # 1. A nested function captures the alias and writes through it.
+        "def f(ns):\n    def g():\n        ns['sqrt'] = 1\n    g()\n"
+        "def run(name):\n    f(sys.modules[name].__dict__)\n",
+        # 1. A lambda captures the parameter and writes through it.
+        "def f(ns):\n    return (lambda: ns.update(x=1))\n"
+        "def run(name):\n    f(sys.modules[name].__dict__)\n",
+        # 2. The alias is declared global: it escapes the function.
+        "keep = None\n"
+        "def run(name):\n    global keep\n    keep = sys.modules[name].__dict__\n",
+        # 3. A decorated callee binds the decorator's result, not the body.
+        "def deco(fn):\n    return lambda ns: ns.update(x=1)\n"
+        "@deco\ndef reader(ns):\n    return ns.get('x')\n"
+        "def run(name):\n    reader(sys.modules[name].__dict__)\n",
+        # 3. A callee name the module binds twice may name the writer.
+        "def reader(ns):\n    return ns.get('x')\n"
+        "def writer(ns):\n    ns['x'] = 1\n"
+        "if flag:\n    reader = writer\n"
+        "def run(name):\n    reader(sys.modules[name].__dict__)\n",
+        # 4. A module-level `eval` is not the excluded builtin.
+        "def eval(source, ns):\n    ns['x'] = 1\n"
+        "def run(name):\n    eval('x', sys.modules[name].__dict__)\n",
+    ],
+)
+def test_namespace_escape_through_an_unproven_reader_stays_a_write(body: str) -> None:
+    source = "import sys\n" + body
+    rows = [w for w in _summary(source).foreign_writes if w.construct == "namespace"]
+    assert rows, "the premise must stay poisoned"
