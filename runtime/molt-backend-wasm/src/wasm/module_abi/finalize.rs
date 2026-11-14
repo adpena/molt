@@ -156,10 +156,6 @@ impl WasmBackend {
         }
 
         eprintln!(
-            "[molt-wasm-import-audit] tail calls emitted: {} (return_call instructions)",
-            self.tail_calls_emitted
-        );
-        eprintln!(
             "[molt-wasm-import-audit] numeric lanes: op_loop_additive_inline_int_raw_sites={} op_loop_additive_float_raw_sites={} op_loop_additive_guarded_int_sites={} op_loop_additive_boxed_runtime_sites={} op_loop_bitwise_inline_int_raw_sites={} op_loop_bitwise_guarded_int_sites={} op_loop_bitwise_boxed_runtime_sites={} op_loop_division_guarded_int_sites={} op_loop_division_boxed_runtime_sites={}",
             self.numeric_lane_stats
                 .op_loop_additive_inline_int_raw_sites,

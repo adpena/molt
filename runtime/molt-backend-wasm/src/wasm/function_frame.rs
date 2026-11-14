@@ -58,7 +58,6 @@ pub(super) struct WasmFunctionFrame {
     guard_profile_local: Option<u32>,
     control_mode: WasmFrameControlMode,
     control_plan: Option<NonLinearControlPlan>,
-    tail_call_eligible: bool,
     // Per-invocation custody, never a persistent generator/task field: the
     // i32 base of the frame record this invocation entered, zero until it does.
     owned_frame_attempt: Option<u32>,
@@ -131,9 +130,5 @@ impl WasmFunctionFrame {
 
     pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
         &self.scalar_plan
-    }
-
-    pub(super) fn tail_call_eligible(&self) -> bool {
-        self.tail_call_eligible
     }
 }

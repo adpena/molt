@@ -8035,16 +8035,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_TAIL_CALL",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
-      "summary": "Set to 1, true, TRUE, on, or ON to emit return_call tail calls (wasm tail-call proposal) in backend output; off by default until the target feature probe proves support.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "",
       "kind": "string",

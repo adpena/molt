@@ -41,9 +41,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let func_index = self.func_index;
         let reloc_enabled = self.reloc_enabled;
         let native_eh_enabled = self.native_eh_enabled;
-        let tail_call_enabled = self.tail_call_enabled;
-        let tail_call_eligible = frame.tail_call_eligible();
-        let tail_call_count = self.tail_call_count;
 
         // Call-boundary retention is a path-local value-epoch fact, unlike RC
         // coalescing. Build it over the exact plain/jumpful/stateful emission
@@ -53,16 +50,10 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let call_liveness =
             CallRetentionLiveness::for_region(ops, base_idx, frame.value_occupancy());
         let mut known_raw_ints: BTreeMap<u32, i64> = BTreeMap::new();
-        let mut skip_next = false;
 
         for (rel_idx, op) in ops.iter().enumerate() {
             let op_idx = base_idx + rel_idx;
             let return_depth = enclosing_control_depth + control_stack.len() as u32;
-
-            if skip_next {
-                skip_next = false;
-                continue;
-            }
 
             // These facts describe physical slot contents, not immutable SSA
             // names. Every emitter can write a slot, including binding-only
@@ -149,26 +140,15 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 data_segments: &mut backend.data_segments,
                 method_site_records: &backend.method_site_records,
                 frame,
-                tail_call_enabled,
-                tail_call_eligible,
-                tail_call_count,
-                // Call-site adjacency remains function-wide even when
-                // stateful/jumpful emission presents one slice at a time.
-                ops: &func_ir.ops,
                 call_liveness: &call_liveness,
                 rc_skip_inc: &self.analysis.rc_skip_inc,
                 rc_skip_dec: &self.analysis.rc_skip_dec,
                 call_live_idx: rel_idx,
                 op_idx,
-                try_stack_is_empty: try_stack.is_empty(),
                 return_depth,
             };
             match emit_call_op(&mut call_op_context, func, op) {
                 CallOpEmission::Handled => continue,
-                CallOpEmission::HandledAndSkipNext => {
-                    skip_next = true;
-                    continue;
-                }
                 CallOpEmission::NotHandled => {}
             }
 

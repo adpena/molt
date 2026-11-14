@@ -5704,14 +5704,6 @@ owner = "src/molt/cli/backend_compile.py"
 summary = "Function-table base index (u32) of the app's callable region for the wasm backend: molt build strips any inherited value and sets it for the backend from the bound runtime layout, and tools/bench_wasm.py sets it from the runtime's table minimum. The runtime never reads it: runtime callables are keys, so no host publishes a table base (HF-699)."
 
 [[variable]]
-name = "MOLT_WASM_TAIL_CALL"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-backend-wasm/src/wasm_options.rs"
-summary = "Set to 1, true, TRUE, on, or ON to emit return_call tail calls (wasm tail-call proposal) in backend output; off by default until the target feature probe proves support."
-
-[[variable]]
 name = "MOLT_WASM_TEST_LANE"
 audience = "developer"
 kind = "string"

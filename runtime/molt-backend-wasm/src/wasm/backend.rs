@@ -38,8 +38,6 @@ pub struct WasmBackend {
     pub(in crate::wasm) molt_main_index: Option<u32>,
     pub(in crate::wasm) molt_host_init_index: Option<u32>,
     pub(in crate::wasm) options: WasmCompileOptions,
-    /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
-    pub(in crate::wasm) tail_calls_emitted: usize,
     pub(in crate::wasm) numeric_lane_stats: WasmNumericLaneStats,
     pub(in crate::wasm) module_registry: Option<ModuleRegistryIR>,
     pub(in crate::wasm) module_registry_segment: Option<DataSegmentRef>,
@@ -51,7 +49,6 @@ pub struct WasmBackend {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WasmCompileDiagnostics {
-    pub tail_calls_emitted: usize,
     pub numeric_lanes: WasmNumericLaneStats,
 }
 
@@ -158,7 +155,6 @@ impl WasmBackend {
             molt_main_index: None,
             molt_host_init_index: None,
             options,
-            tail_calls_emitted: 0,
             numeric_lane_stats: WasmNumericLaneStats::default(),
             module_registry: None,
             module_registry_segment: None,
@@ -179,7 +175,6 @@ impl WasmBackend {
 
     pub(in crate::wasm) fn compile_diagnostics(&self) -> WasmCompileDiagnostics {
         WasmCompileDiagnostics {
-            tail_calls_emitted: self.tail_calls_emitted,
             numeric_lanes: self.numeric_lane_stats,
         }
     }

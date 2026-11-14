@@ -6,7 +6,6 @@ use crate::FunctionIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
-use std::cell::Cell;
 use std::collections::HashSet;
 
 mod builder_ops;
@@ -80,8 +79,6 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
-    pub(super) tail_call_enabled: bool,
-    pub(super) tail_call_count: &'a Cell<usize>,
     pub(super) analysis: &'a WasmFunctionAnalysis,
 }
 

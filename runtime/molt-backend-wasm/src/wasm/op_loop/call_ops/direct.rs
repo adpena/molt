@@ -14,7 +14,7 @@ use crate::wasm::task_runtime::{
 };
 use crate::wasm_abi_generated::wasm_runtime_import;
 use crate::wasm_binary::Function;
-use crate::wasm_binary::{emit_call, emit_return_call};
+use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_boxed_none;
 use molt_tir::trampolines::TaskConstructorLayout;
 use wasm_encoder::Instruction;
@@ -162,7 +162,6 @@ fn emit_internal_call(
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
     let reloc_enabled = call_ctx.reloc_enabled;
-    let tail_call_count = call_ctx.tail_call_count;
     let call_liveness = call_ctx.call_liveness;
     let call_live_idx = call_ctx.call_live_idx;
 
@@ -184,21 +183,6 @@ fn emit_internal_call(
         call_ctx.locals.refcount(),
     );
     let func_idx = call_site_abi.function_index(target_name, molt_ir::OpKind::CallInternal);
-    let is_tail_call = abi_returns_value
-        && locals.bound_op_result_slot(op).is_some()
-        && op.out.as_deref().is_some_and(|out_name| {
-            is_tail_call_candidate(call_ctx, target_name, args_names, out_name)
-        });
-
-    if is_tail_call {
-        // Admission excludes activation owners and literal anchors: a tail
-        // transfer has no cleanup obligation to bypass or move before a call.
-        push_call_args(func, locals, args_names);
-        emit_return_call(func, reloc_enabled, func_idx);
-        tail_call_count.set(tail_call_count.get() + 1);
-        return CallOpEmission::HandledAndSkipNext;
-    }
-
     push_call_args(func, locals, args_names);
     emit_call(func, reloc_enabled, func_idx);
     finish_direct_call_result(call_ctx, func, op, abi_returns_value);
@@ -232,25 +216,4 @@ fn finish_direct_call_result(
             call_ctx.reloc_enabled,
         );
     }
-}
-
-fn is_tail_call_candidate(
-    call_ctx: &CallOpContext<'_, '_, '_>,
-    target_name: &str,
-    args_names: &[String],
-    out_name: &str,
-) -> bool {
-    call_ctx.tail_call_enabled
-        && call_ctx.tail_call_eligible
-        && call_ctx.try_stack_is_empty
-        && call_ctx.op_idx + 1 < call_ctx.ops.len()
-        && molt_ir::tir::op_kinds_generated::simpleir_return_shape(
-            call_ctx.ops[call_ctx.op_idx + 1].kind,
-        ) == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value
-        && call_ctx.ops[call_ctx.op_idx + 1]
-            .args
-            .as_ref()
-            .is_some_and(|args| args == &[out_name])
-        && !target_name.contains("__molt_chunk_")
-        && args_names.len() == call_ctx.func_ir.params.len()
 }
