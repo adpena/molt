@@ -9,6 +9,7 @@ fn slot(index: u32) -> GlobalSlotRef {
     GlobalSlotRef {
         module: "demo".into(),
         index,
+        cell: false,
     }
 }
 
@@ -201,4 +202,75 @@ fn reads_of_one_module_share_one_base_after_the_cleanup_round() {
         gets.iter().all(|get| leader(get.operands[0]) == base),
         "{ops:#?}"
     );
+}
+
+fn cell(index: u32) -> GlobalSlotRef {
+    GlobalSlotRef {
+        cell: true,
+        ..slot(index)
+    }
+}
+
+#[test]
+fn a_cell_read_reads_the_static_block_and_a_cell_store_makes_no_call() {
+    let mut func = function();
+    let read = func.fresh_value();
+    func.value_types.insert(read, TirType::DynBox);
+    let mut get = TirOp::new(
+        OpCode::ModuleGetGlobal,
+        vec![ValueId(0), ValueId(1)],
+        vec![read],
+    );
+    get.set_global_slot(Some(&cell(4)));
+    let mut module_store = TirOp::new(
+        OpCode::ModuleSetAttr,
+        vec![ValueId(0), ValueId(1), ValueId(2)],
+        vec![],
+    );
+    module_store.set_global_slot(Some(&cell(1)));
+    let dict_result = func.fresh_value();
+    func.value_types.insert(dict_result, TirType::DynBox);
+    let mut frame_store = TirOp::new(
+        OpCode::Copy,
+        vec![ValueId(0), ValueId(1), ValueId(2)],
+        vec![dict_result],
+    );
+    frame_store.origin = Some(molt_ir::OpKind::DictSet);
+    frame_store.set_global_slot(Some(&cell(2)));
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.extend([get, module_store, frame_store]);
+    block.terminator = Terminator::Return { values: vec![read] };
+
+    super::run(&mut func);
+    verify(&func);
+    let ops = entry_ops(&func);
+    let kinds: Vec<_> = ops.iter().map(|op| op.opcode).collect();
+    assert_eq!(
+        kinds,
+        [
+            OpCode::StaticCellBase,
+            OpCode::GlobalSlotGet,
+            OpCode::StaticCellBase,
+            OpCode::StaticCellSet,
+            OpCode::StaticCellBase,
+            OpCode::StaticCellSet,
+        ],
+        "no runtime call, no module id, no slot base"
+    );
+    for base in [&ops[0], &ops[2], &ops[4]] {
+        assert_eq!(
+            base.attrs.get("s_value"),
+            Some(&AttrValue::Str("demo".into()))
+        );
+    }
+    assert_eq!(ops[1].operands, [ops[0].results[0], ValueId(0), ValueId(1)]);
+    assert_eq!(ops[1].results, [read]);
+    assert_eq!(ops[1].global_slot(), Some(cell(4)));
+    for (store, base, index) in [(&ops[3], &ops[2], 1), (&ops[5], &ops[4], 2)] {
+        assert_eq!(store.operands, [base.results[0], ValueId(2)]);
+        assert!(store.results.is_empty());
+        assert_eq!(store.global_slot(), Some(cell(index)));
+        assert_eq!(store.origin, None);
+    }
 }

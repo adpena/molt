@@ -42,6 +42,10 @@ pub struct SimpleIR {
 pub struct ModuleRegistryRowIR {
     pub name: String,
     pub init_symbol: Option<String>,
+    /// The word count of the module's static cell block when it is
+    /// cell-eligible (call_anatomy.md 4.5a): its layout's length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_cells: Option<u32>,
 }
 
 /// Per-build module registry projection (import bedrock, design doc 69 §3).
@@ -111,6 +115,14 @@ impl ModuleRegistryIR {
             if row.init_symbol.as_deref().is_some_and(str::is_empty) {
                 return Err("module_registry rows contain an empty init symbol".into());
             }
+            if row.static_cells == Some(0)
+                || row.static_cells.is_some() && row.init_symbol.is_none()
+            {
+                return Err(format!(
+                    "module_registry row {} has static cells without a body or layout",
+                    row.name
+                ));
+            }
             previous_name = Some(&row.name);
         }
         let row_symbols: BTreeSet<&str> = self.init_rows().map(|(_, symbol)| symbol).collect();
@@ -128,6 +140,23 @@ impl ModuleRegistryIR {
             .binary_search_by(|row| row.name.as_str().cmp(name))
             .map(|index| index as u64)
             .map_err(|_| format!("module slot `{name}` has no program registry binding"))
+    }
+
+    /// The word count of `module`'s static cell block, when it is
+    /// cell-eligible (call_anatomy.md 4.5a).
+    pub fn static_cells(&self, module: &str) -> Option<u32> {
+        let index = self
+            .rows
+            .binary_search_by(|row| row.name.as_str().cmp(module))
+            .ok()?;
+        self.rows[index].static_cells
+    }
+
+    /// Every cell-eligible module and its block's word count.
+    pub fn static_cell_blocks(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.rows
+            .iter()
+            .filter_map(|row| Some((row.name.as_str(), row.static_cells?)))
     }
 
     pub fn module_slot_bindings(&self) -> impl Iterator<Item = (&str, u64)> {
@@ -209,10 +238,27 @@ pub fn validate_module_slots(
     }
     for function in functions {
         for (op_index, op) in function.ops.iter().enumerate() {
-            if op.kind == crate::OpKind::ModuleSlot
-                && op.s_value.as_deref().is_none_or(|name| {
-                    registry.is_none_or(|registry| registry.resolve_module_slot(name).is_err())
+            // A static cell names a block the registry sizes (call_anatomy.md
+            // 4.5a): its module is cell-eligible and the cell is in bounds.
+            let cell_module = match (op.kind, &op.global_slot) {
+                (crate::OpKind::StaticCellBase, _) => Some((op.s_value.as_deref(), 0)),
+                (_, Some(slot)) if slot.cell => Some((Some(slot.module.as_str()), slot.index)),
+                _ => None,
+            };
+            let unbound_cell = cell_module.is_some_and(|(module, index)| {
+                module.is_none_or(|module| {
+                    registry
+                        .and_then(|registry| registry.static_cells(module))
+                        .is_none_or(|count| {
+                            index >= count && op.kind != crate::OpKind::StaticCellBase
+                        })
                 })
+            });
+            if unbound_cell
+                || op.kind == crate::OpKind::ModuleSlot
+                    && op.s_value.as_deref().is_none_or(|name| {
+                        registry.is_none_or(|registry| registry.resolve_module_slot(name).is_err())
+                    })
             {
                 return Err(ir_schema::FunctionOpShapeDiagnostic {
                     function: function.name.clone(),
@@ -626,11 +672,16 @@ pub struct OpIR {
 /// One module global slot: the owning module's registry name and the slot's
 /// index in that module's layout. Module identity stays symbolic until final
 /// emission, as `module_slot` does, so reusable objects carry no dense id.
+/// `cell` names the storage: the k-th word of the module's static cell block
+/// (a cell-eligible module, call_anatomy.md 4.5a) or slot k of its namespace
+/// dictionary's slot table.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalSlotRef {
     pub module: String,
     pub index: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cell: bool,
 }
 /// Parse only at transport admission, preserving actionable retirement hints.
 fn deserialize_wire_kind<'de, D: serde::Deserializer<'de>>(
@@ -2182,6 +2233,7 @@ mod json_parse_tests {
             global_slot: Some(super::GlobalSlotRef {
                 module: "demo".to_string(),
                 index: 4,
+                cell: false,
             }),
             method_site: Some(6),
         };
@@ -3167,7 +3219,8 @@ mod json_parse_tests {
             op.global_slot,
             Some(super::GlobalSlotRef {
                 module: "demo".into(),
-                index: 3
+                index: 3,
+                cell: false,
             })
         );
         let mut tir = crate::tir::ops::TirOp {

@@ -49,7 +49,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 8
+SUMMARY_SCHEMA: Final = 9
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -66,6 +66,13 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     "import_binding",
     # A computed cache key proven disjoint from canonical-provider names.
     "import_binding_disjoint",
+    # A read of a namespace mapping by identity, not a write: ``M.__dict__``,
+    # ``vars(M)``, a ``sys.modules`` entry's ``__dict__``, a function's
+    # ``__globals__`` or a frame's ``f_globals`` (``module`` None: any
+    # module's), used other than by a literal dunder key. The mapping then
+    # must hold every global, so the target keeps its dictionary namespace
+    # (static module cells, call_anatomy.md 4.5a). ``name`` is always None.
+    "reflection",
 ]
 
 # Calls that only read their argument. A module or namespace passed to any other
@@ -202,6 +209,8 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         "import_binding_disjoint",
     }:
         raise ValueError("invalid namespace cache write site")
+    if construct == "reflection" and name is not None:
+        raise ValueError("invalid namespace reflection")
     return PythonNamespaceWrite(
         module, name, construct, line, source_owner, source_site
     )
@@ -215,12 +224,17 @@ class PythonNamespaceSummary:
     including deferred own-namespace item writes; ``None``
     when the module reflects its own namespace dynamically (first site in
     ``own_reflection_line``). ``foreign_writes`` lists named writes to other
-    modules' namespaces in source order, one row per distinct write.
+    modules' namespaces in source order, one row per distinct write, and the
+    ``reflection`` rows that reach a namespace mapping by identity.
+    ``own_namespace_line`` is the first line whose code reaches this module's
+    own mapping (``globals()``, a module-scope ``vars()``/``locals()``, or
+    ``exec``/``eval`` on its globals) by any use, read or write; 0 for none.
     """
 
     own_names: frozenset[str] | None
     foreign_writes: tuple[PythonNamespaceWrite, ...]
     own_reflection_line: int = 0
+    own_namespace_line: int = 0
 
 
 def python_namespace_summary(
@@ -274,6 +288,7 @@ def _resolved_python_namespace_summary(
         None if collector.own_reflection_line else frozenset(collector.own_names),
         tuple(sorted(collector.writes.values(), key=_source_order)),
         collector.own_reflection_line,
+        collector.own_namespace_line,
     )
     if ast_digest_admission is not None:
         ast_digest_admission.namespace_summaries[context] = summary
@@ -318,6 +333,10 @@ def _literal_string(node: ast.expr | None) -> str | None:
     return None
 
 
+def _is_dunder(name: str) -> bool:
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
 def _literal_module_name(node: ast.expr | None) -> str | None:
     """A ``sys.modules`` key that names a module, else None (any module)."""
     key = _literal_string(node)
@@ -331,8 +350,11 @@ _HOOK_ATTRIBUTES: Final = frozenset(
     spelling.rpartition(".")[2] for spelling in _IMPORT_HOOK_OBJECTS
 )
 _CANDIDATE_CALLS: Final = frozenset(
-    {"setattr", "delattr", "vars", "globals", "locals", "exec", "eval"}
+    {"setattr", "delattr", "vars", "globals", "locals", "exec", "eval", "getattr"}
 )
+# Attributes whose value is some module's namespace mapping, whichever module
+# defined the function or runs the frame.
+_GLOBALS_ATTRIBUTES: Final = frozenset({"__globals__", "f_globals"})
 
 
 class _Site(NamedTuple):
@@ -696,7 +718,9 @@ class _NamespaceWriteCollector:
         self.star_local_names: set[ast.Name] = set()
         self.own_names: set[str] = set()
         self.own_reflection_line = 0
+        self.own_namespace_line = 0
         self.mapping_flow: _MappingFlow | None = None
+        self.parents: dict[ast.AST, ast.AST] | None = None
         self.writes: dict[
             tuple[
                 str | None,
@@ -927,6 +951,113 @@ class _NamespaceWriteCollector:
         line = getattr(node, "lineno", 0) or 1
         if not self.own_reflection_line or line < self.own_reflection_line:
             self.own_reflection_line = line
+        self._reaches_own_namespace(node)
+
+    def _reaches_own_namespace(self, node: ast.AST) -> None:
+        line = getattr(node, "lineno", 0) or 1
+        if not self.own_namespace_line or line < self.own_namespace_line:
+            self.own_namespace_line = line
+
+    def _reflection_use(self, site: _Site, module: str | None) -> None:
+        """A namespace mapping reached by identity at ``site``: a reflection
+        row unless every use reads only literal dunder keys, which a module's
+        dictionary always holds (static module cells, call_anatomy.md 4.5a)."""
+        if not self._dunder_only_use(*self._consumer(site)):
+            self._record(module, None, "reflection", site)
+
+    def _tree_parents(self) -> dict[ast.AST, ast.AST]:
+        if self.parents is None:
+            self.parents = {
+                child: node
+                for node in ast.walk(self.tree)
+                for child in ast.iter_child_nodes(node)
+            }
+        return self.parents
+
+    def _dunder_only_use(
+        self,
+        value: ast.AST,
+        parent: ast.AST | None,
+        grandparent: ast.AST | None,
+        *,
+        alias: bool = True,
+    ) -> bool:
+        """Whether this use of a mapping reads nothing but literal dunder
+        keys: a subscript load, ``get``/``__contains__``/``__getitem__`` or
+        ``in`` test with a literal dunder key, an identity test, an
+        ``isinstance`` check, a discarded value, or (once) a function-local
+        alias every use of which is one of those."""
+
+        def dunder(node: ast.AST | None) -> bool:
+            key = _literal_string(node) if isinstance(node, ast.expr) else None
+            return key is not None and _is_dunder(key)
+
+        if isinstance(parent, ast.Expr):
+            return True
+        if isinstance(parent, ast.Subscript) and parent.value is value:
+            return isinstance(parent.ctx, ast.Load) and dunder(parent.slice)
+        if isinstance(parent, ast.Attribute) and parent.value is value:
+            return (
+                isinstance(grandparent, ast.Call)
+                and grandparent.func is parent
+                and parent.attr in {"get", "__contains__", "__getitem__"}
+                and bool(grandparent.args)
+                and dunder(grandparent.args[0])
+            )
+        if isinstance(parent, ast.Compare):
+            if all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops):
+                return True
+            return (
+                len(parent.ops) == 1
+                and isinstance(parent.ops[0], (ast.In, ast.NotIn))
+                and parent.comparators[0] is value
+                and dunder(parent.left)
+            )
+        if (
+            isinstance(parent, ast.Call)
+            and isinstance(parent.func, ast.Name)
+            and parent.func.id == "isinstance"
+            and parent.args
+            and parent.args[0] is value
+        ):
+            return True
+        if (
+            alias
+            and isinstance(parent, ast.Assign)
+            and parent.value is value
+            and len(parent.targets) == 1
+            and isinstance(parent.targets[0], ast.Name)
+        ):
+            return self._dunder_only_alias(parent, parent.targets[0].id)
+        return False
+
+    def _dunder_only_alias(self, assign: ast.Assign, name: str) -> bool:
+        """Whether a local bound once by ``assign`` is only read by dunder key."""
+        parents = self._tree_parents()
+        scope = parents.get(assign)
+        while scope is not None and not isinstance(
+            scope, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            if isinstance(scope, (ast.ClassDef, ast.Lambda, ast.Module)):
+                return False
+            scope = parents.get(scope)
+        if scope is None:
+            return False
+        stores = 0
+        for node in ast.walk(scope):
+            if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+                return False
+            if not isinstance(node, ast.Name) or node.id != name:
+                continue
+            if not isinstance(node.ctx, ast.Load):
+                stores += 1
+                continue
+            parent = parents.get(node)
+            if not self._dunder_only_use(
+                node, parent, parents.get(parent) if parent else None, alias=False
+            ):
+                return False
+        return stores == 1
 
     def _reference(self, node: ast.AST) -> str | None:
         """The dotted spelling of a module reference expression, if any."""
@@ -985,6 +1116,8 @@ class _NamespaceWriteCollector:
             is_module, module = self._module_receiver(node.value)
             if is_module:
                 self._namespace_use(site, module)
+        elif node.attr in _GLOBALS_ATTRIBUTES:
+            self._reflection_use(site, None)
         elif node.attr in {"__setattr__", "__delattr__"}:
             if isinstance(parent, ast.Call) and parent.func is node:
                 is_module, module = self._module_receiver(node.value)
@@ -1002,7 +1135,15 @@ class _NamespaceWriteCollector:
         node, module_scope = site.node, site.module_scope
         assert isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         func = node.func.id
-        if func in {"setattr", "delattr"} and node.args:
+        if func == "getattr" and len(node.args) >= 2:
+            attribute = _literal_string(node.args[1])
+            if attribute in _GLOBALS_ATTRIBUTES:
+                self._reflection_use(site, None)
+            elif attribute == "__dict__":
+                is_module, module = self._module_receiver(node.args[0])
+                if is_module:
+                    self._reflection_use(site, module)
+        elif func in {"setattr", "delattr"} and node.args:
             is_module, module = self._module_receiver(node.args[0])
             if is_module:
                 name = _literal_string(node.args[1]) if len(node.args) > 1 else None
@@ -1013,6 +1154,7 @@ class _NamespaceWriteCollector:
                 self._namespace_use(site, module)
         elif func in {"globals", "vars", "locals"} and not node.args:
             if func == "globals" or module_scope:
+                self._reaches_own_namespace(node)
                 self._own_namespace_use(site)
         elif func in {"exec", "eval"} and len(node.args) < 2:
             # Code run on this module's own globals may bind any name.
@@ -1068,6 +1210,7 @@ class _NamespaceWriteCollector:
         return True, None
 
     def _namespace_use(self, site: _Site, module: str | None) -> None:
+        self._reflection_use(site, module)
         writes, name = self._item_write(site)
         if writes and name is None and not self._escape_writes(site):
             # The mapping escapes into a local or a call argument that no

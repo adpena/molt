@@ -950,6 +950,13 @@ unsafe fn module_delattr_namespace(
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
             && object_type_id(dict_ptr) == TYPE_ID_DICT
         {
+            // An unbound cell misses like an absent key: the generic path
+            // below raises the module's AttributeError.
+            if let Some(true) =
+                crate::builtins::namespace_slots::static_cell_delete(_py, dict_ptr, attr_bits)
+            {
+                return Ok(());
+            }
             let annotations_bits = crate::NameId::DunderAnnotations.bits(_py);
             if annotations_bits == 0 {
                 return Err(());

@@ -144,6 +144,18 @@ receiver behavior.
    repeatedly computing an outer-unit analysis from inner-unit requests can make
    compile time quadratic. Molt's source generation is the owner here; a new or
    mutable AST cannot reuse an old generation's facts.
+   **Read-side facts (static module cells, call_anatomy.md 4.5a).** The same traversal records
+   every use of a namespace mapping by identity, read or write, as a `reflection` row (schema 9):
+   `M.__dict__`, `vars(M)`, `getattr(M, "__dict__")` and a `sys.modules` entry's `__dict__` name
+   their module; a function's `__globals__` or a frame's `f_globals` (also through `getattr` with
+   that literal name) name none, so they reach every module. A use that reads only literal dunder
+   keys (a subscript load, `get`, `__contains__` or `in`, an identity test, `isinstance`, or a
+   function-local alias used only so) is not a reflection: every module dictionary keeps its
+   dunders. `own_namespace_line` is the first line whose code reaches the module's own mapping
+   (`globals()`, a module-scope `vars()`/`locals()`, `exec`/`eval`) by any use. Reflection rows
+   travel with the foreign writes, so only activated owners count; the graph aggregates them into
+   `PythonNamespacePremise.namespace_reflected` and writes no member through them. A module that is
+   reflected, or reaches its own mapping, keeps its dictionary namespace.
 2. **The binding flow takes a premise.** `PythonBindingFlowPolicy.foreign_namespace_writes` lists the
    names other graph code writes into this module (`None`, the default, means any name);
    `callback_member_writes` lists the canonical members code in the graph writes (default: all). With a

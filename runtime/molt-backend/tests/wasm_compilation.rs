@@ -277,18 +277,22 @@ fn module_registry_emits_valid_dense_module_id_dispatch() {
             molt_ir::ModuleRegistryRowIR {
                 name: "__main__".into(),
                 init_symbol: None,
+                static_cells: None,
             },
             molt_ir::ModuleRegistryRowIR {
                 name: "alpha".into(),
                 init_symbol: Some("molt_init_alpha".into()),
+                static_cells: None,
             },
             molt_ir::ModuleRegistryRowIR {
                 name: "beta".into(),
                 init_symbol: None,
+                static_cells: None,
             },
             molt_ir::ModuleRegistryRowIR {
                 name: "gamma".into(),
                 init_symbol: Some("molt_init_gamma".into()),
+                static_cells: None,
             },
         ],
     };

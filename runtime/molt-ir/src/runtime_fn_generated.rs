@@ -2455,6 +2455,7 @@ pub enum RuntimeFn {
     StatIssock,
     StatIswht,
     StatefulLocalsRegister,
+    StaticCellsBind,
     StaticmethodCall,
     StaticmethodGet,
     StaticmethodInit,
@@ -5299,6 +5300,7 @@ impl RuntimeFn {
         Self::StatIssock,
         Self::StatIswht,
         Self::StatefulLocalsRegister,
+        Self::StaticCellsBind,
         Self::StaticmethodCall,
         Self::StaticmethodGet,
         Self::StaticmethodInit,
@@ -5795,7 +5797,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2840;
+    pub const COUNT: usize = 2841;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -34055,6 +34057,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         callable_trampoline: None,
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_static_cells_bind",
+        linker_symbol: "molt_static_cells_bind__molt_context_047a33b55bc1b76d",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {

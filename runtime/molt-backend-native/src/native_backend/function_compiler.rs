@@ -1820,6 +1820,7 @@ impl SimpleBackend {
                             representation_plan,
                             &nbc,
                             local_inc_ref_obj,
+                            local_dec_ref_obj,
                             literal_hoists.str_output_slots(),
                         );
                     }

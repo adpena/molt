@@ -3180,6 +3180,7 @@ macro_rules! attached_symbol {
     ("molt_stat_issock") => { "molt_stat_issock__molt_context_047a33b55bc1b76d" };
     ("molt_stat_iswht") => { "molt_stat_iswht__molt_context_047a33b55bc1b76d" };
     ("molt_stateful_locals_register") => { "molt_stateful_locals_register__molt_context_047a33b55bc1b76d" };
+    ("molt_static_cells_bind") => { "molt_static_cells_bind__molt_context_047a33b55bc1b76d" };
     ("molt_staticmethod_builtin") => { "molt_staticmethod_builtin__molt_context_047a33b55bc1b76d" };
     ("molt_staticmethod_call") => { "molt_staticmethod_call__molt_context_047a33b55bc1b76d" };
     ("molt_staticmethod_get") => { "molt_staticmethod_get__molt_context_047a33b55bc1b76d" };

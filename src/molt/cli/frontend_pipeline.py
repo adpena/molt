@@ -1247,7 +1247,9 @@ def _prepare_frontend_pipeline(
     )
     integration_state.module_namespace_facts = {
         module: ModuleNamespaceFacts(
-            authority.namespace_own_names, authority.namespace_premise
+            authority.namespace_own_names,
+            authority.namespace_premise,
+            authority.namespace_own_line,
         )
         for module, authority in import_plan.scan_authority.by_module.items()
     }

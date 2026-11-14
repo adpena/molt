@@ -9998,6 +9998,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_static_cells_bind",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_staticmethod_call",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -25458,6 +25463,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_stateful_locals_register" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_stateful_locals_register__molt_context_047a33b55bc1b76d",
+        },
+        "molt_static_cells_bind" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_static_cells_bind__molt_context_047a33b55bc1b76d",
         },
         "molt_staticmethod_builtin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

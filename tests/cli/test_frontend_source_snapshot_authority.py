@@ -807,6 +807,8 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
         entry_member_writes=ALL_INVALID_MEMBERS,
         noncanonical_imports=(),
         opaque_activation_sources=(),
+        # An unknown graph may reach any module's namespace mapping.
+        namespace_reflected=True,
     )
     target_scan = _CompleteImportScan(
         _ImportScanRequests(

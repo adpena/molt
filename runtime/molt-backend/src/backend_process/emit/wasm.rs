@@ -84,6 +84,7 @@ mod tests {
             rows: vec![molt_ir::ModuleRegistryRowIR {
                 name: "demo".into(),
                 init_symbol: Some(symbol.to_string()),
+                static_cells: None,
             }],
         }
     }

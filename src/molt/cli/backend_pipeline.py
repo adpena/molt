@@ -190,6 +190,9 @@ def _run_backend_pipeline(
         prepared_frontend_run_ticket.frontend_parallel_details[
             "closed_world_binding_fallbacks"
         ] = list(prepared_backend_ir.binding_diagnostics)
+        prepared_frontend_run_ticket.frontend_parallel_details[
+            "static_module_cells"
+        ] = prepared_backend_ir.static_cell_diagnostics
     ir = prepared_backend_ir.ir
     function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
     # The one addressed form of this IR every backend transport writes (HF-516).

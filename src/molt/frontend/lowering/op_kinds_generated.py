@@ -469,6 +469,8 @@ FrontendOpKind = Literal[
     'STATE_TRANSITION',
     'STATE_YIELD',
     'STATICMETHOD_NEW',
+    'STATIC_CELL_BASE',
+    'STATIC_CELL_SET',
     'STORE',
     'STORE_ATTR',
     'STORE_CLOSURE',
@@ -1000,6 +1002,8 @@ WireOpKind = Literal[
     'state_transition',
     'state_yield',
     'stateful_locals_register',
+    'static_cell_base',
+    'static_cell_set',
     'staticmethod_new',
     'store',
     'store_attr',
@@ -1538,6 +1542,8 @@ class FrontendKinds:
     STATE_TRANSITION: Final = 'STATE_TRANSITION'
     STATE_YIELD: Final = 'STATE_YIELD'
     STATICMETHOD_NEW: Final = 'STATICMETHOD_NEW'
+    STATIC_CELL_BASE: Final = 'STATIC_CELL_BASE'
+    STATIC_CELL_SET: Final = 'STATIC_CELL_SET'
     STORE: Final = 'STORE'
     STORE_ATTR: Final = 'STORE_ATTR'
     STORE_CLOSURE: Final = 'STORE_CLOSURE'
@@ -2069,6 +2075,8 @@ class WireKinds:
     STATE_TRANSITION: Final = 'state_transition'
     STATE_YIELD: Final = 'state_yield'
     STATEFUL_LOCALS_REGISTER: Final = 'stateful_locals_register'
+    STATIC_CELL_BASE: Final = 'static_cell_base'
+    STATIC_CELL_SET: Final = 'static_cell_set'
     STATICMETHOD_NEW: Final = 'staticmethod_new'
     STORE: Final = 'store'
     STORE_ATTR: Final = 'store_attr'
@@ -2592,6 +2600,8 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'STATE_TRANSITION': 'state_transition',
     'STATE_YIELD': 'state_yield',
     'STATICMETHOD_NEW': 'staticmethod_new',
+    'STATIC_CELL_BASE': 'static_cell_base',
+    'STATIC_CELL_SET': 'static_cell_set',
     'STORE': 'store',
     'STORE_ATTR': 'store_attr',
     'STORE_CLOSURE': 'closure_store',
@@ -3133,6 +3143,8 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "state_transition",
         "state_yield",
         "stateful_locals_register",
+        "static_cell_base",
+        "static_cell_set",
         "staticmethod_new",
         "store",
         "store_attr",
@@ -3704,6 +3716,8 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "STATE_TRANSITION",
         "STATE_YIELD",
         "STATICMETHOD_NEW",
+        "STATIC_CELL_BASE",
+        "STATIC_CELL_SET",
         "STORE",
         "STORE_ATTR",
         "STORE_CLOSURE",
@@ -3996,6 +4010,8 @@ CANONICAL_KIND: dict[str, str] = {
     "module_import_from": "module_import_from",
     "module_get_global": "module_get_global",
     "global_slot_get": "global_slot_get",
+    "static_cell_base": "static_cell_base",
+    "static_cell_set": "static_cell_set",
     "module_get_name": "module_get_name",
     "module_set_attr": "module_set_attr",
     "module_del_global": "module_del_global",
@@ -4115,6 +4131,8 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "module_import_from",
         "module_get_global",
         "global_slot_get",
+        "static_cell_base",
+        "static_cell_set",
         "module_get_name",
         "module_set_attr",
         "module_del_global",
@@ -4530,6 +4548,8 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "STATE_SWITCH": True,
     "STATE_TRANSITION": True,
     "STATE_YIELD": True,
+    "STATIC_CELL_BASE": False,
+    "STATIC_CELL_SET": True,
     "STORE": True,
     "STORE_ATTR": True,
     "STORE_CLOSURE": True,
@@ -5019,6 +5039,8 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "state_transition": 1024,
     "state_yield": 1024,
     "stateful_locals_register": 1024,
+    "static_cell_base": 64,
+    "static_cell_set": 64,
     "store": 64,
     "store_attr": 64,
     "store_index": 64,
@@ -5243,6 +5265,7 @@ FRONTEND_EFFECT_PURE_KINDS: frozenset[FrontendOpKind] = frozenset(
         "MISSING",
         "MODULE_SLOT",
         "PHI",
+        "STATIC_CELL_BASE",
         "TYPE_GUARD",
         "UNBOX",
         "UNBOX_TO_RAW_INT",

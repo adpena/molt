@@ -150,7 +150,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into_int_value()
     }
 
-    fn none_word(&self) -> inkwell::values::IntValue<'ctx> {
+    pub(super) fn none_word(&self) -> inkwell::values::IntValue<'ctx> {
         self.backend
             .context
             .i64_type()

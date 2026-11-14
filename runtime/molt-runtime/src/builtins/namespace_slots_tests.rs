@@ -124,7 +124,7 @@ fn a_key_that_is_not_an_exact_str_degrades_the_table_for_good() {
         assert!(unsafe { namespace_slots(dict) }.is_some());
         assert!(unsafe { dict_set_in_place(py, dict, int(3), int(1)) });
         assert!(unsafe { namespace_slots(dict) }.is_none());
-        let table = unsafe { &*dict_storage(dict).slots };
+        let table = unsafe { &*dict_storage(dict).slots.slots().unwrap() };
         assert!(table.degraded());
         assert!((0..table.len()).all(|k| table.value(k) == UNBOUND));
         unsafe { dict_clear_in_place(py, dict) };

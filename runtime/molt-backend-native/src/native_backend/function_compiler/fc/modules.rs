@@ -16,6 +16,8 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::ModuleImportFrom,
     OpKind::ModuleGetGlobal,
     OpKind::GlobalSlotGet,
+    OpKind::StaticCellBase,
+    OpKind::StaticCellSet,
     OpKind::ModuleDelGlobal,
     OpKind::ModuleDelGlobalIfPresent,
     OpKind::ModuleGetName,
@@ -47,6 +49,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     local_inc_ref_obj: NativeRefcountSite,
+    local_dec_ref_obj: NativeRefcountSite,
     hoisted_str_slot: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
 ) {
     // Reconstruct the original op-local closure (captures representation_plan +
@@ -362,6 +365,66 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
+        }
+        OpKind::StaticCellBase => {
+            // The module's static cell block (call_anatomy.md 4.5a): a
+            // link-time constant address, boxed as GlobalSlotGet's base.
+            let owner = op
+                .s_value
+                .as_deref()
+                .expect("admitted static_cell_base owner");
+            let symbol = molt_ir::code_slots::static_cell_block_symbol(owner);
+            let data = module
+                .declare_data(&symbol, Linkage::Import, true, false)
+                .unwrap_or_else(|error| panic!("failed to import static cells {symbol}: {error}"));
+            let global = module.declare_data_in_func(data, builder.func);
+            let address = builder.ins().symbol_value(types::I64, global);
+            let shifted = builder.ins().ushr_imm_u(
+                address,
+                i64::from(molt_codegen_abi::global_slot::GLOBAL_SLOT_BASE_SHIFT),
+            );
+            let out = simple_ir_out_result(op).expect("admitted static_cell_base result");
+            // As ModuleSlot's id: a raw carrier holds the shifted address, a
+            // boxed lane its inline int (the address fits the payload).
+            let base = if representation_plan.is_raw_int_carrier_name(out) {
+                shifted
+            } else {
+                box_int_value(builder, shifted, nbc)
+            };
+            def_var_named(&mut *builder, vars, out, base);
+        }
+        OpKind::StaticCellSet => {
+            // Operands: [base, value]; the store's meaning is the shared
+            // generator's (molt_codegen_abi::static_cell).
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let mut operand = |name: &str| {
+                *var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    name,
+                    representation_plan,
+                )
+                .expect("static cell operand")
+            };
+            let base = operand(&args[0]);
+            let value = operand(&args[1]);
+            let index = op
+                .global_slot
+                .as_ref()
+                .expect("static_cell_set carries its cell")
+                .index;
+            crate::native_backend::simple_backend::emit_static_cell_store(
+                builder,
+                base,
+                index,
+                value,
+                local_inc_ref_obj,
+                local_dec_ref_obj,
+            );
         }
         OpKind::ModuleDelGlobal | OpKind::ModuleDelGlobalIfPresent => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

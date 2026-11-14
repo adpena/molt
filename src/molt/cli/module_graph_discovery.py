@@ -848,6 +848,11 @@ def _discover_module_graph_from_paths(
                         scan_sources[module_name],
                         namespace_own_names=summary.own_names,
                     )
+                if scan_sources[module_name].namespace_own_line is None:
+                    scan_sources[module_name] = replace(
+                        scan_sources[module_name],
+                        namespace_own_line=summary.own_namespace_line,
+                    )
                 known = state.namespace_writes.setdefault(module_name, set())
                 pending = pending_namespace_writes.setdefault(module_name, {})
                 for write in summary.foreign_writes:
