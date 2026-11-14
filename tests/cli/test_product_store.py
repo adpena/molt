@@ -15,6 +15,11 @@ from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.dx import PRODUCT_STORE_DIRNAME, product_store_dir
 from molt.process_environment import ProcessEnvironment
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow thread or child is not a stuck one. The
+# properties under test are orderings, which the barriers and events assert.
+_HANG_BOUND_S = 300.0
+
 
 def _environment(value: str) -> CargoEnvironmentInputs:
     return CargoEnvironmentInputs.capture(
@@ -147,7 +152,7 @@ def test_one_builder_per_identity_and_the_other_reuses_its_publication(
 
     def builder(name: str) -> None:
         try:
-            entered.wait(timeout=10)
+            entered.wait(timeout=_HANG_BOUND_S)
             with store.single_flight(identity):
                 # The store is read again under the lock, as the build does.
                 if published.exists():
@@ -162,7 +167,7 @@ def test_one_builder_per_identity_and_the_other_reuses_its_publication(
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(timeout=30)
+        thread.join(timeout=_HANG_BOUND_S)
     assert not errors
     assert len(builds) == 1
     assert published.read_text(encoding="utf-8") == builds[0]
@@ -182,18 +187,18 @@ def test_an_operator_bound_fails_a_waiter_with_a_build_lock_error(
     def holder() -> None:
         with store.single_flight(identity):
             held.set()
-            release.wait(timeout=10)
+            release.wait(timeout=_HANG_BOUND_S)
 
     thread = threading.Thread(target=holder)
     thread.start()
     try:
-        assert held.wait(timeout=10)
+        assert held.wait(timeout=_HANG_BOUND_S)
         with pytest.raises(BuildLockAcquisitionError, match="Timed out after 0.2s"):
             with store.single_flight(identity):
                 pass
     finally:
         release.set()
-        thread.join(timeout=10)
+        thread.join(timeout=_HANG_BOUND_S)
 
 
 def test_eviction_moves_an_entry_aside_before_deleting_it(
@@ -422,19 +427,19 @@ def test_evict_waits_for_the_builder_and_removes_the_entry_whole(
     def builder() -> None:
         with store.single_flight(identity):
             held.set()
-            release.wait(timeout=10)
+            release.wait(timeout=_HANG_BOUND_S)
             released_at.append(time.monotonic())
 
     thread = threading.Thread(target=builder)
     thread.start()
-    assert held.wait(timeout=10)
+    assert held.wait(timeout=_HANG_BOUND_S)
     threading.Timer(0.3, release.set).start()
     try:
         assert store.evict(identity)
         evicted_at = time.monotonic()
     finally:
         release.set()
-        thread.join(timeout=10)
+        thread.join(timeout=_HANG_BOUND_S)
     assert released_at and evicted_at >= released_at[0]
     assert not store.entry(identity).exists()
     assert store.entry(other).is_dir()
@@ -513,7 +518,7 @@ from molt.cli.product_store import ProductStore
 
 root, identity, go = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 store = ProductStore(root)
-deadline = time.monotonic() + 30
+deadline = time.monotonic() + HANG_BOUND_S
 while not go.exists() and time.monotonic() < deadline:
     time.sleep(0.005)
 with store.single_flight(identity):
@@ -524,7 +529,7 @@ with store.single_flight(identity):
         time.sleep(0.3)
         published.write_text(sys.argv[4], encoding="utf-8")
 print("done", flush=True)
-"""
+""".replace("HANG_BOUND_S", repr(_HANG_BOUND_S))
 
 
 def test_two_processes_with_one_identity_build_it_once(tmp_path: Path) -> None:
@@ -563,7 +568,7 @@ def test_two_processes_with_one_identity_build_it_once(tmp_path: Path) -> None:
     try:
         go.touch()
         for builder in builders:
-            assert builder.wait(timeout=60) == 0
+            assert builder.wait(timeout=_HANG_BOUND_S) == 0
             assert builder.stdout is not None
             assert builder.stdout.read().strip() == "done"
     finally:
