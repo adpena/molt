@@ -2993,9 +2993,14 @@ def _incremental_successful_guard(
     from tools.memory_guard_core.active_custody import read_marker_record
 
     receipt = resolve_owned_path(receipt)
-    if receipt.parent not in {
-        retired_guard_marker_dir(active) for active in active_guard_marker_dirs_of(root)
-    }:
+    if (
+        receipt.parent.parent
+        not in {
+            retired_guard_marker_dir(active)
+            for active in active_guard_marker_dirs_of(root)
+        }
+        or receipt.parent.name != receipt.name.split("-", 2)[1]
+    ):
         raise ValueError("requires the existing retired guard receipt authority")
     record = read_marker_record(receipt)
     value = record.payload or {}

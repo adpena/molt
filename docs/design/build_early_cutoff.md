@@ -328,8 +328,7 @@ Measurements: [user_compile_latency.md](user_compile_latency.md).
 **Refusals.** No record for targets other than native and the default `wasm`
 target, for WASM JSON, split-runtime, precompile or named-linked-output requests,
 or for requests that request unrecorded additional products or measurements
-(diagnostics, IR, native linked output, snapshots, audit logs), non-default
-codegen backends, BOLT,
+(diagnostics, IR, native linked output, snapshots, audit logs), BOLT,
 file-naming inputs whose loaders do not report (type facts, PGO profiles,
 runtime feedback, capability manifests, sysroots, capability files), `ty`
 under the trust policy, external static packages, and any ledger refusal,
@@ -426,6 +425,11 @@ unused for a week are deleted, at most once an hour.
   copying the binary from a store on another volume cost 1.5 s more. Keying
   the C toolchain custody of an Apple SDK by its `SDKSettings.json` took it
   from 0.43 s to 0.155 s.
+- LLVM builds join the record (2026-11-14): the LLVM backend's admitted SDK
+  custody already reports every consumed header, library and `llvm-config`
+  (6,668 of a record's 13,231 paths), so the refusal of non-default codegen
+  backends was unneeded. A no-change LLVM rebuild of a three-line program took
+  5.9-7.8 s and now hits in 0.42 s.
 - The record holds 5,985 files, 397 directories and 767 probes: 1.3 MB of
   JSON. It held 75,312 files and 17,162 directories (26.5 MB) while the C
   toolchain custody listed all 69,329 files of the Xcode SDK.
