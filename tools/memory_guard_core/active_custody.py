@@ -3,9 +3,10 @@
 ``active/`` holds the markers of unresolved custody: a guard that may still
 run, a child or process group that may still live, or a scratch lease whose
 payload a process may still use. A marker leaves ``active/`` only after its
-whole custody is resolved. It then moves to durable ``retired/`` history.
-Every reader of ``active/`` costs O(live custody), not
-O(history).
+whole custody is resolved. It then moves to durable ``retired/<pid>/``
+history. Every reader of ``active/`` costs O(live custody), and a reader of
+history lists only the pids it asks about, never O(history): on 2026-11-14 a
+flat ``retired/`` of 108,832 records cost every guarded spawn 0.2-0.6 s.
 
 This module observes custody evidence; it has no process actuation
 capability. Process identity is (pid, birth). A pid that a complete native
@@ -58,7 +59,7 @@ from molt.file_publication import (
     staged_file_destination_key,
     staging_destination_key,
 )
-from molt.memory_guard_paths import retired_guard_marker_dir
+from molt.memory_guard_paths import retired_guard_marker_pid_dir
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
@@ -695,9 +696,14 @@ def guard_marker_records(
     if not names:
         return ()
     records: list[MarkerRecord] = []
+    # Active custody is bounded by live guards; history is keyed by pid, so
+    # each captured pid lists only its own directory.
     for directory, role in (
         (active_dir, "active marker"),
-        (retired_guard_marker_dir(active_dir), "retired marker"),
+        *(
+            (retired_guard_marker_pid_dir(active_dir, name), "retired marker")
+            for name in sorted(names)
+        ),
     ):
         records.extend(
             read_marker_record(path)
@@ -1115,8 +1121,10 @@ def _publish_retired(canonical: Path) -> Path:
     A crash that rolls the move back leaves a terminal record in active/,
     which blocks nothing and which the next sweep retires again.
     """
-    retired = retired_guard_marker_dir(canonical.parent)
-    retired.mkdir(exist_ok=True)
+    retired = retired_guard_marker_pid_dir(
+        canonical.parent, canonical.name.split("-", 2)[1]
+    )
+    retired.mkdir(parents=True, exist_ok=True)
     destination = retired / canonical.name
     namespace_move_exclusive(canonical, destination)
     return destination

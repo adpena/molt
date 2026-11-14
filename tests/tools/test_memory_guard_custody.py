@@ -1,7 +1,7 @@
 """Birth-bound custody evidence is shared by the producer, CLI, and disk guard.
 
 Tests use a private state root: ``<tmp>/state/active`` and its retired
-history ``<tmp>/state/retired``. Process tables are faked only at the
+history ``<tmp>/state/retired/<pid>``. Process tables are faked only at the
 snapshot boundary; markers, scratch generations and locks are real files.
 """
 
@@ -16,6 +16,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from datetime import datetime, timezone
 from threading import Event
 from types import SimpleNamespace
@@ -54,6 +55,15 @@ def _active(tmp_path):
 
 def _retired(tmp_path):
     return tmp_path / "state" / "retired"
+
+
+def _retired_record(tmp_path: Path, name: str) -> Path:
+    """Where retirement puts the record ``name``: history is keyed by pid."""
+    return _retired(tmp_path) / name.split("-", 2)[1] / name
+
+
+def _retired_records(tmp_path: Path) -> list[Path]:
+    return sorted(_retired(tmp_path).glob("*/guard-*.json"))
 
 
 def _marker(
@@ -106,7 +116,7 @@ def test_dry_run_then_apply_records_exact_births_and_retires_the_record(tmp_path
     assert report.terminalized == 1 and report.retired == 1
     # The resolved record and its lock leave active/; history keeps the record.
     assert list(active.iterdir()) == []
-    retired = _retired(tmp_path) / marker.name
+    retired = _retired_record(tmp_path, marker.name)
     assert report.decisions[0].retired_to == str(retired)
     payload = _payload(retired)
     assert payload["status"] == "custody_reconciled"
@@ -231,7 +241,7 @@ def test_absent_pid_is_dead_whatever_its_recorded_birth(tmp_path, birth, child_b
     marker = _marker(active, birth=birth, child_birth=child_birth)
     report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     assert report.terminalized == 1 and report.retired == 1
-    payload = _payload(_retired(tmp_path) / marker.name)
+    payload = _payload(_retired_record(tmp_path, marker.name))
     receipt = payload["reconciliation"]
     assert receipt["previous_status"] == "child_running"
     assert [
@@ -256,7 +266,7 @@ def test_producer_terminal_status_does_not_depend_on_births(tmp_path, status):
     assert marker.exists()
     report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     assert report.retired == 1 and report.terminalized == 0
-    assert _payload(_retired(tmp_path) / marker.name)["status"] == status
+    assert _payload(_retired_record(tmp_path, marker.name))["status"] == status
 
 
 def test_reused_child_leader_proves_its_recorded_group_closed(tmp_path):
@@ -391,7 +401,7 @@ def test_corrupted_reconciliation_receipt_does_not_release_artifacts(tmp_path, c
     marker = _marker(active)
     custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     # Put a damaged copy of the reconciled record back into active custody.
-    payload = _payload(_retired(tmp_path) / marker.name)
+    payload = _payload(_retired_record(tmp_path, marker.name))
     corrupt(payload["reconciliation"])
     marker.write_text(json.dumps(payload), encoding="utf-8")
     assert custody.has_active_guard_marker(active)
@@ -893,7 +903,7 @@ def test_retired_history_preserves_every_record_beyond_previous_count_limit(tmp_
     report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     assert report.retired == len(originals)
     assert {
-        path.name: path.read_bytes() for path in _retired(tmp_path).iterdir()
+        path.name: path.read_bytes() for path in _retired_records(tmp_path)
     } == originals
 
 
@@ -905,7 +915,7 @@ def test_guard_marker_lookup_reads_active_and_retired_records_of_one_pid(
     custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     running = _marker(active, pid=11)
     assert [record.path for record in custody.guard_marker_records(active, (10,))] == [
-        _retired(tmp_path) / done.name
+        _retired_record(tmp_path, done.name)
     ]
     assert [record.path for record in custody.guard_marker_records(active, (11,))] == [
         running
@@ -923,9 +933,9 @@ def test_guard_marker_lookup_reads_active_and_retired_records_of_one_pid(
     records = custody.guard_marker_records(active, (10, 11))
     assert {record.path for record in records} == {
         running,
-        _retired(tmp_path) / done.name,
+        _retired_record(tmp_path, done.name),
     }
-    assert opened == [running, _retired(tmp_path) / done.name]
+    assert opened == [running, _retired_record(tmp_path, done.name)]
     assert unrelated not in opened
 
 
@@ -950,7 +960,7 @@ def test_producer_retires_only_its_own_resolved_record(tmp_path):
     assert custody.retire_active_guard_marker(done, "f" * 32) is None
     assert custody.retire_active_guard_marker(raised, _payload(raised)["token"]) is None
     retired = custody.retire_active_guard_marker(done, token)
-    assert retired == _retired(tmp_path) / done.name
+    assert retired == _retired_record(tmp_path, done.name)
     assert not done.exists() and not done.with_suffix(".lock").exists()
     assert raised.exists()
 
@@ -983,13 +993,15 @@ def test_release_resolves_inconclusive_evidence_with_an_attested_receipt(
     )
     assert report.terminalized == 2 and report.retired == 2
     for marker in (pending, unknown):
-        receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+        receipt = _payload(_retired_record(tmp_path, marker.name))["reconciliation"]
         assert receipt["reason"] == "operator_attested"
-    states = _payload(_retired(tmp_path) / unknown.name)["reconciliation"]["evidence"]
+    states = _payload(_retired_record(tmp_path, unknown.name))["reconciliation"][
+        "evidence"
+    ]
     assert [item["state"] for item in states] == ["absent", "identity_unavailable"]
     assert states[1]["expected_started_at_ns"] == child_birth
     assert states[1]["observed_started_at_ns"] == observed_birth
-    assert custody.read_marker_record(_retired(tmp_path) / unknown.name).terminal
+    assert custody.read_marker_record(_retired_record(tmp_path, unknown.name)).terminal
     assert not custody.has_active_guard_marker(active)
 
 
@@ -1016,7 +1028,7 @@ def test_release_moves_an_unreadable_record_unchanged(tmp_path):
         active, _snapshot(), apply=True, release=[marker]
     )
     assert report.decisions[0].disposition == "release"
-    assert (_retired(tmp_path) / marker.name).read_bytes() == b"{"
+    assert (_retired_record(tmp_path, marker.name)).read_bytes() == b"{"
     assert not custody.has_active_guard_marker(active)
 
 
@@ -1048,7 +1060,7 @@ def test_cli_names_the_release_command_for_inconclusive_records(
     args = ["--active-dir", str(active), "--release", str(marker), "--apply"]
     assert cli.main(args) == 0
     assert not marker.exists()
-    assert (_retired(tmp_path) / marker.name).exists()
+    assert (_retired_record(tmp_path, marker.name)).exists()
 
 
 def test_cli_apply_records_what_the_sweep_left(tmp_path, monkeypatch):
@@ -1270,7 +1282,7 @@ def test_exit_sweep_keeps_live_custody_with_boot_tick_zero_rows(tmp_path, monkey
     assert report.snapshot_processes == len(samples())
     assert report.retired == 1 and report.remaining == 1 and report.preserved == 1
     assert not dead.exists() and not dead.with_suffix(".lock").exists()
-    assert custody.read_marker_record(_retired(tmp_path) / dead.name).terminal
+    assert custody.read_marker_record(_retired_record(tmp_path, dead.name)).terminal
     assert set(active.glob("guard-*.json")) == {live}
     assert live.read_bytes() == original
     receipt = read_exact(active.parent / "sweep.json", max_bytes=65536, label="test")
@@ -1393,7 +1405,7 @@ def test_unclosed_completion_waits_for_every_orphaned_group(tmp_path):
     assert custody.has_active_guard_marker(active)
     report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     assert report.terminalized == 1 and report.retired == 1
-    receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+    receipt = _payload(_retired_record(tmp_path, marker.name))["reconciliation"]
     assert receipt["previous_status"] == "completed"
     # The child's own group and both orphaned groups were seen empty.
     assert receipt["empty_process_groups"] == [20, 30, 40]
@@ -1418,7 +1430,7 @@ def test_a_reused_orphaned_group_id_proves_the_old_group_closed(tmp_path):
         active, _snapshot(*samples), apply=True
     )
     assert report.terminalized == 1 and report.retired == 1
-    receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+    receipt = _payload(_retired_record(tmp_path, marker.name))["reconciliation"]
     assert receipt["empty_process_groups"] == [20, 30]
     assert not custody.has_active_guard_marker(active)
 
@@ -1466,7 +1478,7 @@ def test_reconciliation_receipt_must_name_every_orphaned_group(tmp_path, corrupt
     active = _active(tmp_path)
     marker = _completion(active, closed=False, groups=[30, 40])
     custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
-    payload = _payload(_retired(tmp_path) / marker.name)
+    payload = _payload(_retired_record(tmp_path, marker.name))
     corrupt(payload["reconciliation"])
     marker.write_text(json.dumps(payload), encoding="utf-8")
     assert custody.read_marker_record(marker).error is not None
@@ -1505,7 +1517,7 @@ def test_a_real_orphaned_group_protects_until_its_last_member_exits(tmp_path):
         active, process_model.sample_processes, apply=True
     )
     assert report.terminalized == 1 and report.retired == 1
-    receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+    receipt = _payload(_retired_record(tmp_path, marker.name))["reconciliation"]
     assert group in receipt["empty_process_groups"]
 
 
@@ -1588,7 +1600,7 @@ def test_a_crash_that_drops_marker_writes_resolves_or_names_its_release(
     if residue in {"launch_prepared", "child_running"}:
         # An older generation is judged by the same snapshot as any record.
         assert decision.reason == custody.RECONCILED_REASON
-        assert decision.retired_to == str(_retired(tmp_path) / marker.name)
+        assert decision.retired_to == str(_retired_record(tmp_path, marker.name))
         assert not custody.has_active_guard_marker(active)
         return
     # An unreadable record, or a launch whose child was never recorded, stays

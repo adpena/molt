@@ -3332,7 +3332,8 @@ def completed_incremental(tmp_path):
         "--config",
         "build.target-dir=" + json.dumps(str(session)),
     ]
-    retired = root / "tmp/memory_guard/retired"
+    # Guard history is keyed by pid (memory_guard_paths.retired_guard_marker_pid_dir).
+    retired = root / "tmp/memory_guard/retired/761"
     retired.mkdir(parents=True)
     receipt = _guard_marker(retired, 761, "completed")
     payload = json.loads(receipt.read_text(encoding="utf-8"))
