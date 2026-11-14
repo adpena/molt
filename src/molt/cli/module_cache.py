@@ -723,7 +723,8 @@ def _frontend_lowering_cache_disabled() -> bool:
 
 # The typed dataclass projection reserves a new JSON tag. Old name maps did not
 # escape it, so do not decode those records under the extended codec.
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 14
+# 15: module function defaults carry their definer's symbol base.
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 15
 
 
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 12

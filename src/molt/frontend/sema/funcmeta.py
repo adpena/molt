@@ -461,6 +461,13 @@ def collect_module_class_names(node: ast.Module) -> set[str]:
 
 
 def collect_module_func_defaults(node: ast.Module) -> dict[str, dict[str, Any]]:
+    from molt.compiler_analysis.source_function_symbols import (
+        unambiguous_symbol_bases,
+    )
+
+    # A caller in another module links to this base only (the definer's
+    # reserved symbol); an ambiguous name publishes none.
+    bases = unambiguous_symbol_bases(node)
     defaults: dict[str, dict[str, Any]] = {}
     for stmt in node.body:
         if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -484,6 +491,8 @@ def collect_module_func_defaults(node: ast.Module) -> dict[str, dict[str, Any]]:
                 "kind": kind,
                 "has_decorators": has_decorators,
             }
+            if stmt.name in bases:
+                defaults[stmt.name]["symbol_base"] = bases[stmt.name]
             continue
         params = _function_param_names(stmt.args)
         default_specs = _default_specs_from_args(stmt.args)
@@ -495,4 +504,6 @@ def collect_module_func_defaults(node: ast.Module) -> dict[str, dict[str, Any]]:
             "kind": kind,
             "has_decorators": has_decorators,
         }
+        if stmt.name in bases:
+            defaults[stmt.name]["symbol_base"] = bases[stmt.name]
     return defaults

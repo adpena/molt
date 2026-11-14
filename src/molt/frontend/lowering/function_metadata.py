@@ -679,6 +679,16 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             producer.metadata = {}
         producer.metadata["argument_custody"] = custody
 
+    def _module_function_symbol(self, module_name: str, func_id: str) -> str | None:
+        """The code symbol the defining module reserved for its function
+        ``func_id``, or None when the name has no unambiguous symbol
+        (``source_function_symbols``); the caller keeps the generic call."""
+        info = self._lookup_func_defaults(module_name, func_id)
+        base = info.get("symbol_base") if info is not None else None
+        if not isinstance(base, str):
+            return None
+        return f"{self._sanitize_module_name(module_name)}__{base}"
+
     def _known_module_function_type_hint(
         self, module_name: str | None, func_id: str
     ) -> str | None:
@@ -696,7 +706,9 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         kind = self._known_function_kind(module_name, func_id)
         if kind is None:
             return None
-        func_symbol = f"{self._sanitize_module_name(module_name)}__{func_id}"
+        func_symbol = self._module_function_symbol(module_name, func_id)
+        if func_symbol is None:
+            return None
         if kind == FunctionKind.SYNC:
             return f"Func:{func_symbol}"
         total_params = info.get("params") if info is not None else None
