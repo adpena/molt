@@ -1,3 +1,4 @@
+use super::molt_vec::MoltVec;
 use std::alloc::{Layout, alloc};
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
@@ -25,7 +26,7 @@ struct TrackedVecBox<T> {
     /// hot paths.
     heap_edge_count: AtomicUsize,
     buffer_exports: super::buffer_exports::BufferExports,
-    vec: Vec<T>,
+    vec: MoltVec<T>,
 }
 
 pub(crate) struct TrackedVecMutationGuard<T> {
@@ -50,7 +51,7 @@ pub(crate) struct TrackedVecOwner<T> {
 impl<T> TrackedVecOwner<T> {
     /// Transfer this allocation, including its accounting and mutation identity,
     /// to an object that assumes sole responsibility for terminal destruction.
-    pub(crate) fn into_raw(self) -> *mut Vec<T> {
+    pub(crate) fn into_raw(self) -> *mut MoltVec<T> {
         let owner = std::mem::ManuallyDrop::new(self);
         unsafe { &raw mut (*owner.ptr.as_ptr()).vec }
     }
@@ -60,12 +61,12 @@ impl<T> TrackedVecOwner<T> {
 /// stable owner retains its lock/epoch identity with an empty zero-charge Vec;
 /// dropping this value releases the displaced buffer's resource charge.
 pub(crate) struct TrackedVecContents<T> {
-    vec: Vec<T>,
+    vec: MoltVec<T>,
     buffer_bytes: usize,
 }
 
 impl<T> Deref for TrackedVecOwner<T> {
-    type Target = Vec<T>;
+    type Target = MoltVec<T>;
 
     fn deref(&self) -> &Self::Target {
         unsafe { &self.ptr.as_ref().vec }
@@ -94,7 +95,7 @@ impl<T> Drop for TrackedVecOwner<T> {
 }
 
 impl<T> Deref for TrackedVecContents<T> {
-    type Target = Vec<T>;
+    type Target = MoltVec<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.vec
@@ -143,7 +144,7 @@ fn vec_field_offset<T>() -> usize {
 }
 
 #[inline]
-unsafe fn owner_ptr_from_vec<T>(ptr: *mut Vec<T>) -> *mut TrackedVecBox<T> {
+unsafe fn owner_ptr_from_vec<T>(ptr: *mut MoltVec<T>) -> *mut TrackedVecBox<T> {
     unsafe {
         (ptr.cast::<u8>())
             .sub(vec_field_offset::<T>())
@@ -185,7 +186,7 @@ pub(crate) fn release_grow(bytes: usize) {
 
 /// Allocate an object-owned Vec with resource accounting for both the owning
 /// allocation and its backing buffer capacity.
-pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut Vec<T>> {
+pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut MoltVec<T>> {
     let requested_charge = vec_charge::<T>(capacity)?;
     if !charge_alloc(requested_charge) {
         return None;
@@ -239,7 +240,7 @@ pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut V
                 mutation_lock: AtomicBool::new(false),
                 heap_edge_count: AtomicUsize::new(0),
                 buffer_exports: super::buffer_exports::BufferExports::new(),
-                vec,
+                vec: MoltVec::from_vec(vec),
             },
         );
         Some(ptr::addr_of_mut!((*raw).vec))
@@ -254,7 +255,9 @@ pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut V
 /// # Safety
 /// `ptr` must be a live Vec pointer allocated by
 /// [`tracked_vec_box_with_capacity`].
-pub(crate) unsafe fn tracked_vec_mutation_lock<T>(ptr: *mut Vec<T>) -> TrackedVecMutationGuard<T> {
+pub(crate) unsafe fn tracked_vec_mutation_lock<T>(
+    ptr: *mut MoltVec<T>,
+) -> TrackedVecMutationGuard<T> {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     loop {
         let acquired = unsafe {
@@ -274,7 +277,7 @@ pub(crate) unsafe fn tracked_vec_mutation_lock<T>(ptr: *mut Vec<T>) -> TrackedVe
 
 // Observe the real publication lock without waiting inside a native finalizer.
 #[cfg(test)]
-pub(crate) unsafe fn tracked_vec_mutation_is_locked_for_test<T>(ptr: *mut Vec<T>) -> bool {
+pub(crate) unsafe fn tracked_vec_mutation_is_locked_for_test<T>(ptr: *mut MoltVec<T>) -> bool {
     unsafe {
         (*owner_ptr_from_vec(ptr))
             .mutation_lock
@@ -288,14 +291,14 @@ pub(crate) unsafe fn tracked_vec_mutation_is_locked_for_test<T>(ptr: *mut Vec<T>
 /// `ptr` must be a live Vec pointer allocated by
 /// [`tracked_vec_box_with_capacity`].
 #[inline]
-pub(crate) unsafe fn tracked_vec_mutation_epoch<T>(ptr: *mut Vec<T>) -> u64 {
+pub(crate) unsafe fn tracked_vec_mutation_epoch<T>(ptr: *mut MoltVec<T>) -> u64 {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     unsafe { (*owner).mutation_epoch.load(Ordering::Acquire) }
 }
 
 /// Export state lives with the stable allocation, never in an address registry.
 pub(crate) unsafe fn tracked_vec_buffer_exports<T>(
-    ptr: *mut Vec<T>,
+    ptr: *mut MoltVec<T>,
 ) -> &'static super::buffer_exports::BufferExports {
     unsafe { &(*owner_ptr_from_vec(ptr)).buffer_exports }
 }
@@ -306,7 +309,7 @@ pub(crate) unsafe fn tracked_vec_buffer_exports<T>(
 /// `ptr` must be a live Vec pointer allocated by
 /// [`tracked_vec_box_with_capacity`].
 #[inline]
-pub(crate) unsafe fn tracked_vec_bump_mutation_epoch<T>(ptr: *mut Vec<T>) -> u64 {
+pub(crate) unsafe fn tracked_vec_bump_mutation_epoch<T>(ptr: *mut MoltVec<T>) -> u64 {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     unsafe {
         (*owner)
@@ -317,20 +320,20 @@ pub(crate) unsafe fn tracked_vec_bump_mutation_epoch<T>(ptr: *mut Vec<T>) -> u64
 }
 
 #[inline]
-pub(crate) unsafe fn tracked_vec_heap_edge_count<T>(ptr: *mut Vec<T>) -> usize {
+pub(crate) unsafe fn tracked_vec_heap_edge_count<T>(ptr: *mut MoltVec<T>) -> usize {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     unsafe { (*owner).heap_edge_count.load(Ordering::Acquire) }
 }
 
 #[inline]
-pub(crate) unsafe fn tracked_vec_set_heap_edge_count<T>(ptr: *mut Vec<T>, count: usize) {
+pub(crate) unsafe fn tracked_vec_set_heap_edge_count<T>(ptr: *mut MoltVec<T>, count: usize) {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     unsafe { (*owner).heap_edge_count.store(count, Ordering::Release) };
 }
 
 #[inline]
 pub(crate) unsafe fn tracked_vec_adjust_heap_edge_count<T>(
-    ptr: *mut Vec<T>,
+    ptr: *mut MoltVec<T>,
     removed: usize,
     added: usize,
 ) -> usize {
@@ -354,7 +357,7 @@ pub(crate) unsafe fn tracked_vec_adjust_heap_edge_count<T>(
 /// Both pointers must be distinct, live tracked Vec allocations of the same
 /// element type. The caller must hold the live allocation's mutation lock and
 /// exclusive custody of the staged allocation.
-pub(crate) unsafe fn tracked_vec_swap_contents<T>(live: *mut Vec<T>, staged: *mut Vec<T>) {
+pub(crate) unsafe fn tracked_vec_swap_contents<T>(live: *mut MoltVec<T>, staged: *mut MoltVec<T>) {
     debug_assert_ne!(live, staged);
     let live_owner = unsafe { owner_ptr_from_vec(live) };
     let staged_owner = unsafe { owner_ptr_from_vec(staged) };
@@ -382,7 +385,7 @@ pub(crate) unsafe fn tracked_vec_swap_contents<T>(live: *mut Vec<T>, staged: *mu
 ///
 /// # Safety
 /// `ptr` must be a live tracked Vec pointer under exclusive mutation custody.
-pub(crate) unsafe fn tracked_vec_take_contents<T>(ptr: *mut Vec<T>) -> TrackedVecContents<T> {
+pub(crate) unsafe fn tracked_vec_take_contents<T>(ptr: *mut MoltVec<T>) -> TrackedVecContents<T> {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     assert!(!unsafe { (*owner).buffer_exports.is_exported() });
     let vec = unsafe { std::mem::take(&mut (*owner).vec) };
@@ -394,7 +397,7 @@ pub(crate) unsafe fn tracked_vec_take_contents<T>(ptr: *mut Vec<T>) -> TrackedVe
 pub(crate) fn tracked_vec_box_from_slice<T: Copy>(
     elems: &[T],
     capacity: usize,
-) -> Option<*mut Vec<T>> {
+) -> Option<*mut MoltVec<T>> {
     let ptr = tracked_vec_box_with_capacity::<T>(capacity.max(elems.len()))?;
     unsafe {
         (*ptr).extend_from_slice(elems);
@@ -402,7 +405,28 @@ pub(crate) fn tracked_vec_box_from_slice<T: Copy>(
     Some(ptr)
 }
 
-pub(crate) fn tracked_vec_box_zeroed<T: Copy + Default>(len: usize) -> Option<*mut Vec<T>> {
+/// Tracked storage of `len` copies of `value`.
+pub(crate) fn tracked_vec_box_filled<T: Copy>(len: usize, value: T) -> Option<*mut MoltVec<T>> {
+    let ptr = tracked_vec_box_with_capacity::<T>(len)?;
+    unsafe {
+        (*ptr).resize(len, value);
+    }
+    Some(ptr)
+}
+
+/// Tracked storage of `items` repeated `times` times.
+pub(crate) fn tracked_vec_box_repeated<T: Copy>(
+    items: &[T],
+    times: usize,
+) -> Option<*mut MoltVec<T>> {
+    let ptr = tracked_vec_box_with_capacity::<T>(items.len().checked_mul(times)?)?;
+    for _ in 0..times {
+        unsafe { (*ptr).extend_from_slice(items) };
+    }
+    Some(ptr)
+}
+
+pub(crate) fn tracked_vec_box_zeroed<T: Copy + Default>(len: usize) -> Option<*mut MoltVec<T>> {
     let ptr = tracked_vec_box_with_capacity::<T>(len)?;
     unsafe {
         (*ptr).resize(len, T::default());
@@ -424,7 +448,10 @@ pub(crate) fn tracked_vec_box_zeroed<T: Copy + Default>(len: usize) -> Option<*m
 /// # Safety
 /// `ptr` must be a live Vec pointer allocated by
 /// [`tracked_vec_box_with_capacity`].
-pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_len: usize) -> bool {
+pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(
+    ptr: *mut MoltVec<T>,
+    required_len: usize,
+) -> bool {
     if ptr.is_null() {
         return false;
     }
@@ -469,8 +496,10 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_l
         release_grow(target_bytes - actual_bytes);
     }
 
-    replacement.append(vec);
-    *vec = replacement;
+    let mut old = std::mem::take(vec).into_vec();
+    replacement.append(&mut old);
+    drop(old);
+    *vec = MoltVec::from_vec(replacement);
     release_grow(old_bytes);
     unsafe {
         (*owner).charge.buffer_bytes = actual_bytes;
@@ -483,7 +512,7 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_l
 /// # Safety
 /// `ptr` must be a pointer returned by [`tracked_vec_box_with_capacity`]. The
 /// returned owner must be dropped exactly once by the caller.
-pub(crate) unsafe fn tracked_vec_box_from_raw<T>(ptr: *mut Vec<T>) -> TrackedVecOwner<T> {
+pub(crate) unsafe fn tracked_vec_box_from_raw<T>(ptr: *mut MoltVec<T>) -> TrackedVecOwner<T> {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     let Some(ptr) = NonNull::new(owner) else {
         std::process::abort();

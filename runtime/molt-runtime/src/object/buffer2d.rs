@@ -10,8 +10,8 @@ use crate::{
 };
 
 pub(crate) enum Buffer2DStorage {
-    I64(*mut Vec<i64>),
-    Boxed(*mut Vec<u64>),
+    I64(*mut crate::object::molt_vec::MoltVec<i64>),
+    Boxed(*mut crate::object::molt_vec::MoltVec<u64>),
 }
 
 pub(crate) unsafe fn visit_owned_values(buffer: *mut Buffer2D, mut visit: impl FnMut(u64)) {
@@ -128,13 +128,13 @@ fn integer_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<ExactIn
     }
 }
 
-unsafe fn drop_i64_storage(ptr: *mut Vec<i64>) {
+unsafe fn drop_i64_storage(ptr: *mut crate::object::molt_vec::MoltVec<i64>) {
     if !ptr.is_null() {
         drop(unsafe { tracked_vec_box_from_raw(ptr) });
     }
 }
 
-unsafe fn drop_boxed_storage(_py: &PyToken<'_>, ptr: *mut Vec<u64>) {
+unsafe fn drop_boxed_storage(_py: &PyToken<'_>, ptr: *mut crate::object::molt_vec::MoltVec<u64>) {
     if ptr.is_null() {
         return;
     }
@@ -152,7 +152,11 @@ unsafe fn drop_staged(_py: &PyToken<'_>, storage: Buffer2DStorage) {
     }
 }
 
-fn allocate_i64_storage(_py: &PyToken<'_>, len: usize, init: i64) -> Option<*mut Vec<i64>> {
+fn allocate_i64_storage(
+    _py: &PyToken<'_>,
+    len: usize,
+    init: i64,
+) -> Option<*mut crate::object::molt_vec::MoltVec<i64>> {
     let Some(ptr) = tracked_vec_box_with_capacity::<i64>(len) else {
         return memory_error(_py);
     };
@@ -197,7 +201,11 @@ fn owned_exact_bits(_py: &PyToken<'_>, value: ExactInt) -> Option<u64> {
     }
 }
 
-fn allocate_boxed_storage(_py: &PyToken<'_>, len: usize, init: BigInt) -> Option<*mut Vec<u64>> {
+fn allocate_boxed_storage(
+    _py: &PyToken<'_>,
+    len: usize,
+    init: BigInt,
+) -> Option<*mut crate::object::molt_vec::MoltVec<u64>> {
     let Some(ptr) = tracked_vec_box_with_capacity::<u64>(len) else {
         return memory_error(_py);
     };
@@ -342,7 +350,7 @@ fn allocate_boxed_values(
     _py: &PyToken<'_>,
     capacity: usize,
     values: impl IntoIterator<Item = ExactInt>,
-) -> Option<*mut Vec<u64>> {
+) -> Option<*mut crate::object::molt_vec::MoltVec<u64>> {
     let Some(boxed_ptr) = tracked_vec_box_with_capacity::<u64>(capacity) else {
         memory_error::<Option<()>>(_py);
         return None;

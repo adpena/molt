@@ -159,7 +159,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             types::I64,
                             MemFlagsData::trusted(),
                             storage_ptr,
-                            LIST_INT_STORAGE_DATA_OFFSET,
+                            LIST_STORAGE_DATA_OFFSET,
                         );
                         let var = builder.declare_var(types::I64);
                         builder.def_var(var, dp);
@@ -174,7 +174,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             types::I64,
                             MemFlagsData::trusted(),
                             storage_ptr,
-                            LIST_INT_STORAGE_LEN_OFFSET,
+                            LIST_STORAGE_LEN_OFFSET,
                         );
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
@@ -201,7 +201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             types::I64,
                             MemFlagsData::trusted(),
                             storage_ptr,
-                            LIST_INT_STORAGE_LEN_OFFSET,
+                            LIST_STORAGE_LEN_OFFSET,
                         );
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);

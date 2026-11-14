@@ -991,8 +991,13 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
 unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
         if count <= 0 {
-            return crate::object::buffer_exports::bytearray_mutate(_py, ptr, 0, Vec::clear)
-                .is_some();
+            return crate::object::buffer_exports::bytearray_mutate(
+                _py,
+                ptr,
+                0,
+                crate::object::molt_vec::MoltVec::clear,
+            )
+            .is_some();
         }
         let count = match usize::try_from(count) {
             Ok(val) => val,

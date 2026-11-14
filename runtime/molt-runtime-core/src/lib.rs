@@ -15,6 +15,7 @@ pub mod float_repr;
 pub mod host_capabilities_generated;
 pub mod integer_decimal;
 pub mod itertools_tee;
+pub mod molt_vec;
 pub mod numeric_error_policy_generated;
 pub mod numeric_ratio;
 pub mod unicode_target;
@@ -1685,7 +1686,7 @@ pub struct RuntimeVtable {
     pub intern_static_name: unsafe extern "C" fn(u64, *const u8, usize) -> u64,
 
     // --- Container helpers ---
-    pub bytearray_vec: unsafe extern "C" fn(*mut u8) -> *mut Vec<u8>,
+    pub bytearray_vec: unsafe extern "C" fn(*mut u8) -> *mut crate::molt_vec::MoltVec<u8>,
     /// Lookup: 1 writes a borrowed value, 0 is absent, -1 retains an error.
     /// Absent/error outcomes leave the output unchanged.
     pub dict_get_in_place: unsafe extern "C" fn(u64, *mut u8, u64, *mut u64) -> i32,

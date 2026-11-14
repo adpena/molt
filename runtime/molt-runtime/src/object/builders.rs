@@ -433,7 +433,8 @@ pub(crate) fn molt_list_builder_new_attached_body(
             );
         }
         // Allocate wrapper object
-        let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>(); // Store pointer to Vec
+        let total = std::mem::size_of::<MoltHeader>()
+            + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>(); // Store pointer to Vec
         let ptr = alloc_object(_py, total, TYPE_ID_LIST_BUILDER);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -466,7 +467,7 @@ pub(crate) fn molt_list_builder_new_attached_body(
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return MoltObject::none().bits();
             };
-            *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+            *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = vec_ptr;
         }
         bits_from_ptr(ptr)
     })
@@ -545,7 +546,7 @@ pub(crate) unsafe fn molt_list_builder_append_attached_body(
                 raise_exception::<()>(_py, BuiltinExc::RuntimeError, "invalid list builder");
                 return 1;
             }
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            let vec_ptr = *(builder_ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>);
             if vec_ptr.is_null() {
                 raise_exception::<()>(_py, BuiltinExc::RuntimeError, "consumed list builder");
                 return 1;
@@ -598,11 +599,11 @@ unsafe fn finish_sequence_builder(
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+        let vec_ptr = *(builder_ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>);
         if vec_ptr.is_null() {
             return raise_exception::<_>(py, BuiltinExc::RuntimeError, "consumed list builder");
         }
-        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+        *(builder_ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = std::ptr::null_mut();
         let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
         let result = allocate(py, vec.as_slice(), vec.capacity());
         if result.is_null() {
@@ -706,8 +707,8 @@ pub(crate) fn alloc_list_with_capacity(
 ) -> *mut u8 {
     let cap = capacity.max(elems.len());
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
@@ -726,7 +727,7 @@ pub(crate) fn alloc_list_with_capacity(
             vec_ptr,
             crate::object::refcount_opt::slice_heap_ref_count(elems),
         );
-        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
@@ -742,8 +743,8 @@ pub(crate) fn alloc_list_from_snapshot(
     snapshot: super::seq_access::PinnedSequenceSnapshot<'_, '_>,
 ) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
         + std::mem::size_of::<u64>();
     let object = alloc_object_with_aux(py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
     if object.is_null() {
@@ -753,7 +754,7 @@ pub(crate) fn alloc_list_from_snapshot(
     let storage = snapshot.into_owned_values().into_raw();
     unsafe {
         super::backing::tracked_vec_set_heap_edge_count(storage, heap_edges);
-        *(object as *mut *mut Vec<u64>) = storage;
+        *(object as *mut *mut crate::object::molt_vec::MoltVec<u64>) = storage;
         if heap_edges != 0 {
             (*header_from_obj_ptr(object)).fetch_or_flags(super::HEADER_FLAG_CONTAINS_REFS);
         }
@@ -767,8 +768,8 @@ pub(crate) fn alloc_list_from_snapshot(
 /// that the physical slots are not yet safe to read until populated.
 pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
@@ -789,7 +790,7 @@ pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject
             vec_ptr,
             usize::from(value.is_ptr()).saturating_mul(len),
         );
-        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = vec_ptr;
         if len != 0 && value.is_ptr() {
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
@@ -804,8 +805,8 @@ pub(crate) fn alloc_list_with_capacity_owned(
 ) -> *mut u8 {
     let cap = capacity.max(elems.len());
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
     if ptr.is_null() {
@@ -821,7 +822,7 @@ pub(crate) fn alloc_list_with_capacity_owned(
             vec_ptr,
             crate::object::refcount_opt::slice_heap_ref_count(elems),
         );
-        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
@@ -839,14 +840,18 @@ fn specialized_list_object_size<Storage>() -> usize {
 #[inline]
 unsafe fn drop_list_int_storage(storage_ptr: *mut crate::object::layout::ListIntStorage) {
     unsafe {
-        drop((*Box::from_raw(storage_ptr)).into_vec());
+        drop(crate::object::backing::tracked_vec_box_from_raw(
+            storage_ptr,
+        ));
     }
 }
 
 #[inline]
 unsafe fn drop_list_bool_storage(storage_ptr: *mut crate::object::layout::ListBoolStorage) {
     unsafe {
-        drop((*Box::from_raw(storage_ptr)).into_vec());
+        drop(crate::object::backing::tracked_vec_box_from_raw(
+            storage_ptr,
+        ));
     }
 }
 
@@ -903,7 +908,8 @@ pub(crate) fn alloc_list_bool_from_raw_slice(
     _py: &PyToken<'_>,
     elems: &[u8],
 ) -> Result<*mut u8, u64> {
-    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::from_slice(elems) else {
+    let Some(storage_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, elems.len())
+    else {
         record_memory_error_without_allocation(_py);
         return Err(MoltObject::none().bits());
     };
@@ -920,7 +926,7 @@ pub(crate) fn alloc_list_int_from_fill(
         return Err(MoltObject::none().bits());
     }
     if let Some(value) = crate::object::layout::InlineListInt::from_bits(fill) {
-        let Some(storage) = crate::object::layout::ListIntStorage::filled(len, value) else {
+        let Some(storage) = crate::object::backing::tracked_vec_box_filled(len, value.raw()) else {
             record_memory_error_without_allocation(py);
             return Err(MoltObject::none().bits());
         };
@@ -954,7 +960,7 @@ pub(crate) fn alloc_list_bool_filled(
     len: usize,
     value: u8,
 ) -> Result<*mut u8, u64> {
-    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::filled(len, value) else {
+    let Some(storage_ptr) = crate::object::backing::tracked_vec_box_filled(len, value) else {
         record_memory_error_without_allocation(_py);
         return Err(MoltObject::none().bits());
     };
@@ -1001,8 +1007,7 @@ pub(crate) fn alloc_list_bool_from_repeated_raw_slice(
     elems: &[u8],
     times: usize,
 ) -> Result<*mut u8, u64> {
-    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::repeated_slice(elems, times)
-    else {
+    let Some(storage_ptr) = crate::object::backing::tracked_vec_box_repeated(elems, times) else {
         record_memory_error_without_allocation(_py);
         return Err(MoltObject::none().bits());
     };
@@ -1017,12 +1022,13 @@ pub(crate) fn alloc_list_int_from_raw_iter<F>(
 where
     F: FnMut(usize) -> i64,
 {
-    use crate::object::layout::{InlineListInt, ListIntStorage};
+    use crate::object::layout::InlineListInt;
     let none = MoltObject::none().bits();
     if exception_pending(py) {
         return Err(none);
     }
-    let Some(storage_ptr) = ListIntStorage::with_capacity(len) else {
+    let Some(storage_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<i64>(len)
+    else {
         record_memory_error_without_allocation(py);
         return Err(none);
     };
@@ -1031,7 +1037,7 @@ where
     for index in 0..len {
         let value = raw_at(index);
         if let Some(value) = InlineListInt::from_raw(value) {
-            if unsafe { !(*storage_ptr).push(value) } {
+            if unsafe { !crate::object::layout::list_storage_push(storage_ptr, value.raw()) } {
                 record_memory_error_without_allocation(py);
                 unsafe { drop_list_int_storage(storage_ptr) };
                 return Err(none);
@@ -1075,14 +1081,13 @@ pub(crate) fn alloc_list_bool_from_raw_iter<F>(
 where
     F: FnMut(usize) -> u8,
 {
-    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::with_capacity(len) else {
+    let Some(storage_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<u8>(len) else {
         record_memory_error_without_allocation(_py);
         return Err(MoltObject::none().bits());
     };
     unsafe {
-        let storage = &mut *storage_ptr;
         for idx in 0..len {
-            if !storage.push(raw_at(idx)) {
+            if !crate::object::layout::list_storage_push(storage_ptr, raw_at(idx)) {
                 record_memory_error_without_allocation(_py);
                 drop_list_bool_storage(storage_ptr);
                 return Err(MoltObject::none().bits());
@@ -2570,7 +2575,8 @@ pub(crate) unsafe fn alloc_native_bytearray(py: &PyToken<'_>, class: u64) -> *mu
         return std::ptr::null_mut();
     };
     unsafe {
-        ptr.cast::<*mut Vec<u8>>().write(backing);
+        ptr.cast::<*mut crate::object::molt_vec::MoltVec<u8>>()
+            .write(backing);
         super::native_instance::publish(py, ptr, class)
     }
 }
@@ -2607,7 +2613,7 @@ pub(crate) fn alloc_bytearray_with_capacity(
 ) -> *mut u8 {
     let cap = capacity.max(bytes.len());
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u8>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u8>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_BYTEARRAY);
     if ptr.is_null() {
@@ -2619,14 +2625,14 @@ pub(crate) fn alloc_bytearray_with_capacity(
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
-        *(ptr as *mut *mut Vec<u8>) = vec_ptr;
+        *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u8>) = vec_ptr;
     }
     ptr
 }
 
 pub(crate) fn alloc_bytearray_with_len(_py: &PyToken<'_>, len: usize) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u8>>()
+        + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u8>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_BYTEARRAY);
     if ptr.is_null() {
@@ -2638,7 +2644,7 @@ pub(crate) fn alloc_bytearray_with_len(_py: &PyToken<'_>, len: usize) -> *mut u8
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
-        *(ptr as *mut *mut Vec<u8>) = vec_ptr;
+        *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u8>) = vec_ptr;
     }
     ptr
 }

@@ -830,7 +830,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
             | HeapLifecycleHandler::GlobIter => {}
             HeapLifecycleHandler::NativeHandle | HeapLifecycleHandler::Foreign => {}
             HeapLifecycleHandler::ListBuilder => {
-                let values = *(ptr as *mut *mut Vec<u64>);
+                let values = *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>);
                 if !values.is_null() {
                     for &bits in &*values {
                         visit_bits(bits, visit);
@@ -1745,7 +1745,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             }
             HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
             HeapLifecycleHandler::ListBuilder => {
-                let values = *(ptr as *mut *mut Vec<u64>);
+                let values = *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>);
                 if !values.is_null() {
                     for bits in std::mem::take(&mut *values).into_iter().rev() {
                         sink.detach_if_heap(bits);

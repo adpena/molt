@@ -857,8 +857,8 @@ pub(crate) struct SetEntry {
 /// `live`, physical entries length, and occupied index count are distinct facts.
 #[repr(C)]
 pub(crate) struct HashStorage<Entry> {
-    pub(crate) entries: *mut Vec<Entry>,
-    pub(crate) table: *mut Vec<usize>,
+    pub(crate) entries: *mut crate::object::molt_vec::MoltVec<Entry>,
+    pub(crate) table: *mut crate::object::molt_vec::MoltVec<usize>,
     pub(crate) live: usize,
     pub(crate) fill: usize,
 }
@@ -878,8 +878,8 @@ pub(crate) enum DictKeyKind {
 /// index or popitem truncates the row extent. Sets retain occupied-slot fill.
 #[repr(C)]
 pub(crate) struct DictStorage {
-    pub(crate) entries: *mut Vec<DictEntry>,
-    pub(crate) table: *mut Vec<usize>,
+    pub(crate) entries: *mut crate::object::molt_vec::MoltVec<DictEntry>,
+    pub(crate) table: *mut crate::object::molt_vec::MoltVec<usize>,
     pub(crate) live: usize,
     pub(crate) usable: usize,
     pub(crate) kind: DictKeyKind,
@@ -901,31 +901,43 @@ pub(crate) unsafe fn dict_storage(ptr: *mut u8) -> &'static mut DictStorage {
 pub(crate) unsafe fn set_storage(ptr: *mut u8) -> &'static mut HashStorage<SetEntry> {
     unsafe { &mut *ptr.cast() }
 }
-pub(crate) unsafe fn dict_entries_ptr(ptr: *mut u8) -> *mut Vec<DictEntry> {
+pub(crate) unsafe fn dict_entries_ptr(
+    ptr: *mut u8,
+) -> *mut crate::object::molt_vec::MoltVec<DictEntry> {
     unsafe { dict_storage(ptr).entries }
 }
-pub(crate) unsafe fn dict_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
+pub(crate) unsafe fn dict_table_ptr(ptr: *mut u8) -> *mut crate::object::molt_vec::MoltVec<usize> {
     unsafe { dict_storage(ptr).table }
 }
-pub(crate) unsafe fn dict_entries(ptr: *mut u8) -> &'static mut Vec<DictEntry> {
+pub(crate) unsafe fn dict_entries(
+    ptr: *mut u8,
+) -> &'static mut crate::object::molt_vec::MoltVec<DictEntry> {
     unsafe { &mut *dict_entries_ptr(ptr) }
 }
-pub(crate) unsafe fn dict_table(ptr: *mut u8) -> &'static mut Vec<usize> {
+pub(crate) unsafe fn dict_table(
+    ptr: *mut u8,
+) -> &'static mut crate::object::molt_vec::MoltVec<usize> {
     unsafe { &mut *dict_table_ptr(ptr) }
 }
 pub(crate) unsafe fn dict_len(ptr: *mut u8) -> usize {
     unsafe { dict_storage(ptr).live }
 }
-pub(crate) unsafe fn set_entries_ptr(ptr: *mut u8) -> *mut Vec<SetEntry> {
+pub(crate) unsafe fn set_entries_ptr(
+    ptr: *mut u8,
+) -> *mut crate::object::molt_vec::MoltVec<SetEntry> {
     unsafe { set_storage(ptr).entries }
 }
-pub(crate) unsafe fn set_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
+pub(crate) unsafe fn set_table_ptr(ptr: *mut u8) -> *mut crate::object::molt_vec::MoltVec<usize> {
     unsafe { set_storage(ptr).table }
 }
-pub(crate) unsafe fn set_entries(ptr: *mut u8) -> &'static mut Vec<SetEntry> {
+pub(crate) unsafe fn set_entries(
+    ptr: *mut u8,
+) -> &'static mut crate::object::molt_vec::MoltVec<SetEntry> {
     unsafe { &mut *set_entries_ptr(ptr) }
 }
-pub(crate) unsafe fn set_table(ptr: *mut u8) -> &'static mut Vec<usize> {
+pub(crate) unsafe fn set_table(
+    ptr: *mut u8,
+) -> &'static mut crate::object::molt_vec::MoltVec<usize> {
     unsafe { &mut *set_table_ptr(ptr) }
 }
 pub(crate) unsafe fn set_len(ptr: *mut u8) -> usize {

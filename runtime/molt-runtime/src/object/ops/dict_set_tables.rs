@@ -79,7 +79,7 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
             None,
         );
         let live_entries = dict_entries_ptr(live);
-        let live_table = dict_table(live) as *mut Vec<usize>;
+        let live_table = dict_table(live) as *mut crate::object::molt_vec::MoltVec<usize>;
         let _order_lock = crate::object::backing::tracked_vec_mutation_lock(live_entries);
         let _table_lock = crate::object::backing::tracked_vec_mutation_lock(live_table);
         let tracked =
@@ -1043,8 +1043,8 @@ fn checked_dict_growth_capacity(live: usize) -> Option<usize> {
 /// physical movement, retained hashes and bounded index remapping have one owner.
 unsafe fn reserve_hash_rows<E: HashRow>(
     py: &PyToken<'_>,
-    entries: *mut Vec<E>,
-    table: *mut Vec<usize>,
+    entries: *mut crate::object::molt_vec::MoltVec<E>,
+    table: *mut crate::object::molt_vec::MoltVec<usize>,
     live: usize,
     (capacity, required): (usize, usize),
     compact: bool,
