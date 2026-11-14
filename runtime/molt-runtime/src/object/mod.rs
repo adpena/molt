@@ -4676,10 +4676,17 @@ unsafe fn dec_ref_ptr_terminal_body(
         };
         // A payload of non-heap words with no side owner detaches nothing:
         // its backing store is freed below without the edge sink, its census
-        // or the detach walk. Every other object takes the full transaction.
+        // or the detach walk. A plain instance on that path keeps one edge,
+        // its class, released after the free as CPython's subtype_dealloc
+        // drops the type. Every other object takes the full transaction.
         let detaches_edges = module_registry_edge.is_some()
             || retired_runtime_view.is_some()
-            || !heap_lifecycle::retires_without_edges(ptr, terminal_flags, header_aux.kind);
+            || !heap_lifecycle::retires_without_edges(py, ptr, terminal_flags, header_aux.kind);
+        let class_edge = if detaches_edges {
+            0
+        } else {
+            object_detach_class_edge(ptr)
+        };
         if detaches_edges {
             let (terminal_edge_count, terminal_resource_count) =
                 heap_lifecycle::terminal_detach_capacity(py, ptr);
@@ -4829,6 +4836,9 @@ unsafe fn dec_ref_ptr_terminal_body(
         });
         if (header_flags & HEADER_FLAG_SCOPED) == 0 {
             record_terminal_deallocation(py, type_id, dealloc_bytes);
+        }
+        if class_edge != 0 {
+            dec_ref_bits(py, class_edge);
         }
         next_tee_link
     }
