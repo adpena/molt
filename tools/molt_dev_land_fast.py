@@ -178,15 +178,15 @@ def _interaction_rerun(
     """Which try-run gates main's move ``tested_base`` -> ``base`` can affect.
 
     A gate the lane passed on ``tested_base`` keeps its verdict on ``base``
-    unless the move can change it: a pytest cohort the move's own selection
-    also picks, or a Cargo gate when the reverse-dependency closures of the
-    lane's and the move's paths share a package (or either reaches the whole
-    workspace or the toolchain). Any other try-run gate reruns. Chromium's
-    commit queue and TAP make the same trade; postsubmit runs everything.
+    unless the move can change it: a pytest cohort that names a test file the
+    move's own selection also runs, or a Cargo gate when the
+    reverse-dependency closures of the lane's and the move's paths share a
+    package (or either reaches the whole workspace or the toolchain). Any
+    other try-run gate reruns. Chromium's commit queue and TAP make the same
+    trade; postsubmit runs everything.
     """
     from tools.cargo_reach import Workspace, reach
     from tools.proof_plan import CargoTargetAccess
-    from tools.molt_dev_gates import display
     from tools.molt_dev_policy import select_landing_gates
     from tools.molt_dev_queue import queue_paths, recent_postsubmit_failures
 
@@ -204,7 +204,9 @@ def _interaction_rerun(
         extra=[],
         recent_failures=recent_postsubmit_failures(queue_paths(repo)),
     )
-    moved_cohorts = {display(gate.command) for gate in moved_gates if gate.pytest}
+    moved_tests = {
+        target for gate in moved_gates if gate.pytest for target in _pytest_files(gate)
+    }
     cargo: list[bool] = []  # computed on the first Cargo gate
 
     def cargo_interacts() -> bool:
@@ -230,9 +232,10 @@ def _interaction_rerun(
         return cargo[0]
 
     def rerun(gate: SelectedGate) -> bool:
-        shown = display(gate.command)
         if gate.pytest:
-            return shown in moved_cohorts
+            # Cohorts merge files by their worker envelope, so two selections
+            # can share a file under different cohort commands.
+            return not moved_tests.isdisjoint(_pytest_files(gate))
         # A Cargo gate's verdict can change only through a package both
         # reverse-dependency closures reach (a package it builds depends on
         # both changes), so disjoint closures carry it.
@@ -243,30 +246,74 @@ def _interaction_rerun(
     return rerun
 
 
+def _pytest_files(gate: SelectedGate) -> set[str]:
+    """The test files a pytest gate names (a node id counts as its file)."""
+    command = gate.command
+    words = command.split() if isinstance(command, str) else list(command)
+    return {
+        word.partition("::")[0]
+        for word in words
+        if isinstance(word, str) and word.startswith("tests/")
+    }
+
+
+def _gate_identity(command: str) -> str:
+    """A gate's shown command without its ``--base`` binding: the same gate
+    on another base of main."""
+    words = command.split()
+    kept, skip = [], False
+    for word in words:
+        if skip:
+            skip = False
+            continue
+        if word == "--base":
+            skip = True
+            continue
+        kept.append(word)
+    return " ".join(kept)
+
+
 def _carried_records(prior: dict, rerun_records: list[dict]) -> list[dict]:
     """The prior receipt's try-run records the new run did not repeat, each
     marked with the base it passed on."""
-
-    def identity(command: str) -> str:
-        words = command.split()
-        kept, skip = [], False
-        for word in words:
-            if skip:
-                skip = False
-                continue
-            if word == "--base":
-                skip = True
-                continue
-            kept.append(word)
-        return " ".join(kept)
-
-    ran = {identity(str(record["command"])) for record in rerun_records}
+    ran = {_gate_identity(str(record["command"])) for record in rerun_records}
     # A record carried twice keeps the base it actually passed on.
     return [
         {"carried_from_base": prior["base"], **record}
         for record in prior["gates"]
-        if record["phase"] != "static" and identity(str(record["command"])) not in ran
+        if record["phase"] != "static"
+        and _gate_identity(str(record["command"])) not in ran
     ]
+
+
+def split_carried(
+    gates: list[SelectedGate],
+    prior: dict,
+    rerun: Callable[[SelectedGate], bool],
+) -> tuple[list[SelectedGate], list[dict]]:
+    """The gates to run on the new base, and the prior receipt's records the
+    rest carry.
+
+    A gate is carried only when the prior receipt passed the same gate (its
+    command less its ``--base``) outside the static phase and ``rerun`` says
+    main's move cannot change its verdict; every other gate runs.
+    """
+    from tools.molt_dev_gates import display
+
+    passed = {
+        _gate_identity(str(record["command"])): record
+        for record in prior["gates"]
+        if record["phase"] != "static"
+    }
+    run: list[SelectedGate] = []
+    carried: list[dict] = []
+    for gate in gates:
+        record = passed.get(_gate_identity(display(gate.command)))
+        if record is None or gate.static or rerun(gate):
+            run.append(gate)
+        else:
+            carried.append({"carried_from_base": prior["base"], **record})
+    return run, carried
 
 
 def _remote_main(git, remote: str) -> str | None:

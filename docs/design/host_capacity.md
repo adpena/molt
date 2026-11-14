@@ -112,7 +112,9 @@ An independent audit (2026-10-17) found more:
 6. **One executor CPU budget, per-peer memory slices.** The 2026-11-02
    host-wide jobserver attempt was rejected: leaked allotments and blocked
    I/O defeated its assumptions. The executor instead divides one observed
-   CPU budget (performance cores first on macOS, affinity/quota bounded)
+   CPU budget (every macOS core but the efficiency cores, affinity/quota
+   bounded; an M5 Max has 6 Super and 12 Performance cores and no
+   efficiency cores, so its budget is 18)
    among its pytest gates. It admits at most that many pytest sessions;
    serial sessions also reserve one CPU. Shares return when commands finish.
    This does not claim to budget other processes on the host. A parent
