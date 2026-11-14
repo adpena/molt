@@ -2463,6 +2463,7 @@ fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_value
                     .map(|name| molt_ir::ModuleRegistryRowIR {
                         name: name.into(),
                         init_symbol: None,
+                        static_cells: None,
                     })
                     .collect(),
                 ..Default::default()

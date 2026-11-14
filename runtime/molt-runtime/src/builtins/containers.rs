@@ -883,8 +883,9 @@ pub(crate) struct DictStorage {
     pub(crate) live: usize,
     pub(crate) usable: usize,
     pub(crate) kind: DictKeyKind,
-    /// A module namespace's slot table, or null (call_anatomy.md 4.5).
-    pub(crate) slots: *mut crate::builtins::namespace_slots::NamespaceSlots,
+    /// A module namespace's slot table or static cells, or none
+    /// (call_anatomy.md 4.5, 4.5a).
+    pub(crate) slots: crate::builtins::namespace_slots::NamespaceBinding,
 }
 
 const _: () = {

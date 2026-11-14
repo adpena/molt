@@ -24,6 +24,16 @@ def _writes(source: str, package: str | None = "pkg.sub") -> set[tuple]:
     return {
         (write.module, write.name, write.construct)
         for write in _summary(source, package).foreign_writes
+        if write.construct != "reflection"
+    }
+
+
+def _reflections(source: str, package: str | None = "pkg.sub") -> set[str | None]:
+    """The modules whose namespace mapping ``source`` reaches by identity."""
+    return {
+        write.module
+        for write in _summary(source, package).foreign_writes
+        if write.construct == "reflection"
     }
 
 
@@ -1150,3 +1160,67 @@ def test_namespace_escape_through_an_unproven_reader_stays_a_write(body: str) ->
     source = "import sys\n" + body
     rows = [w for w in _summary(source).foreign_writes if w.construct == "namespace"]
     assert rows, "the premise must stay poisoned"
+
+
+# Read-side facts (static module cells, call_anatomy.md 4.5a): a module whose
+# namespace mapping any code reaches by identity keeps its dictionary
+# namespace, so every such use must be recorded, read or write. A read of a
+# literal dunder key never needs a global, so it is not a reflection.
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import m\nseen = m.__dict__.get('k')\n", {"m"}),
+        ("import m\npresent = 'k' in vars(m)\n", {"m"}),
+        ("import m\nfor key in m.__dict__:\n    pass\n", {"m"}),
+        ("import m\nregister(vars(m))\n", {"m"}),
+        ("import m\nnamespace = getattr(m, '__dict__')\n", {"m"}),
+        ("import sys\nsys.modules[name].__dict__.get('k')\n", {None}),
+        ("import sys\nns = sys.modules['pkg.literal'].__dict__\n", {"pkg.literal"}),
+        ("def f(fn):\n    return fn.__globals__['helper']\n", {None}),
+        ("def f(frame):\n    return dict(frame.f_globals)\n", {None}),
+        ("def f(frame):\n    return getattr(frame, 'f_globals')\n", {None}),
+        # Literal dunder keys stay in every module's dictionary.
+        ("import m\nname = m.__dict__['__name__']\n", set()),
+        ("def f(frame):\n    return frame.f_globals.get('__name__', 'x')\n", set()),
+        ("def f(tb):\n    return '__name__' in tb.tb_frame.f_globals\n", set()),
+        # A private name is a global, not a dunder: unittest's marker reads it.
+        ("def f(tb):\n    return '__unittest' in tb.tb_frame.f_globals\n", {None}),
+        (
+            "def f(caller):\n"
+            "    ns = getattr(caller, 'f_globals', None)\n"
+            "    if isinstance(ns, dict):\n"
+            "        return ns.get('__name__')\n",
+            set(),
+        ),
+        # An alias that reads a non-dunder key is a reflection.
+        (
+            "def f(caller):\n    ns = caller.f_globals\n    return ns.get('helper')\n",
+            {None},
+        ),
+        # An attribute that is not a namespace mapping reaches nothing.
+        ("import m\nvalue = m.helper\n", set()),
+        ("def f(obj):\n    return obj.__dict__['x']\n", set()),
+    ],
+)
+def test_namespace_mapping_reads_are_reflections(
+    source: str, expected: set[str | None]
+) -> None:
+    assert _reflections(source) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "line"),
+    [
+        ("x = 1\nnames = globals()\n", 2),
+        ("x = 1\nvalue = globals()['x']\n", 2),
+        ("x = 1\nlocal = locals()\n", 2),
+        ("x = 1\ndef f():\n    return vars()\n", 0),
+        ("x = 1\ndef f():\n    return globals().get('x')\n", 3),
+        ("x = 1\nexec('y = 2')\n", 2),
+        ("x = 1\nprint(x)\n", 0),
+    ],
+)
+def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:
+    assert _summary(source, None).own_namespace_line == line

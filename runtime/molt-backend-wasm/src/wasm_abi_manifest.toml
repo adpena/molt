@@ -1210,6 +1210,12 @@ runtime_name = "molt_global_slot_set"
 callable_arity = 5
 
 [[import]]
+name = "static_cells_bind"
+type = 4
+runtime_name = "molt_static_cells_bind"
+callable_arity = 3
+
+[[import]]
 name = "build_class_builtin"
 type = 3
 runtime_name = "molt_build_class_builtin"

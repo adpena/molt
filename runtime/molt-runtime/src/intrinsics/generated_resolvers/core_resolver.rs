@@ -397,6 +397,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_global_slot_set",
             crate::molt_global_slot_set as *const (),
         )),
+        "molt_static_cells_bind" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_static_cells_bind",
+            crate::molt_static_cells_bind as *const (),
+        )),
         "molt_build_class_builtin" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_build_class_builtin",
             crate::molt_build_class_builtin as *const (),

@@ -63,6 +63,7 @@ from tools import proof_receipts, toolchain_probe  # noqa: E402
 from tools.proof_command_argv import is_python_command  # noqa: E402
 from molt import python_environment_contract as _contract  # noqa: E402
 from molt import host_capacity  # noqa: E402
+from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
@@ -5754,6 +5755,13 @@ def execute_commands(
 ) -> int:
     commands = tuple(commands)
     baseline = MappingProxyType(dict(os.environ))
+    # Command profiles are guard evidence: they live under the guard's artifact
+    # root, never beside a receipt in the source checkout, where the storage
+    # authority refuses them (CI's docs gates failed every test that ran a
+    # guarded child under it, 2026-11-13).
+    profile_root = (
+        harness_guard_artifact_dir(ROOT, baseline) / "proof-plan" / receipt_path.stem
+    )
     memory_share = _command_memory_share(plan, commands)
     closures = {command.id: plan.required_toolchains(command) for command in commands}
     environments: dict[tuple[str, ...], Mapping[str, str]] = {}
@@ -5801,7 +5809,7 @@ def execute_commands(
                 {
                     **environments[closures[command.id]],
                     "MOLT_GUARD_PROFILE_LOG": str(
-                        receipt_path.with_suffix(".d")
+                        profile_root
                         / f"{command.id}.attempt-{allocation.attempt}.profile.jsonl"
                     ),
                 }

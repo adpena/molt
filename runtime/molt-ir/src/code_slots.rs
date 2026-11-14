@@ -150,6 +150,16 @@ pub fn program_slot_symbol(kind: ProgramSlotKind, owner: &str) -> String {
     )
 }
 
+/// The writable data symbol of a cell-eligible module's static cell block
+/// (call_anatomy.md 4.5a): one word per layout name, initially unbound,
+/// defined once in the program object and imported by every function object.
+pub fn static_cell_block_symbol(module: &str) -> String {
+    format!(
+        "__molt_static_cells_{}",
+        crate::content_digest::bytes_to_lower_hex(module.as_bytes())
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,6 +23,30 @@ pub(super) fn emit_object_attr_op(
     reloc_enabled: bool,
     op_idx: usize,
 ) -> bool {
+    match op.kind {
+        molt_ir::OpKind::StaticCellBase => {
+            crate::wasm::global_slot::emit_static_cell_base(
+                backend,
+                func,
+                op,
+                locals,
+                func_index,
+                reloc_enabled,
+            );
+            return true;
+        }
+        molt_ir::OpKind::StaticCellSet => {
+            crate::wasm::global_slot::emit_static_cell_set(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+            );
+            return true;
+        }
+        _ => {}
+    }
     if class_ops::emit_class_object_op(
         func,
         op,

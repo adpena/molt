@@ -339,22 +339,6 @@ impl FrameRecord {
         }
     }
 
-    /// The site the frame last published, read from its location word.
-    #[inline]
-    pub(crate) fn location(self) -> LocationId {
-        LocationId::from_word(unsafe { *self.header(molt_codegen_abi::FRAME_LOCATION_OFFSET) })
-    }
-
-    /// The frame's current source position, decoded from its code's location
-    /// table. Reads the record's code and location words only.
-    pub(crate) fn source_position(self) -> Option<super::locations::CodeLocation> {
-        let code = obj_from_bits(self.code_bits()).as_ptr()?;
-        if unsafe { crate::object_type_id(code) } != crate::TYPE_ID_CODE {
-            return None;
-        }
-        unsafe { super::locations::code_location(code, self.location()) }
-    }
-
     /// A copy of the frame's facts, every edge borrowed from the record.
     pub(crate) fn entry(self) -> FrameEntry {
         self.entry_with(self.bindings())

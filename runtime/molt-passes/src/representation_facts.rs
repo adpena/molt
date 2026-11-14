@@ -600,6 +600,8 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::ModuleGetGlobal
         | OpCode::GlobalSlotBase
         | OpCode::GlobalSlotGet
+        | OpCode::StaticCellBase
+        | OpCode::StaticCellSet
         | OpCode::ModuleGetName
         | OpCode::ModuleSetAttr
         | OpCode::ModuleDelGlobal

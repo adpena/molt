@@ -236,6 +236,7 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
             "entry_member_writes": expected.entry_member_writes,
             "noncanonical_imports": expected.noncanonical_imports,
             "opaque_activation_sources": expected.opaque_activation_sources,
+            "namespace_reflected": expected.namespace_reflected,
         }
     )
 

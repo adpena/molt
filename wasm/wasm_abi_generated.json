@@ -14884,6 +14884,10 @@
       "context": "Attached",
       "physical_symbol": "molt_stateful_locals_register__molt_context_047a33b55bc1b76d"
     },
+    "molt_static_cells_bind": {
+      "context": "Attached",
+      "physical_symbol": "molt_static_cells_bind__molt_context_047a33b55bc1b76d"
+    },
     "molt_staticmethod_builtin": {
       "context": "Attached",
       "physical_symbol": "molt_staticmethod_builtin__molt_context_047a33b55bc1b76d"
@@ -24031,6 +24035,7 @@
     "molt_stat_issock__molt_context_047a33b55bc1b76d": "molt_stat_issock__molt_context_047a33b55bc1b76d",
     "molt_stat_iswht__molt_context_047a33b55bc1b76d": "molt_stat_iswht__molt_context_047a33b55bc1b76d",
     "molt_stateful_locals_register__molt_context_047a33b55bc1b76d": "molt_stateful_locals_register__molt_context_047a33b55bc1b76d",
+    "molt_static_cells_bind__molt_context_047a33b55bc1b76d": "molt_static_cells_bind__molt_context_047a33b55bc1b76d",
     "molt_staticmethod_builtin__molt_context_047a33b55bc1b76d": "molt_staticmethod_builtin__molt_context_047a33b55bc1b76d",
     "molt_staticmethod_call__molt_context_047a33b55bc1b76d": "molt_staticmethod_call__molt_context_047a33b55bc1b76d",
     "molt_staticmethod_get__molt_context_047a33b55bc1b76d": "molt_staticmethod_get__molt_context_047a33b55bc1b76d",
@@ -25308,6 +25313,7 @@
     "stat_issock": "molt_stat_issock__molt_context_047a33b55bc1b76d",
     "stat_iswht": "molt_stat_iswht__molt_context_047a33b55bc1b76d",
     "stateful_locals_register": "molt_stateful_locals_register__molt_context_047a33b55bc1b76d",
+    "static_cells_bind": "molt_static_cells_bind__molt_context_047a33b55bc1b76d",
     "staticmethod_call": "molt_staticmethod_call__molt_context_047a33b55bc1b76d",
     "staticmethod_get": "molt_staticmethod_get__molt_context_047a33b55bc1b76d",
     "staticmethod_init": "molt_staticmethod_init__molt_context_047a33b55bc1b76d",

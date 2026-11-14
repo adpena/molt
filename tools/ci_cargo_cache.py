@@ -27,6 +27,15 @@ from pathlib import Path
 # across runs, because actions/cache folds its paths into the cache version.
 DEFAULT_TARGET_NAME = "molt-cargo-target"
 TARGET_ENV = "MOLT_CARGO_CACHE_TARGET"
+# Cargo writes this tag only when it creates a target directory itself.
+# `configure` creates the directory first, and Cargo 1.100's `cargo clean`
+# refuses a target without a valid tag, so CI's prune failed on every job
+# (2026-11-13). The text is Cargo's own; https://bford.info/cachedir/
+CARGO_CACHEDIR_TAG = (
+    "Signature: 8a477f597d28d172789f06886806bc55\n"
+    "# This file is a cache directory tag created by cargo.\n"
+    "# For information about cache directory tags see https://bford.info/cachedir/\n"
+)
 
 # setup-project saves ``cargo-<namespace>-<os>-<arch>-<toolchain token>-
 # <sha256 of the dependency inputs>-<run id>-<run attempt>``.
@@ -48,6 +57,9 @@ def configure_cargo_cache(environ: Mapping[str, str]) -> Path:
         target = workspace / target
     target = target.resolve()
     target.mkdir(parents=True, exist_ok=True)
+    tag = target / "CACHEDIR.TAG"
+    if not tag.is_file():
+        tag.write_text(CARGO_CACHEDIR_TAG, encoding="utf-8")
     with Path(environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_env:
         github_env.write(
             f"CARGO_TARGET_DIR={target}\nCARGO_INCREMENTAL=0\n{TARGET_ENV}={target}\n"

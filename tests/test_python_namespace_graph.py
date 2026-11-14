@@ -106,6 +106,7 @@ def test_incremental_index_matches_whole_graph_in_any_admission_order() -> None:
         PythonNamespaceWrite("second", None, "namespace", 2),
         PythonNamespaceWrite(None, "shared", "attribute", 3),
         PythonNamespaceWrite("typing", "TYPE_CHECKING", "attribute", 4),
+        PythonNamespaceWrite("second", None, "reflection", 5),
     )
     oracle = graph_python_namespace_writes(writes, topology.get)
     for order in permutations(writes):
@@ -136,7 +137,7 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
     assert index.merge(NO_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) is None
     assert index.premise(second, frozenset()) == PythonNamespacePremise(
-        None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, ()
+        None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, (), namespace_reflected=True
     )
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(batch) == frozenset()
@@ -206,3 +207,26 @@ def test_callback_inventory_does_not_claim_initializer_execution() -> None:
         PythonMember.SYS_PLATFORM
     )
     assert before.entry_member_writes == 0
+
+
+def test_reflection_marks_only_its_target_and_writes_no_member() -> None:
+    first, second = Path("first.py"), Path("second.py")
+    topology = {"first": first, "second": second}
+    named = graph_python_namespace_writes(
+        (PythonNamespaceWrite("first", None, "reflection", 1),), topology.get
+    )
+    assert named.premise(first, frozenset()) == PythonNamespacePremise(
+        (), 0, 0, (), namespace_reflected=True
+    )
+    assert named.premise(second, frozenset()) == PythonNamespacePremise((), 0, 0, ())
+    # A reflection of some module's mapping (a frame's f_globals) reaches all.
+    anywhere = graph_python_namespace_writes(
+        (PythonNamespaceWrite(None, None, "reflection", 1),), topology.get
+    )
+    assert anywhere.premise(second, frozenset()) == PythonNamespacePremise(
+        (), 0, 0, (), namespace_reflected=True
+    )
+    index = PythonGraphNamespaceIndex()
+    assert index.merge(named) == frozenset({first})
+    assert index.merge(anywhere) is None
+    assert index.premise(second, frozenset()).namespace_reflected

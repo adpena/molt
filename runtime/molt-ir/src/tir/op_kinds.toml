@@ -589,6 +589,7 @@ simpleir_object_model_semantics_kinds = [
     "module_new", "module_cache_get", "module_load_cached", "module_cache_set",
     "module_cache_del", "module_import", "module_get_attr", "module_import_from",
     "module_get_name", "module_get_global", "global_slot_get", "module_set_attr",
+    "static_cell_base", "static_cell_set",
     "object_new", "builtin_type", "bound_method_new",
     "func_new", "func_new_closure", "code_new", "code_slot_set", "code_slots_init",
     "set_new", "frozenset_new", "set_add", "set_add_probe", "frozenset_add",
@@ -1469,6 +1470,9 @@ gvn_always_numberable_opcodes = [
     # read of one module in a function shares one base.
     "ModuleSlot",
     "GlobalSlotBase",
+    # A static cell block's address is a link-time constant
+    # (call_anatomy.md 4.5a).
+    "StaticCellBase",
 ]
 
 gvn_type_gated_numberable_opcodes = [
@@ -1518,6 +1522,7 @@ gvn_value_keyed_constant_opcodes = [
 gvn_numberable_attr_key_opcodes = [
     { opcode = "TypeGuard", key = "str_attr", attrs = ["expected_type", "ty"] },
     { opcode = "ModuleSlot", key = "str_attr", attrs = ["s_value"] },
+    { opcode = "StaticCellBase", key = "str_attr", attrs = ["s_value"] },
 ]
 
 # final_tir_opcodes: produced only by the terminal phase of TIR for targets
@@ -2102,6 +2107,12 @@ value_rule = "nonnegative"
 
 [[simpleir_op_shape]]
 kind = "module_slot"
+family = "module_registry"
+operands = 0
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "static_cell_base"
 family = "module_registry"
 operands = 0
 value_rule = "unconstrained"
@@ -4375,6 +4386,29 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "StaticCellBase"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_types = ["i64"]
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StaticCellSet"
+may_call_python = true
+operand_arity = 2
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "GlobalSlotGet"
 may_call_python = true
 operand_arity = 3
@@ -5049,6 +5083,16 @@ mapper_opcode = "ModuleGetGlobal"
 canonical = "global_slot_get"
 aliases = []
 mapper_opcode = "GlobalSlotGet"
+
+[[kind]]
+canonical = "static_cell_base"
+aliases = []
+mapper_opcode = "StaticCellBase"
+
+[[kind]]
+canonical = "static_cell_set"
+aliases = []
+mapper_opcode = "StaticCellSet"
 
 [[kind]]
 canonical = "module_get_name"

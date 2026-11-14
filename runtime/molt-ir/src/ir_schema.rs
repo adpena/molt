@@ -29,6 +29,7 @@ const BCE_SAFE_KINDS: &[crate::OpKind] = &[crate::OpKind::Index, crate::OpKind::
 const GLOBAL_SLOT_KINDS: &[crate::OpKind] = &[
     crate::OpKind::ModuleGetGlobal,
     crate::OpKind::GlobalSlotGet,
+    crate::OpKind::StaticCellSet,
     crate::OpKind::ModuleSetAttr,
     crate::OpKind::DictSet,
 ];
@@ -248,7 +249,11 @@ pub fn validate_program_slot_symbol(
             violation: OpShapeViolation::CodeSlotSymbol,
         });
     }
-    if kind == crate::OpKind::ModuleSlot && symbol.is_none_or(str::is_empty) {
+    if matches!(
+        kind,
+        crate::OpKind::ModuleSlot | crate::OpKind::StaticCellBase
+    ) && symbol.is_none_or(str::is_empty)
+    {
         return Err(OpShapeDiagnostic {
             family: "module_registry",
             kind: kind.to_string(),

@@ -467,6 +467,8 @@ impl RustBackend {
             | molt_ir::OpKind::ModuleDelGlobalIfPresent
             | molt_ir::OpKind::ModuleGetGlobal
             | molt_ir::OpKind::GlobalSlotGet
+            | molt_ir::OpKind::StaticCellBase
+            | molt_ir::OpKind::StaticCellSet
             | molt_ir::OpKind::ModuleImport
             | molt_ir::OpKind::ModuleImportFrom
             | molt_ir::OpKind::ModuleImportStar

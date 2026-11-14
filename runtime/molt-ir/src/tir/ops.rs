@@ -378,6 +378,17 @@ pub enum OpCode {
     /// `ModuleGetGlobal`'s by-name path on the last two operands, with the
     /// same results, exceptions and effects.
     GlobalSlotGet,
+    /// The cell block of one cell-eligible module (call_anatomy.md 4.5a): a
+    /// fixed-address array in program data, one word per layout name. Attr
+    /// `s_value` names the module. Result: an inline int of the block's
+    /// address shifted right by `GLOBAL_SLOT_BASE_SHIFT`, the base a
+    /// `GlobalSlotGet` reads. A link-time constant: pure, never raises.
+    StaticCellBase,
+    /// A store into a static cell (call_anatomy.md 4.5a). Operands:
+    /// `[base, value]`; the op carries its `global_slot` (cell k of the
+    /// block). Retains `value`, swaps it into the cell and releases the old
+    /// word (`molt_codegen_abi::static_cell`). No runtime call, no result.
+    StaticCellSet,
     /// Read a named module attribute through the `module_get_name` runtime
     /// entrypoint used by the current native/WASM import surface.
     ///
@@ -557,6 +568,9 @@ pub const ARGUMENT_CUSTODY_ATTR: &str = "argument_custody";
 /// typed accessor pair reads and writes them; nothing else spells them.
 const GLOBAL_SLOT_MODULE_ATTR: &str = "global_slot_module";
 const GLOBAL_SLOT_INDEX_ATTR: &str = "global_slot_index";
+/// Present when the slot is a static cell of a cell-eligible module
+/// (call_anatomy.md 4.5a), absent for a namespace slot table.
+const GLOBAL_SLOT_CELL_ATTR: &str = "global_slot_cell";
 /// The compiled method site of a method load or of the call that consumes its
 /// pair (`OpIR::method_site`); only its typed accessor pair spells it.
 const METHOD_SITE_ATTR: &str = "method_site";
@@ -862,7 +876,16 @@ impl TirOp {
             }),
             other => panic!("{:?}: malformed global slot index {other:?}", self.opcode),
         };
-        Some(crate::ir::GlobalSlotRef { module, index })
+        let cell = match self.attrs.get(GLOBAL_SLOT_CELL_ATTR) {
+            None => false,
+            Some(&AttrValue::Bool(true)) => true,
+            other => panic!("{:?}: malformed global slot cell {other:?}", self.opcode),
+        };
+        Some(crate::ir::GlobalSlotRef {
+            module,
+            index,
+            cell,
+        })
     }
 
     /// The compiled method site this op belongs to (call_anatomy.md 4.5).
@@ -900,10 +923,17 @@ impl TirOp {
                     GLOBAL_SLOT_INDEX_ATTR.into(),
                     AttrValue::Int(i64::from(slot.index)),
                 );
+                if slot.cell {
+                    self.attrs
+                        .insert(GLOBAL_SLOT_CELL_ATTR.into(), AttrValue::Bool(true));
+                } else {
+                    self.attrs.remove(GLOBAL_SLOT_CELL_ATTR);
+                }
             }
             None => {
                 self.attrs.remove(GLOBAL_SLOT_MODULE_ATTR);
                 self.attrs.remove(GLOBAL_SLOT_INDEX_ATTR);
+                self.attrs.remove(GLOBAL_SLOT_CELL_ATTR);
             }
         }
     }

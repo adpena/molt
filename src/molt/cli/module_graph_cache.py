@@ -349,6 +349,7 @@ def _encode_namespace_summary(summary: PythonNamespaceSummary) -> dict[str, Any]
             python_namespace_write_payload(write) for write in summary.foreign_writes
         ],
         "own_reflection_line": summary.own_reflection_line,
+        "own_namespace_line": summary.own_namespace_line,
     }
 
 
@@ -361,7 +362,14 @@ def _validate_import_scan_namespace_summary(
 
 def _decode_namespace_summary(raw: Any) -> PythonNamespaceSummary:
     item = _source_cache_record(
-        raw, {"schema", "own_names", "foreign_writes", "own_reflection_line"}
+        raw,
+        {
+            "schema",
+            "own_names",
+            "foreign_writes",
+            "own_reflection_line",
+            "own_namespace_line",
+        },
     )
     if type(item["schema"]) is not int or item["schema"] != SUMMARY_SCHEMA:
         raise ValueError("invalid namespace summary schema")
@@ -377,7 +385,14 @@ def _decode_namespace_summary(raw: Any) -> PythonNamespaceSummary:
     ]
     if len(set(writes)) != len(writes):
         raise ValueError("repeated foreign namespace write")
-    return PythonNamespaceSummary(own_names, tuple(writes), line)
+    namespace_line = item["own_namespace_line"]
+    if (
+        type(namespace_line) is not int
+        or namespace_line < 0
+        or (line > 0 and not 0 < namespace_line <= line)
+    ):
+        raise ValueError("invalid namespace reach line")
+    return PythonNamespaceSummary(own_names, tuple(writes), line, namespace_line)
 
 
 def _encode_intrinsic_source_facts(
@@ -513,6 +528,7 @@ def _namespace_premise_cache_identity(
             if premise.opaque_activation_sources is None
             else list(premise.opaque_activation_sources)
         ),
+        "namespace_reflected": premise.namespace_reflected,
     }
 
 
@@ -529,6 +545,7 @@ def _decode_namespace_premise_cache_identity(
             "entry_member_writes",
             "noncanonical_imports",
             "opaque_activation_sources",
+            "namespace_reflected",
         },
     )
     foreign = item["foreign_writes"]
@@ -550,7 +567,12 @@ def _decode_namespace_premise_cache_identity(
     )
     if opaque is not None and tuple(sorted(set(opaque))) != opaque:
         raise ValueError("invalid namespace activation source keys")
-    return PythonNamespacePremise(foreign, members, entry_members, noncanonical, opaque)
+    reflected = item["namespace_reflected"]
+    if type(reflected) is not bool:
+        raise ValueError("invalid namespace premise reflection")
+    return PythonNamespacePremise(
+        foreign, members, entry_members, noncanonical, opaque, reflected
+    )
 
 
 def _intrinsic_source_identity(
@@ -824,7 +846,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 43
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 44
 
 
 def _import_scan_cache_key(

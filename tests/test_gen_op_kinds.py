@@ -350,6 +350,7 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "frame_home_clear": 0,
         "code_new": 9,
         "module_slot": 0,
+        "static_cell_base": 0,
         "guard_layout": 2,
         "class_set_definition": 1,
         "code_slot_set": 2,
@@ -1442,6 +1443,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "GlobalSlotBase": "i64",
         "GlobalSlotGet": "dynbox",
         "ModuleSlot": "i64",
+        "StaticCellBase": "i64",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
         "ConstFloat": "f64",
@@ -2684,6 +2686,7 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "IntToFloat",
         "ModuleSlot",
         "GlobalSlotBase",
+        "StaticCellBase",
     }
     expected_type_gated = {
         "Add",
@@ -2754,6 +2757,11 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
             "key": "str_attr",
             "attrs": ["s_value"],
         },
+        "StaticCellBase": {
+            "opcode": "StaticCellBase",
+            "key": "str_attr",
+            "attrs": ["s_value"],
+        },
     }
     expected_value_keyed = set(expected_value_keyed_rows)
     expected_proven_seeds = expected_value_keyed - {"ConstBigInt"}
@@ -2803,6 +2811,7 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "ConstBytes": "BytesAttr",
         "TypeGuard": "StrAttr",
         "ModuleSlot": "StrAttr",
+        "StaticCellBase": "StrAttr",
     }
     expected_attr_consts = {
         "ConstInt": 'const GVN_VALUE_KEY_ATTRS_CONST_INT: &[&str] = &["value"];',
@@ -2822,6 +2831,9 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
             'const GVN_VALUE_KEY_ATTRS_TYPE_GUARD: &[&str] = &["expected_type", "ty"];'
         ),
         "ModuleSlot": 'const GVN_VALUE_KEY_ATTRS_MODULE_SLOT: &[&str] = &["s_value"];',
+        "StaticCellBase": (
+            'const GVN_VALUE_KEY_ATTRS_STATIC_CELL_BASE: &[&str] = &["s_value"];'
+        ),
     }
     for opcode, variant in expected_key_variants.items():
         const_decl = expected_attr_consts[opcode]
