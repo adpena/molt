@@ -516,9 +516,6 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
     monkeypatch.setattr(
         build_results, "_assert_native_binary_valid", lambda *args: None
     )
-    monkeypatch.setattr(
-        link_pipeline, "_darwin_link_validation_failure", lambda **kwargs: None
-    )
     linked: list[Path] = []
     darwin = (
         resolve_native_target_spec(target).object_format is NativeObjectFormat.MACHO

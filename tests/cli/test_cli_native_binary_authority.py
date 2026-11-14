@@ -21,8 +21,6 @@ from tests.process_guard_common import install_module_view
 _NATIVE_BINARY_NAMES = (
     "_NativeBinaryInvalid",
     "_assert_native_binary_valid",
-    "_darwin_binary_imports_validation_error",
-    "_darwin_binary_magic_error",
     "_expected_binary_format_for_target",
     "_smoke_probe_native_binary",
     "_target_is_host_executable",
@@ -32,8 +30,6 @@ _NATIVE_BINARY_NAMES = (
 _NATIVE_BINARY_DEFINITIONS = (
     "class _NativeBinaryInvalid",
     "def _assert_native_binary_valid(",
-    "def _darwin_binary_imports_validation_error(",
-    "def _darwin_binary_magic_error(",
     "def _expected_binary_format_for_target(",
     "def _smoke_probe_native_binary(",
     "def _target_is_host_executable(",
@@ -154,21 +150,6 @@ def test_smoke_probe_requires_exact_host_shape_and_does_not_assume_rosetta(monke
     assert native_binary._target_is_host_executable("aarch64-apple-darwin")
     assert not native_binary._target_is_host_executable("x86_64-apple-darwin")
     assert not native_binary._target_is_host_executable("aarch64_32-apple-darwin")
-
-
-def test_darwin_post_link_hook_uses_same_bounded_header_authority(
-    tmp_path, monkeypatch
-):
-    binary = tmp_path / "image"
-    binary.write_bytes(macho_header())
-    # The check runs only on a Darwin host; native_binary is its reader.
-    install_module_view(monkeypatch, "sys", sys, native_binary, platform="darwin")
-    monkeypatch.setattr(Path, "read_bytes", lambda path: pytest.fail("whole-file read"))
-    assert native_binary._darwin_binary_magic_error(binary) is None
-    binary.write_bytes(macho_header(cpu=0x0100000C))
-    assert native_binary._darwin_binary_magic_error(binary) is None
-    binary.write_bytes(elf_header())
-    assert "expected macho" in native_binary._darwin_binary_magic_error(binary)
 
 
 @pytest.mark.parametrize("valid", [False, True])

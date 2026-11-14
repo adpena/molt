@@ -1818,14 +1818,6 @@ owner = "tests/molt_diff.py"
 summary = "RSS threshold in kilobytes above which tests/molt_diff.py retires a verified backend daemon it owns during its pruning passes on POSIX hosts, once the daemon reports no admitted jobs; retirement unlinks the socket and lets accepted work finish, and a busy daemon keeps running. 0 or a negative value disables RSS-based retirement, non-numeric values fall back to 2500000."
 
 [[variable]]
-name = "MOLT_DIFF_DYLD_PREFLIGHT"
-audience = "developer"
-kind = "bool"
-default = ""
-owner = "tests/molt_diff.py"
-summary = "Enables the otool -l preflight that checks a freshly built test binary for dyld unknown imports format or malformed load command corruption before it runs; 1/true/yes/on enables it, 0/false/no/off disables it, and when unset the check runs on macOS only. A detected defect fails the selected attempt without rerunning it."
-
-[[variable]]
 name = "MOLT_DIFF_FAILURES"
 audience = "developer"
 kind = "path"

@@ -895,12 +895,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "MOLT_CLI_TEST limits, process-group custody, and force-close helper",
     ),
     AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_dyld_preflight_error",
-        "run",
-        "differential harness bounded dyld preflight compile probe",
-    ),
-    AllowedRawSubprocessUse(
         "tests/test_tkinter_phase0_wrappers.py",
         "_run_probe",
         "run",

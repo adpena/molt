@@ -767,7 +767,6 @@ def test_native_profiling_wraps_guarded_commands_only_when_requested(
     monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
     monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda *a, **k: None)
     monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda **k: None)
     monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
     looked_up = []
@@ -1450,7 +1449,6 @@ def test_native_resource_evidence_survives_build_and_run(
         module, "_diff_batch_compile_server_enabled", lambda: source == "batch"
     )
     selected = str(tmp_path / "context CLI python")
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
     monkeypatch.setattr(
         module,
@@ -1537,7 +1535,6 @@ def test_native_timeout_preserves_guard_outcome_and_raw_streams(
     monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(
         module, "_memory_guard_trip_outcome", lambda *, environment=None: None
     )
@@ -1663,7 +1660,6 @@ def test_native_build_runs_inside_the_frontend_image_and_the_guest_does_not(
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
     image = tmp_path / "image"
     harness = {

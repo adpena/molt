@@ -39,12 +39,6 @@ def test_runtime_build_identity_is_verified_before_every_production_link() -> No
     assert verify < identity < run
 
 
-def test_darwin_validation_reports_invalid_selected_linker_output() -> None:
-    source = inspect.getsource(link_pipeline._validate_darwin_link_output)
-    assert "_run_native_link_command" not in source
-    assert "retry" not in source.lower()
-
-
 def test_bolt_runs_inside_build_before_success_is_emitted() -> None:
     source = inspect.getsource(backend_output_pipeline._emit_backend_pipeline_outputs)
     assert source.index("_run_bolt_post_link(") < source.index(
