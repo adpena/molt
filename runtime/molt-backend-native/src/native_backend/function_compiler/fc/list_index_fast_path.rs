@@ -78,34 +78,20 @@ pub(in crate::native_backend::function_compiler) fn observe_generic_list_storage
         .iconst(types::I32, molt_codegen_abi::TYPE_ID_LIST_INT as i64);
     let is_bool = builder.ins().icmp(IntCC::Equal, kind, bool_kind);
     let is_int = builder.ins().icmp(IntCC::Equal, kind, int_kind);
-    let is_flat = builder.ins().bor(is_bool, is_int);
-    let flat_data = builder.ins().load(
+    // Every list storage keeps its data pointer and length at the same
+    // offsets (molt_codegen_abi::LIST_STORAGE_*), whatever the element kind.
+    let data = builder.ins().load(
         types::I64,
         MemFlagsData::trusted(),
         storage,
-        LIST_INT_STORAGE_DATA_OFFSET,
+        LIST_STORAGE_DATA_OFFSET,
     );
-    let flat_len = builder.ins().load(
+    let len = builder.ins().load(
         types::I64,
         MemFlagsData::trusted(),
         storage,
-        LIST_INT_STORAGE_LEN_OFFSET,
+        LIST_STORAGE_LEN_OFFSET,
     );
-    let vec_layout = vec_u64_layout();
-    let boxed_data = builder.ins().load(
-        types::I64,
-        MemFlagsData::trusted(),
-        storage,
-        vec_layout.data_offset,
-    );
-    let boxed_len = builder.ins().load(
-        types::I64,
-        MemFlagsData::trusted(),
-        storage,
-        vec_layout.len_offset,
-    );
-    let data = builder.ins().select(is_flat, flat_data, boxed_data);
-    let len = builder.ins().select(is_flat, flat_len, boxed_len);
     for (field, value) in fields.into_iter().zip([data, len, is_bool, is_int]) {
         let ty = builder.func.dfg.value_type(value);
         let variable = builder.declare_var(ty);
@@ -611,13 +597,13 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
                 types::I64,
                 MemFlagsData::trusted(),
                 storage_ptr,
-                LIST_INT_STORAGE_DATA_OFFSET,
+                LIST_STORAGE_DATA_OFFSET,
             );
             let len = builder.ins().load(
                 types::I64,
                 MemFlagsData::trusted(),
                 storage_ptr,
-                LIST_INT_STORAGE_LEN_OFFSET,
+                LIST_STORAGE_LEN_OFFSET,
             );
             let data_var = builder.declare_var(types::I64);
             builder.def_var(data_var, data);

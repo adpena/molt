@@ -1071,6 +1071,41 @@ def _carry_prior_gates(
     return split
 
 
+def _consumer_proven_gates(
+    repo: Path, git: Git, commit: str, gates: list[SelectedGate]
+) -> tuple[list[SelectedGate], list[dict]]:
+    """The gates to run, and records for those the consumer gate already ran.
+
+    The consumer gate ran the static gates and the importer tests of this
+    exact tree in a checkout that held only the tree's files
+    (``consumer_gate.proven_gates(exact=True)``); a test result is a function
+    of the tree, so the batch does not run them a second time. Every other
+    gate (landing-built tests, Cargo, slow tests) runs here.
+    """
+    from tools import landing_receipt
+    from tools.consumer_gate import proven_gates
+    from tools.molt_dev_gates import display
+
+    tree = git.rev_parse(f"{commit}^{{tree}}")
+    proven = proven_gates(repo, tree, exact=True)
+    if proven is None:
+        return gates, []
+    run = [gate for gate in gates if not proven(gate)]
+    records = [
+        landing_receipt.gate_record(
+            phase="consumer", command=display(gate.command), seconds=None, log=None
+        )
+        for gate in gates
+        if gate not in run
+    ]
+    if records:
+        _say(
+            f"    the consumer gate ran {len(records)} of {len(gates)} gate(s) on "
+            f"tree {tree[:12]}; they are not run again"
+        )
+    return run, records
+
+
 def _write_queue_receipt(
     repo: Path,
     git: Git,
@@ -1474,6 +1509,10 @@ def _integrate_exclusive(
         gate_cmds, carried_records = carried(gate_cmds)
     else:
         carried_records = []
+    gate_cmds, proven_records = _consumer_proven_gates(
+        repo, git, selected_commit, gate_cmds
+    )
+    carried_records += proven_records
     graph_selection = config.graph_selection(touched, recent_failures=recent_failures)
     if graph_selection is not None:
         _say(

@@ -540,10 +540,7 @@ pub(crate) fn op_loop_runtime_call(
                 OpLoopRuntimeArgSpec::Local(0),
                 OpLoopRuntimeArgSpec::Local(1),
             ],
-            required_imports: &[
-                WasmRuntimeImport::GuardType,
-                WasmRuntimeImport::ProfileEnabled,
-            ],
+            required_imports: &[WasmRuntimeImport::GuardType],
             discard_result: false,
         }),
         molt_ir::OpKind::GuardType => Some(OpLoopRuntimeCallSpec {
@@ -552,10 +549,7 @@ pub(crate) fn op_loop_runtime_call(
                 OpLoopRuntimeArgSpec::Local(0),
                 OpLoopRuntimeArgSpec::Local(1),
             ],
-            required_imports: &[
-                WasmRuntimeImport::GuardType,
-                WasmRuntimeImport::ProfileEnabled,
-            ],
+            required_imports: &[WasmRuntimeImport::GuardType],
             discard_result: false,
         }),
         molt_ir::OpKind::StringFormat => Some(OpLoopRuntimeCallSpec {

@@ -285,9 +285,6 @@ pub(crate) struct TrampolineKey {
     pub(crate) target_has_ret: bool,
 }
 
-pub(crate) mod vec_layout;
-pub(crate) use vec_layout::vec_u64_layout;
-
 mod simple_backend;
 // `lib.rs` re-exports the externally-public backend types
 // (`molt_backend::SimpleBackend`, etc.). Each item keeps its declared

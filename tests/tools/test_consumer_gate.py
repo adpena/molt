@@ -11,6 +11,7 @@ import pytest
 from tests.process_guard_common import run_guarded_test_process
 from tools import consumer_gate
 from tools.test_dependency_graph import DirectReaders
+from tools.molt_dev_policy import SelectedGate
 
 
 @pytest.fixture(autouse=True)
@@ -321,3 +322,72 @@ def test_the_default_importer_run_is_presubmits() -> None:
     assert "--skip-slow" in argv
     assert any(arg.startswith("--molt-worker-memory-gb=") for arg in argv)
     assert argv[-1] == "tests/tools/test_consumer_gate.py"
+
+
+def _pytest_gate(*args: str) -> SelectedGate:
+    command = ("python", "-m", "pytest", "-q", "-n", "auto", *args)
+    return SelectedGate(command=command, toolchains=(), pytest=True, try_run=True)
+
+
+def test_a_receipt_proves_the_gates_it_ran_and_no_other(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    passing = 'python -c "pass"'
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": [passing]
+    )
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    tree = consumer_gate.commit_tree(repo, ["lib.py"])
+    assert consumer_gate.proven_gates(repo, tree) is None
+
+    assert (
+        consumer_gate.run(repo, ["lib.py"], pytest_args=["-p", "no:cacheprovider"]) == 0
+    )
+    proven = consumer_gate.proven_gates(repo, tree)
+    assert proven is not None
+    # The receipt ran these: the static command, and the importer under
+    # presubmit's --skip-slow (a -k selection only narrows the file).
+    assert proven(SelectedGate(command=passing, toolchains=()))
+    assert proven(_pytest_gate("--maxfail=1", "--skip-slow", "tests/test_lib.py"))
+    assert proven(
+        _pytest_gate("-k", "value", "--skip-slow", "tests/test_lib.py::test_value")
+    )
+    # It did not run these: another static command, a cohort that runs slow
+    # tests, a file it never ran, or a directory of files.
+    assert not proven(SelectedGate(command='python -c "1"', toolchains=()))
+    assert not proven(_pytest_gate("tests/test_lib.py"))
+    assert not proven(_pytest_gate("--skip-slow", "tests/test_lib.py", "tests/t.py"))
+    assert not proven(_pytest_gate("--skip-slow", "tests"))
+    # A different tree has no receipt.
+    (repo / "lib.py").write_text("VALUE = 3\n", encoding="utf-8")
+    assert (
+        consumer_gate.proven_gates(repo, consumer_gate.commit_tree(repo, ["lib.py"]))
+        is None
+    )
+
+
+def test_the_batch_reuses_only_a_receipt_run_on_exactly_the_tree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": []
+    )
+    (repo / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    paths = [".gitignore", "lib.py"]
+    gate = _pytest_gate("--skip-slow", "tests/test_lib.py")
+
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    tree = consumer_gate.commit_tree(repo, paths)
+    exact = consumer_gate.proven_gates(repo, tree, exact=True)
+    assert exact is not None and exact(gate)
+
+    # An untracked file the tree lacks could have made the tests pass: the
+    # lane precheck may still skip the gate, the batch may not.
+    (repo / "helper.py").write_text("X = 1\n", encoding="utf-8")
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    assert consumer_gate.proven_gates(repo, tree, exact=True) is None
+    lane = consumer_gate.proven_gates(repo, tree)
+    assert lane is not None and lane(gate)

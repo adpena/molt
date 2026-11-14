@@ -1160,14 +1160,13 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
     let tls = crate::state::execution_tls();
     let begins_custody = tls.lease_depth.get() == 0;
     {
-        let depth = &tls.lease_depth;
-        let current = depth.get() & !RUNTIME_EXECUTION_SERVICE_ROLE;
+        let current = tls.lease_depth.get() & !RUNTIME_EXECUTION_SERVICE_ROLE;
         assert_ne!(
             current,
             RUNTIME_EXECUTION_SERVICE_ROLE - 1,
             "current-thread runtime execution lease depth overflow"
         );
-        depth.set(
+        tls.set_lease_depth(
             (current + 1)
                 | if service {
                     RUNTIME_EXECUTION_SERVICE_ROLE
@@ -1198,11 +1197,10 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
 pub(crate) fn release_runtime_execution_lease() {
     let service = {
         let tls = crate::state::execution_tls();
-        let depth = &tls.lease_depth;
-        let current = depth.get();
+        let current = tls.lease_depth.get();
         let count = current & !RUNTIME_EXECUTION_SERVICE_ROLE;
         assert_ne!(count, 0, "current-thread runtime execution lease underflow");
-        depth.set(if count == 1 { 0 } else { current - 1 });
+        tls.set_lease_depth(if count == 1 { 0 } else { current - 1 });
         release_execution_state_binding(tls);
         current & RUNTIME_EXECUTION_SERVICE_ROLE != 0
     };
@@ -1508,6 +1506,8 @@ pub(crate) fn bind_execution_state(tls: &crate::state::ExecutionTls) {
     // host entry helper. Publish every compiled borrow at its lifetime owner.
     tls.pending_work_ptr
         .set(state.map_or(0, |state| state.pending_work.word_ptr() as u64));
+    tls.profile_enabled
+        .set(u64::from(crate::state::metrics::profile_enabled_unchecked()));
 }
 
 /// Reset the binding once this thread holds neither a lease nor drain custody.
@@ -1522,6 +1522,7 @@ pub(crate) fn release_execution_state_binding(tls: &crate::state::ExecutionTls) 
 pub(crate) fn unbind_execution_state(tls: &crate::state::ExecutionTls) {
     tls.bound_state.set(std::ptr::null());
     tls.pending_work_ptr.set(0);
+    tls.profile_enabled.set(0);
 }
 
 /// `runtime_state_for_gil` for a caller that has already read this thread's

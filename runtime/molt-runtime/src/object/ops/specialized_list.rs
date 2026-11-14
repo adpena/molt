@@ -239,7 +239,7 @@ pub(super) fn list_int_getitem_impl(
                 return Err(());
             };
             let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-            let len = storage.len as i64;
+            let len = storage.len() as i64;
             if normalize_negative && index < 0 {
                 index += len;
             }
@@ -247,7 +247,7 @@ pub(super) fn list_int_getitem_impl(
                 list_index_out_of_range_error();
                 return Err(());
             }
-            let raw = *storage.data.add(index as usize);
+            let raw = *storage.as_ptr().add(index as usize);
             Ok(MoltObject::from_int(raw).bits())
         }
     })
@@ -280,7 +280,7 @@ pub(crate) fn molt_list_int_getitem_raw_checked_attached_body(
     };
     unsafe {
         let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        let len = storage.len as i64;
+        let len = storage.len() as i64;
         let index = if raw_index < 0 {
             raw_index + len
         } else {
@@ -290,7 +290,7 @@ pub(crate) fn molt_list_int_getitem_raw_checked_attached_body(
             let _ = list_index_out_of_range_error();
             return 0;
         }
-        *storage.data.add(index as usize)
+        *storage.as_ptr().add(index as usize)
     }
 }
 
@@ -332,14 +332,14 @@ pub(crate) fn molt_list_int_setitem_attached_body(
                 return MoltObject::none().bits();
             };
             let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
-            let len = storage.len as i64;
+            let len = storage.len() as i64;
             if index < 0 {
                 index += len;
             }
             if index < 0 || index >= len {
                 return list_assignment_out_of_range_error();
             }
-            *storage.data.add(index as usize) = value.raw();
+            *storage.as_mut_ptr().add(index as usize) = value.raw();
             list_bits
         }
     })
@@ -397,7 +397,7 @@ pub(super) fn list_bool_getitem_impl(
                 return Err(());
             };
             let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
-            let len = storage.len as i64;
+            let len = storage.len() as i64;
             if normalize_negative && index < 0 {
                 index += len;
             }
@@ -405,7 +405,7 @@ pub(super) fn list_bool_getitem_impl(
                 list_index_out_of_range_error();
                 return Err(());
             }
-            let raw = *storage.data.add(index as usize);
+            let raw = *storage.as_ptr().add(index as usize);
             Ok(MoltObject::from_bool(raw != 0).bits())
         }
     })
@@ -450,14 +450,14 @@ pub(crate) fn molt_list_bool_setitem_attached_body(
                 return MoltObject::none().bits();
             };
             let storage = &mut *crate::object::layout::list_bool_storage_ptr(ptr);
-            let len = storage.len as i64;
+            let len = storage.len() as i64;
             if index < 0 {
                 index += len;
             }
             if index < 0 || index >= len {
                 return list_assignment_out_of_range_error();
             }
-            *storage.data.add(index as usize) = u8::from(value);
+            *storage.as_mut_ptr().add(index as usize) = u8::from(value);
             list_bits
         }
     })
@@ -469,7 +469,7 @@ pub(crate) fn molt_list_int_data_attached_body(_py: &crate::PyToken<'_>, list_bi
     let Some(ptr) = flat_list_int_ptr(list_bits) else {
         return 0;
     };
-    unsafe { (*crate::object::layout::list_int_storage_ptr(ptr)).data as u64 }
+    unsafe { (*crate::object::layout::list_int_storage_ptr(ptr)).as_ptr() as u64 }
 }
 
 /// Return the length of an admitted flat inline-integer list as a raw u64.
@@ -477,7 +477,7 @@ pub(crate) fn molt_list_int_len_raw_attached_body(_py: &crate::PyToken<'_>, list
     let Some(ptr) = flat_list_int_ptr(list_bits) else {
         return 0;
     };
-    unsafe { (*crate::object::layout::list_int_storage_ptr(ptr)).len as u64 }
+    unsafe { (*crate::object::layout::list_int_storage_ptr(ptr)).len() as u64 }
 }
 
 /// Get length of a specialized list[int].
@@ -574,14 +574,14 @@ pub(crate) fn molt_list_getitem_int_fast_attached_body(
             // list[bool] fast path — u8 storage, no refcount needed.
             let mut idx = index_obj.as_int_unchecked();
             let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
-            let len = storage.len as i64;
+            let len = storage.len() as i64;
             if idx < 0 {
                 idx += len;
             }
             if idx < 0 || idx >= len {
                 return molt_index_attached_body(_py, list_bits, index_bits);
             }
-            return MoltObject::from_bool(*storage.data.add(idx as usize) != 0).bits();
+            return MoltObject::from_bool(*storage.as_ptr().add(idx as usize) != 0).bits();
         }
         if tid != TYPE_ID_LIST {
             return molt_index_attached_body(_py, list_bits, index_bits);

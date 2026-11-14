@@ -128,7 +128,9 @@ distinguishes remaining consumer gaps from mechanisms already implemented.
   operation effects are the current authority, not builtin-name hand tables.
 - **E4. IPSCCP + whole-program constant propagation** (needs S4). SCCP seeds params Bottom; module-
   level constants don't cross fn boundaries. Seed constant call-site args; propagate module globals.
-- **E5. Function monomorphization / specialization** (needs S4+E1) — THE Julia engine. One body per
+- **E5. Function monomorphization / specialization** — the P0 program since 2026-11-14 (HF-847);
+  the authority is `foundation/78_whole_program_type_flow.md`, which supersedes the note below and
+  the build order's E5 position. Earlier note: THE Julia engine. One body per
   function today; params enter DynBox unless annotated. Build: clone+specialize a function per proven
   arg-repr tuple, run the pipeline on the clone, dispatch call sites to the specialization, keep the
   generic as fallback. + return-type backpropagation (E4) + union splitting (exploit TirType::Union).

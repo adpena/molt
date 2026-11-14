@@ -53,10 +53,10 @@ pub(crate) unsafe fn promote_specialized_list_to_list(_py: &PyToken<'_>, ptr: *m
 unsafe fn commit_specialized_list_promotion(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    backing: *mut Vec<u64>,
+    backing: *mut crate::object::molt_vec::MoltVec<u64>,
 ) {
     unsafe {
-        *(ptr as *mut *mut Vec<u64>) = backing;
+        *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = backing;
         (*header_from_obj_ptr(ptr)).type_id = TYPE_ID_LIST;
         super::gc::gc_track_if_cyclic(py, ptr, TYPE_ID_LIST);
     }
@@ -77,7 +77,7 @@ pub(crate) unsafe fn promote_list_int_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
             return;
         }
         let int_storage_ref = &*int_storage_ptr;
-        let int_slice = std::slice::from_raw_parts(int_storage_ref.data, int_storage_ref.len);
+        let int_slice = int_storage_ref.as_slice();
         let Some(vec_ptr) =
             crate::object::backing::tracked_vec_box_with_capacity::<u64>(int_slice.len())
         else {
@@ -88,8 +88,9 @@ pub(crate) unsafe fn promote_list_int_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
         for &raw in int_slice {
             boxed_vec.push(MoltObject::from_int(raw).bits());
         }
-        let int_storage = *Box::from_raw(int_storage_ptr);
-        drop(int_storage.into_vec());
+        drop(crate::object::backing::tracked_vec_box_from_raw(
+            int_storage_ptr,
+        ));
         commit_specialized_list_promotion(_py, ptr, vec_ptr);
     }
 }
@@ -114,7 +115,7 @@ pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) 
             return;
         }
         let bool_storage_ref = &*bool_storage_ptr;
-        let bool_slice = std::slice::from_raw_parts(bool_storage_ref.data, bool_storage_ref.len);
+        let bool_slice = bool_storage_ref.as_slice();
         let Some(vec_ptr) =
             crate::object::backing::tracked_vec_box_with_capacity::<u64>(bool_slice.len())
         else {
@@ -125,8 +126,9 @@ pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) 
         for &b in bool_slice {
             boxed_vec.push(MoltObject::from_bool(b != 0).bits());
         }
-        let bool_storage = *Box::from_raw(bool_storage_ptr);
-        drop(bool_storage.into_vec());
+        drop(crate::object::backing::tracked_vec_box_from_raw(
+            bool_storage_ptr,
+        ));
         commit_specialized_list_promotion(_py, ptr, vec_ptr);
         // No HEADER_FLAG_CONTAINS_REFS needed — bools are not heap refs.
     }
@@ -181,8 +183,8 @@ pub(crate) fn molt_list_append_with_projection(
                         // Fast path: append directly to ListIntStorage.
                         // No NaN-boxing, no promotion, no IncRef (i64 is
                         // not a heap reference).
-                        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
-                        if !storage.push(int_val) {
+                        let storage = crate::object::layout::list_int_storage_ptr(ptr);
+                        if !crate::object::layout::list_storage_push(storage, int_val.raw()) {
                             return {
                                 crate::record_memory_error_without_allocation(_py);
                                 crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
@@ -197,8 +199,8 @@ pub(crate) fn molt_list_append_with_projection(
                         // Fast path: append directly to ListBoolStorage.
                         // No NaN-boxing, no promotion, no IncRef (bools are
                         // inline NaN-boxed values, not heap references).
-                        let storage = &mut *crate::object::layout::list_bool_storage_ptr(ptr);
-                        if !storage.push(bool_val as u8) {
+                        let storage = crate::object::layout::list_bool_storage_ptr(ptr);
+                        if !crate::object::layout::list_storage_push(storage, bool_val as u8) {
                             return {
                                 crate::record_memory_error_without_allocation(_py);
                                 crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()

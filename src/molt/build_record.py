@@ -917,6 +917,8 @@ def resolve_observed(
     """
     from molt.path_custody import resolved_host_path_key
 
+    from molt.checkout_state import is_checkout_state_control_file
+
     outputs = tuple(Path(os.path.realpath(path)) for path in published_outputs)
     output_parents = {resolved_host_path_key(output.parent) for output in outputs}
     observed = sorted(ledger.observed)
@@ -967,6 +969,11 @@ def resolve_observed(
         resolved = resolved_paths[name]
         real = resolved_host_path_key(resolved)
         if resolved in custody or (kind == "directory" and real in output_parents):
+            continue
+        # A guarded child stamps the use of every checkout-state root its
+        # environment selects (caches, scratch, targets, images); concurrent
+        # processes rewrite those control files.
+        if kind != "directory" and is_checkout_state_control_file(Path(resolved)):
             continue
         if (real + os.sep).startswith(roots):
             continue

@@ -34,11 +34,8 @@ pub(super) fn emit_fallback_function_body(
         );
     }
     frame.emit_entry_initializers(&mut func, import_ids, reloc_enabled);
-    frame
-        .locals()
-        .refcount()
-        .initialize(&mut func, import_ids, reloc_enabled);
-    frame.emit_guard_profile_flag(&mut func, reloc_enabled, import_ids);
+    frame.locals().refcount().initialize(&mut func);
+    frame.emit_guard_profile_flag(&mut func);
     // All function ABIs preserve pending Python exceptions. Only structured
     // bodies lower authored handlers with WASM EH; dispatch keeps explicit edges.
     let wasm_eh_enabled = backend.options.native_eh_enabled && !reloc_enabled;

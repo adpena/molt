@@ -292,31 +292,85 @@ fn refcount_word_accesses(function: &Function) -> Vec<Inst> {
         .collect()
 }
 
-/// Invocation admission guards compiled count-word access, and nothing else
-/// requests it (`docs/design/foundation/inline_refcount.md`). A body makes
-/// exactly one admission call when it touches a count word, and none when
-/// every transition reaches the runtime: debug and atomic compilers, or
-/// immediate-only bodies. Each count-word access must lie under the
-/// `== AttachedPlain` arm of a branch on that call's result. The oracle is
+/// The refcount admission is the thread-record word
+/// `THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET`, loaded once at entry
+/// (`docs/design/foundation/inline_refcount.md`). A body uses exactly one
+/// admission load when it touches a count word, and none when every
+/// transition reaches the runtime: debug and atomic compilers, or
+/// immediate-only bodies leave the load dead. Each count-word access must lie
+/// under the `== AttachedPlain` arm of a branch on that load. The oracle is
 /// the emitted body, so it holds whichever storage mode built the compiler.
-/// Returns the admission call sites.
+/// Returns every admission load and the record load that addresses it.
 fn assert_refcount_word_access_is_admitted(compiled: &CompiledFunctionClif) -> Vec<(Block, Inst)> {
     let function = &compiled.function;
-    let admissions = compiled
-        .import_ids
-        .get(molt_ir::runtime_fn_generated::RuntimeFn::RefcountAdmission.symbol())
-        .map_or_else(Vec::new, |&id| call_sites_for_import(function, id));
+    let used = |inst: Inst| {
+        let result = function.dfg.first_result(inst);
+        function.layout.blocks().any(|block| {
+            function
+                .layout
+                .block_insts(block)
+                .any(|user| function.dfg.inst_args(user).contains(&result))
+        })
+    };
+    let admissions: Vec<(Block, Inst)> = function
+        .layout
+        .blocks()
+        .flat_map(|block| {
+            function
+                .layout
+                .block_insts(block)
+                .map(move |inst| (block, inst))
+        })
+        .filter(|&(_, inst)| {
+            matches!(
+                function.dfg.insts[inst],
+                InstructionData::Load { offset, .. }
+                    if i32::from(offset)
+                        == molt_codegen_abi::THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET
+            )
+        })
+        .collect();
+    // The admission's address is the entry's thread-record load.
+    let admissions: Vec<(Block, Inst)> = admissions
+        .into_iter()
+        .flat_map(|(block, load)| {
+            let address = function.dfg.inst_args(load)[0];
+            let record = function
+                .dfg
+                .value_def(address)
+                .inst()
+                .filter(|&def| matches!(function.dfg.insts[def], InstructionData::Load { .. }));
+            std::iter::once((block, load)).chain(record.map(|def| {
+                (
+                    function.layout.inst_block(def).expect("placed record load"),
+                    def,
+                )
+            }))
+        })
+        .collect();
     let accesses = refcount_word_accesses(function);
     assert_eq!(
-        admissions.len(),
+        admissions.iter().filter(|&&(_, inst)| matches!(
+            function.dfg.insts[inst],
+            InstructionData::Load { offset, .. }
+                if i32::from(offset) == molt_codegen_abi::THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET
+        ) && used(inst)).count(),
         usize::from(!accesses.is_empty()),
-        "one invocation admission exactly when compiled code touches a count word:\n{}",
+        "one used invocation admission exactly when compiled code touches a count word:\n{}",
         function.display()
     );
-    let [(_, admission_call)] = admissions[..] else {
+    let Some(&(_, admission_load)) = admissions.iter().find(|&&(_, inst)| {
+        used(inst)
+            && matches!(
+                function.dfg.insts[inst],
+                InstructionData::Load { offset, .. }
+                    if i32::from(offset)
+                        == molt_codegen_abi::THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET
+            )
+    }) else {
         return admissions;
     };
-    let admission = function.dfg.first_result(admission_call);
+    let admission = function.dfg.first_result(admission_load);
     let cfg = ControlFlowGraph::with_function(function);
     let dominators =
         cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);

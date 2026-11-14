@@ -44,8 +44,11 @@ fn unused_constant_removed() {
     assert!(func.blocks[&func.entry_block].ops.is_empty());
 }
 
+/// A source literal is a code constant: CPython never allocates one at run
+/// time, so a materialization nothing reads is dead, whichever pass left it
+/// unused; its allocation failure is not Python-observable (HF-846).
 #[test]
-fn unused_heap_literal_materialization_preserves_allocation_failure() {
+fn unused_heap_literal_materialization_is_dead() {
     for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
         let mut func = TirFunction::new(
             "heap_literal".into(),
@@ -58,11 +61,8 @@ fn unused_heap_literal_materialization_preserves_allocation_failure() {
         entry.ops.push(make_op(opcode, vec![], vec![value]));
         entry.terminator = Terminator::Return { values: vec![] };
         let stats = run(&mut func);
-        assert_eq!(
-            stats.ops_removed, 0,
-            "{opcode:?} may report allocation failure"
-        );
-        assert_eq!(func.blocks[&func.entry_block].ops[0].opcode, opcode);
+        assert_eq!(stats.ops_removed, 1, "{opcode:?} is dead");
+        assert!(func.blocks[&func.entry_block].ops.is_empty());
     }
 }
 

@@ -370,7 +370,8 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
             return MoltObject::none().bits();
         }
         *(map_ptr as *mut u64) = func_bits;
-        *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
+        *(map_ptr.add(std::mem::size_of::<u64>())
+            as *mut *mut crate::object::molt_vec::MoltVec<u64>) = iters_ptr;
         // Publish the complete payload with no subsequent fallible allocation.
         map_set_cached_tuple(map_ptr, std::ptr::null_mut());
         inc_ref_bits(_py, func_bits);
@@ -2218,7 +2219,7 @@ unsafe fn zip_next(
 /// still yields is "longer"; an earlier one that yielded makes this "shorter".
 unsafe fn zip_strict_mismatch(
     py: &PyToken<'_>,
-    iters_ptr: *mut Vec<u64>,
+    iters_ptr: *mut crate::object::molt_vec::MoltVec<u64>,
     index: usize,
 ) -> IterationResult {
     let preceding = |last: usize| -> String {
@@ -2632,10 +2633,10 @@ unsafe fn pair_cache_slot(ptr: *mut u8) -> Option<*mut *mut u8> {
                     as *mut *mut u8,
             ),
             TYPE_ID_CALL_ITER => Some(ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8),
-            TYPE_ID_MAP => Some(
-                ptr.add(std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>())
-                    as *mut *mut u8,
-            ),
+            TYPE_ID_MAP => Some(ptr.add(
+                std::mem::size_of::<u64>()
+                    + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>(),
+            ) as *mut *mut u8),
             _ => None,
         }
     }

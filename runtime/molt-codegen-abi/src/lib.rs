@@ -28,6 +28,7 @@ pub mod global_slot;
 pub mod inline_refcount;
 pub mod method_site;
 pub mod static_cell;
+pub mod thread_record;
 pub mod word;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,10 +123,11 @@ pub const QNAN_TAG_PENDING_I64: i64 = (QNAN | TAG_PENDING) as i64;
 /// carries payload 0, and every slot reader branches on this word before use.
 pub const NAMESPACE_SLOT_UNBOUND: u64 = QNAN | TAG_PENDING | 1;
 
-// ListIntStorage (#[repr(C)]) field offsets. Must match
-// runtime/molt-runtime/src/object/layout.rs.
-pub const LIST_INT_STORAGE_DATA_OFFSET: i32 = 0;
-pub const LIST_INT_STORAGE_LEN_OFFSET: i32 = 8;
+// List storage field offsets, from the object's storage pointer: the data
+// pointer and the length of `MoltVec` (runtime/molt-runtime-core/src/molt_vec.rs,
+// which asserts them at compile time), the one storage of every list kind.
+pub const LIST_STORAGE_DATA_OFFSET: i32 = 0;
+pub const LIST_STORAGE_LEN_OFFSET: i32 = 8;
 
 pub const GENERATOR_CONTROL_BYTES: i32 = 48;
 /// The resume label a generator body stores at its normal return. The poll
@@ -195,6 +197,14 @@ pub const THREAD_RECORD_FRAME_TOP_OFFSET: i32 = 24;
 pub const THREAD_RECORD_ARENA_TOP_OFFSET: i32 = 32;
 /// u64: the end of the thread's current frame-arena chunk.
 pub const THREAD_RECORD_ARENA_LIMIT_OFFSET: i32 = 40;
+/// u64: the `inline_refcount::CompiledRefcountAdmission` compiled code may use,
+/// kept current by the runtime at every change of its inputs (GIL, lifecycle
+/// lease, shutdown drain and C-extension depth). An invocation reads it once at
+/// entry, as it used to call the runtime for it.
+pub const THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET: i32 = 48;
+/// u64: 1 when the process collects runtime profile counters, else 0; published
+/// with the runtime execution binding.
+pub const THREAD_RECORD_PROFILE_ENABLED_OFFSET: i32 = 56;
 
 // A frame record: six header words, then the frame's homes. `base` is the
 // homes base; every header word sits at a negative offset from it, so home
@@ -475,8 +485,8 @@ pub struct GeneratedObjectAbiFacts {
     pub special_tag_limit: i64,
     pub immortal_refcount: u32,
     pub generator_control_bytes: i32,
-    pub list_int_storage_data_offset: i32,
-    pub list_int_storage_len_offset: i32,
+    pub list_storage_data_offset: i32,
+    pub list_storage_len_offset: i32,
     pub inline_int_bias: i64,
     pub inline_int_limit: i64,
     pub int_mask: u64,
@@ -552,8 +562,8 @@ impl GeneratedObjectAbiFacts {
             self.special_tag_limit as u64,
             self.immortal_refcount as u64,
             self.generator_control_bytes as i64 as u64,
-            self.list_int_storage_data_offset as i64 as u64,
-            self.list_int_storage_len_offset as i64 as u64,
+            self.list_storage_data_offset as i64 as u64,
+            self.list_storage_len_offset as i64 as u64,
             self.inline_int_bias as u64,
             self.inline_int_limit as u64,
             self.int_mask,
@@ -648,8 +658,8 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     special_tag_limit: SPECIAL_TAG_LIMIT,
     immortal_refcount: IMMORTAL_REFCOUNT,
     generator_control_bytes: GENERATOR_CONTROL_BYTES,
-    list_int_storage_data_offset: LIST_INT_STORAGE_DATA_OFFSET,
-    list_int_storage_len_offset: LIST_INT_STORAGE_LEN_OFFSET,
+    list_storage_data_offset: LIST_STORAGE_DATA_OFFSET,
+    list_storage_len_offset: LIST_STORAGE_LEN_OFFSET,
     inline_int_bias: INLINE_INT_BIAS,
     inline_int_limit: INLINE_INT_LIMIT,
     int_mask: INT_MASK,

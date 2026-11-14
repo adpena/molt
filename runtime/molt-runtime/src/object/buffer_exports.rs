@@ -598,14 +598,19 @@ pub(crate) unsafe fn detach_memoryview_owner(
 /// Every bytearray backing owns one initialized NUL outside its logical Vec
 /// length. Establish this before publication: acquiring an export must never
 /// allocate, because an existing descriptor may already observe the address.
-pub(crate) fn bytearray_backing_from_slice(bytes: &[u8], capacity: usize) -> Option<*mut Vec<u8>> {
+pub(crate) fn bytearray_backing_from_slice(
+    bytes: &[u8],
+    capacity: usize,
+) -> Option<*mut crate::object::molt_vec::MoltVec<u8>> {
     let capacity = capacity.max(bytes.len()).checked_add(1)?;
     let vec = super::backing::tracked_vec_box_from_slice(bytes, capacity)?;
     unsafe { (*vec).as_mut_ptr().add((*vec).len()).write(0) };
     Some(vec)
 }
 
-pub(crate) fn bytearray_backing_zeroed(len: usize) -> Option<*mut Vec<u8>> {
+pub(crate) fn bytearray_backing_zeroed(
+    len: usize,
+) -> Option<*mut crate::object::molt_vec::MoltVec<u8>> {
     let capacity = len.checked_add(1)?;
     let vec = super::backing::tracked_vec_box_with_capacity::<u8>(capacity)?;
     unsafe {
@@ -659,7 +664,7 @@ pub(crate) unsafe fn bytearray_mutate<T>(
     py: &PyToken<'_>,
     ptr: *mut u8,
     new_len: usize,
-    mutate: impl FnOnce(&mut Vec<u8>) -> T,
+    mutate: impl FnOnce(&mut crate::object::molt_vec::MoltVec<u8>) -> T,
 ) -> Option<T> {
     match unsafe { bytearray_try_mutate(ptr, new_len, mutate) } {
         Ok(out) => Some(out),
@@ -684,7 +689,7 @@ pub(crate) enum BufferMutationError {
 pub(crate) unsafe fn bytearray_try_mutate<T>(
     ptr: *mut u8,
     new_len: usize,
-    mutate: impl FnOnce(&mut Vec<u8>) -> T,
+    mutate: impl FnOnce(&mut crate::object::molt_vec::MoltVec<u8>) -> T,
 ) -> Result<T, BufferMutationError> {
     unsafe {
         let vec = super::layout::bytearray_vec_ptr(ptr);

@@ -1424,6 +1424,17 @@ i64_zero_divisor_guard_opcodes = [
     "Mod",
 ]
 
+# literal_materialization_opcodes: the source constant these ops materialize
+# is a code constant in Python; CPython never allocates one when it runs, so
+# the materialization's only failure (allocation) is not Python-observable.
+# A materialization nothing reads is dead code: DCE removes it, inside an
+# exception region too, whichever pass left it unused (HF-846).
+literal_materialization_opcodes = [
+    "ConstStr",
+    "ConstBytes",
+    "ConstBigInt",
+]
+
 # i64_shift_count_guard_opcodes: raw i64 hoist/lowering proof for these binary
 # opcodes must prove the count operand is in the valid machine-shift range
 # [0, 63]. Python shifts with negative counts raise; unchecked machine shifts

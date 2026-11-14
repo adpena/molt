@@ -401,11 +401,26 @@ def test_a_guarded_child_leaves_the_recorded_build_current(
     calls: list[str] = []
     fake = _fake_build(calls)
 
+    from molt.checkout_state import (
+        checkout_state_command_roots,
+        checkout_state_lock_paths,
+    )
+    from molt.source_root import compiler_source_root
+
     def guarded_build(*args: Any, **kwargs: Any) -> int:
+        command = [sys.executable, "-c", "pass"]
         child = process_guard.run_completed_command(
-            [sys.executable, "-c", "pass"], env=ProcessEnvironment(dict(os.environ))
+            command, env=ProcessEnvironment(dict(os.environ))
         )
         assert child.returncode == 0
+        # Another process using the same caches and images rewrites their
+        # lifetime locks while this build runs.
+        compiler_root = compiler_source_root()
+        for root, _owner in checkout_state_command_roots(
+            compiler_root, dict(os.environ), command, cwd=compiler_root
+        ):
+            for lock in checkout_state_lock_paths(root):
+                os.utime(lock)
         return fake(*args, **kwargs)
 
     build = build_command._with_early_cutoff(guarded_build)

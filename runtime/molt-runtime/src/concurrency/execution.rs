@@ -180,38 +180,12 @@ pub(crate) fn current_thread_has_c_extension_execution_context() -> bool {
     crate::state::execution_tls().cext_execution_depth.get() != 0
 }
 
-/// Borrow the current execution admission for one compiled invocation.
-///
-/// This grants no ownership and cannot attach a thread. The invoker retains
-/// its outer execution guard until compiled code returns; balanced C-API GIL
-/// suspension must restore that guard before returning to compiled code.
-/// Generator suspension returns to the invoker and a resume obtains a fresh
-/// snapshot. A GIL-only caller, detached caller or diagnostic run uses the
-/// existing checked runtime transitions instead of touching header cells.
-pub(crate) fn molt_refcount_admission_attached_body(_py: &crate::PyToken<'_>) -> u64 {
-    refcount_admission_in(_py.execution_tls())
-}
-
-fn refcount_admission_in(tls: &crate::state::ExecutionTls) -> u64 {
-    use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission;
-    if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC
-        || tls.gil_depth.get() == 0
-        || tls.cext_execution_depth.get() == 0
-        || (tls.lease_depth.get() == 0 && tls.shutdown_drain_depth.get() == 0)
-        || crate::object::rc_transition_trace_enabled()
-    {
-        CompiledRefcountAdmission::Runtime as u64
-    } else {
-        CompiledRefcountAdmission::AttachedPlain as u64
-    }
-}
-
 fn enter_c_extension_execution_context() {
     assert!(gil_held(), "C extension execution context requires the GIL");
     {
-        let depth = &crate::state::execution_tls().cext_execution_depth;
-        depth.set(
-            depth
+        let tls = crate::state::execution_tls();
+        tls.set_cext_execution_depth(
+            tls.cext_execution_depth
                 .get()
                 .checked_add(1)
                 .expect("C extension execution context depth overflow"),
@@ -221,10 +195,10 @@ fn enter_c_extension_execution_context() {
 
 fn leave_c_extension_execution_context() {
     {
-        let depth = &crate::state::execution_tls().cext_execution_depth;
-        let current = depth.get();
+        let tls = crate::state::execution_tls();
+        let current = tls.cext_execution_depth.get();
         if current != 0 {
-            depth.set(current - 1);
+            tls.set_cext_execution_depth(current - 1);
         }
         assert_ne!(current, 0, "C extension execution context depth underflow");
     }
@@ -264,9 +238,12 @@ impl ShutdownDrainExecutionCustody {
         );
         {
             let tls = crate::state::execution_tls();
-            let depth = &tls.shutdown_drain_depth;
-            assert_eq!(depth.get(), 0, "duplicate shutdown drain execution custody");
-            depth.set(1);
+            assert_eq!(
+                tls.shutdown_drain_depth.get(),
+                0,
+                "duplicate shutdown drain execution custody"
+            );
+            tls.set_shutdown_drain_depth(1);
             crate::state::runtime_state::bind_execution_state(tls);
         }
         enter_c_extension_execution_context();
@@ -320,7 +297,8 @@ impl Drop for ShutdownDrainExecutionCustody {
                 );
             }
             let tls = crate::state::execution_tls();
-            let previous = tls.shutdown_drain_depth.replace(0);
+            let previous = tls.shutdown_drain_depth.get();
+            tls.set_shutdown_drain_depth(0);
             crate::state::runtime_state::release_execution_state_binding(tls);
             assert_eq!(previous, 1, "shutdown drain execution custody corrupted");
         }));
@@ -1258,8 +1236,6 @@ pub(crate) fn release_persistent_runtime_execution() -> bool {
     true
 }
 
-include!("../attached_exports_generated/concurrency/execution.rs");
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,14 +1248,14 @@ mod tests {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         let runtime = CompiledRefcountAdmission::Runtime as u64;
         assert_eq!(
-            refcount_admission_in(crate::state::execution_tls()),
+            crate::state::execution_tls().refcount_admission.get(),
             runtime
         );
         {
             let _gil_only = GilGuard::new();
             assert!(gil_held());
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 runtime,
                 "a GIL token grants no attachment or lifecycle authority"
             );
@@ -1297,35 +1273,35 @@ mod tests {
                 CompiledRefcountAdmission::AttachedPlain as u64
             };
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 expected
             );
             {
                 let _suspended = crate::GilReleaseGuard::suspend();
                 assert_eq!(
-                    refcount_admission_in(crate::state::execution_tls()),
+                    crate::state::execution_tls().refcount_admission.get(),
                     runtime
                 );
             }
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 expected,
                 "resumption borrows a fresh admission"
             );
             {
                 let _nested = RuntimeExecutionGuard::enter();
                 assert_eq!(
-                    refcount_admission_in(crate::state::execution_tls()),
+                    crate::state::execution_tls().refcount_admission.get(),
                     expected
                 );
             }
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 expected
             );
         }
         assert_eq!(
-            refcount_admission_in(crate::state::execution_tls()),
+            crate::state::execution_tls().refcount_admission.get(),
             runtime,
             "admission expires with its execution boundary"
         );

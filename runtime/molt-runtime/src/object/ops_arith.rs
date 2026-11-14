@@ -991,8 +991,13 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
 unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
         if count <= 0 {
-            return crate::object::buffer_exports::bytearray_mutate(_py, ptr, 0, Vec::clear)
-                .is_some();
+            return crate::object::buffer_exports::bytearray_mutate(
+                _py,
+                ptr,
+                0,
+                crate::object::molt_vec::MoltVec::clear,
+            )
+            .is_some();
         }
         let count = match usize::try_from(count) {
             Ok(val) => val,
@@ -1573,7 +1578,21 @@ fn complex_power_payload(
             "complex modulo",
         ));
     }
-    Some(match complex_pow(base, exponent) {
+    // CPython's `complex_pow`: a real, integral exponent of magnitude at
+    // most 100 takes repeated multiplication (`c_powi`), not the polar form.
+    let integral =
+        exponent.im == 0.0 && exponent.re == exponent.re.floor() && exponent.re.abs() <= 100.0;
+    let result = if integral && (base.re != 0.0 || base.im != 0.0 || exponent.re > 0.0) {
+        crate::builtins::numbers::complex_powi(
+            base,
+            exponent.re as i64,
+            runtime_target_at_least(py, 3, 14),
+        )
+        .ok_or(())
+    } else {
+        complex_pow(base, exponent)
+    };
+    Some(match result {
         Ok(out) => complex_bits(py, out.re, out.im),
         Err(()) => raise_numeric_error(py, NumericErrorContext::ComplexNegativePower),
     })

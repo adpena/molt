@@ -748,7 +748,7 @@ extern "C" fn bridge_format_obj_str(
 // ---------------------------------------------------------------------------
 
 #[allow(improper_ctypes_definitions)]
-extern "C" fn bridge_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
+extern "C" fn bridge_bytearray_vec(ptr: *mut u8) -> *mut crate::object::molt_vec::MoltVec<u8> {
     unsafe { crate::object::layout::bytearray_vec_ptr(ptr) }
 }
 

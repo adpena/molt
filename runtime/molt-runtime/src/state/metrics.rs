@@ -141,10 +141,6 @@ pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
     profile_enabled_unchecked()
 }
 
-pub(crate) fn molt_profile_enabled_attached_body(_py: &crate::PyToken<'_>) -> u64 {
-    if profile_enabled_unchecked() { 1 } else { 0 }
-}
-
 pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {
     if profile_enabled(_py) {
         counter.fetch_add(1, AtomicOrdering::Relaxed);
