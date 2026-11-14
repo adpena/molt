@@ -65,6 +65,7 @@ the source of truth.
 
 - Integrated foundation program: [design/foundation/00_integrated_parallel_program.md](design/foundation/00_integrated_parallel_program.md)
 - Architecture convergence (one typed IR, one runtime boundary, typed identity): [design/foundation/77_architecture_convergence.md](design/foundation/77_architecture_convergence.md)
+- Whole-program type flow and specialization (the P0 compiler program, HF-847): [design/foundation/78_whole_program_type_flow.md](design/foundation/78_whole_program_type_flow.md)
 - RC ownership and drop insertion: [design/foundation/20_rc-ownership-drop-insertion.md](design/foundation/20_rc-ownership-drop-insertion.md)
 - Implemented generational cycle-collector authority: [design/foundation/generational_gc_authority.md](design/foundation/generational_gc_authority.md)
 - Perceus-style borrow inference: [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)

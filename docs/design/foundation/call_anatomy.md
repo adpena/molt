@@ -56,6 +56,10 @@ push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top
 code (stage 1) and traceback location decoding (`LocationRows`) at the top of `exception_heavy`
 (stage 5).
 
+The P0 compiler program since 2026-11-14 is whole-program type flow and specialization (HF-847,
+`78_whole_program_type_flow.md`): facts cross calls, one body per argument-type context. Stages 6
+and 7 consume its facts; stages 1 and 2 remove the per-call costs that remain after it.
+
 ## Why Molt is slow: five causes and their owners (2026-11-09)
 
 1. Generated code is call-threaded: every operation enters the runtime. Stages 1-7 below.
