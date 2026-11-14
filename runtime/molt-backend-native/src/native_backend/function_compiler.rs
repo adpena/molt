@@ -567,16 +567,7 @@ impl SimpleBackend {
                 RuntimeFn::ProfileStructFieldStore,
             )
         });
-        let local_profile_enabled = (needs_field_store_profile || guard_facts.has_profile_only())
-            .then(|| {
-                import_runtime_func_ref(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    &mut builder,
-                    &mut import_refs,
-                    RuntimeFn::ProfileEnabled,
-                )
-            });
+        let needs_profile_flag = needs_field_store_profile || guard_facts.has_profile_only();
 
         if trace_stride.is_some() {
             let trace_suffix: String = func_ir
@@ -670,9 +661,14 @@ impl SimpleBackend {
             def_var_named(&mut builder, &vars, "self", self_bits);
         }
 
-        let profile_enabled_val = local_profile_enabled.map(|local_profile_enabled| {
-            let call = builder.ins().call(local_profile_enabled, &[]);
-            builder.inst_results(call)[0]
+        // Thread-record words are plain loads; a load nothing uses is dead
+        // code, since a trusted load cannot trap.
+        let profile_enabled_val = needs_profile_flag.then(|| {
+            thread_record_word(
+                &mut builder,
+                execution_context,
+                molt_codegen_abi::thread_record::ThreadRecordWord::ProfileEnabled,
+            )
         });
 
         // Fetch the thread record once in the entry block and keep it in a
@@ -699,9 +695,13 @@ impl SimpleBackend {
             }
         }
 
-        // Finalization replaces this entry value only when a generated RC
-        // site consumes it. Scalar-only functions make no admission call.
-        let admission = builder.ins().iconst(types::I64, 0);
+        // The invocation's refcount admission is a thread-record word read
+        // once at entry; scalar-only functions leave the load dead.
+        let admission = thread_record_word(
+            &mut builder,
+            execution_context,
+            molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission,
+        );
         import_refs.set_refcount_admission(admission);
         let local_inc_ref_obj = import_refs.refcount_site(
             local_inc_ref_slow,
@@ -2445,15 +2445,6 @@ impl SimpleBackend {
         // Finish SSA before the shared deferred-codegen boundary admits the
         // actual CFG and retires complete unreachable components through
         // Cranelift. Emission-time reachability is not a retirement authority.
-        materialize_refcount_admission(&mut builder, admission, |builder| {
-            import_runtime_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                builder,
-                &mut import_refs,
-                RuntimeFn::RefcountAdmission,
-            )
-        });
         builder.seal_all_blocks();
         if debug_seal {
             eprintln!(

@@ -21,6 +21,35 @@ pub(in crate::wasm) fn emit_thread_record(func: &mut Function) {
     }));
 }
 
+/// WASM spelling of `molt_codegen_abi::thread_record`: a stack machine, so a
+/// word is the value on top of the operand stack.
+struct WasmThreadRecord<'a>(&'a mut Function);
+
+impl molt_codegen_abi::thread_record::ThreadRecordBuilder for WasmThreadRecord<'_> {
+    type Word = ();
+
+    fn attached_context(&mut self) {
+        self.0.instruction(&Instruction::LocalGet(0));
+    }
+
+    fn load_trusted_word(&mut self, (): (), offset: i32) {
+        self.0.instruction(&Instruction::I32WrapI64);
+        self.0.instruction(&Instruction::I64Load(MemArg {
+            offset: offset as u64,
+            align: 3,
+            memory_index: 0,
+        }));
+    }
+}
+
+/// Push `word` of this invocation's thread record.
+pub(in crate::wasm) fn emit_thread_record_word(
+    func: &mut Function,
+    word: molt_codegen_abi::thread_record::ThreadRecordWord,
+) {
+    molt_codegen_abi::thread_record::generate_thread_record_word(&mut WasmThreadRecord(func), word);
+}
+
 /// Push an i32 that is non-zero exactly when `molt_exception_pending()` is.
 /// A function that holds the thread record (`record`) tests its pending byte
 /// inline and calls the runtime reader only when the byte is set. The reader

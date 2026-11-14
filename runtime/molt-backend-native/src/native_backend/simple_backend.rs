@@ -28,6 +28,8 @@ mod method_site;
 pub(crate) use method_site::*;
 mod refcount;
 pub(crate) use refcount::*;
+mod thread_record;
+pub(crate) use thread_record::*;
 mod variables;
 pub(crate) use variables::*;
 mod trace_ops;

@@ -405,33 +405,3 @@ impl NativeRefcountBuilder<'_, '_> {
             })
     }
 }
-
-/// Resolve an entry SSA placeholder only if a generated transition consumes it.
-/// This is code-emission state, not a runtime/fact cache: a scalar-only body
-/// leaves no admission call. Replacement preserves the exact entry SSA value.
-pub(crate) fn materialize_refcount_admission(
-    builder: &mut FunctionBuilder<'_>,
-    admission: Value,
-    import: impl FnOnce(&mut FunctionBuilder<'_>) -> FuncRef,
-) {
-    if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
-        return;
-    }
-    let used = builder.func.layout.blocks().any(|block| {
-        builder
-            .func
-            .layout
-            .block_insts(block)
-            .any(|inst| builder.func.dfg.inst_args(inst).contains(&admission))
-    });
-    if used {
-        let callee = import(builder);
-        let inst = builder
-            .func
-            .dfg
-            .value_def(admission)
-            .inst()
-            .expect("entry admission placeholder");
-        builder.func.replace(inst).call(callee, &[]);
-    }
-}

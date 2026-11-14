@@ -486,11 +486,14 @@ fn native_runtime_guards_check_expected_tags_and_define_used_results() {
                 .contains(physical_runtime_symbol("molt_guard_type")),
             "{kind}: two raw integers and a misleading hint must not erase the check"
         );
+        // The profile flag gating the admitted check is the thread-record word
+        // THREAD_RECORD_PROFILE_ENABLED_OFFSET, read without a runtime call.
         assert!(
-            native_object_symbols(&object.bytes)
+            !native_object_symbols(&object.bytes)
                 .undefined
-                .contains(physical_runtime_symbol("molt_profile_enabled")),
-            "{kind}: admitted tag checks must be gated by the runtime profile flag"
+                .iter()
+                .any(|symbol| symbol.contains("molt_profile_enabled")),
+            "{kind}: the profile flag must not cost a runtime call"
         );
     }
 }

@@ -46,7 +46,7 @@ impl WasmBackend {
         let mut func = Function::new_with_locals_types(local_types);
         func.attach_context(4, self.execution_call_abis.clone());
         if let Some(scratch) = refcount {
-            scratch.initialize(&mut func, &self.import_ids, reloc_enabled);
+            scratch.initialize(&mut func);
         }
         match behavior {
             TrampolineBehavior::ForwardCallFrame => {

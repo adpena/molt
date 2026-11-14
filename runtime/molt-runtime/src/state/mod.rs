@@ -22,8 +22,7 @@ pub(crate) use metrics::{
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use metrics::{
-    molt_profile_enabled, molt_profile_enabled_attached_body, molt_profile_handle_resolve,
-    molt_profile_handle_resolve_attached_body, molt_profile_snapshot,
+    molt_profile_handle_resolve, molt_profile_handle_resolve_attached_body, molt_profile_snapshot,
     molt_profile_snapshot_attached_body, molt_profile_struct_field_store,
     molt_profile_struct_field_store_attached_body,
 };

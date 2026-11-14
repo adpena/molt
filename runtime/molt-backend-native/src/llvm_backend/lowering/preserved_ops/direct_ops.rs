@@ -73,22 +73,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if let Some(flag) = self.guard_profile_flag {
             return flag;
         }
-        let function = self.ensure_runtime_import(RuntimeFn::ProfileEnabled);
         let builder = self.backend.context.create_builder();
         let entry = self.llvm_fn.get_first_basic_block().expect("LLVM entry");
-        // The runtime profile flag is initialized once per runtime epoch. One
-        // activation observes it at entry, before any guard or callback runs.
+        // The thread record publishes the process's profile flag with the
+        // runtime binding. One activation observes it at entry, before any
+        // guard or callback runs.
         if let Some(first) = entry.get_first_instruction() {
             builder.position_before(&first);
         } else {
             builder.position_at_end(entry);
         }
-        let flag = builder
-            .build_execution_call(function, &[], "runtime_profile_enabled")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
+        let flag = self.load_thread_record_word(
+            &builder,
+            molt_codegen_abi::thread_record::ThreadRecordWord::ProfileEnabled,
+            "runtime_profile_enabled",
+        );
         self.guard_profile_flag = Some(flag);
         flag
     }

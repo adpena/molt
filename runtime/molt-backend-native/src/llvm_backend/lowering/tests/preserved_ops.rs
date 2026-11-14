@@ -1151,10 +1151,18 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
         "layout guards keep the receiver tag and name the statement's slot: {ir}"
     );
     assert!(ir.contains_execution(", i64 %2)"), "{ir}");
+    // The only integer-to-pointer casts reach the thread record through the
+    // attached context; the receiver itself is never unboxed to a pointer.
     assert!(
-        !ir.contains_execution("inttoptr") && !ir.contains_execution("ptr_unbox"),
+        ir.lines()
+            .filter(|line| line.contains("inttoptr"))
+            .all(|line| {
+                line.contains("%execution_context_header_ptr")
+                    || line.contains("%thread_record_ptr")
+            }),
         "{ir}"
     );
+    assert!(!ir.contains_execution("ptr_unbox"), "{ir}");
 }
 
 #[test]
@@ -2139,9 +2147,10 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
         let llvm = try_lower_tir_to_llvm(&func, &backend).expect("profile guard lowering");
         assert!(llvm.verify(true));
         let ir = llvm.print_to_string().to_string();
+        // The profile flag is one entry load of its thread-record word.
+        assert!(!ir.contains("@molt_profile_enabled"), "{ir}");
         assert_eq!(
-            ir.matches_execution("call i64 @molt_profile_enabled()")
-                .count(),
+            ir.matches("%runtime_profile_enabled = load i64").count(),
             1,
             "{ir}"
         );
