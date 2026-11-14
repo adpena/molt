@@ -1086,8 +1086,31 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         return collector.names
 
     def _collect_stable_module_classes(self, node: ast.Module) -> set[str]:
-        if self._module_globals_dict_escapes(node):
-            return set()
+        """Module-level class statements whose name no code rebinds.
+
+        With a closed graph premise the writers are named facts (HF-226): the
+        module's own deferred writes and every other module's writes into it;
+        own reflection of the namespace proves nothing. Code that merely reads
+        the namespace (a function called from module scope) rebinds nothing.
+        Without a premise any namespace observation keeps the names unstable.
+        """
+        premise = self.namespace_premise
+        writers: frozenset[str]
+        if premise is None or premise.foreign_writes is None:
+            if self._module_globals_dict_escapes(node):
+                return set()
+            writers = frozenset()
+        else:
+            from molt.compiler_analysis.python_namespace_writes import (
+                _resolved_python_namespace_summary,
+            )
+
+            summary = _resolved_python_namespace_summary(
+                node, target_python=self.target_python
+            )
+            if summary.own_names is None:
+                return set()
+            writers = summary.own_names | frozenset(premise.foreign_writes)
         class_defs: dict[str, int] = {}
         rebound: set[str] = set()
         deleted: set[str] = set()
@@ -1130,6 +1153,25 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
             if isinstance(stmt, (ast.Import, ast.ImportFrom)):
                 for alias in stmt.names:
                     rebound.add(python_import_binding(alias))
+                continue
+            # Any other module-scope statement binds what its executing
+            # parts bind: nested blocks of if/for/while/try/with/match.
+            for inner in self._module_scope_nodes(stmt):
+                if isinstance(inner, ast.Name) and not isinstance(inner.ctx, ast.Load):
+                    rebound.add(inner.id)
+                elif isinstance(inner, (ast.Import, ast.ImportFrom)):
+                    rebound.update(python_import_binding(a) for a in inner.names)
+                elif isinstance(
+                    inner,
+                    (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+                ):
+                    rebound.add(inner.name)
+                elif isinstance(inner, ast.ExceptHandler) and inner.name:
+                    rebound.add(inner.name)
+                elif isinstance(inner, (ast.MatchAs, ast.MatchStar)) and inner.name:
+                    rebound.add(inner.name)
+                elif isinstance(inner, ast.MatchMapping) and inner.rest:
+                    rebound.add(inner.rest)
 
         return {
             name
@@ -1138,7 +1180,37 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
             and name not in rebound
             and name not in deleted
             and name not in global_decls
+            and name not in writers
         }
+
+    @staticmethod
+    def _module_scope_nodes(stmt: ast.stmt) -> list[ast.AST]:
+        """The nodes of a module-scope statement that execute in module
+        scope: every node except the bodies of nested functions, lambdas,
+        classes and comprehensions (which bind in their own scopes)."""
+        found: list[ast.AST] = []
+        pending: list[ast.AST] = [stmt]
+        while pending:
+            current = pending.pop()
+            found.append(current)
+            if current is not stmt and isinstance(
+                current,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            if isinstance(
+                current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+            ):
+                # A comprehension binds its targets in its own scope; only an
+                # assignment expression inside it binds in module scope.
+                found.extend(
+                    inner.target
+                    for inner in ast.walk(current)
+                    if isinstance(inner, ast.NamedExpr)
+                )
+                continue
+            pending.extend(ast.iter_child_nodes(current))
+        return found
 
     def _collect_nonlocal_decls(self, nodes: list[ast.stmt]) -> set[str]:
         class NonlocalCollector(ast.NodeVisitor):

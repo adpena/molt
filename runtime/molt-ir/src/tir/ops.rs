@@ -584,6 +584,9 @@ const GLOBAL_SLOT_INIT_ONCE_ATTR: &str = "global_slot_init_once";
 /// The compiled method site of a method load or of the call that consumes its
 /// pair (`OpIR::method_site`); only its typed accessor pair spells it.
 const METHOD_SITE_ATTR: &str = "method_site";
+/// A guarded call whose target integration proved (`OpIR::proven_target`);
+/// only its typed accessor pair spells it.
+const PROVEN_TARGET_ATTR: &str = "proven_target";
 
 /// Executable builtin identity, separate from positional arguments. A name
 /// selects runtime builtin lookup; it does not prove a fixed callable, purity,
@@ -916,6 +919,25 @@ impl TirOp {
                 }))
             }
             other => panic!("{:?}: malformed method site {other:?}", self.opcode),
+        }
+    }
+
+    /// Whether integration proved this guarded call's callee is its target's
+    /// function object (HF-846 slice 2, `OpIR::proven_target`).
+    pub fn proven_target(&self) -> bool {
+        match self.attrs.get(PROVEN_TARGET_ATTR) {
+            None => false,
+            Some(&AttrValue::Bool(true)) => true,
+            other => panic!("{:?}: malformed proven target {other:?}", self.opcode),
+        }
+    }
+
+    pub fn set_proven_target(&mut self, proven: bool) {
+        if proven {
+            self.attrs
+                .insert(PROVEN_TARGET_ATTR.into(), AttrValue::Bool(true));
+        } else {
+            self.attrs.remove(PROVEN_TARGET_ATTR);
         }
     }
 

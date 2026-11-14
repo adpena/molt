@@ -1318,3 +1318,40 @@ fn boxed_bitwise_ops_take_only_the_inline_int_arm() {
         assert_eq!(calls[0].1.runtime, Some(runtime), "{opcode:?}");
     }
 }
+
+/// A proven guarded call (HF-846 slice 2) enters its target directly: no
+/// admission call, no code guard, no slow call. The recursion check stays.
+#[test]
+fn a_proven_call_skips_admission_and_the_code_guard() {
+    let (mut func, result) = guarded_call(true);
+    let entry = func.entry_block;
+    func.blocks.get_mut(&entry).unwrap().ops[0].set_proven_target(true);
+    assert_eq!(super::run(&mut func, &targets(1, false)).values_changed, 1);
+    assert_valid(&func);
+    let runtimes: Vec<_> = ops(&func, OpCode::CallRuntime)
+        .into_iter()
+        .map(|(_, op)| op.runtime.unwrap())
+        .collect();
+    assert_eq!(
+        runtimes,
+        [
+            RuntimeFn::RecursionEnterFast,
+            RuntimeFn::RecursionExitFast,
+            RuntimeFn::RaiseRecursionError,
+        ]
+        .into_iter()
+        .filter(|expected| runtimes.contains(expected))
+        .collect::<Vec<_>>(),
+    );
+    assert!(!runtimes.contains(&RuntimeFn::FunctionDirectCallEligible));
+    assert!(ops(&func, OpCode::CodeIs).is_empty(), "no code guard");
+    assert!(
+        ops(&func, OpCode::Call).is_empty(),
+        "no slow call: the callee is proven"
+    );
+    let direct = ops(&func, OpCode::DirectCall);
+    assert_eq!(direct.len(), 1);
+    assert_eq!(direct[0].1.operands, [ValueId(0), ValueId(1)]);
+    assert_eq!(runtimes.len(), 3, "{runtimes:?}");
+    let _ = result;
+}

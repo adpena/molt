@@ -482,6 +482,7 @@ _OPCODE_FACT_SETS = (
     "structured_scf_marker_opcodes",
     "i64_zero_divisor_guard_opcodes",
     "i64_shift_count_guard_opcodes",
+    "literal_materialization_opcodes",
     "gvn_always_numberable_opcodes",
     "gvn_type_gated_numberable_opcodes",
     "proven_result_type_seed_opcodes",

@@ -470,3 +470,115 @@ def test_a_call_in_a_loop_after_the_store_is_one_dominated_start() -> None:
     funcs = [init, step]
     plan = _dominance_plan(funcs, funcs)
     assert _lines(funcs, plan.init_dominated["mod"]) == {30}
+
+
+def _call_program(
+    *,
+    shape: bool = True,
+    arity: int = 1,
+    supplied: int = 1,
+    kind: str = "func_new",
+    entry_custody: tuple[str, ...] = ("transferred",),
+    call_custody: bool = True,
+    caller_before_store: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """``mod`` defines ``helper`` (symbol ``mod__helper``) and a ``caller``
+    whose guarded call reads ``helper`` from its cell."""
+    func_new: dict[str, Any] = {
+        "kind": kind,
+        "s_value": "mod__helper",
+        "value": arity,
+        "out": "f_helper",
+        "source_line": 3,
+    }
+    if shape:
+        func_new["direct_shape"] = True
+    caller_new = _func_new("mod__caller", "f_caller", 2 if caller_before_store else 5)
+    init_ops: list[dict[str, Any]] = [
+        _const("nm", "mod"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+    ]
+    if caller_before_store:
+        init_ops += [caller_new, *_store("caller", "f_caller", 2)]
+    init_ops += [func_new, *_store("helper", "f_helper", 3)]
+    if not caller_before_store:
+        init_ops += [caller_new, *_store("caller", "f_caller", 5)]
+    init_ops.append({"kind": "ret_void"})
+    call: dict[str, Any] = {
+        "kind": "call_guarded",
+        "s_value": "mod__helper",
+        "args": ["callee", *[f"a{i}" for i in range(supplied)]],
+        "out": "r",
+        "source_line": 20,
+    }
+    if call_custody:
+        call["argument_custody"] = ["transferred"] * (supplied + 1)
+    caller = _function("mod__caller", *_read("helper", "callee", 20, "none"), call)
+    helper = _function("mod__helper")
+    helper["parameter_custody"] = list(entry_custody)
+    funcs = [_function("molt_init_mod", *init_ops), caller, helper]
+    return funcs, call
+
+
+def _prove(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    from molt.cli.static_module_cells import prove_init_once_calls
+
+    plan = _dominance_plan(funcs, funcs)
+    # The global slot stamps replace bodies copy-on-write in ``functions``
+    # only; the proof must follow them by name.
+    functions = [dict(func) for func in funcs]
+    module_functions = {"mod": list(funcs)}
+    diagnostics = prove_init_once_calls(functions, module_functions, plan)
+    assert functions == module_functions["mod"], "both views see the rewrite"
+    return functions, diagnostics
+
+
+def _guarded(functions: list[dict[str, Any]]) -> dict[str, Any]:
+    return next(
+        op for func in functions for op in func["ops"] if op["kind"] == "call_guarded"
+    )
+
+
+def test_a_call_of_a_proven_init_once_function_is_marked_proven() -> None:
+    funcs, _call = _call_program()
+    snapshot = [dict(func, ops=[dict(op) for op in func["ops"]]) for func in funcs]
+    functions, diagnostics = _prove(funcs)
+    assert diagnostics == []
+    assert _guarded(functions)["proven_target"] is True
+    # Copy-on-write: the admitted bodies keep their ops.
+    assert funcs == snapshot
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"shape": False}, "parameter shape that needs binding"),
+        ({"supplied": 2, "arity": 1}, "passes 2 of 1 parameters"),
+        ({"kind": "func_new_closure"}, "not a func_new without a closure"),
+        ({"entry_custody": ()}, "entry custody differs"),
+        ({"call_custody": False}, "entry custody differs"),
+        ({"supplied": 0, "arity": 0}, "entry custody differs"),
+    ],
+)
+def test_a_guarded_call_keeps_its_guards_when_a_fact_fails(
+    change: dict[str, Any], reason: str
+) -> None:
+    funcs, _call = _call_program(**change)
+    functions, diagnostics = _prove(funcs)
+    assert "proven_target" not in _guarded(functions)
+    assert len(diagnostics) == 1 and reason in diagnostics[0], diagnostics
+
+
+def test_a_zero_argument_call_of_a_borrowing_entry_is_proven() -> None:
+    funcs, _call = _call_program(supplied=0, arity=0, entry_custody=())
+    functions, diagnostics = _prove(funcs)
+    assert diagnostics == []
+    assert _guarded(functions)["proven_target"] is True
+
+
+def test_a_caller_that_may_run_before_the_store_is_not_proven() -> None:
+    funcs, _call = _call_program(caller_before_store=True)
+    functions, diagnostics = _prove(funcs)
+    assert "proven_target" not in _guarded(functions)
+    # The read is not dominated, so no InitOnce call fact applies.
+    assert diagnostics == []
