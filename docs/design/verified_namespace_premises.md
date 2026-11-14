@@ -170,12 +170,14 @@ receiver behavior.
    only so. The graph aggregates activated rows into `PythonNamespacePremise.code_rebinding`, which
    a native extension also sets (its C code reads code objects the scan cannot see). Its consumers:
    a module keeps its dictionary (static cells) and a function's imported-module global is not
-   bound statically (module-attribute binding, F3). The binding flow still treats every exposed
-   definition as activatable over foreign globals (`opaque_activation_sources`); narrowing that to
-   programs with a rebinder lifts builtin and global proofs into methods (`bench_class_hierarchy`
-   -6.1% instructions) but first needs a whole-module escape to expose only the members read
-   from it: with precise origins, the runtime closure's escape of `types` activated
-   `types.coroutine` and 17 more modules, a `sys.modules` writer among them. The pinned stdlib holds no activated `code` row; `asyncio`, `logging` and `unittest.mock` read
+   bound statically (module-attribute binding, F3). Third, frontend lowering
+   (`python_namespace_binding_policy(..., lowering=True)`) sees the exposed definitions
+   (`opaque_activation_sources`) only when the fact holds, so a method's builtin and global reads
+   keep their proofs (`bench_class_hierarchy` -6.1% instructions). Graph discovery keeps the exposed
+   set: with precise origins, its worklist turned the runtime closure's escape of the `types` module
+   into an activation of `types.coroutine` and 17 more modules, a `sys.modules` writer among them,
+   which cost `bench_math_numeric` its cells (+1,755%). A whole-module escape that exposes only the
+   members read from it would let discovery narrow too. The pinned stdlib holds no activated `code` row; `asyncio`, `logging` and `unittest.mock` read
    code objects only for metadata. Oracle: `tests/differential/basic/function_type_foreign_globals.py`
    (static cells had read the defining module's cells under foreign globals).
 2. **The binding flow takes a premise.** `PythonBindingFlowPolicy.foreign_namespace_writes` lists the

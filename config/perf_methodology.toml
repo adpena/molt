@@ -42,7 +42,7 @@ schema = "molt-perf-methodology-v1"
 # settings (hash seed fixed); the development interpreter added about 0.2 s
 # of site and sitecustomize startup to every CPython sample.
 version = 38
-content_sha256 = "cd26ce29f6c50f222d06d6c2fe16e980f6dabee53be8b3c01aeace00a01a7006"
+content_sha256 = "27fb294a66645c8ded49847a40162e3db373e73788bc68d8f802db9c6b373c37"
 
 [[methodology]]
 path = "tools/safe_run.py"
