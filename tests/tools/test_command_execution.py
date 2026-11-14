@@ -27,6 +27,11 @@ from tools import git_transfer
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow child is not a stuck one. Waits that expect
+# a timeout or a refusal (0.01 s and 0.1 s) keep their short bounds.
+_HANG_BOUND_S = 300.0
+
 
 @pytest.mark.parametrize("rule", list(NameRule))
 @pytest.mark.parametrize("owner", ["snapshot", "builder", "isolated-guard"])
@@ -1137,7 +1142,7 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
             assert owned.stdin is not None
             owned.stdin.write("start\n")
             owned.stdin.flush()
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + _HANG_BOUND_S
             while not pidfile.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
             assert pidfile.exists(), str(owned.evidence_path)
@@ -1201,7 +1206,7 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         f"release=pathlib.Path({str(release)!r})\n"
         "def hold():\n"
         " entered.write_text('entered', encoding='utf-8')\n"
-        " deadline=time.monotonic()+20\n"
+        f" deadline=time.monotonic()+{_HANG_BOUND_S}\n"
         " while not release.exists() and time.monotonic()<deadline: time.sleep(.02)\n"
         " if not release.exists(): raise RuntimeError('test release deadline')\n"
         + (
@@ -1253,7 +1258,7 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
     )
     try:
         ready = entered if pause == "startup" else child_ready
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert ready.exists(), str(owned.evidence_path)
@@ -1542,7 +1547,7 @@ def test_guard_resource_owner_survives_gc_after_unresolved_wait(
         else process
     )
     if guard_has_exited:
-        assert guard_process.wait(timeout=5) == 0
+        assert guard_process.wait(timeout=_HANG_BOUND_S) == 0
     fixture, startup, terminal = _interactive_guard_fixture(tmp_path, guard_process)
     if guard_has_exited:
         terminal["descendants_closed"] = False
@@ -1571,12 +1576,12 @@ def test_guard_resource_owner_survives_gc_after_unresolved_wait(
         _assert_retirement_binding(roots, False)
     finally:
         process.terminate()
-        process.wait(timeout=5)
+        process.wait(timeout=_HANG_BOUND_S)
         survivor = reference()
         assert survivor is not None
         terminal["descendants_closed"] = True
         fixture.summary_path.write_text(json.dumps(terminal), encoding="utf-8")
-        assert survivor.wait(timeout=5) is not None
+        assert survivor.wait(timeout=_HANG_BOUND_S) is not None
         assert survivor.terminal
     _assert_retirement_binding(roots, True)
     del survivor
