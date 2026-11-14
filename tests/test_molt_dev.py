@@ -575,6 +575,32 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         ]
 
 
+def test_postsubmit_measures_diff_relative_gates_from_the_main_it_last_observed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A red streak keeps last green far back (1,174 commits on 2026-11-14);
+    diff-relative gates measure from the newest main postsubmit already saw."""
+    from tools import molt_dev_queue as queue
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    green = _commit_file(repo, "a.txt", "a\n", "green")
+    observed = _commit_file(repo, "b.txt", "b\n", "observed")
+    head = _commit_file(repo, "c.txt", "c\n", "head")
+    git = molt_dev.Git(repo)
+    paths = queue.queue_paths(repo)
+    results: list[dict[str, str]] = []
+    monkeypatch.setattr(queue, "postsubmit_results", lambda _paths: results)
+
+    # Nothing observed: the last green main; no green either: head's parent.
+    assert queue.prior_main(git, paths, head, green) == green
+    assert queue.prior_main(git, paths, head, None) == observed
+    # The newest observed main wins over an older green, never over a newer one.
+    results[:] = [{"commit": head}, {"commit": observed}, {"commit": green}]
+    assert queue.prior_main(git, paths, head, green) == observed
+    assert queue.prior_main(git, paths, head, observed) == observed
+
+
 @pytest.mark.parametrize("spelling", ["tests/test_value.py", r"tests\test_value.py"])
 def test_postsubmit_junit_normalizes_platform_paths_before_reselection(
     tmp_path, spelling
