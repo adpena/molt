@@ -178,6 +178,7 @@ def stamp_global_slots(
     registered_modules: Collection[str],
     static_modules: Collection[str] = (),
     guard_masks: Mapping[str, int] | None = None,
+    init_dominated: Mapping[str, Collection[tuple[str, int]]] | None = None,
 ) -> None:
     """Mark each read and store of a slotted global with its slot
     ``{"module": M, "index": k}``: slot k of M's layout. Only modules with a
@@ -189,7 +190,9 @@ def stamp_global_slots(
     in static cells instead: its stamps carry ``"cell": true`` (slot k is the
     k-th word of its cell block), and its init binds the block to its module
     object right after creating it, before any store
-    (``molt_static_cells_bind``).
+    (``molt_static_cells_bind``). A read in ``init_dominated`` (function
+    name, op index) runs only after its InitOnce cell's store; its stamp also
+    carries ``"init_once": true``, and it becomes one load (HF-846).
     """
     from molt.cli.static_module_cells import module_object_site
 
@@ -203,14 +206,20 @@ def stamp_global_slots(
             for index, name in enumerate(global_layouts.get(module_name, ()))
         }
         bind_site = module_object_site(module_name, funcs) if cells else None
+        dominated = (init_dominated or {}).get(module_name, frozenset())
         for func in funcs:
             stamps: dict[int, dict[str, Any]] = {}
+            positions = (
+                {id(op): at for at, op in enumerate(func["ops"])} if dominated else {}
+            )
             for op, name in _global_name_sites([func]):
                 index = index_of.get(name)
                 if index is not None and op.get("kind") in _SLOTTED_SITE_OPS:
                     stamp: dict[str, Any] = {"module": module_name, "index": index}
                     if cells:
                         stamp["cell"] = True
+                        if (func.get("name", ""), positions.get(id(op))) in dominated:
+                            stamp["init_once"] = True
                     stamps[id(op)] = stamp
             binds = bind_site is not None and bind_site[0] == func.get("name")
             if (not stamps and not binds) or id(func) not in position:

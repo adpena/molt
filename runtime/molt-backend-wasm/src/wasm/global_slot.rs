@@ -133,6 +133,39 @@ pub(in crate::wasm) fn emit_static_cell_base(
     func.instruction(&Instruction::LocalSet(out));
 }
 
+/// A `static_cell_load` site (HF-846): one load from the module's segment at
+/// the cell's offset; the cell keeps its reference.
+pub(in crate::wasm) fn emit_static_cell_load(
+    backend: &mut WasmBackend,
+    func: &mut Function,
+    op: &OpIR,
+    locals: &crate::wasm::WasmFrameLocals,
+    func_index: u32,
+    reloc: bool,
+) {
+    let slot = op
+        .global_slot
+        .as_ref()
+        .expect("admitted static_cell_load carries its cell");
+    let block = *backend
+        .static_cell_blocks
+        .get(&slot.module)
+        .unwrap_or_else(|| panic!("module {} has no static cell block", slot.module));
+    backend.emit_data_ptr_i32(reloc, func_index, func, block);
+    molt_codegen_abi::static_cell::generate_static_cell_load(slot.index, |offset| {
+        // The cell's offset folds into the load's immediate.
+        func.instruction(&Instruction::I64Load(MemArg {
+            align: 3,
+            offset: u64::try_from(offset).expect("static cell offset is nonnegative"),
+            memory_index: 0,
+        }));
+    });
+    let out = locals
+        .bound_op_result_slot(op)
+        .expect("admitted static_cell_load result");
+    func.instruction(&Instruction::LocalSet(out));
+}
+
 /// A `static_cell_set` site: [base, value] are locals.
 pub(in crate::wasm) fn emit_static_cell_set(
     func: &mut Function,

@@ -6,7 +6,6 @@ import io
 import json
 import os
 import platform
-import shutil
 import signal
 import subprocess
 import sys
@@ -1189,13 +1188,6 @@ def _diff_warm_cache() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _diff_dyld_preflight_default() -> bool:
-    explicit = _bool_env("MOLT_DIFF_DYLD_PREFLIGHT")
-    if explicit is not None:
-        return explicit
-    return sys.platform == "darwin"
-
-
 def _bool_env(name: str) -> bool | None:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -1250,47 +1242,6 @@ def _diff_force_rebuild() -> bool:
     if explicit is not None:
         return explicit
     return False
-
-
-def _dyld_preflight_error(
-    binary_path: Path, *, budget: compat_backends.ItemBudget
-) -> str | None:
-    if not _diff_dyld_preflight_default() or sys.platform != "darwin":
-        return None
-    otool = shutil.which("otool")
-    if not otool:
-        return None
-    timeout = budget.limit(20.0)
-    if timeout == 0:
-        return None
-    try:
-        probe = subprocess.run(
-            [otool, "-l", str(binary_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-            encoding="utf-8",
-        )
-    except OSError:
-        # Preflight is best-effort; host tool failures are not binary corruption.
-        return None
-    except subprocess.TimeoutExpired:
-        return None
-    merged = "\n".join([probe.stdout or "", probe.stderr or ""]).lower()
-    if probe.returncode != 0:
-        # Only gate when otool output indicates the specific dyld corruption we care
-        # about; generic preflight failures should not poison the run.
-        if "unknown imports format" in merged:
-            return "dyld: unknown imports format (preflight)"
-        if "malformed load command" in merged:
-            return "dyld: unknown imports format (preflight malformed load command)"
-        return None
-    if "unknown imports format" in merged:
-        return "dyld: unknown imports format (preflight)"
-    if "malformed load command" in merged:
-        return "dyld: unknown imports format (preflight malformed load command)"
-    return None
 
 
 def _diff_allow_rustc_wrapper() -> bool:
@@ -3233,20 +3184,6 @@ def _run_molt_owned(
 
     if budget.expired():
         return budget.exhausted_result(build_failed=build_only)
-    preflight_err = _dyld_preflight_error(output_binary, budget=budget)
-    if preflight_err is not None:
-        _record_rss_metrics(
-            file_path,
-            build_metrics=build_metrics,
-            run_metrics=None,
-            build_rc=126,
-            run_rc=None,
-            status="build_dyld_preflight_failed",
-        )
-        return compat_backends.BackendResult(
-            None, preflight_err, 126, build_failed=True
-        )
-
     if build_only:
         _record_rss_metrics(
             file_path,

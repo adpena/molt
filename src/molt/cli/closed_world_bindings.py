@@ -38,6 +38,7 @@ from molt._public_objects_generated import PUBLIC_DIRECT_CALL_BINDINGS
 from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend._types import _MOLT_MODULE_CHUNK_PARAM, _intrinsic_signature
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 
 # The frontend's guess of the module an attribute read's receiver names
 # (``m.f`` with ``m`` an import binding). Consumed here; never on the wire.
@@ -48,10 +49,6 @@ _IMPORT_TRANSACTION = "molt_importlib_import_transaction"
 _IMPORT_REDIRECTS = (
     PythonMember.SYS_MODULES | PythonMember.IMPORT_HOOKS | PythonMember.BUILTINS_IMPORT
 )
-_OPENERS = frozenset({"if", "loop_start", "try_start"})
-_CLOSERS = frozenset({"end_if", "loop_end", "try_end"})
-# Unstructured control flow: no op after one is known to run unconditionally.
-_UNSTRUCTURED = frozenset({"label", "jump", "br_if", "state_switch", "state_label"})
 _GLOBAL_STORES = frozenset({"module_set_attr", "dict_set"})
 _GLOBAL_DELETES = frozenset({"module_del_global", "module_del_global_if_present"})
 _ATTRIBUTE_WRITES = (
@@ -93,6 +90,8 @@ class _BodyStore:
     value: str | None
     function: str
     line: int | None
+    # The store op's index in ``function``'s ops.
+    index: int
 
 
 def _module_init_symbol(module: str) -> str:
@@ -113,39 +112,284 @@ def _module_body_functions(
     ]
 
 
+# The control kinds the init chain's CFG models, spelled as the frontend CFG
+# reads them; every other kind is straight-line code to it. A body function
+# with an unmodeled control kind (``br_if``, generator states) orders nothing.
+_CHAIN_CONTROL: Mapping[str, FrontendOpKind] = {
+    "if": "IF",
+    "else": "ELSE",
+    "end_if": "END_IF",
+    "loop_start": "LOOP_START",
+    "loop_end": "LOOP_END",
+    "loop_break": "LOOP_BREAK",
+    "loop_break_if_true": "LOOP_BREAK_IF_TRUE",
+    "loop_break_if_false": "LOOP_BREAK_IF_FALSE",
+    "loop_continue": "LOOP_CONTINUE",
+    "try_start": "TRY_START",
+    "try_end": "TRY_END",
+    "jump": "JUMP",
+    "label": "LABEL",
+    "check_exception": "CHECK_EXCEPTION",
+    "ret": "ret",
+    "ret_void": "ret_void",
+    "raise": "RAISE",
+}
+_UNMODELED_CONTROL = frozenset(
+    {"br_if", "state_switch", "state_label", "state_yield", "state_transition"}
+)
+_LABELLED = frozenset({"label", "jump", "check_exception", "try_start"})
+
+
+class _ChainOp:
+    """A SimpleIR op as the frontend CFG reads it: its control kind, and the
+    label a control transfer names."""
+
+    __slots__ = ("kind", "args")
+
+    def __init__(self, op: Mapping[str, Any]) -> None:
+        kind = str(op.get("kind"))
+        self.kind: FrontendOpKind = _CHAIN_CONTROL.get(kind, "NOP")
+        value = op.get("value")
+        self.args: list[Any] = (
+            [value] if kind in _LABELLED and value is not None else []
+        )
+
+
+@dataclass(frozen=True)
+class _ChainFunction:
+    ops: Sequence[Mapping[str, Any]]
+    cfg: Any
+    # Blocks on a cycle: an op there may run more than once.
+    cyclic: frozenset[int]
+    # Blocks that end a normal return: an exit block (a ``ret``, or the end
+    # of the ops) that no exception landing (``label`` with
+    # ``exception_source: unwind``) dominates.
+    normal_returns: tuple[int, ...]
+
+
+def _cyclic_blocks(successors: Mapping[int, Sequence[int]]) -> frozenset[int]:
+    """The blocks of every strongly connected component with a cycle."""
+    index_of: dict[int, int] = {}
+    low: dict[int, int] = {}
+    stack: list[int] = []
+    on_stack: set[int] = set()
+    cyclic: set[int] = set()
+    counter = 0
+    for root in successors:
+        if root in index_of:
+            continue
+        work: list[tuple[int, int]] = [(root, 0)]
+        while work:
+            node, child = work.pop()
+            if child == 0:
+                index_of[node] = low[node] = counter
+                counter += 1
+                stack.append(node)
+                on_stack.add(node)
+            targets = successors.get(node, ())
+            if child < len(targets):
+                work.append((node, child + 1))
+                target = targets[child]
+                if target not in index_of:
+                    work.append((target, 0))
+                elif target in on_stack:
+                    low[node] = min(low[node], index_of[target])
+                continue
+            for target in targets:
+                if target in on_stack:
+                    low[node] = min(low[node], low[target])
+            if low[node] == index_of[node]:
+                component: list[int] = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                if len(component) > 1 or node in targets:
+                    cyclic.update(component)
+    return frozenset(cyclic)
+
+
+class InitChain:
+    """The run-once chain of a module's init: the init function and each body
+    chunk it calls from exactly one call site that runs at most once, as one
+    control-flow graph per function (the frontend CFG, ``cfg_analysis``).
+
+    A point is a (function, op index) pair. ``dominates(a, b)`` holds when
+    every execution of ``b`` follows an execution of ``a``: in one function,
+    ``a``'s block dominates ``b``'s; across a chunk call, the caller's part of
+    the path is checked at the call site, and a point inside a chunk counts
+    as done after the call only when it dominates every normal return of the
+    chunk. An exception that leaves a chunk takes its caller's exception edge,
+    so code after the call's normal continuation never runs on that path."""
+
+    def __init__(self, module: str, funcs: Sequence[Mapping[str, Any]]) -> None:
+        from molt.frontend.cfg_analysis import build_cfg
+
+        body = {
+            func.get("name", ""): func for func in _module_body_functions(module, funcs)
+        }
+        self.init = _module_init_symbol(module)
+        sites: dict[str, list[tuple[str, int]]] = {}
+        for name, func in body.items():
+            for index, op in enumerate(func.get("ops", ())):
+                callee = op.get("s_value")
+                if op.get("kind") == "call_internal" and callee in body:
+                    sites.setdefault(callee, []).append((name, index))
+        self.functions: dict[str, _ChainFunction] = {}
+        self.parent: dict[str, tuple[str, int]] = {}
+        pending = [self.init] if self.init in body else []
+        while pending:
+            name = pending.pop()
+            ops = body[name].get("ops", ())
+            if any(op.get("kind") in _UNMODELED_CONTROL for op in ops):
+                continue
+            cfg = build_cfg([_ChainOp(op) for op in ops])
+            landings = [
+                block.id
+                for block in cfg.blocks
+                if block.end > block.start
+                and ops[block.start].get("kind") == "label"
+                and ops[block.start].get("exception_source") == "unwind"
+            ]
+            normal = [
+                block.id
+                for block in cfg.blocks
+                if block.end > block.start
+                and block.id in cfg.reachable
+                and not cfg.successors.get(block.id)
+                and not any(
+                    cfg.dominance.dominates(landing, block.id) for landing in landings
+                )
+            ]
+            chain = _ChainFunction(
+                ops, cfg, _cyclic_blocks(cfg.successors), tuple(normal)
+            )
+            self.functions[name] = chain
+            for callee, callee_sites in sites.items():
+                if len(callee_sites) != 1 or callee in self.functions:
+                    continue
+                caller, index = callee_sites[0]
+                block = cfg.block_for_op(index)
+                if (
+                    caller == name
+                    and block is not None
+                    and block in cfg.reachable
+                    and block not in chain.cyclic
+                ):
+                    self.parent[callee] = (caller, index)
+                    pending.append(callee)
+
+    def runs_once(self, point: tuple[str, int]) -> bool:
+        """Whether ``point``'s op runs at most once per process."""
+        chain = self.functions.get(point[0])
+        if chain is None:
+            return False
+        block = chain.cfg.block_for_op(point[1])
+        return (
+            block is not None
+            and block in chain.cfg.reachable
+            and block not in chain.cyclic
+        )
+
+    def _local(self, function: str, a: int, b: int) -> bool:
+        """Whether op ``a`` runs before every execution of op ``b`` (or is
+        ``b``) in one function."""
+        cfg = self.functions[function].cfg
+        block_a, block_b = cfg.block_for_op(a), cfg.block_for_op(b)
+        if block_a is None or block_b is None:
+            return False
+        if block_a == block_b:
+            return a <= b and block_a in cfg.reachable
+        return cfg.dominance.dominates(block_a, block_b)
+
+    def _done_after_return(self, point: tuple[str, int]) -> bool:
+        """Whether ``point`` runs on every normal return of its function."""
+        function, index = point
+        chain = self.functions[function]
+        if index >= len(chain.ops):
+            # The continuation of a call that ends the function's ops.
+            return True
+        last = {
+            block: chain.cfg.blocks[block].end - 1 for block in chain.normal_returns
+        }
+        return all(self._local(function, index, last_op) for last_op in last.values())
+
+    def _continuation(self, function: str) -> tuple[str, int]:
+        """The first point of ``function``'s caller after its call returns
+        normally: past the call's ``check_exception``, if it has one."""
+        caller, index = self.parent[function]
+        ops = self.functions[caller].ops
+        after = index + 1
+        if after < len(ops) and ops[after].get("kind") == "check_exception":
+            after += 1
+        return caller, after
+
+    def _ancestors(self, function: str) -> list[str]:
+        found = [function]
+        while found[-1] in self.parent:
+            found.append(self.parent[found[-1]][0])
+        return found
+
+    def dominates(self, a: tuple[str, int], b: tuple[str, int]) -> bool:
+        """Whether every execution of ``b`` follows an execution of ``a``, or
+        ``b`` is ``a`` (reflexive)."""
+        if a[0] not in self.functions or b[0] not in self.functions:
+            return False
+        a_line = self._ancestors(a[0])
+        b_line = self._ancestors(b[0])
+        common = next((name for name in b_line if name in a_line), None)
+        if common is None:
+            return False
+        # Lift ``a`` to the common function: it must be done on every normal
+        # return of each chunk it leaves.
+        while a[0] != common:
+            if not self._done_after_return(a):
+                return False
+            a = self._continuation(a[0])
+        # Lift ``b`` to its call site in the common function.
+        while b[0] != common:
+            b = self.parent[b[0]]
+        return self._local(common, a[1], b[1])
+
+    def unconditional(self, point: tuple[str, int]) -> bool:
+        """Whether ``point`` runs once, on every normal completion of the
+        init: every op after the init returns observes its effect."""
+        if not self.runs_once(point):
+            return False
+        while point[0] != self.init:
+            if point[0] not in self.parent or not self._done_after_return(point):
+                return False
+            point = self._continuation(point[0])
+        return self._done_after_return(point)
+
+
 def _body_analysis(
     module: str, funcs: Sequence[Mapping[str, Any]]
 ) -> tuple[dict[str, list[_BodyStore]], set[str], bool, dict[tuple[str, str], str]]:
     """Every own-namespace store and delete of ``module``'s body, whether
-    the body star-imports, and each ``builtin_func`` result's intrinsic."""
+    the body star-imports, and each ``builtin_func`` result's intrinsic. A
+    store is unconditional when it runs once and on every normal completion
+    of the init (``InitChain.unconditional``)."""
     stores: dict[str, list[_BodyStore]] = {}
     deletes: set[str] = set()
     star = False
     builtins: dict[tuple[str, str], str] = {}
     body = _module_body_functions(module, funcs)
-    # Every call site of each body function: whether it runs unconditionally.
-    chunk_calls: dict[str, list[bool]] = {}
-    init = _module_init_symbol(module)
+    chain = InitChain(module, funcs)
     for func in body:
         constants: dict[str, str] = {}
-        depth = 0
-        unstructured = False
         own_modules = {
             param
             for param in func.get("params") or ()
             if param == _MOLT_MODULE_CHUNK_PARAM
         }
         globals_dicts: set[str] = set()
-        for op in func.get("ops", ()):
+        name_of_function = func.get("name", "")
+        for index, op in enumerate(func.get("ops", ())):
             kind = op.get("kind")
             out = op.get("out")
-            if kind in _UNSTRUCTURED:
-                unstructured = True
-            if kind in _CLOSERS:
-                depth -= 1
-            unconditional = depth == 0 and not unstructured
-            if kind in _OPENERS:
-                depth += 1
             if kind == "const_str" and isinstance(out, str):
                 constants[out] = op.get("s_value")
             elif kind == "module_new" and isinstance(out, str):
@@ -154,11 +398,7 @@ def _body_analysis(
                 if isinstance(out, str):
                     globals_dicts.add(out)
             elif kind == "builtin_func" and isinstance(out, str):
-                builtins[(func.get("name", ""), out)] = op.get("s_value")
-            elif kind == "call_internal":
-                callee = op.get("s_value")
-                if isinstance(callee, str):
-                    chunk_calls.setdefault(callee, []).append(unconditional)
+                builtins[(name_of_function, out)] = op.get("s_value")
             elif kind is not None and "import_star" in kind:
                 star = True
             args = op.get("args") or ()
@@ -171,46 +411,15 @@ def _body_analysis(
             if kind in _GLOBAL_STORES and own and len(args) == 3:
                 stores.setdefault(name, []).append(
                     _BodyStore(
-                        unconditional,
+                        chain.unconditional((name_of_function, index)),
                         args[2],
-                        func.get("name", ""),
+                        name_of_function,
                         op.get("source_line"),
+                        index,
                     )
                 )
             elif kind in _GLOBAL_DELETES:
                 deletes.add(name)
-    # A chunk's store runs once and unconditionally only if the chunk has
-    # exactly one call and that call is unconditional. A chunk whose call the
-    # scan did not see, or one called twice, proves nothing.
-    callers: dict[str, list[str]] = {}
-    for func in body:
-        for op in func.get("ops", ()):
-            if op.get("kind") == "call_internal" and isinstance(op.get("s_value"), str):
-                callers.setdefault(op["s_value"], []).append(func.get("name", ""))
-
-    def runs_once(function: str, seen: frozenset[str] = frozenset()) -> bool:
-        if function == init:
-            return True
-        calls = chunk_calls.get(function, [])
-        sites = callers.get(function, [])
-        return (
-            len(calls) == 1
-            and calls[0]
-            and len(sites) == 1
-            and sites[0] not in seen
-            and runs_once(sites[0], seen | {function})
-        )
-
-    for name, rows in stores.items():
-        stores[name] = [
-            _BodyStore(
-                row.unconditional and runs_once(row.function),
-                row.value,
-                row.function,
-                row.line,
-            )
-            for row in rows
-        ]
     return stores, deletes, star, builtins
 
 

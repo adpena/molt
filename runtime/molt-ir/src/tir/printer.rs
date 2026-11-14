@@ -351,6 +351,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::GlobalSlotBase => "global_slot_base",
         OpCode::GlobalSlotGet => "global_slot_get",
         OpCode::StaticCellBase => "static_cell_base",
+        OpCode::StaticCellLoad => "static_cell_load",
         OpCode::StaticCellSet => "static_cell_set",
         OpCode::ConstInt => "const_int",
         OpCode::ConstBigInt => "const_bigint",

@@ -295,6 +295,11 @@ class CargoResourceCustody:
     _content: tuple[str, int, int, tuple[str, ...]] | None = field(
         default=None, init=False, compare=False, repr=False
     )
+    # file_identity's index, built once: entrypoint -> its one identity, or
+    # None when two captures of the entrypoint disagree.
+    _by_entrypoint: dict[Path, StableRegularFileIdentity | None] | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     @classmethod
     def capture(
@@ -427,12 +432,19 @@ class CargoResourceCustody:
 
     def file_identity(self, path: Path) -> StableRegularFileIdentity:
         """Project a captured lexical resource; never select or hash a new file."""
-        matches = [item.identity for item in self.files if item.entrypoint == path]
-        if not matches or any(identity != matches[0] for identity in matches):
+        index = self._by_entrypoint
+        if index is None:
+            index = {}
+            for item in self.files:
+                known = index.get(item.entrypoint, item.identity)
+                index[item.entrypoint] = known if known == item.identity else None
+            object.__setattr__(self, "_by_entrypoint", index)
+        identity = index.get(path)
+        if identity is None:
             raise ValueError(
                 f"runtime resource has no unique captured identity: {path}"
             )
-        return matches[0]
+        return identity
 
     def content_identity(self) -> dict[str, object]:
         """Project captured bytes, without probing or reading a second generation."""

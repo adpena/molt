@@ -13,11 +13,9 @@ from molt.cli import build_pipeline
 from molt.cli import link_fingerprints, link_pipeline
 
 _LINK_PIPELINE_NAMES = (
-    "_darwin_link_validation_failure",
     "_prepare_native_link",
     "_prepare_native_object_artifact",
     "_run_native_link_command",
-    "_validate_darwin_link_output",
 )
 
 

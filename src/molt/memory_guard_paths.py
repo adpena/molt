@@ -62,6 +62,19 @@ def retired_guard_marker_dir(active_dir: Path) -> Path:
     return active_dir.parent / RETIRED_DIRNAME
 
 
+def retired_guard_marker_pid_dir(active_dir: Path, pid: str) -> Path:
+    """Return the history of guards whose process id is ``pid``.
+
+    History is keyed by pid because its only reader asks for the records of a
+    captured process family: a guarded spawn lists its own pids' directories,
+    never the whole history, whose size grows with every guard ever run.
+    """
+
+    if not pid.isdecimal():
+        raise ValueError(f"guard pid is not decimal: {pid!r}")
+    return retired_guard_marker_dir(active_dir) / pid
+
+
 def active_guard_marker_dirs_of(artifact_root: Path) -> tuple[Path, ...]:
     """Return every active-marker directory of guards using ``artifact_root``.
 

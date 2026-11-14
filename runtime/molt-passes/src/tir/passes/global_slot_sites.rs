@@ -30,6 +30,16 @@
 //!   %b = StaticCellBase[M] ; StaticCellSet %b, %value   {cell M:k}
 //! ```
 //!
+//! A read stamped `init_once` (HF-846) runs only after its cell's one store,
+//! at initialization, which no code undoes. It needs no unbound test and no
+//! retain: the cell owns the value, and the result is a view of it.
+//!
+//! ```text
+//!   %v = ModuleGetGlobal %module, %name          {cell M:k, init_once}
+//! becomes
+//!   %v = StaticCellLoad                          {cell M:k, init_once}
+//! ```
+//!
 //! `GlobalSlotBase` is pure within an activation, so the cleanup round after
 //! this pass merges every base of one module into one per function and
 //! hoists it out of loops. A read's meaning (slot load, unbound test, retain,
@@ -93,6 +103,18 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 continue;
             }
             let span = op.source_span;
+            if slot.cell && slot.init_once && site_kind == Site::Read {
+                // An init-dominated read (HF-846): the cell is bound and never
+                // written again, so the read is one load with no operands; its
+                // name and module operands die here.
+                let mut load = op;
+                load.origin = None;
+                load.opcode = OpCode::StaticCellLoad;
+                load.operands.clear();
+                rewritten.push(load);
+                stats.values_changed += 1;
+                continue;
+            }
             if slot.cell {
                 // A static cell (call_anatomy.md 4.5a): the block's address
                 // is a link-time constant, and a store is the shared
