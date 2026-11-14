@@ -69,3 +69,18 @@ for index in range(1000):
     if isinstance(item, str):
         count += 1
 print(count)
+
+
+# A subclass hit answers by the real type before `__class__` is consulted; a
+# miss still consults `__class__`, which may name another class.
+class Disguised(Plain):
+    @property
+    def __class__(self):
+        print("Disguised.__class__ read")
+        return int
+
+
+disguised = Disguised()
+print(isinstance(disguised, Plain), isinstance(disguised, object))
+print(isinstance(disguised, int), isinstance(disguised, str))
+print(isinstance(Child(), Plain), isinstance(Child(), (str, Plain)))
