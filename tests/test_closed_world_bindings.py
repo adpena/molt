@@ -175,6 +175,15 @@ def test_a_proven_site_becomes_one_direct_intrinsic_call() -> None:
             },
             "sys.modules",
         ),
+        (
+            {
+                "facts_user": ModuleNamespaceFacts(
+                    frozenset(),
+                    PythonNamespacePremise((), 0, 0, (), code_rebinding=True),
+                )
+            },
+            "another globals mapping",
+        ),
         ({"math": _math_body(conditional=True)}, "conditional"),
         ({"math": _math_body(twice=True)}, "2 times"),
         ({"user": _user(arity=2)}, "arity"),

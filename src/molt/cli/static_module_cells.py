@@ -22,7 +22,10 @@ C2. No code reaches ``M``'s namespace mapping by identity: ``M``'s own code
     activated code anywhere reaches ``M.__dict__``, ``vars(M)``, a
     ``sys.modules`` entry's ``__dict__``, a ``__globals__`` or an
     ``f_globals`` except by literal dunder keys
-    (``PythonNamespacePremise.namespace_reflected``).
+    (``PythonNamespacePremise.namespace_reflected``), and no activated code
+    reads a code object that ``FunctionType`` could run over another globals
+    mapping (``PythonNamespacePremise.code_rebinding``), whose reads a cell
+    would not see.
 C3. Every writer of ``M``'s namespace is named: ``M``'s own deferred writes and
     the premise's foreign writes are known sets.
 C4. ``M``'s body does not star-import (which binds names the layout lacks), and
@@ -165,6 +168,12 @@ def _module_reason(
         return (
             "some code reaches its namespace mapping by identity (__dict__, "
             "vars(), __globals__, f_globals or a sys.modules entry)"
+        )
+    if premise.code_rebinding:
+        return (
+            "some code reads a code object (__code__, f_code, gi_code, cr_code "
+            "or ag_code) or loads a native extension, so FunctionType may run "
+            "this module's functions over another globals mapping"
         )
     if premise.foreign_writes is None:
         return "the program writes some module namespace by a computed name"

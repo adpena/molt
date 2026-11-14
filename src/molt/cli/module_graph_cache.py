@@ -529,6 +529,7 @@ def _namespace_premise_cache_identity(
             else list(premise.opaque_activation_sources)
         ),
         "namespace_reflected": premise.namespace_reflected,
+        "code_rebinding": premise.code_rebinding,
     }
 
 
@@ -546,6 +547,7 @@ def _decode_namespace_premise_cache_identity(
             "noncanonical_imports",
             "opaque_activation_sources",
             "namespace_reflected",
+            "code_rebinding",
         },
     )
     foreign = item["foreign_writes"]
@@ -570,8 +572,11 @@ def _decode_namespace_premise_cache_identity(
     reflected = item["namespace_reflected"]
     if type(reflected) is not bool:
         raise ValueError("invalid namespace premise reflection")
+    code_rebinding = item["code_rebinding"]
+    if type(code_rebinding) is not bool:
+        raise ValueError("invalid namespace premise code rebinding")
     return PythonNamespacePremise(
-        foreign, members, entry_members, noncanonical, opaque, reflected
+        foreign, members, entry_members, noncanonical, opaque, reflected, code_rebinding
     )
 
 
@@ -846,7 +851,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 44
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 46
 
 
 def _import_scan_cache_key(
