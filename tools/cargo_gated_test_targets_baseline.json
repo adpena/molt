@@ -9,6 +9,10 @@
    "finding": "HF-565",
    "reason": "run by tools/numeric_attestation runners, which the plan does not declare as a cargo test invocation of this target"
   },
+  "molt-runtime::cext_dlopen_smoke": {
+   "finding": "HF-565",
+   "reason": "needs the cext_host cdylib built first and named by MOLT_CEXT_HOST_LIBRARY; no plan command builds it"
+  },
   "molt-runtime::l7_numeric_runtime_perf_attestation": {
    "finding": "HF-565",
    "reason": "run by tools/numeric_attestation runners, which the plan does not declare as a cargo test invocation of this target"

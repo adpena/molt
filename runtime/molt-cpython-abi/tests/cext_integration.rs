@@ -1,7 +1,7 @@
 //! Loader admission rejects missing runtime custody before opening a library.
 //! Real extension execution belongs to runtime-backed acceptance lanes.
 
-#![cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use molt_cpython_abi::loader::{LoadError, load_cpython_extension};
 

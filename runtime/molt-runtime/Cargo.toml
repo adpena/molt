@@ -52,6 +52,11 @@ name = "list_delta_perf_attestation"
 path = "tests/list_delta_perf_attestation.rs"
 required-features = ["l7-attestation-probe"]
 
+[[test]]
+name = "cext_dlopen_smoke"
+path = "tests/cext_dlopen_smoke.rs"
+required-features = ["cext_loader"]
+
 # One image carrying the runtime and the CPython-ABI exports for native
 # C-extension tests (`tests/cext_dlopen_smoke.rs`). Build it explicitly in the
 # test's target/profile with `cargo build --example cext_host --features

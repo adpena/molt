@@ -8,7 +8,7 @@
 //! runtime nor the ABI itself. A missing host or C toolchain is a failure,
 //! never a skip; loader admission alone is tested in molt-cpython-abi.
 
-#![cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::path::Path;
