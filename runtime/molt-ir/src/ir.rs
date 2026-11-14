@@ -2237,6 +2237,8 @@ mod json_parse_tests {
             class_definition: Some("class:module:Owner".to_string()),
             runtime_requirement_bits: 3,
             passes_execution_context: true,
+            proven_target: true,
+            direct_shape: true,
             runtime: None,
             async_work_poll: true,
             argument_custody: Some(vec![
