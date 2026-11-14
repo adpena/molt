@@ -445,7 +445,11 @@ One runner owns main. Agents enqueue and continue.
   confirms. A failed batch splits into halves: a passing first half lands,
   and the rest retest on the new tip. A single failing lane leaves the queue
   with its log. A move of main rebuilds the candidate; it never needs a
-  person. Speculation is a candidate chain (main + L1, main + L1 + L2, ...)
+  person. When the batch's gates had passed and only the push lost the race,
+  the rebuilt batch reruns the static gates and the gates the move can
+  affect, by the rule `land --fast` uses below, and carries the rest from
+  the earlier base (2026-11-14: two batches of one request were each run
+  again in full, 35 minutes apiece, after unrelated pushes). Speculation is a candidate chain (main + L1, main + L1 + L2, ...)
   that runs as far as the admitted capacity allows: one chain on this Mac,
   wider on the farm.
   Direct materialization uses Git's

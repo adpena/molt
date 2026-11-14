@@ -1018,6 +1018,59 @@ def _gate_runtime(
     )
 
 
+def _carry_prior_gates(
+    git: Git,
+    repo: Path,
+    args: argparse.Namespace,
+    base: str,
+    commit: str,
+) -> Callable[[list[SelectedGate]], tuple[list[SelectedGate], list[dict]]] | None:
+    """For a queue replay, split the selected gates into those to run and the
+    prior receipt's records to carry; None runs every gate.
+
+    The prior run tested the same batch on an earlier base of main. Its gates
+    that main's move cannot affect keep their verdicts, as land --fast keeps
+    them across a move (molt_dev_land_fast._interaction_rerun).
+    """
+    tree, prior_base = (
+        getattr(args, "carry_tree", None),
+        getattr(args, "carry_base", None),
+    )
+    if tree is None or prior_base is None:
+        return None
+    from tools import landing_receipt
+    from tools.molt_dev_land_fast import _changed, _interaction_rerun, split_carried
+
+    common_dir = _git_common_directory(repo)
+    prior = (
+        None
+        if common_dir is None
+        else landing_receipt.read_receipt(common_dir, tree=tree, base=prior_base)
+    )
+    if prior is None:
+        _say(
+            f"    no receipt for tree {tree[:12]} on {prior_base[:12]}; every gate runs"
+        )
+        return None
+    rerun = _interaction_rerun(
+        git,
+        repo,
+        lane_paths=_changed(git, base, commit),
+        tested_base=prior_base,
+        base=base,
+    )
+
+    def split(gates: list[SelectedGate]) -> tuple[list[SelectedGate], list[dict]]:
+        run, carried = split_carried(gates, prior, rerun)
+        _say(
+            f"    replay on {git.short(base)}: {len(run)} gate(s) run, "
+            f"{len(carried)} carried from {git.short(prior_base)}"
+        )
+        return run, carried
+
+    return split
+
+
 def _write_queue_receipt(
     repo: Path,
     git: Git,
@@ -1029,9 +1082,11 @@ def _write_queue_receipt(
     logs: Mapping[str, Path],
     controller: str | None,
     postsubmit_only: Sequence[str] = (),
+    carried: Sequence[Mapping[str, object]] = (),
 ) -> None:
-    """The landing receipt of an integrate run: every selected gate passed.
-    ``logs`` maps each shown command to the log of the run that passed."""
+    """The landing receipt of an integrate run: every selected gate passed,
+    here or (``carried``) on the earlier base its record names. ``logs`` maps
+    each shown command to the log of the run that passed."""
     from tools import landing_receipt
     from tools.molt_dev_gates import display
 
@@ -1047,7 +1102,7 @@ def _write_queue_receipt(
             log=logs.get(display(gate.command)),
         )
         for gate in gates
-    ]
+    ] + [dict(record) for record in carried]
     receipt = landing_receipt.build_receipt(
         mode="queue",
         base=base,
@@ -1413,6 +1468,12 @@ def _integrate_exclusive(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
+    selected_gates = gate_cmds
+    carried = _carry_prior_gates(git, repo, args, upstream_before, selected_commit)
+    if carried is not None:
+        gate_cmds, carried_records = carried(gate_cmds)
+    else:
+        carried_records = []
     graph_selection = config.graph_selection(touched, recent_failures=recent_failures)
     if graph_selection is not None:
         _say(
@@ -1426,7 +1487,7 @@ def _integrate_exclusive(
             )
             for test, cells in sorted(graph_selection.deferred.items()):
                 _say(f"      {test}  ({', '.join(cells) or 'no proof cell owns it'})")
-        left = left_to_postsubmit(graph_selection, gate_cmds)
+        left = left_to_postsubmit(graph_selection, selected_gates)
         if left:
             _say(
                 f"    data readers left to postsubmit ({len(left)}): "
@@ -1517,7 +1578,8 @@ def _integrate_exclusive(
             seconds=gate_seconds,
             logs=gate_logs,
             controller=progress.controller,
-            postsubmit_only=left_to_postsubmit(graph_selection, gate_cmds),
+            postsubmit_only=left_to_postsubmit(graph_selection, selected_gates),
+            carried=carried_records,
         )
 
     # --- step 6: push (only after every gate is green) ----------------------
@@ -2203,6 +2265,11 @@ def build_parser() -> argparse.ArgumentParser:
     molt_dev_controller.add_pinned_controller_arguments(p_int)
     # Set only by the landing queue's runner (tools/molt_dev_queue.py).
     p_int.add_argument("--wait-for-lock", action="store_true", help=argparse.SUPPRESS)
+    # The queue's replay of a batch that passed on an earlier base of main: the
+    # (tree, base) of that run's landing receipt, whose gates main's move
+    # cannot affect it carries (molt_dev_land_fast.split_carried).
+    p_int.add_argument("--carry-tree", help=argparse.SUPPRESS)
+    p_int.add_argument("--carry-base", help=argparse.SUPPRESS)
     p_int.add_argument(
         "--marker",
         action="append",

@@ -77,6 +77,7 @@ def _driver() -> ModuleType:
 REQUEST_SCHEMA = "molt.landing-request.v2"
 RESULT_SCHEMA = "molt.landing-result.v2"
 PLAN_SCHEMA = "molt.landing-plan.v1"
+TESTED_SCHEMA = "molt.landing-tested.v1"
 # Batching pays only when most candidates pass: at a per-candidate pass rate p
 # a batch of k passes with probability p**k. On 2026-11-02 p was about 0.2 and
 # 24 failed batch blocks cost 7.6 h of bisection. Raise this only while p holds
@@ -471,6 +472,11 @@ class QueuePaths:
         return self.root / "plan.json"
 
     @property
+    def tested(self) -> Path:
+        """The batch that passed its gates before main moved under its push."""
+        return self.root / "tested.json"
+
+    @property
     def runner_lock(self) -> Path:
         return self.root / "runner.lock"
 
@@ -813,6 +819,44 @@ def bisect(
 
 def retire_batch_plan(paths: QueuePaths, batch: Sequence[LandingRequest]) -> None:
     _write_plan(paths, _remaining_groups(paths, batch))
+    paths.tested.unlink(missing_ok=True)
+
+
+def _batch_key(batch: Sequence[LandingRequest]) -> list[list[str]]:
+    return [[request.id, request.head] for request in batch]
+
+
+def record_tested(
+    paths: QueuePaths, batch: Sequence[LandingRequest], *, tree: str, base: str
+) -> None:
+    """Keep the (tree, base) of a batch whose gates passed before main moved,
+    so its replay on the new base carries what the move cannot affect."""
+    _write_json(
+        paths.tested,
+        {
+            "schema": TESTED_SCHEMA,
+            "requests": _batch_key(batch),
+            "tree": tree,
+            "base": base,
+        },
+    )
+
+
+def tested_receipt(
+    paths: QueuePaths, batch: Sequence[LandingRequest]
+) -> tuple[str, str] | None:
+    """The (tree, base) an earlier run of exactly this batch passed on, if any."""
+    try:
+        data = json.loads(paths.tested.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(data, dict)
+        or data.get("schema") != TESTED_SCHEMA
+        or data.get("requests") != _batch_key(batch)
+    ):
+        return None
+    return str(data["tree"]), str(data["base"])
 
 
 # --------------------------------------------------------------------------
@@ -1371,6 +1415,7 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
     if not candidate.included:
         retire_batch_plan(paths, batch)
         return False
+    tested = tested_receipt(paths, candidate.included)
     integration = drv.build_parser().parse_args(
         [
             "integrate",
@@ -1388,12 +1433,29 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
                 if args.pinned_controller
                 else ["--candidate-controller"]
             ),
+            *(
+                ["--carry-tree", tested[0], "--carry-base", tested[1]]
+                if tested is not None
+                else []
+            ),
         ]
     )
     try:
         drv.cmd_integrate(integration)
-    except (RebaseConflict, PublicationRace) as exc:
+    except RebaseConflict as exc:
         # main moved under the batch; the next runner rebuilds it on the new tip.
+        _warn(f"main moved; rebuilding the batch: {exc}")
+        return False
+    except PublicationRace as exc:
+        # main moved under the push. When the gates had passed, their receipt
+        # is keyed by this tree on this base; the rebuilt batch reruns only
+        # the gates main's move can affect. Without a receipt, all run again.
+        record_tested(
+            paths,
+            candidate.included,
+            tree=sandbox.rev_parse(f"{sandbox.head_sha()}^{{tree}}"),
+            base=upstream,
+        )
         _warn(f"main moved; rebuilding the batch: {exc}")
         return False
     except CandidateFailure as exc:

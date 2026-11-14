@@ -6350,6 +6350,138 @@ def test_queue_rebuilds_a_batch_when_main_moves_under_it(
     assert len(runs.splitlines()) == 2
 
 
+def _queue_replay_runs(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path], tmp_path: Path, path: str
+) -> list[str]:
+    """Queue one lane whose Cargo gate publishes a commit touching ``path`` to
+    main during the batch's first run; return the gate runs it took to land."""
+    from tools import landing_receipt
+
+    origin, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    move = _moving_try_gate(origin, tmp_path, counter, path=path, label="cargo-gate")
+    _commit_file(work, "Cargo.toml", "[workspace]\nmembers = []\n", "workspace")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _publish_policy(work, _try_run_policy(counter, try_gate=move, cargo=True))
+    first_base = _remote_main(work)
+    head = _lane(work, "replay", {"a.py": "a = 1\n"})
+    paths, requests = _enqueue(drv, work, head)
+
+    assert _run_queue(drv, work) == EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed"]
+    assert {"a.py", path} <= _origin_tree(work)
+    assert not paths.tested.exists()
+    landed = _remote_main(work)
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(work),
+        tree=_git(work, "rev-parse", f"{landed}^{{tree}}").stdout.strip(),
+        base=_git(work, "rev-parse", f"{landed}^1").stdout.strip(),
+    )
+    assert receipt is not None
+    carried = {
+        gate["command"]: gate["carried_from_base"]
+        for gate in receipt["gates"]
+        if "carried_from_base" in gate
+    }
+    assert set(carried.values()) <= {first_base}
+    return counter.read_text(encoding="utf-8").split()
+
+
+def test_replay_reruns_a_pytest_cohort_that_shares_a_file_with_the_move(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Cohorts merge files by worker envelope, so the lane's cohort and the
+    move's cohort can be different commands that share one test file; that
+    file's verdict can change, so its cohort reruns."""
+    from tools import molt_dev_land_fast as land_fast
+    from tools import molt_dev_policy, molt_dev_queue
+
+    def cohort(*files: str) -> SelectedGate:
+        return SelectedGate(
+            command=("python", "-m", "pytest", "-q", *files),
+            toolchains=("python",),
+            pytest=True,
+        )
+
+    monkeypatch.setattr(land_fast, "_changed", lambda git, old, new: ["src/b.py"])
+    monkeypatch.setattr(
+        molt_dev_policy,
+        "select_landing_gates",
+        lambda *args, **kwargs: (
+            "",
+            None,
+            [],
+            [cohort("tests/b.py", "tests/c.py")],
+            [],
+        ),
+    )
+    monkeypatch.setattr(molt_dev_queue, "queue_paths", lambda repo: None)
+    monkeypatch.setattr(molt_dev_queue, "recent_postsubmit_failures", lambda paths: ())
+    rerun = land_fast._interaction_rerun(
+        None, tmp_path, lane_paths=["src/a.py"], tested_base="b0", base="b1"
+    )
+
+    assert rerun(cohort("tests/a.py", "tests/b.py::test_one"))
+    assert not rerun(cohort("tests/a.py"))
+
+
+def test_split_carried_carries_only_gates_the_prior_receipt_passed() -> None:
+    from tools.molt_dev_land_fast import split_carried
+
+    static = SelectedGate(command="python tools/check.py", toolchains=("python",))
+    cargo = SelectedGate(
+        command="python tools/check_changed_crate_tests.py --base NEW",
+        toolchains=("python", "cargo"),
+    )
+    new = SelectedGate(
+        command=("python", "-m", "pytest", "tests/n.py"),
+        toolchains=("python",),
+        pytest=True,
+    )
+    prior = {
+        "base": "OLD",
+        "gates": [
+            {"phase": "static", "command": "python tools/check.py"},
+            {
+                "phase": "batch",
+                "command": "python tools/check_changed_crate_tests.py --base OLD",
+                "carried_from_base": "OLDER",
+            },
+        ],
+    }
+
+    run, carried = split_carried([static, cargo, new], prior, lambda gate: False)
+
+    # The static gate always runs; a gate the prior run never passed runs; the
+    # Cargo gate is carried with the base its verdict came from.
+    assert run == [static, new]
+    assert [record["carried_from_base"] for record in carried] == ["OLDER"]
+
+
+def test_queue_replay_carries_a_cargo_gate_main_moving_cannot_affect(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """A batch whose push lost the race to a docs commit passed its gates on
+    the old base. The replay reruns the static gate and the gates without a
+    typed reach; it carries the Cargo gate, since no package sees both changes."""
+    runs = _queue_replay_runs(drv, origin_and_clone, tmp_path, "docs/note.md")
+
+    assert runs.count("cargo-gate") == 1
+    assert runs.count("static") == 2
+    assert runs.count("batch") == 2
+
+
+def test_queue_replay_reruns_a_cargo_gate_main_moving_reaches(
+    drv: ModuleType, origin_and_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """A Rust source outside every package reaches the whole workspace, so the
+    replay runs the Cargo gate again on the new base."""
+    runs = _queue_replay_runs(drv, origin_and_clone, tmp_path, "shared/support.rs")
+
+    assert runs.count("cargo-gate") == 2
+
+
 def _land_without_runner(drv, monkeypatch, lane: Path, *extra: str) -> int:
     """`land` in process; the detached runner it would start is not needed."""
     from tools import molt_dev_queue as queue
