@@ -9,6 +9,7 @@ from tests.process_guard_common import run_guarded_test_process
 
 from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceSummary,
+    own_namespace_literal_delete,
     decode_python_namespace_write,
     python_namespace_write_payload,
     python_namespace_summary,
@@ -1220,7 +1221,42 @@ def test_namespace_mapping_reads_are_reflections(
         ("x = 1\ndef f():\n    return globals().get('x')\n", 3),
         ("x = 1\nexec('y = 2')\n", 2),
         ("x = 1\nprint(x)\n", 0),
+        # HF-844: a module-scope statement that pops a literal key with a
+        # constant default is a tolerant module global delete.
+        ("x = 1\nglobals().pop('x', None)\n", 0),
+        ("x = 1\nif x:\n    globals().pop('x', 0)\n", 0),
+        # Its value is used, its key or default is computed, or it is not at
+        # module scope: the mapping is reached.
+        ("x = 1\ny = globals().pop('x', None)\n", 2),
+        ("x = 1\nk = 'x'\nglobals().pop(k, None)\n", 3),
+        ("x = 1\nd = None\nglobals().pop('x', d)\n", 3),
+        ("x = 1\nglobals().pop('x')\n", 2),
+        ("x = 1\nglobals().pop('x', None, )\nglobals().get('x')\n", 3),
+        ("x = 1\ndef f():\n    globals().pop('x', None)\n", 3),
+        ("x = 1\nclass C:\n    globals().pop('x', None)\n", 3),
+        ("x = 1\nglobals().__delitem__('x')\n", 2),
+        # A rebinding of ``globals`` anywhere in the module defeats the proof.
+        ("x = 1\nglobals().pop('x', None)\nglobals = dict\n", 2),
+        ("from m import *\nglobals().pop('x', None)\n", 2),
+        ("def f(globals):\n    pass\nglobals().pop('x', None)\n", 3),
     ],
 )
 def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:
     assert _summary(source, None).own_namespace_line == line
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ("globals().pop('_require_intrinsic', None)\n", "_require_intrinsic"),
+        ("globals().pop('x', 'fallback')\n", "x"),
+        ("globals().pop(name, None)\n", None),
+        ("globals().pop('x', None).y\n", None),
+        ("del_ = globals().pop('x', None)\n", None),
+        ("globals(1).pop('x', None)\n", None),
+        ("vars().pop('x', None)\n", None),
+        ("globals().pop('x', default=None)\n", None),
+    ],
+)
+def test_own_namespace_literal_delete_spelling(source: str, name: str | None) -> None:
+    assert own_namespace_literal_delete(ast.parse(source).body[0]) == name

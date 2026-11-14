@@ -15,6 +15,9 @@ from molt.frontend.lowering.op_kinds_generated import (
 import ast
 from typing import cast
 
+from molt.compiler_analysis.python_namespace_writes import (
+    own_namespace_literal_delete,
+)
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
@@ -220,6 +223,23 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="IF", args=[declined], result=MoltValue("none")))
         self._emit_assign_statement(node)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+    def visit_Expr(self, node: ast.Expr) -> None:
+        """Lower a module-scope ``globals().pop("name", <constant>)`` statement
+        as the tolerant module global delete it equals (HF-844), so it reaches
+        no namespace mapping; the HF-226 authority classifies the same
+        statements through the same predicate."""
+        name = own_namespace_literal_delete(node)
+        if (
+            name is not None
+            and self.current_func_name == "molt_main"
+            and not self._class_ns_stack
+            and not self.module_globals_rebound
+        ):
+            self._emit_delete_name(name, allow_missing=True)
+            return None
+        self.generic_visit(node)
+        return None
 
     def visit_Delete(self, node: ast.Delete) -> None:
         def delete_target(target: ast.AST) -> None:

@@ -1453,9 +1453,18 @@ a float or inline-int read adds about 3 instructions of tag test, and a pointer 
 receiver, which the closed-world binding keeps for its `NameError`) about 15 for the inline
 retain and 15 more for the release that follows, about 140 of the loop's 770 instructions per
 iteration. `InitOnce` with proven initialization dominance removes both (HF-846). Not yet compiled:
-foreign `M.x` reads and stores and `del` (one runtime call routed to the cell, HF-845), and the
-175 stdlib modules whose own `globals().pop("_require_intrinsic", None)` keeps them on dictionary
-namespaces (HF-844).
+foreign `M.x` reads and stores and `del` (one runtime call routed to the cell, HF-845).
+
+HF-844 (2026-11-14): 175 stdlib modules end with `globals().pop("_require_intrinsic", None)`,
+which counted as reaching the module's own mapping. At module scope, with its value discarded, a
+literal key and a constant default, that statement equals a `del` that tolerates an unbound name.
+The frontend lowers it to `module_del_global_if_present`, and the HF-226 authority classifies the
+same statements through the same predicate (`own_namespace_literal_delete`); a module that binds
+`globals` in any scope keeps the old reach. `os`, `_abc` and `typing` replaced computed-key loops and a `globals()`
+cache with literal pops and a `global` declaration. `bench_math_numeric`'s 27-module
+closure went from 8 to 17 cell-eligible modules (`math`, `abc`, `copyreg`, `typing`, `os`,
+`_collections_abc`, `importlib`, `zipimport` among them). `__future__` still writes its own
+namespace by a computed key.
 
 ### 4.6 Reference counts
 

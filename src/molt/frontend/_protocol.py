@@ -100,7 +100,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -148,6 +147,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_func_defaults: dict[str, dict[str, Any]]
     module_global_mutations: set[str]
     module_globals_dict_escaped: Any
+    module_globals_rebound: bool
     module_import_flow: ModuleImportFlow | None
     module_import_state: Any
     module_is_package: Any
@@ -2673,6 +2673,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def visit_Dict(self, node: ast.Dict) -> Any: ...
 
     def visit_DictComp(self, node: ast.DictComp) -> Any: ...
+
+    def visit_Expr(self, node: ast.Expr) -> None: ...
 
     def visit_For(self, node: ast.For) -> None: ...
 

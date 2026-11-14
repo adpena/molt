@@ -49,7 +49,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 9
+SUMMARY_SCHEMA: Final = 10
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -335,6 +335,67 @@ def _literal_string(node: ast.expr | None) -> str | None:
 
 def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
+def own_namespace_literal_delete(statement: ast.stmt) -> str | None:
+    """The global a ``globals().pop("name", <constant>)`` statement deletes.
+
+    With its value discarded, the statement equals ``del name`` that tolerates
+    an unbound name (HF-844). The frontend lowers it to that module global
+    delete at module scope, where the builtin ``globals`` is proven, so the
+    statement reaches no namespace mapping. One predicate serves the frontend
+    and this authority, so the two never disagree on the spelling.
+    """
+    if not isinstance(statement, ast.Expr):
+        return None
+    call = statement.value
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "pop"
+        and not call.keywords
+        and len(call.args) == 2
+        and isinstance(call.args[1], ast.Constant)
+    ):
+        return None
+    receiver = call.func.value
+    if not (
+        isinstance(receiver, ast.Call)
+        and isinstance(receiver.func, ast.Name)
+        and receiver.func.id == "globals"
+        and not receiver.args
+        and not receiver.keywords
+    ):
+        return None
+    return _literal_string(call.args[0])
+
+
+def module_binds_name(tree: ast.Module, name: str) -> bool:
+    """Whether any scope of ``tree`` may bind ``name``: a store, ``del``,
+    definition, parameter, handler, pattern, import alias or star import."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            bound = node.id if not isinstance(node.ctx, ast.Load) else None
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound = node.name
+        elif isinstance(node, ast.arg):
+            bound = node.arg
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            bound = node.name
+        elif isinstance(node, ast.MatchMapping):
+            bound = node.rest
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            if any(
+                alias.name == "*" or python_import_binding(alias) == name
+                for alias in node.names
+            ):
+                return True
+            continue
+        else:
+            continue
+        if bound == name:
+            return True
+    return False
 
 
 def _literal_module_name(node: ast.expr | None) -> str | None:
@@ -721,6 +782,7 @@ class _NamespaceWriteCollector:
         self.own_namespace_line = 0
         self.mapping_flow: _MappingFlow | None = None
         self.parents: dict[ast.AST, ast.AST] | None = None
+        self.globals_rebound: bool | None = None
         self.writes: dict[
             tuple[
                 str | None,
@@ -1153,12 +1215,39 @@ class _NamespaceWriteCollector:
             if is_module:
                 self._namespace_use(site, module)
         elif func in {"globals", "vars", "locals"} and not node.args:
+            if func == "globals" and self._literal_own_delete(site):
+                # Lowered as a module global delete: no mapping is reached.
+                return
             if func == "globals" or module_scope:
                 self._reaches_own_namespace(node)
                 self._own_namespace_use(site)
         elif func in {"exec", "eval"} and len(node.args) < 2:
             # Code run on this module's own globals may bind any name.
             self._reflects_own_namespace(node)
+
+    def _literal_own_delete(self, site: _Site) -> bool:
+        """Whether this ``globals()`` call is the receiver of a module-scope
+        ``globals().pop("name", <constant>)`` statement
+        (``own_namespace_literal_delete``) and no scope rebinds ``globals``."""
+        if not site.module_scope or site.callback_deferred:
+            return False
+        method = site.parent
+        if not (
+            isinstance(method, ast.Attribute)
+            and method.value is site.node
+            and isinstance(site.grandparent, ast.Call)
+            and site.grandparent.func is method
+        ):
+            return False
+        statement = self._tree_parents().get(site.grandparent)
+        if not (
+            isinstance(statement, ast.stmt)
+            and own_namespace_literal_delete(statement) is not None
+        ):
+            return False
+        if self.globals_rebound is None:
+            self.globals_rebound = module_binds_name(self.tree, "globals")
+        return not self.globals_rebound
 
     @staticmethod
     def _consumer(site: _Site) -> tuple[ast.AST, ast.AST | None, ast.AST | None]:

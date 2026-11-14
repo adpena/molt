@@ -752,7 +752,7 @@ def _expandvars(path, windows):
     elif "$" not in path and (not windows or "%" not in path):
         return path
     _MOLT_REQUIRE_OPERATION("env.expandvars")
-    environment = globals().get("environb") if raw else environ
+    environment = (environb if supports_bytes_environ else None) if raw else environ
 
     # CPython's ASCII expansion grammar has only ASCII delimiters. Scan byte
     # coordinates so UTF-8 character indexing cannot repeatedly walk a prefix.
@@ -1774,12 +1774,11 @@ supports_follow_symlinks = {
 # These are needed for type annotations and internal helpers but must not appear
 # in the module __dict__ as non-underscore public names.
 # ---------------------------------------------------------------------------
-for _name in (
-    "TYPE_CHECKING",
-    "Any",
-    "Iterator",
-    "ItemsView",
-    "KeysView",
-    "ValuesView",
-):
-    globals().pop(_name, None)
+# Literal keys lower to module global deletes, so the namespace stays static
+# module cells (HF-844).
+globals().pop("TYPE_CHECKING", None)
+globals().pop("Any", None)
+globals().pop("Iterator", None)
+globals().pop("ItemsView", None)
+globals().pop("KeysView", None)
+globals().pop("ValuesView", None)

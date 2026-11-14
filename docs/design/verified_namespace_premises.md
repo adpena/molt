@@ -49,7 +49,11 @@ Under spec 0216 a module's globals change outside its own statements only throug
 
 - **its own deferred code**: `global` declarations and own-namespace item writes with literal keys.
   Initialization stores such as `globals().pop("_require_intrinsic", None)` affect the current
-  binding state; they do not authorize later callbacks to replace that name;
+  binding state; they do not authorize later callbacks to replace that name. At module scope,
+  with its value discarded, a literal key and a constant default, that statement is a tolerant
+  delete of the global: the frontend lowers it to `module_del_global_if_present`, and the
+  authority counts no namespace reach for it (`own_namespace_literal_delete`, HF-844), so the
+  module can keep static cells;
 - **named writes from other modules**: an attribute store, `setattr`/`delattr`, `__setattr__`, or a
   `__dict__`/`vars()` item write on a module reference (an import binding, its attribute chain, or a
   `sys.modules` entry);

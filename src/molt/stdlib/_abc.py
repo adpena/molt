@@ -20,8 +20,4 @@ _reset_caches = _require_intrinsic("molt_abc_reset_caches")
 
 __all__ = ["get_cache_token"]
 
-for _name in ("_require_intrinsic",):
-    globals().pop(_name, None)
-globals().pop("_name", None)
-
 globals().pop("_require_intrinsic", None)

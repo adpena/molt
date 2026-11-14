@@ -766,8 +766,12 @@ def _require_importlib_util_module() -> object:
     return mod
 
 
+_ABC_CACHE = None
+
+
 def _load_collections_abc() -> ModuleType:
-    cached = globals().get("_ABC_CACHE")
+    global _ABC_CACHE
+    cached = _ABC_CACHE
     if isinstance(cached, ModuleType):
         return cached
     abc_mod = _typing_cast(ModuleType, _collections_abc_module)
@@ -804,7 +808,7 @@ def _load_collections_abc() -> ModuleType:
             ]
     if missing:
         raise RuntimeError(f"typing missing _collections_abc.{missing[0]}")
-    globals()["_ABC_CACHE"] = abc_mod
+    _ABC_CACHE = abc_mod
     return abc_mod
 
 
