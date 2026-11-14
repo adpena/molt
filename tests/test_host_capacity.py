@@ -360,19 +360,56 @@ def test_a_slice_already_holds_the_machine_reserve(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "performance,allowed,expected", [(6, 18, 6), (6, 2, 2), (None, 8, 8), (0, 8, 8)]
+    "levels,allowed,expected",
+    [
+        # Through M4: performance cores, then efficiency cores.
+        ((("Performance", 6), ("Efficiency", 4)), 18, 6),
+        # M5 Max: Super and Performance cores and no efficiency cores
+        # (2026-11-13: reading level 0 alone gave this host 6 of 18 CPUs).
+        ((("Super", 6), ("Performance", 12)), 18, 18),
+        ((("Super", 6), ("Performance", 12)), 2, 2),
+        # Unreadable levels keep the affinity-bounded count.
+        ((("Performance", None), ("Efficiency", 4)), 8, 8),
+        (None, 8, 8),
+    ],
 )
-def test_executor_cpu_budget_prefers_performance_cores_within_affinity(
-    monkeypatch, performance, allowed, expected
-):
+def test_executor_cpu_budget_leaves_only_efficiency_cores_within_affinity(
+    monkeypatch: pytest.MonkeyPatch,
+    levels: tuple[tuple[str, int | None], ...] | None,
+    allowed: int,
+    expected: int,
+) -> None:
     install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
     monkeypatch.setattr(host_capacity, "cpu_count", lambda: allowed)
+    integers: dict[str, int] = {} if levels is None else {"hw.nperflevels": len(levels)}
+    strings: dict[str, str] = {}
+    for index, (name, physical) in enumerate(levels or ()):
+        strings[f"hw.perflevel{index}.name"] = name
+        if physical is not None:
+            integers[f"hw.perflevel{index}.physicalcpu"] = physical
+    monkeypatch.setattr(host_capacity, "_darwin_sysctl_integer", integers.get)
+    monkeypatch.setattr(host_capacity, "_darwin_sysctl_string", strings.get)
+    assert host_capacity.execution_cpu_count() == expected
+
+
+def test_executor_cpu_budget_reads_level_zero_without_a_level_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 18)
     monkeypatch.setattr(
         host_capacity,
         "_darwin_sysctl_integer",
-        lambda name: performance if name == "hw.perflevel0.physicalcpu" else None,
+        {"hw.perflevel0.physicalcpu": 6}.get,
     )
-    assert host_capacity.execution_cpu_count() == expected
+    assert host_capacity.execution_cpu_count() == 6
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads this Mac's sysctls")
+def test_darwin_sysctl_readers_read_this_host() -> None:
+    assert host_capacity._darwin_sysctl_integer("hw.nperflevels") >= 1
+    assert host_capacity._darwin_sysctl_string("hw.perflevel0.name")
+    assert host_capacity._darwin_sysctl_integer("hw.memsize") > 0
 
 
 # --------------------------------------------------------------------------

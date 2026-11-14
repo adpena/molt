@@ -63,18 +63,47 @@ def cpu_count(
     return count
 
 
-def execution_cpu_count() -> int:
-    """One batch's CPU budget, preferring macOS performance cores.
+# The macOS name of the core class a batch leaves to other host work. Apple
+# names each performance level (``hw.perflevelN.name``): "Performance" and
+# "Efficiency" through M4; "Super" and "Performance" on M5 Max, which has no
+# efficiency cores.
+_DARWIN_EFFICIENCY_LEVEL = "Efficiency"
 
-    Efficiency cores remain available to other host work. Intel Macs and
-    other platforms use the affinity/cgroup-bounded count. A fractional Linux
-    quota retains cpu_count's one-execution floor.
+
+def _darwin_execution_cores() -> int | None:
+    """The physical cores of every macOS performance level but efficiency.
+
+    None when the levels cannot be read; the caller keeps its count then.
+    """
+    levels = _darwin_sysctl_integer("hw.nperflevels")
+    if levels is None:
+        performance = _darwin_sysctl_integer("hw.perflevel0.physicalcpu")
+        return performance if performance is not None and performance > 0 else None
+    cores = 0
+    for level in range(levels):
+        name = _darwin_sysctl_string(f"hw.perflevel{level}.name")
+        physical = _darwin_sysctl_integer(f"hw.perflevel{level}.physicalcpu")
+        if name is None or physical is None:
+            return None
+        if name != _DARWIN_EFFICIENCY_LEVEL:
+            cores += physical
+    return cores or None
+
+
+def execution_cpu_count() -> int:
+    """One batch's CPU budget: every macOS core but the efficiency cores.
+
+    Efficiency cores remain available to other host work. On 2026-11-13 the
+    budget read only ``hw.perflevel0`` and gave an M5 Max (6 Super and 12
+    Performance cores) 6 CPUs, so every batch ran its pytest gates at -n 3.
+    Intel Macs and other platforms use the affinity/cgroup-bounded count. A
+    fractional Linux quota retains cpu_count's one-execution floor.
     """
     count = cpu_count()
     if sys.platform == "darwin":
-        performance = _darwin_sysctl_integer("hw.perflevel0.physicalcpu")
-        if performance is not None and performance > 0:
-            count = min(count, performance)
+        cores = _darwin_execution_cores()
+        if cores is not None:
+            count = min(count, cores)
     return count
 
 
@@ -315,8 +344,9 @@ def _read_memory_integer(path: Path, *, allow_zero: bool = False) -> int | None:
     return value if value > 0 or (allow_zero and value == 0) else None
 
 
-def _darwin_sysctl_integer(name: str) -> int | None:
-    """Read an integer sysctl without spawning the ``sysctl`` executable."""
+def _darwin_sysctl_bytes(name: str, *, limit: int) -> bytes | None:
+    """Read a sysctl's raw value, at most ``limit`` bytes, without spawning
+    the ``sysctl`` executable."""
 
     if sys.platform != "darwin":
         return None
@@ -337,14 +367,30 @@ def _darwin_sysctl_integer(name: str) -> int | None:
         size = ctypes.c_size_t()
         if sysctlbyname(encoded, None, ctypes.byref(size), None, 0) != 0:
             return None
-        if size.value <= 0 or size.value > ctypes.sizeof(ctypes.c_uint64):
+        if size.value <= 0 or size.value > limit:
             return None
         storage = ctypes.create_string_buffer(size.value)
         if sysctlbyname(encoded, storage, ctypes.byref(size), None, 0) != 0:
             return None
     except (AttributeError, OSError, ValueError):
         return None
-    return int.from_bytes(storage.raw[: size.value], byteorder=sys.byteorder)
+    return storage.raw[: size.value]
+
+
+def _darwin_sysctl_integer(name: str) -> int | None:
+    """Read an integer sysctl."""
+    import ctypes
+
+    raw = _darwin_sysctl_bytes(name, limit=ctypes.sizeof(ctypes.c_uint64))
+    return None if raw is None else int.from_bytes(raw, byteorder=sys.byteorder)
+
+
+def _darwin_sysctl_string(name: str) -> str | None:
+    """Read a NUL-terminated string sysctl."""
+    raw = _darwin_sysctl_bytes(name, limit=256)
+    if raw is None:
+        return None
+    return raw.split(b"\0", 1)[0].decode("ascii", errors="replace") or None
 
 
 def _read_cgroup_inactive_file_bytes(path: Path) -> int:

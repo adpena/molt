@@ -1310,8 +1310,9 @@ took 1423 seconds against its 900-second deadline. These are the motivating
 measurements, not qualification of the changes below.
 
 The proof executor owns one CPU budget for its batch, using the existing
-`molt.host_capacity` authority: affinity/quota, with performance cores first
-on macOS. It divides that budget among the possible concurrent pytest gates
+`molt.host_capacity` authority: affinity/quota, without the efficiency cores
+on macOS (until 2026-11-14 it took only `hw.perflevel0`, 6 of an M5 Max's 18
+cores, so every batch ran its pytest gates at `-n 3`). It divides that budget among the possible concurrent pytest gates
 within their resource limits. Every pytest gate reserves at least one CPU,
 including serial `-n 0`; a one-CPU host serializes pytest sessions. The runner
 bounds each share by its existing memory slice and declared per-worker memory,
