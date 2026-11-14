@@ -2219,9 +2219,8 @@ unsafe fn sequence_contains_builtin(py: &PyToken<'_>, ptr: *mut u8, needle: u64)
     if let Some(needle) = inline_integer {
         match unsafe { object_type_id(ptr) } {
             TYPE_ID_LIST_INT => {
-                let found = unsafe { crate::object::layout::list_int_vec_ref(ptr) }
-                    .iter()
-                    .any(|&value| value == needle);
+                let found =
+                    unsafe { crate::object::layout::list_int_vec_ref(ptr) }.contains(&needle);
                 return MoltObject::from_bool(found).bits();
             }
             TYPE_ID_LIST_BOOL => {
