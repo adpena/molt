@@ -260,6 +260,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                     module_execution_kind=self.module_execution_kind,
                 ),
                 self.namespace_premise,
+                lowering=True,
             ),
         )
         self.module_import_flow = self.python_binding_index.module_import_flow
