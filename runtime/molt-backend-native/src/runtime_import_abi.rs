@@ -9,7 +9,6 @@ use molt_ir::runtime_fn_generated::RuntimeFn;
 pub(crate) const NATIVE_RUNTIME_HELPER_IMPORTS: &[RuntimeFn] = &[
     RuntimeFn::DecRefObj,
     RuntimeFn::IncRefObj,
-    RuntimeFn::RefcountAdmission,
     RuntimeFn::TaskNew,
     RuntimeFn::CancelTokenGetCurrent,
     RuntimeFn::TaskRegisterExecution,

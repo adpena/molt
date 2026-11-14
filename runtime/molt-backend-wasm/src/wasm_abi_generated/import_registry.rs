@@ -887,10 +887,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "guard_layout",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ProfileEnabled,
-        name: "profile_enabled",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::GuardType,
         name: "guard_type",
     },
@@ -1185,10 +1181,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AttachedContext,
         name: "attached_context",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::RefcountAdmission,
-        name: "refcount_admission",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TraceSetLine,
@@ -11741,8 +11733,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_fast_str_strip" => Some(WasmRuntimeImport::FastStrStrip),
         "guard_layout" => Some(WasmRuntimeImport::GuardLayout),
         "molt_guard_layout" => Some(WasmRuntimeImport::GuardLayout),
-        "profile_enabled" => Some(WasmRuntimeImport::ProfileEnabled),
-        "molt_profile_enabled" => Some(WasmRuntimeImport::ProfileEnabled),
         "guard_type" => Some(WasmRuntimeImport::GuardType),
         "molt_guard_type" => Some(WasmRuntimeImport::GuardType),
         "guarded_field_get" => Some(WasmRuntimeImport::GuardedFieldGet),
@@ -11891,8 +11881,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_frame_locals_set" => Some(WasmRuntimeImport::FrameLocalsSet),
         "attached_context" => Some(WasmRuntimeImport::AttachedContext),
         "molt_attached_context" => Some(WasmRuntimeImport::AttachedContext),
-        "refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
-        "molt_refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
         "trace_set_line" => Some(WasmRuntimeImport::TraceSetLine),
         "molt_trace_set_line" => Some(WasmRuntimeImport::TraceSetLine),
         "runtime_init" => Some(WasmRuntimeImport::RuntimeInit),

@@ -83,7 +83,13 @@ impl SimpleBackend {
         let args_ptr = builder.block_params(entry_block)[2];
         let args_len = builder.block_params(entry_block)[3];
         let behavior = kind.behavior();
-        let admission = builder.ins().iconst(types::I64, 0);
+        // The invocation's refcount admission: a thread-record word read once;
+        // a trampoline with no refcount site leaves the trusted loads dead.
+        let admission = thread_record_word(
+            &mut builder,
+            execution_context,
+            molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission,
+        );
 
         match behavior {
             TrampolineBehavior::Task(task_kind) => {
@@ -310,14 +316,6 @@ impl SimpleBackend {
             }
         }
 
-        materialize_refcount_admission(&mut builder, admission, |builder| {
-            let id = Self::import_runtime_func_id_split(
-                module,
-                import_ids,
-                RuntimeFn::RefcountAdmission,
-            );
-            module.declare_func_in_func(id, builder.func)
-        });
         builder.seal_all_blocks();
         builder.finalize(module.target_config());
         complete_attached_calls(module, &mut ctx.func, execution_context);

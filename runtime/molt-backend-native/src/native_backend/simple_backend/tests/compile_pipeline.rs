@@ -1713,8 +1713,9 @@ fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
             .windows(b"molt_profile_struct_field_store".len())
             .any(|window| window == b"molt_profile_struct_field_store")
     );
+    // The profile flag is a thread-record word, never a runtime call.
     assert!(
-        output
+        !output
             .bytes
             .windows(b"molt_profile_enabled".len())
             .any(|window| window == b"molt_profile_enabled")
