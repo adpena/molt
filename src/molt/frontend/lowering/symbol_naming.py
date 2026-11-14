@@ -14,6 +14,10 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import CallableId
 from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_lexical_scope import function_contains_yield
+from molt.compiler_analysis.source_function_symbols import (
+    module_level_function_definitions,
+    source_function_symbol_base,
+)
 from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
@@ -90,7 +94,7 @@ class SymbolNamingMixin(GeneratorMixinBase):
     def _function_symbol(
         self, name: str, *, kind: FunctionKind = FunctionKind.SYNC
     ) -> str:
-        base = "molt_user_main" if name == "main" else name
+        base = source_function_symbol_base(name)
         symbol = f"{self.module_prefix}{base}"
         counter = 1
         while self._function_symbol_in_use(symbol, kind=kind):
@@ -118,32 +122,25 @@ class SymbolNamingMixin(GeneratorMixinBase):
 
     def _reserve_source_callables(self, tree: ast.Module) -> None:
         """Reserve code slots by source definition before lowering any body."""
-        pending: list[ast.AST] = list(reversed(tree.body))
-        while pending:
-            node = pending.pop()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.name in self.module_elided_deleted_funcs:
-                    continue
-                yields = function_contains_yield(node)
-                kind = (
-                    (FunctionKind.ASYNC_GENERATOR if yields else FunctionKind.ASYNC)
-                    if isinstance(node, ast.AsyncFunctionDef)
-                    else (FunctionKind.GENERATOR if yields else FunctionKind.SYNC)
-                )
-                identity = CallableId(self.module_name, python_node_source_key(node))
-                symbol = self._function_symbol(node.name, kind=kind)
-                self.reserved_func_symbols[identity] = symbol
-                if (
-                    kind is FunctionKind.SYNC
-                    and isinstance(node, ast.FunctionDef)
-                    and not getattr(node, "type_params", ())
-                ):
-                    self._register_source_callable(node, symbol)
-                    self._record_func_default_specs(symbol, node.args)
+        for node in module_level_function_definitions(tree):
+            if node.name in self.module_elided_deleted_funcs:
                 continue
-            if isinstance(node, (ast.ClassDef, ast.Lambda)):
-                continue
-            pending.extend(reversed(list(ast.iter_child_nodes(node))))
+            yields = function_contains_yield(node)
+            kind = (
+                (FunctionKind.ASYNC_GENERATOR if yields else FunctionKind.ASYNC)
+                if isinstance(node, ast.AsyncFunctionDef)
+                else (FunctionKind.GENERATOR if yields else FunctionKind.SYNC)
+            )
+            identity = CallableId(self.module_name, python_node_source_key(node))
+            symbol = self._function_symbol(node.name, kind=kind)
+            self.reserved_func_symbols[identity] = symbol
+            if (
+                kind is FunctionKind.SYNC
+                and isinstance(node, ast.FunctionDef)
+                and not getattr(node, "type_params", ())
+            ):
+                self._register_source_callable(node, symbol)
+                self._record_func_default_specs(symbol, node.args)
 
     def _lambda_symbol(self, *, kind: FunctionKind = FunctionKind.SYNC) -> str:
         self.lambda_counter += 1

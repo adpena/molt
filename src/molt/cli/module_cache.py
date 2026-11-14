@@ -723,7 +723,8 @@ def _frontend_lowering_cache_disabled() -> bool:
 
 # The typed dataclass projection reserves a new JSON tag. Old name maps did not
 # escape it, so do not decode those records under the extended codec.
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 14
+# 15: module function defaults carry their definer's symbol base.
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 15
 
 
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 12
@@ -929,6 +930,10 @@ def _validate_module_func_default_payload(payload: dict[str, Any]) -> bool:
     if kind not in _MODULE_ANALYSIS_FUNC_KINDS:
         return False
     if not isinstance(payload.get("has_decorators"), bool):
+        return False
+    # Absent when the name has no unambiguous symbol (source_function_symbols).
+    symbol_base = payload.get("symbol_base")
+    if symbol_base is not None and not isinstance(symbol_base, str):
         return False
     has_vararg = payload.get("has_vararg", False)
     if not isinstance(has_vararg, bool):

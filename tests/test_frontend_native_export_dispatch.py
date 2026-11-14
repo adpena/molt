@@ -9,6 +9,33 @@ import pytest
 from molt.frontend import BuiltinClass, ClassId, SimpleTIRGenerator
 from molt.frontend._types import OBJECT_CLASS
 from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.frontend.sema.funcmeta import (
+    collect_module_func_defaults,
+    collect_module_func_kinds,
+)
+
+_DEFINITION_BY_KIND = {
+    FunctionKind.SYNC: "def {name}(value):\n    return value\n",
+    FunctionKind.ASYNC: "async def {name}(value):\n    return value\n",
+    FunctionKind.GENERATOR: "def {name}(value):\n    yield value\n",
+    FunctionKind.ASYNC_GENERATOR: "async def {name}(value):\n    yield value\n",
+}
+
+
+def _definer_facts(module: str, name: str, kind: str) -> dict[str, object]:
+    """The facts a build publishes for a module defining ``name`` as ``kind``:
+    both come from the definer's source, as they do in a real build."""
+    tree = ast.parse(_DEFINITION_BY_KIND[FunctionKind(kind)].format(name=name))
+    return {
+        "known_func_kinds": {
+            module: {
+                function: function_kind.value
+                for function, function_kind in collect_module_func_kinds(tree).items()
+            }
+        },
+        "known_func_defaults": {module: collect_module_func_defaults(tree)},
+    }
+
 
 OPS_ERROR = ClassId("nativepkg.ops", "OpsError")
 
@@ -269,7 +296,7 @@ def test_hybrid_or_unlinked_import_never_mints_native_function_hint(
         direct_call_modules={"__main__"}
         if native == "unlinked_source"
         else {"__main__", "nativepkg.ops"},
-        known_func_kinds={"nativepkg.ops": {"run": kind}},
+        **_definer_facts("nativepkg.ops", "run", kind),
         native_python_exports={"nativepkg.ops.run"}
         if native == "visibility"
         else set(),
@@ -300,7 +327,7 @@ def test_linked_python_source_retains_function_hint_authority(kind: str) -> None
     generator = SimpleTIRGenerator(
         known_modules={"sourcepkg"},
         direct_call_modules={"sourcepkg"},
-        known_func_kinds={"sourcepkg": {"run": kind}},
+        **_definer_facts("sourcepkg", "run", kind),
     )
     assert generator._known_module_function_type_hint("sourcepkg", "run") is not None
     assert generator._known_function_symbol_target("sourcepkg__run") == (
@@ -411,7 +438,7 @@ def test_linked_asyncio_intrinsic_hint_preserves_source_authority(
     generator = SimpleTIRGenerator(
         known_modules={"asyncio"},
         direct_call_modules={"__main__", "asyncio"},
-        known_func_kinds={"asyncio": {name: kind.value}},
+        **_definer_facts("asyncio", name, kind.value),
     )
     generator.visit(ast.parse(f"from asyncio import {name} as operation\n"))
     hint = generator._module_attr_type_hints["operation"]

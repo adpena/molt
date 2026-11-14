@@ -188,6 +188,9 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             target_module, original_attr
         ) or not self._imported_module_attr_is_stable(target_module, original_attr):
             return None
+        target_name = self._module_function_symbol(target_module, original_attr)
+        if target_name is None:
+            return None
 
         lowered_task_func = self._emit_known_module_task_func_call(
             target_module,
@@ -209,7 +212,6 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
         args = self._emit_call_args(node.args)
         res = MoltValue(self.next_var(), type_hint="Any")
-        target_name = f"{self._sanitize_module_name(target_module)}__{original_attr}"
         self.emit(
             MoltOp(
                 kind="CALL_GUARDED",

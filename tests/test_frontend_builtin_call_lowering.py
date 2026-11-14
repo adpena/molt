@@ -21,6 +21,7 @@ from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.compiler_analysis.python_imports import ModuleSourceRole
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.logical_source_paths import toolchain_logical_path
 from molt.frontend._types import (
     OBJECT_CLASS,
@@ -3156,6 +3157,7 @@ def test_imported_known_vararg_function_call_uses_live_published_value() -> None
         known_func_defaults={
             "typing": {
                 "TypeVar": {
+                    "symbol_base": "TypeVar",
                     "params": 1,
                     "defaults": [],
                     "kwonly": 0,
@@ -3369,6 +3371,12 @@ def test_imported_callable_hint_respects_link_partition(
         direct_call_modules={"asyncio"} if compiled else set(),
         stdlib_allowlist={"asyncio"},
         known_func_kinds={"asyncio": {member: "sync"}},
+        # The producer's own facts for a one-parameter module function.
+        known_func_defaults={
+            "asyncio": collect_module_func_defaults(
+                ast.parse(f"def {member}(value):\n    return value\n")
+            )
+        },
     )
     gen.visit(
         ast.parse(
@@ -3442,6 +3450,7 @@ def test_stdlib_direct_call_requires_lowered_target_module() -> None:
         known_func_defaults={
             "copy": {
                 "copy": {
+                    "symbol_base": "copy",
                     "params": 1,
                     "defaults": [],
                     "kwonly": 0,
@@ -3480,6 +3489,7 @@ def test_stdlib_lowered_target_guards_the_actual_imported_callable() -> None:
         known_func_defaults={
             "copy": {
                 "copy": {
+                    "symbol_base": "copy",
                     "params": 1,
                     "defaults": [],
                     "kwonly": 0,
@@ -3540,6 +3550,7 @@ def test_imported_plain_generator_calls_actual_function() -> None:
         known_func_defaults={
             "tinygrad.engine.realize": {
                 "unwrap_multi": {
+                    "symbol_base": "unwrap_multi",
                     "params": 1,
                     "defaults": [],
                     "posonly": 0,
@@ -3579,6 +3590,7 @@ def test_imported_decorated_generator_uses_runtime_binding() -> None:
         known_func_defaults={
             "tinygrad.helpers": {
                 "cpu_profile": {
+                    "symbol_base": "cpu_profile",
                     "params": 1,
                     "defaults": [],
                     "posonly": 0,
@@ -3631,6 +3643,7 @@ def test_from_import_generator_keeps_defaults_on_actual_callable() -> None:
         known_func_defaults={
             "helpers": {
                 "cpu_profile": {
+                    "symbol_base": "cpu_profile",
                     "params": 3,
                     "defaults": [
                         {"const": True, "value": "TINY"},
@@ -3707,6 +3720,7 @@ def test_assigned_alias_of_imported_generator_owns_live_defaults() -> None:
         known_func_defaults={
             "helpers": {
                 "cpu_profile": {
+                    "symbol_base": "cpu_profile",
                     "params": 2,
                     "defaults": [{"const": True, "value": "TINY"}],
                     "kwonly": 0,

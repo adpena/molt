@@ -16574,6 +16574,7 @@ def test_load_module_analysis_persists_bytes_defaults(
             "kwonly": 0,
             "kind": "sync",
             "has_decorators": False,
+            "symbol_base": "f",
         }
     }
     assert func_kinds == {"f": "sync"}
@@ -16683,6 +16684,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
         "kwonly": 0,
         "kind": "gen",
         "has_decorators": False,
+        "symbol_base": "g",
     }
     assert func_kinds == {"g": "gen"}
     assert cached_source == module_path.read_text(encoding="utf-8")
