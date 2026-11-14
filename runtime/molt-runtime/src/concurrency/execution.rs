@@ -180,18 +180,6 @@ pub(crate) fn current_thread_has_c_extension_execution_context() -> bool {
     crate::state::execution_tls().cext_execution_depth.get() != 0
 }
 
-/// Borrow the current execution admission for one compiled invocation.
-///
-/// This grants no ownership and cannot attach a thread. The invoker retains
-/// its outer execution guard until compiled code returns; balanced C-API GIL
-/// suspension must restore that guard before returning to compiled code.
-/// Generator suspension returns to the invoker and a resume obtains a fresh
-/// snapshot. A GIL-only caller, detached caller or diagnostic run uses the
-/// existing checked runtime transitions instead of touching header cells.
-fn refcount_admission_in(tls: &crate::state::ExecutionTls) -> u64 {
-    tls.refcount_admission.get()
-}
-
 fn enter_c_extension_execution_context() {
     assert!(gil_held(), "C extension execution context requires the GIL");
     {
@@ -1260,14 +1248,14 @@ mod tests {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         let runtime = CompiledRefcountAdmission::Runtime as u64;
         assert_eq!(
-            refcount_admission_in(crate::state::execution_tls()),
+            crate::state::execution_tls().refcount_admission.get(),
             runtime
         );
         {
             let _gil_only = GilGuard::new();
             assert!(gil_held());
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 runtime,
                 "a GIL token grants no attachment or lifecycle authority"
             );
@@ -1285,35 +1273,35 @@ mod tests {
                 CompiledRefcountAdmission::AttachedPlain as u64
             };
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 expected
             );
             {
                 let _suspended = crate::GilReleaseGuard::suspend();
                 assert_eq!(
-                    refcount_admission_in(crate::state::execution_tls()),
+                    crate::state::execution_tls().refcount_admission.get(),
                     runtime
                 );
             }
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 expected,
                 "resumption borrows a fresh admission"
             );
             {
                 let _nested = RuntimeExecutionGuard::enter();
                 assert_eq!(
-                    refcount_admission_in(crate::state::execution_tls()),
+                    crate::state::execution_tls().refcount_admission.get(),
                     expected
                 );
             }
             assert_eq!(
-                refcount_admission_in(crate::state::execution_tls()),
+                crate::state::execution_tls().refcount_admission.get(),
                 expected
             );
         }
         assert_eq!(
-            refcount_admission_in(crate::state::execution_tls()),
+            crate::state::execution_tls().refcount_admission.get(),
             runtime,
             "admission expires with its execution boundary"
         );
