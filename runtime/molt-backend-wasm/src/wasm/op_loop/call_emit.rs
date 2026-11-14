@@ -140,3 +140,34 @@ pub(super) fn emit_op_loop_local_prefix_call(
         import,
     );
 }
+
+/// Call the generated `body` with the op's first `arg_count` locals and the
+/// invocation's RC admission. The body returns what the runtime entry
+/// `import` returns, so `import`'s ABI owns the result's disposal.
+pub(super) fn emit_op_loop_local_prefix_body_call(
+    context: &OpLoopRuntimeCallContext<'_>,
+    func: &mut Function,
+    op: &OpIR,
+    body: u32,
+    import: WasmRuntimeImport,
+    arg_count: usize,
+) {
+    let args = op
+        .args
+        .as_deref()
+        .filter(|args| args.len() >= arg_count)
+        .unwrap_or_else(|| panic!("wasm body call for '{}' expected {arg_count} args", op.kind));
+    for arg in &args[..arg_count] {
+        func.instruction(&Instruction::LocalGet(context.locals[arg]));
+    }
+    func.instruction(&Instruction::LocalGet(context.locals.refcount().admission));
+    emit_call(func, context.reloc_enabled, body);
+    store_runtime_result(
+        func,
+        op,
+        context.locals,
+        context.import_ids,
+        context.reloc_enabled,
+        import,
+    );
+}

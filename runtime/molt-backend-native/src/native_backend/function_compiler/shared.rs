@@ -656,6 +656,61 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
+    emit_operand_transaction_with(
+        op,
+        args,
+        symbol,
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        vars,
+        representation_plan,
+        nbc,
+        block_tracked_obj,
+        block_tracked_ptr,
+        |call| {
+            let site = call.builder.ins().call(call.callee, call.words);
+            call.builder.inst_results(site)[0]
+        },
+    );
+}
+
+/// The borrowed operand words of an operand transaction and what its call
+/// may use: the runtime entry `callee` and the module's import tables.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) struct OperandTransactionCall<'c, 'f> {
+    pub(in crate::native_backend::function_compiler) words: &'c [Value],
+    pub(in crate::native_backend::function_compiler) callee: FuncRef,
+    pub(in crate::native_backend::function_compiler) module: &'c mut dyn Module,
+    pub(in crate::native_backend::function_compiler) import_ids: &'c mut RuntimeImportIds,
+    pub(in crate::native_backend::function_compiler) builder: &'c mut FunctionBuilder<'f>,
+    pub(in crate::native_backend::function_compiler) import_refs: &'c mut NativeFunctionImports,
+    pub(in crate::native_backend::function_compiler) sealed_blocks: &'c mut BTreeSet<Block>,
+}
+
+/// [`emit_operand_transaction_call`] with the call spelled by `emit`, which
+/// returns the word `symbol` would: a shared generator whose miss calls
+/// `callee` (the list item store) keeps the transaction and result custody.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_with(
+    op: &OpIR,
+    args: &[String],
+    symbol: RuntimeFn,
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut NativeFunctionImports,
+    sealed_blocks: &mut BTreeSet<Block>,
+    vars: &BTreeMap<String, Variable>,
+    representation_plan: &ScalarRepresentationPlan,
+    nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
+    emit: impl FnOnce(OperandTransactionCall<'_, '_>) -> Value,
+) {
     use molt_ir::runtime_fn_generated::RuntimeBoxedReturn;
     let contract = symbol
         .boxed_abi()
@@ -694,8 +749,15 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
         ));
     }
     let callee = import_runtime_func_ref(module, import_ids, builder, import_refs, symbol);
-    let call = builder.ins().call(callee, &words);
-    let result = builder.inst_results(call)[0];
+    let result = emit(OperandTransactionCall {
+        words: &words,
+        callee,
+        module: &mut *module,
+        import_ids: &mut *import_ids,
+        builder: &mut *builder,
+        import_refs: &mut *import_refs,
+        sealed_blocks: &mut *sealed_blocks,
+    });
     let borrowed = contract == RuntimeBoxedReturn::BorrowedValue;
     if borrowed && out.is_some() {
         let retain = import_runtime_func_ref(

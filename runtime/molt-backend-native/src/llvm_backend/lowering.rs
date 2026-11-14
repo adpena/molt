@@ -95,6 +95,8 @@ mod container_ops;
 mod frame_record;
 mod global_slot;
 #[cfg(feature = "llvm")]
+mod list_item;
+#[cfg(feature = "llvm")]
 mod method_site;
 #[cfg(feature = "llvm")]
 mod numeric_ops;

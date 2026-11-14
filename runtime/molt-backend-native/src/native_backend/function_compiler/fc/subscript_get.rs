@@ -484,8 +484,29 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 };
                 let callee =
                     import_runtime_func_ref(module, import_ids, builder, import_refs, fn_name);
-                let call = builder.ins().call(callee, &[obj, idx]);
-                let res = builder.inst_results(call)[0];
+                // Every list entry is the miss of the shared list read
+                // (`molt_codegen_abi::list_item`); dict and tuple keep theirs.
+                let res = if matches!(
+                    fn_name,
+                    RuntimeFn::Index | RuntimeFn::ListGetitemIntFast | RuntimeFn::ListIntGetitem
+                ) {
+                    let sites =
+                        super::calls::native_frame_sites(module, import_ids, builder, import_refs);
+                    crate::native_backend::simple_backend::emit_list_item_get(
+                        builder,
+                        sealed_blocks,
+                        sites,
+                        obj,
+                        idx,
+                        |builder| {
+                            let call = builder.ins().call(callee, &[obj, idx]);
+                            builder.inst_results(call)[0]
+                        },
+                    )
+                } else {
+                    let call = builder.ins().call(callee, &[obj, idx]);
+                    builder.inst_results(call)[0]
+                };
                 let res = operands.finish(
                     res,
                     None,
