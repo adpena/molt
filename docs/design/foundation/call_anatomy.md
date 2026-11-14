@@ -1410,7 +1410,10 @@ module is cell-eligible when no code reaches its namespace mapping by identity a
 named (`molt.cli.static_module_cells`, facts C1-C6): its own code calls no `globals()`,
 module-scope `vars()`/`locals()` or `exec`/`eval`; no activated code reaches `M.__dict__`,
 `vars(M)`, a `sys.modules` entry's `__dict__`, a `__globals__` or an `f_globals` except by literal
-dunder keys (the HF-226 authority's `reflection` rows, `verified_namespace_premises.md`); its own
+dunder keys (the HF-226 authority's `reflection` rows, `verified_namespace_premises.md`); no
+activated code reads a code object that `FunctionType` could run over another globals mapping
+(the premise's `code_rebinding`, added 2026-11-14 after static cells read the defining module's
+cells under foreign globals); its own
 deferred writes and its foreign writes are named sets; its body does not star-import; the program
 writes no `sys.modules`, import hook or `__import__`; and the program loads no extension module
 and spawns no isolate thread. The entry module also must not be imported by its own name. Each

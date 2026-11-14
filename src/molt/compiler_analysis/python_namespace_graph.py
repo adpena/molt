@@ -41,7 +41,10 @@ class PythonNamespacePremise:
     other global and member fact across callbacks. ``namespace_reflected``
     holds when activated graph code may reach the module's namespace mapping
     by identity (a ``reflection`` row naming it or any module), so the mapping
-    must hold every global.
+    must hold every global. ``code_rebinding`` holds when activated graph code
+    reads a code object (a ``code`` row) or a native extension can: then
+    ``FunctionType`` may run any function over another globals mapping, so no
+    function's global read is its module's.
     """
 
     foreign_writes: tuple[str, ...] | None
@@ -50,6 +53,7 @@ class PythonNamespacePremise:
     noncanonical_imports: tuple[str, ...]
     opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None
     namespace_reflected: bool = False
+    code_rebinding: bool = False
 
 
 def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
@@ -86,6 +90,8 @@ class PythonGraphNamespaceWrites:
     # Sources whose namespace mapping a reflection row reaches; None when one
     # reaches any module's (a computed key, ``__globals__``, ``f_globals``).
     reflected: frozenset[Path] | None = frozenset()
+    # Whether some activated code reads a code object (a ``code`` row).
+    code_rebinding: bool = False
 
     def premise(
         self,
@@ -94,6 +100,7 @@ class PythonGraphNamespaceWrites:
         *,
         noncanonical_imports: tuple[str, ...] = (),
         opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None,
+        native_code: bool = False,
     ) -> PythonNamespacePremise:
         return _namespace_premise(
             self.by_source.get(source, frozenset()),
@@ -104,6 +111,7 @@ class PythonGraphNamespaceWrites:
             noncanonical_imports,
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
+            self.code_rebinding or native_code,
         )
 
 
@@ -111,7 +119,7 @@ NO_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
     MappingProxyType({}), frozenset(), NO_INVALID_MEMBERS, NO_INVALID_MEMBERS
 )
 UNKNOWN_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
-    MappingProxyType({}), None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, None
+    MappingProxyType({}), None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, None, True
 )
 
 
@@ -124,23 +132,18 @@ def _namespace_premise(
     noncanonical_imports: tuple[str, ...],
     opaque_activation_sources: tuple[PythonSourceKey, ...] | None,
     reflected: bool = False,
+    code_rebinding: bool = False,
 ) -> PythonNamespacePremise:
-    if named is None or any_module is None:
-        return PythonNamespacePremise(
-            None,
-            members,
-            entry_members,
-            noncanonical_imports,
-            opaque_activation_sources,
-            reflected,
-        )
     return PythonNamespacePremise(
-        tuple(sorted(children | named | any_module)),
+        None
+        if named is None or any_module is None
+        else tuple(sorted(children | named | any_module)),
         members,
         entry_members,
         noncanonical_imports,
         opaque_activation_sources,
         reflected,
+        code_rebinding,
     )
 
 
@@ -170,6 +173,7 @@ def join_python_namespace_premises(
             )
         ),
         left.namespace_reflected or right.namespace_reflected,
+        left.code_rebinding or right.code_rebinding,
     )
 
 
@@ -187,6 +191,7 @@ class PythonGraphNamespaceIndex:
         self.members = NO_INVALID_MEMBERS
         self.entry_members = NO_INVALID_MEMBERS
         self.reflected: set[Path] | None = set()
+        self.code_rebinding = False
 
     def merge(self, batch: PythonGraphNamespaceWrites) -> frozenset[Path] | None:
         changed: set[Path] = set()
@@ -195,6 +200,9 @@ class PythonGraphNamespaceIndex:
         global_change = members != self.members or entry_members != self.entry_members
         self.members = members
         self.entry_members = entry_members
+        if batch.code_rebinding and not self.code_rebinding:
+            self.code_rebinding = True
+            global_change = True
         if self.reflected is not None:
             if batch.reflected is None:
                 self.reflected = None
@@ -244,6 +252,7 @@ class PythonGraphNamespaceIndex:
         *,
         noncanonical_imports: tuple[str, ...] = (),
         opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None,
+        native_code: bool = False,
     ) -> PythonNamespacePremise:
         return _namespace_premise(
             self.by_source.get(source, frozenset()),
@@ -254,6 +263,7 @@ class PythonGraphNamespaceIndex:
             noncanonical_imports,
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
+            self.code_rebinding or native_code,
         )
 
 
@@ -271,9 +281,13 @@ def graph_python_namespace_writes(
     by_source: dict[Path, set[str] | None] = {}
     any_module: set[str] | None = set()
     reflected: set[Path] | None = set()
+    code_rebinding = False
     members = NO_INVALID_MEMBERS
     for write in writes:
         if write.construct == "import_binding_disjoint":
+            continue
+        if write.construct == "code":
+            code_rebinding = True
             continue
         if write.construct == "reflection":
             if write.module is None:
@@ -314,4 +328,5 @@ def graph_python_namespace_writes(
         members,
         members if entry else NO_INVALID_MEMBERS,
         None if reflected is None else frozenset(reflected),
+        code_rebinding,
     )

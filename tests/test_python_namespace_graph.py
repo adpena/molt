@@ -137,7 +137,12 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
     assert index.merge(NO_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) is None
     assert index.premise(second, frozenset()) == PythonNamespacePremise(
-        None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, (), namespace_reflected=True
+        None,
+        ALL_INVALID_MEMBERS,
+        ALL_INVALID_MEMBERS,
+        (),
+        namespace_reflected=True,
+        code_rebinding=True,
     )
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(batch) == frozenset()
@@ -207,6 +212,26 @@ def test_callback_inventory_does_not_claim_initializer_execution() -> None:
         PythonMember.SYS_PLATFORM
     )
     assert before.entry_member_writes == 0
+
+
+def test_code_row_makes_every_premise_code_rebinding() -> None:
+    first, second = Path("first.py"), Path("second.py")
+    topology = {"first": first, "second": second}
+    code = graph_python_namespace_writes(
+        (PythonNamespaceWrite(None, None, "code", 1),), topology.get
+    )
+    assert code.premise(second, frozenset()) == PythonNamespacePremise(
+        (), 0, 0, (), code_rebinding=True
+    )
+    index = PythonGraphNamespaceIndex()
+    assert index.premise(first, frozenset()).code_rebinding is False
+    # A native extension's C code can read code objects the scan cannot see.
+    assert index.premise(first, frozenset(), native_code=True).code_rebinding
+    # The fact is global: every premise changes, so the delta is unbounded.
+    assert index.merge(code) is None
+    assert index.premise(first, frozenset()).code_rebinding
+    assert index.merge(code) == frozenset()
+    assert UNKNOWN_GRAPH_NAMESPACE_WRITES.premise(first, frozenset()).code_rebinding
 
 
 def test_reflection_marks_only_its_target_and_writes_no_member() -> None:

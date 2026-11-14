@@ -29,9 +29,15 @@ def _premise(
     foreign: tuple[str, ...] | None = (),
     members: int = 0,
     reflected: bool = False,
+    code_rebinding: bool = False,
 ) -> PythonNamespacePremise:
     return PythonNamespacePremise(
-        foreign, members, 0, (), namespace_reflected=reflected
+        foreign,
+        members,
+        0,
+        (),
+        namespace_reflected=reflected,
+        code_rebinding=code_rebinding,
     )
 
 
@@ -111,6 +117,7 @@ def test_an_eligible_module_has_cells_and_init_once_facts() -> None:
         ({"own_namespace_line": 7}, "line 7 reaches its namespace mapping"),
         ({"premise": None}, "no namespace premise"),
         ({"premise": _premise(reflected=True)}, "by identity"),
+        ({"premise": _premise(code_rebinding=True)}, "another globals mapping"),
         ({"premise": _premise(None)}, "computed name"),
         (
             {"premise": _premise(members=int(PythonMember.SYS_MODULES))},

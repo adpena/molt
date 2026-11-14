@@ -24,7 +24,7 @@ def _writes(source: str, package: str | None = "pkg.sub") -> set[tuple]:
     return {
         (write.module, write.name, write.construct)
         for write in _summary(source, package).foreign_writes
-        if write.construct != "reflection"
+        if write.construct not in {"reflection", "code"}
     }
 
 
@@ -1208,6 +1208,75 @@ def test_namespace_mapping_reads_are_reflections(
     source: str, expected: set[str | None]
 ) -> None:
     assert _reflections(source) == expected
+
+
+def _code_rows(source: str) -> int:
+    """How many sites of ``source`` may hand a code object to FunctionType."""
+    return sum(
+        write.construct == "code" for write in _summary(source, None).foreign_writes
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "rows"),
+    [
+        # Each spelling that yields a code object, handed on.
+        (
+            "import types\ndef f(g, ns):\n    return types.FunctionType(g.__code__, ns)\n",
+            1,
+        ),
+        ("def f(frame):\n    return frame.f_code\n", 1),
+        ("def f(gen):\n    keep(gen.gi_code)\n", 1),
+        ("def f(coro):\n    return getattr(coro, 'cr_code')\n", 1),
+        ("def f(agen):\n    x = [agen.ag_code]\n", 1),
+        # Code stored into a function is a rebinding too.
+        ("def f(a, b):\n    a.__code__ = b.__code__\n", 1),
+        # Nested code objects and copies are code objects.
+        ("def f(g):\n    return g.__code__.co_consts\n", 1),
+        ("def f(g):\n    return g.__code__.replace(co_name='x')\n", 1),
+        # An alias with one read that hands the object on.
+        ("def f(g):\n    c = g.__code__\n    print(c.co_name)\n    return c\n", 1),
+        # Metadata, identity, truth and type reads cannot run the code.
+        ("def f(g):\n    return g.__code__.co_name\n", 0),
+        ("def f(g):\n    return g.__code__.co_flags & 0x80\n", 0),
+        ("def f(g):\n    return g.__code__ is None\n", 0),
+        ("def f(g):\n    if getattr(g, '__code__', None):\n        return 1\n", 0),
+        ("def f(g):\n    return not g.__code__\n", 0),
+        ("def f(g):\n    return getattr(g, '__code__', None).__class__\n", 0),
+        ("def f(g):\n    g.__code__\n", 0),
+        (
+            "def f(frame):\n"
+            "    code = getattr(frame, 'f_code', None)\n"
+            "    if code is None:\n"
+            "        return ''\n"
+            "    return getattr(code, 'co_filename', '')\n",
+            0,
+        ),
+        # An alias that several code reads store, read only for metadata.
+        (
+            "def f(gen):\n"
+            "    try:\n"
+            "        code = gen.cr_code\n"
+            "    except AttributeError:\n"
+            "        code = gen.gi_code\n"
+            "    return code.co_qualname\n",
+            0,
+        ),
+        # An accessor named for a code attribute forwards it to a reader whose
+        # own read of that name is classified where it happens.
+        (
+            "class W:\n"
+            "    @property\n"
+            "    def gi_code(self):\n"
+            "        return self._wrapped.gi_code\n",
+            0,
+        ),
+        # Not a code attribute.
+        ("def f(g):\n    return g.__name__\n", 0),
+    ],
+)
+def test_code_object_reads_are_code_rows(source: str, rows: int) -> None:
+    assert _code_rows(source) == rows
 
 
 @pytest.mark.parametrize(

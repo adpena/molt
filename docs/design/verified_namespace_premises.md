@@ -145,7 +145,7 @@ receiver behavior.
    compile time quadratic. Molt's source generation is the owner here; a new or
    mutable AST cannot reuse an old generation's facts.
    **Read-side facts (static module cells, call_anatomy.md 4.5a).** The same traversal records
-   every use of a namespace mapping by identity, read or write, as a `reflection` row (schema 9):
+   every use of a namespace mapping by identity, read or write, as a `reflection` row (schema 11):
    `M.__dict__`, `vars(M)`, `getattr(M, "__dict__")` and a `sys.modules` entry's `__dict__` name
    their module; a function's `__globals__` or a frame's `f_globals` (also through `getattr` with
    that literal name) name none, so they reach every module. A use that reads only literal dunder
@@ -156,6 +156,24 @@ receiver behavior.
    travel with the foreign writes, so only activated owners count; the graph aggregates them into
    `PythonNamespacePremise.namespace_reflected` and writes no member through them. A module that is
    reflected, or reaches its own mapping, keeps its dictionary namespace.
+   **Code rebinding (2026-11-14).** `types.FunctionType(code, globals)` runs existing code over
+   another globals mapping, so a function's global reads are its module's only while no code can
+   obtain a code object. The traversal records a `code` row (module and name always `None`) for a
+   read of `__code__`, `f_code`, `gi_code`, `cr_code` or `ag_code` (also through `getattr` with that
+   literal name), unless every use cannot hand the object on: a `co_*` read other than `co_consts`,
+   `__class__`, an identity or truth test, a discarded value, a return from an accessor named for a
+   code attribute (its caller's read is classified at the caller), or a function-local alias read
+   only so. The graph aggregates activated rows into `PythonNamespacePremise.code_rebinding`, which
+   a native extension also sets (its C code reads code objects the scan cannot see). Its consumers:
+   a module keeps its dictionary (static cells) and a function's imported-module global is not
+   bound statically (module-attribute binding, F3). The binding flow still treats every exposed
+   definition as activatable over foreign globals (`opaque_activation_sources`); narrowing that to
+   programs with a rebinder lifts builtin and global proofs into methods (`bench_class_hierarchy`
+   -6.1% instructions) but first needs a whole-module escape to expose only the members read
+   from it: with precise origins, the runtime closure's escape of `types` activated
+   `types.coroutine` and 17 more modules, a `sys.modules` writer among them. The pinned stdlib holds no activated `code` row; `asyncio`, `logging` and `unittest.mock` read
+   code objects only for metadata. Oracle: `tests/differential/basic/function_type_foreign_globals.py`
+   (static cells had read the defining module's cells under foreign globals).
 2. **The binding flow takes a premise.** `PythonBindingFlowPolicy.foreign_namespace_writes` lists the
    names other graph code writes into this module (`None`, the default, means any name);
    `callback_member_writes` lists the canonical members code in the graph writes (default: all). With a
