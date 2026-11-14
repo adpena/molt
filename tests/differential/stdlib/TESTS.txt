@@ -200,6 +200,7 @@ tests/differential/stdlib/collections_chainmap_protocol.py
 tests/differential/stdlib/collections_count_elements_custody.py
 tests/differential/stdlib/collections_counter.py
 tests/differential/stdlib/collections_counter_basic.py
+tests/differential/stdlib/collections_counter_count_values.py
 tests/differential/stdlib/collections_counter_string_index.py
 tests/differential/stdlib/collections_defaultdict_basic.py
 tests/differential/stdlib/collections_defaultdict_missing.py

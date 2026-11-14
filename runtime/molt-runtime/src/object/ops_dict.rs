@@ -1046,30 +1046,10 @@ pub(crate) fn molt_dict_count_elements_attached_body(
                 if hash == u64::MAX {
                     return MoltObject::none().bits();
                 }
-                let found =
-                    match unsafe { super::ops::dict_find_entry_with_hash(py, dict, key, hash) } {
-                        Ok(found) => found,
-                        Err(()) => return MoltObject::none().bits(),
-                    };
-                let next = if let Some(index) = found {
-                    let old =
-                        CountElementOwned::borrow(py, unsafe { dict_entries(dict)[index].value });
-                    custody.new_value = Some(CountElementOwned::adopt(
-                        py,
-                        molt_add_attached_body(py, old.bits, one),
-                    ));
-                    drop(old);
-                    custody.new_value.as_ref().unwrap().bits
-                } else {
-                    one
-                };
-                if exception_pending(py) {
+                // `mapping[key] = mapping.get(key, 0) + 1` through its one
+                // authority, with the key hashed once as CPython does.
+                if !unsafe { super::ops::dict_inc_with_hash_in_place(py, dict, key, hash, one) } {
                     return MoltObject::none().bits();
-                }
-                unsafe {
-                    if !super::ops::dict_set_with_hash_in_place(py, dict, key, next, hash) {
-                        return MoltObject::none().bits();
-                    }
                 }
             } else {
                 let old = CountElementOwned::adopt(py, unsafe {
@@ -1093,9 +1073,9 @@ pub(crate) fn molt_dict_count_elements_attached_body(
                     key,
                     custody.new_value.as_ref().unwrap().bits,
                 );
-            }
-            if exception_pending(py) {
-                return MoltObject::none().bits();
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
             }
             // Successful per-item retirement differs from terminal cleanup.
             drop(custody.new_value.take());
