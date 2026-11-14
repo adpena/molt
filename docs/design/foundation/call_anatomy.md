@@ -2025,9 +2025,10 @@ first. These sites hold a hand-written allocator today:
 - `runtime/molt-runtime-resource/src/temp_arena.rs:7`: `TempArena`, chunked
   `Vec<Vec<u8>>` storage with tracker charging. The same `Allocator` impl would
   carry the resource-tracker charge that each call site now pairs by hand.
-- `runtime/molt-runtime/src/object/layout.rs:291` and `:554`: `ListIntStorage` and
-  `ListBoolStorage` allocate their owner with `std::alloc::alloc` and charge the
-  tracker separately. A tracking allocator makes `Box::new_in` charge and release
+- `runtime/molt-runtime/src/object/backing.rs` (`tracked_vec_box_with_buffer`):
+  every object-owned sequence storage (`MoltVec<T>`, one `#[repr(C)]` type for
+  generic, int and bool lists alike) charges the tracker for its owner and
+  buffer by hand. A tracking allocator makes `Box::new_in` charge and release
   in one place.
 - `runtime/molt-runtime/src/object/aux_header.rs:409`: the aux sidecar's raw
   `alloc`, same pattern.

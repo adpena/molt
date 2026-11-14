@@ -187,16 +187,51 @@ pub(crate) fn release_grow(bytes: usize) {
 /// Allocate an object-owned Vec with resource accounting for both the owning
 /// allocation and its backing buffer capacity.
 pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut MoltVec<T>> {
+    tracked_vec_box_with_buffer(capacity, |capacity| {
+        let mut vec = Vec::new();
+        (capacity == 0 || vec.try_reserve_exact(capacity).is_ok()).then_some(vec)
+    })
+}
+
+/// Element types whose all-zero bit pattern is their `Default` value.
+///
+/// # Safety
+/// An implementation asserts exactly that, for every value of the type.
+pub(crate) unsafe trait ZeroIsDefault: Copy + Default {}
+unsafe impl ZeroIsDefault for usize {}
+unsafe impl ZeroIsDefault for u64 {}
+unsafe impl ZeroIsDefault for i64 {}
+unsafe impl ZeroIsDefault for u8 {}
+
+/// Tracked storage of `len` default elements from one zeroed allocation: a
+/// fresh hash table, which a fill loop would otherwise write element by element.
+pub(crate) fn tracked_vec_box_zeroed<T: ZeroIsDefault>(len: usize) -> Option<*mut MoltVec<T>> {
+    tracked_vec_box_with_buffer(len, |len| {
+        if len == 0 || size_of::<T>() == 0 {
+            return Some(Vec::new());
+        }
+        let layout = Layout::array::<T>(len).ok()?;
+        let data = unsafe { std::alloc::alloc_zeroed(layout) }.cast::<T>();
+        // Every element is the zero pattern, which ZeroIsDefault makes `T::default()`.
+        (!data.is_null()).then(|| unsafe { Vec::from_raw_parts(data, len, len) })
+    })
+}
+
+/// Charge for `capacity` elements, build the buffer with `make` (None when the
+/// allocator refuses it), and box it with its accounting.
+fn tracked_vec_box_with_buffer<T>(
+    capacity: usize,
+    make: impl FnOnce(usize) -> Option<Vec<T>>,
+) -> Option<*mut MoltVec<T>> {
     let requested_charge = vec_charge::<T>(capacity)?;
     if !charge_alloc(requested_charge) {
         return None;
     }
 
-    let mut vec = Vec::new();
-    if capacity > 0 && vec.try_reserve_exact(capacity).is_err() {
+    let Some(vec) = make(capacity) else {
         release_alloc(requested_charge);
         return None;
-    }
+    };
 
     let Some(actual_charge) = vec_charge::<T>(vec.capacity()) else {
         drop(vec);
@@ -426,14 +461,6 @@ pub(crate) fn tracked_vec_box_repeated<T: Copy>(
     Some(ptr)
 }
 
-pub(crate) fn tracked_vec_box_zeroed<T: Copy + Default>(len: usize) -> Option<*mut MoltVec<T>> {
-    let ptr = tracked_vec_box_with_capacity::<T>(len)?;
-    unsafe {
-        (*ptr).resize(len, T::default());
-    }
-    Some(ptr)
-}
-
 /// Ensure a tracked Vec has capacity for `required_len` elements before a
 /// mutating operation grows its length.
 ///
@@ -448,6 +475,7 @@ pub(crate) fn tracked_vec_box_zeroed<T: Copy + Default>(len: usize) -> Option<*m
 /// # Safety
 /// `ptr` must be a live Vec pointer allocated by
 /// [`tracked_vec_box_with_capacity`].
+#[inline]
 pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(
     ptr: *mut MoltVec<T>,
     required_len: usize,
@@ -455,11 +483,20 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(
     if ptr.is_null() {
         return false;
     }
-    let owner = unsafe { owner_ptr_from_vec(ptr) };
-    let vec = unsafe { &mut *ptr };
-    if required_len <= vec.capacity() {
+    if required_len <= unsafe { (*ptr).capacity() } {
         return true;
     }
+    unsafe { tracked_vec_grow_for_len(ptr, required_len) }
+}
+
+/// The charged regrowth behind [`tracked_vec_reserve_for_len`], out of line:
+/// inlined, it spilled the registers of every caller's common no-growth path
+/// (`set_insert_absent_with_hash` grew by 46 instructions, 2026-11-14).
+#[cold]
+#[inline(never)]
+unsafe fn tracked_vec_grow_for_len<T>(ptr: *mut MoltVec<T>, required_len: usize) -> bool {
+    let owner = unsafe { owner_ptr_from_vec(ptr) };
+    let vec = unsafe { &mut *ptr };
     if unsafe { (*owner).buffer_exports.is_exported() } {
         return false;
     }

@@ -245,8 +245,12 @@ pub(crate) unsafe fn list_storage_push<T>(
     storage: *mut super::molt_vec::MoltVec<T>,
     value: T,
 ) -> bool {
-    let required = unsafe { (*storage).len() }.saturating_add(1);
-    if !unsafe { super::backing::tracked_vec_reserve_for_len(storage, required) } {
+    let (len, capacity) = unsafe { ((*storage).len(), (*storage).capacity()) };
+    // Only a full buffer reaches the charged regrowth; the common append
+    // writes in place, as the deleted per-kind storages did.
+    if len == capacity
+        && !unsafe { super::backing::tracked_vec_reserve_for_len(storage, len.saturating_add(1)) }
+    {
         return false;
     }
     unsafe { (*storage).push(value) };

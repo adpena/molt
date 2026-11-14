@@ -154,14 +154,21 @@ impl<T> MoltVec<T> {
         self.len = new_len;
     }
 
+    /// Room for one more element. Kept out of line, as `Vec`'s `grow_one`
+    /// is, so every `push` and `insert` site stays a test and a store.
+    #[cold]
+    #[inline(never)]
+    fn grow_one(&mut self) {
+        self.with_vec(|vec| vec.reserve(1));
+    }
+
     #[inline]
     pub fn push(&mut self, value: T) {
-        if self.len < self.cap {
-            unsafe { self.data.as_ptr().add(self.len).write(value) };
-            self.len += 1;
-        } else {
-            self.with_vec(|vec| vec.push(value));
+        if self.len == self.cap {
+            self.grow_one();
         }
+        unsafe { self.data.as_ptr().add(self.len).write(value) };
+        self.len += 1;
     }
 
     #[inline]
@@ -173,20 +180,60 @@ impl<T> MoltVec<T> {
         Some(unsafe { self.data.as_ptr().add(self.len).read() })
     }
 
+    /// As `Vec::insert`, in place after at most one out-of-line growth.
+    #[inline]
     pub fn insert(&mut self, index: usize, value: T) {
-        self.with_vec(|vec| vec.insert(index, value));
+        assert!(
+            index <= self.len,
+            "insertion index {index} exceeds length {}",
+            self.len
+        );
+        if self.len == self.cap {
+            self.grow_one();
+        }
+        unsafe {
+            let at = self.data.as_ptr().add(index);
+            if index < self.len {
+                std::ptr::copy(at, at.add(1), self.len - index);
+            }
+            at.write(value);
+        }
+        self.len += 1;
     }
 
+    #[inline]
     pub fn remove(&mut self, index: usize) -> T {
-        self.with_vec(|vec| vec.remove(index))
+        assert!(
+            index < self.len,
+            "removal index {index} exceeds length {}",
+            self.len
+        );
+        unsafe {
+            let at = self.data.as_ptr().add(index);
+            let value = at.read();
+            std::ptr::copy(at.add(1), at, self.len - index - 1);
+            self.len -= 1;
+            value
+        }
     }
 
+    #[inline]
     pub fn truncate(&mut self, len: usize) {
-        self.with_vec(|vec| vec.truncate(len));
+        if len >= self.len {
+            return;
+        }
+        let tail = std::ptr::slice_from_raw_parts_mut(
+            unsafe { self.data.as_ptr().add(len) },
+            self.len - len,
+        );
+        // Shorten first, as Vec does, so a panicking drop cannot drop twice.
+        self.len = len;
+        unsafe { std::ptr::drop_in_place(tail) };
     }
 
+    #[inline]
     pub fn clear(&mut self) {
-        self.with_vec(Vec::clear);
+        self.truncate(0);
     }
 
     pub fn reserve(&mut self, additional: usize) {
@@ -257,6 +304,8 @@ impl<T> IntoIterator for MoltVec<T> {
 }
 
 impl<T: Clone> MoltVec<T> {
+    // Vec's own extend and fill specialize to memcpy and memset; a hand loop
+    // here measured worse (op_dict +2.2 points on Cranelift, 2026-11-14).
     pub fn extend_from_slice(&mut self, items: &[T]) {
         self.with_vec(|vec| vec.extend_from_slice(items));
     }
@@ -372,6 +421,27 @@ mod tests {
         values.truncate(3);
         assert_eq!(values.as_slice(), &[2, 3, 4]);
         assert_eq!(values.into_vec(), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn in_place_insert_remove_and_truncate_match_vec() {
+        let mut ours = MoltVec::new();
+        let mut oracle = Vec::new();
+        for step in 0..200usize {
+            let index = (step * 7) % (oracle.len() + 1);
+            ours.insert(index, step);
+            oracle.insert(index, step);
+            if step % 3 == 0 {
+                let at = (step * 5) % oracle.len();
+                assert_eq!(ours.remove(at), oracle.remove(at));
+            }
+            assert_eq!(ours.as_slice(), oracle.as_slice());
+        }
+        ours.truncate(17);
+        oracle.truncate(17);
+        assert_eq!(ours.as_slice(), oracle.as_slice());
+        ours.clear();
+        assert!(ours.is_empty() && ours.capacity() >= 17);
     }
 
     #[test]

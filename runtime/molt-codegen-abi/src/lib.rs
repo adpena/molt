@@ -123,8 +123,8 @@ pub const QNAN_TAG_PENDING_I64: i64 = (QNAN | TAG_PENDING) as i64;
 pub const NAMESPACE_SLOT_UNBOUND: u64 = QNAN | TAG_PENDING | 1;
 
 // List storage field offsets, from the object's storage pointer: the data
-// pointer and the length of `MoltVec` (runtime/molt-runtime/src/object/molt_vec.rs,
-// which asserts them at compile time) and of `ListIntStorage`.
+// pointer and the length of `MoltVec` (runtime/molt-runtime-core/src/molt_vec.rs,
+// which asserts them at compile time), the one storage of every list kind.
 pub const LIST_STORAGE_DATA_OFFSET: i32 = 0;
 pub const LIST_STORAGE_LEN_OFFSET: i32 = 8;
 
@@ -476,8 +476,8 @@ pub struct GeneratedObjectAbiFacts {
     pub special_tag_limit: i64,
     pub immortal_refcount: u32,
     pub generator_control_bytes: i32,
-    pub list_int_storage_data_offset: i32,
-    pub list_int_storage_len_offset: i32,
+    pub list_storage_data_offset: i32,
+    pub list_storage_len_offset: i32,
     pub inline_int_bias: i64,
     pub inline_int_limit: i64,
     pub int_mask: u64,
@@ -553,8 +553,8 @@ impl GeneratedObjectAbiFacts {
             self.special_tag_limit as u64,
             self.immortal_refcount as u64,
             self.generator_control_bytes as i64 as u64,
-            self.list_int_storage_data_offset as i64 as u64,
-            self.list_int_storage_len_offset as i64 as u64,
+            self.list_storage_data_offset as i64 as u64,
+            self.list_storage_len_offset as i64 as u64,
             self.inline_int_bias as u64,
             self.inline_int_limit as u64,
             self.int_mask,
@@ -649,8 +649,8 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     special_tag_limit: SPECIAL_TAG_LIMIT,
     immortal_refcount: IMMORTAL_REFCOUNT,
     generator_control_bytes: GENERATOR_CONTROL_BYTES,
-    list_int_storage_data_offset: LIST_STORAGE_DATA_OFFSET,
-    list_int_storage_len_offset: LIST_STORAGE_LEN_OFFSET,
+    list_storage_data_offset: LIST_STORAGE_DATA_OFFSET,
+    list_storage_len_offset: LIST_STORAGE_LEN_OFFSET,
     inline_int_bias: INLINE_INT_BIAS,
     inline_int_limit: INLINE_INT_LIMIT,
     int_mask: INT_MASK,
