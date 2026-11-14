@@ -1008,12 +1008,20 @@ pub(crate) unsafe fn detached_managed_edge_count(py: &PyToken<'_>, ptr: *mut u8)
 ///
 /// The answer is exact, never a heuristic: an object qualifies only when it has
 /// no side owner (C view, weak reference, scheduler retain), no sidecar (frame
-/// context, awaited value, frame bindings), no owned class edge or instance
-/// fields, and a payload of a closed set of kinds whose every value is a
-/// non-heap word. Its storage is read directly: the reference count is zero,
-/// so no borrower holds it. The scan costs one tag test per item; a list of
-/// inline ints retires with no edge traffic.
-pub(crate) unsafe fn retires_without_edges(ptr: *mut u8, header_flags: u32, aux_kind: u16) -> bool {
+/// context, awaited value, frame bindings), and either a payload of a closed
+/// set of kinds whose every value is a non-heap word, or the shape of a plain
+/// class instance whose only owned edge is its class (no instance dictionary,
+/// no field holding a heap reference). That class edge is the caller's to
+/// release (`object_detach_class_edge`). Storage is read directly: the
+/// reference count is zero, so no borrower holds it. The scan costs one tag
+/// test per item; a list of inline ints or an instance of int fields retires
+/// with no edge traffic.
+pub(crate) unsafe fn retires_without_edges(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    header_flags: u32,
+    aux_kind: u16,
+) -> bool {
     const SIDE_OWNERS: u32 =
         HEADER_FLAG_HAS_ABI_VIEW | super::HEADER_FLAG_HAS_WEAKREF | crate::HEADER_FLAG_SPAWN_RETAIN;
     if header_flags & SIDE_OWNERS != 0 || aux_kind == super::HEADER_AUX_KIND_SIDECAR {
@@ -1023,7 +1031,7 @@ pub(crate) unsafe fn retires_without_edges(ptr: *mut u8, header_flags: u32, aux_
         if object_class_bits(ptr) != 0
             && (!object_class_edge_is_borrowed(ptr) || super::native_instance::has_fields(ptr))
         {
-            return false;
+            return plain_instance_owns_only_its_class(py, ptr);
         }
         let no_heap = |items: &[u64]| {
             !items
@@ -1050,6 +1058,35 @@ pub(crate) unsafe fn retires_without_edges(ptr: *mut u8, header_flags: u32, aux_
             ]),
             _ => false,
         }
+    }
+}
+
+/// Whether a plain class instance owns no edge but its class: no instance
+/// dictionary and no field holding a heap reference. A plain shape owns
+/// exactly those three kinds of edge (`clear_class_shaped_edges` and
+/// `object_detach_class_edge`); a native payload's fields keep the full walk.
+unsafe fn plain_instance_owns_only_its_class(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    unsafe {
+        if object_type_id(ptr) != crate::TYPE_ID_OBJECT
+            || super::object_shape_id(ptr) != super::ObjectShapeId::Plain
+            || !super::object_has_class_shape(ptr)
+            || super::native_instance::has_fields(ptr)
+        {
+            return false;
+        }
+        let dict = super::instance_dict_bits_ptr(ptr);
+        if !dict.is_null() && *dict != 0 {
+            return false;
+        }
+        let Some(class_ptr) = obj_from_bits(object_class_bits(ptr)).as_ptr() else {
+            return false;
+        };
+        super::field_storage::with_instance_fields(py, ptr, class_ptr, |fields| {
+            fields.into_iter().all(|(_, slot)| {
+                let bits = *slot;
+                !super::refcount_opt::is_heap_ref(bits) || crate::is_missing_bits(py, bits)
+            })
+        })
     }
 }
 

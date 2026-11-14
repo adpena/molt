@@ -506,6 +506,16 @@ def test_a_file_output_replaced_by_a_directory_selects_a_new_binary(
     assert (project / "program" / "app_molt").is_file()
 
 
+@pytest.mark.parametrize("backend", ["cranelift", "llvm"])
+def test_every_native_codegen_backend_may_reuse_a_record(
+    project: Path, backend: str
+) -> None:
+    # Each backend's compiler inputs (LLVM: its SDK headers, libraries and
+    # llvm-config) report to the record, so the backend is only a key value.
+    request = BuildRequest(file_path=str(project / "app.py"), codegen_backend=backend)
+    assert build_command._early_cutoff_request(request) is not None
+
+
 @pytest.mark.parametrize("option", ["diagnostics", "cache_report"])
 def test_requests_for_additional_results_still_do_not_cut_off(
     project: Path, option: str

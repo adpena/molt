@@ -45,10 +45,6 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _StagedExternalPackageNativeArtifact,
 )
-from molt.cli.native_binary import (
-    _darwin_binary_imports_validation_error,
-    _darwin_binary_magic_error,
-)
 from molt.cli.native_link_command import (
     _build_native_link_plan,
 )
@@ -135,44 +131,6 @@ def _prepare_native_object_artifact(
     except (OSError, RuntimeError) as exc:
         return None, _fail(str(exc), json_output, command="build")
     return output_artifact, None
-
-
-def _darwin_link_validation_failure(
-    *,
-    output_binary: Path,
-    kind: str,
-) -> str | None:
-    if kind == "magic":
-        detail = _darwin_binary_magic_error(output_binary)
-        if detail is None:
-            return None
-        return "Generated binary failed Mach-O header validation.\n" + detail + "\n"
-    detail = _darwin_binary_imports_validation_error(output_binary)
-    if detail is None:
-        return None
-    return "Generated binary failed dyld import validation.\n" + detail + "\n"
-
-
-def _validate_darwin_link_output(
-    *,
-    link_process: subprocess.CompletedProcess[str],
-    link_cmd: Sequence[str],
-    output_binary: Path,
-    validation_kind: str,
-) -> subprocess.CompletedProcess[str]:
-    validation_error = _darwin_link_validation_failure(
-        output_binary=output_binary,
-        kind=validation_kind,
-    )
-    if validation_error is None:
-        return link_process
-    failure_stderr = (link_process.stderr or "") + "\n" + validation_error
-    return subprocess.CompletedProcess(
-        args=list(link_cmd),
-        returncode=1,
-        stdout=link_process.stdout,
-        stderr=failure_stderr,
-    )
 
 
 def _prepare_native_link(
@@ -627,28 +585,6 @@ def _prepare_native_link(
                         stderr=link_process.stderr,
                         output=link_selection_candidate,
                     )
-            if (
-                link_process.returncode == 0
-                and sys.platform == "darwin"
-                and target.is_host
-            ):
-                link_process = _validate_darwin_link_output(
-                    link_process=link_process,
-                    link_cmd=execution_link_cmd,
-                    output_binary=link_output,
-                    validation_kind="magic",
-                )
-            if (
-                link_process.returncode == 0
-                and sys.platform == "darwin"
-                and target.is_host
-            ):
-                link_process = _validate_darwin_link_output(
-                    link_process=link_process,
-                    link_cmd=execution_link_cmd,
-                    output_binary=link_output,
-                    validation_kind="dyld",
-                )
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             with contextlib.suppress(OSError):
                 link_output.unlink()

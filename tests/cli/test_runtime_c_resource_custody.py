@@ -314,6 +314,24 @@ def test_directory_backedges_do_not_hide_sibling_aliases_or_new_resources(
         custody.verify()
 
 
+def test_file_identity_projects_each_captured_file_and_refuses_others(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "install"
+    root.mkdir()
+    first, second = root / "a.h", root / "b.h"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second header")
+    custody = CargoResourceCustody.capture((CargoResourceRoot("toolchain", root),))
+    for path, size in ((first, 5), (second, 13)):
+        identity = custody.file_identity(path)
+        assert identity.size == size
+        # The projection is stable: a second lookup answers the same capture.
+        assert custody.file_identity(path) is identity
+    with pytest.raises(ValueError, match="no unique captured identity"):
+        custody.file_identity(root / "absent.h")
+
+
 def test_resource_directory_backedge_retargeting_is_fenced(tmp_path: Path) -> None:
     root = tmp_path / "install"
     (root / "build").mkdir(parents=True)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 import dataclasses
 import errno
 import io
@@ -629,6 +629,31 @@ def test_temporary_artifact_posix_closure_requires_empty_group_and_final_sample(
     assert evidence["root_process_group_members"] == []
 
 
+def test_guard_history_reads_only_the_captured_pids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A guarded spawn lists its own pids' history, never all of it."""
+    active = tmp_path / "custody" / "active"
+    active.mkdir(parents=True)
+    retired = active.parent / "retired"
+    for pid in ("101", "999"):
+        (retired / pid).mkdir(parents=True)
+    # Another pid's history, unreadable: listing or reading it would fail.
+    (retired / "999" / f"guard-999-{'f' * 32}.json").write_text("{", encoding="utf-8")
+    listed: list[Path] = []
+    iterate = active_custody._iter_marker_paths
+
+    def recording(
+        directory: Path, *, role: str, prefix: str = "guard-"
+    ) -> Iterator[Path]:
+        listed.append(directory)
+        return iterate(directory, role=role, prefix=prefix)
+
+    monkeypatch.setattr(active_custody, "_iter_marker_paths", recording)
+    assert active_custody.guard_marker_records(active, {101}) == ()
+    assert listed == [active, retired / "101"]
+
+
 @pytest.mark.parametrize("scoped_absence", [False, True])
 @pytest.mark.parametrize(
     "state",
@@ -674,6 +699,9 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
             },
             "child_launch_state": "recorded",
         }
+        if directory == retired:
+            directory = retired / str(pid)
+            directory.mkdir(exist_ok=True)
         path = directory / f"guard-{pid}-{token}.json"
         active_custody.write_active_guard_marker(path, payload)
         return path
@@ -1484,7 +1512,8 @@ def test_completed_guard_retires_its_marker_lock_and_scratch(
     assert _guarded_pass(state_root, environment, text=text).returncode == 0
     _assert_guard_use_retirement(roots, True)
     assert list((state_root / "active").iterdir()) == []
-    (retired,) = (state_root / "retired").glob("guard-*.json")
+    (retired,) = (state_root / "retired").glob("*/guard-*.json")
+    assert retired.parent.name == str(os.getpid())
     payload = json.loads(retired.read_text(encoding="utf-8"))
     assert payload["pid"] == os.getpid()
     assert payload["status"] == "completed"
@@ -1637,7 +1666,7 @@ def test_exiting_guard_sweeps_dead_custody_records(
         )
     assert _guarded_pass(state_root).returncode == 0
     assert list(active.iterdir()) == []
-    assert len(list((state_root / "retired").glob("guard-*.json"))) == len(dead) + 1
+    assert len(list((state_root / "retired").glob("*/guard-*.json"))) == len(dead) + 1
     receipt = json.loads((state_root / "sweep.json").read_text(encoding="utf-8"))
     assert receipt["remaining"] == 0
 
