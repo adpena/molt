@@ -277,7 +277,7 @@ def run(
         with host_capacity.host_work_slot(
             host_capacity.host_work_dir(root),
             label=f"consumer gate ({root.name}, {len(run_now)} test files)",
-            landing=False,
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
             say=lambda message: print(message, flush=True),
         ) as admission:
             if admission.waited_seconds >= 1:

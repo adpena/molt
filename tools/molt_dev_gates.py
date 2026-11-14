@@ -640,13 +640,18 @@ def run_selected_gates(
         from molt import host_capacity
 
         # Every gate run (a try run, a batch, postsubmit, a receipt rerun)
-        # takes the host's one heavy-work slot for its heavy block (HF-623).
-        # A caller that already holds it (the try run, whose budget starts at
+        # takes its class's heavy-work slot for its heavy block (HF-623): a
+        # batch the integration slot, the rest the development slot. A caller
+        # that already holds a slot (the try run, whose budget starts at
         # admission) is admitted at once through the inherited mark.
         with host_capacity.host_work_slot(
             host_capacity.host_work_dir(runtime.repo),
             label=f"{runtime.mode.value} gates ({runtime.repo.name})",
-            landing=runtime.mode is LandingMode.PRESUBMIT,
+            work=(
+                host_capacity.HostWorkClass.INTEGRATION
+                if runtime.mode is LandingMode.PRESUBMIT
+                else host_capacity.HostWorkClass.DEVELOPMENT
+            ),
             say=runtime.say,
         ):
             _run_heavy_gates(heavy, runtime, gate_seconds, host_limit)
