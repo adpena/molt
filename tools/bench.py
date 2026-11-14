@@ -389,6 +389,22 @@ def _canonical_interpreter(executable: str) -> str:
     return harness_memory_guard.canonical_interpreter(executable)
 
 
+def cpython_reference_command() -> list[str]:
+    """The CPython that benchmarks are timed against: the uv-managed base
+    interpreter, without user site-packages.
+
+    The development environment's interpreter (``sys.executable``) loads the
+    venv's site-packages and the checkout's ``src/sitecustomize.py`` before
+    the script: 157 ms against 12.5 ms for ``-c pass`` on 2026-11-14, which
+    pulled every Molt/CPython ratio toward 1 (bench_struct reported 0.42x
+    where direct timing gives 0.12x). ``reference_invocation`` gives the
+    command an environment without ``PYTHON*`` settings except a fixed hash
+    seed, which output parity needs; that is ``-I`` less ``-P``, so a script
+    still sees its own directory, as on PyPy.
+    """
+    return [_canonical_interpreter(sys._base_executable), "-s"]
+
+
 def _backend_daemon_record_payload(
     record: daemon_custody.BackendDaemonIdentityRecord,
 ) -> dict[str, object]:
@@ -2098,7 +2114,7 @@ def bench_results(
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
     runtimes = {}
     if use_cpython:
-        runtimes["cpython"] = [_canonical_interpreter(sys.executable)]
+        runtimes["cpython"] = cpython_reference_command()
     if use_pypy:
         pypy_cmd = _pypy_command(base_env, limits)
         if pypy_cmd:

@@ -38,8 +38,11 @@ schema = "molt-perf-methodology-v1"
 # ratchet; the board-vs-history chain is retired (HF-222).
 # v37: a build that molt.disk_capacity refuses is infrastructure_error, not
 # build_failed, so a full host never reads as a compiler failure.
-version = 37
-content_sha256 = "819037ea8e753227541c632194b2540274c89c2a10ea002e859f7fa31f851f5d"
+# v38: CPython is timed with the uv-managed base interpreter and no PYTHON*
+# settings (hash seed fixed); the development interpreter added about 0.2 s
+# of site and sitecustomize startup to every CPython sample.
+version = 38
+content_sha256 = "fececd7fa8bb7ae225015aa2c7904077c5757add21417056ddc4003d16866870"
 
 [[methodology]]
 path = "tools/safe_run.py"
