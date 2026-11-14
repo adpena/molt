@@ -529,7 +529,8 @@ Hard gates: no 10-30min wasm build (M71's cost asymmetry) before L1-L2; no
 cross-lane composition before L4; ship only from L7. Enforce in proof_queue
 submission (refuse an expensive row for a lane below its rung's floor).
 Plus the P4 rule for molt's own apparatus: **no gate without a canary** — a
-periodic `tools/check_gate_liveness.py` that runs each registered gate
+periodic `tools/check_gate_liveness.py` (retired 2026-11-14: each gate's own
+tests feed it a known-bad input) that ran each registered gate
 against a known-bad fixture and fails if the gate no longer fires (molt has
 had exactly this class: gates green atop a broken compiler, M42; configured
 != effective, M34 — this is the binding-vs-inert audit pointed at the gates

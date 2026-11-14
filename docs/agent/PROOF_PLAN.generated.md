@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 455 |
 | Local path rules | 35 | 84 |
-| Unique local commands | 73 | 83 |
+| Unique local commands | 73 | 82 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 243 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 242 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -402,11 +402,11 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `proof-plan-tests` | 1 | 0 |
 | `ci-wiring` | 51 | 0 |
 | `typed-facts-gate` | 2 | 0 |
-| `apparatus-hooks` | 11 | 2 |
-| `apparatus-learning-protection` | 6 | 1 |
+| `apparatus-hooks` | 9 | 1 |
+| `apparatus-learning-protection` | 4 | 1 |
 | `performance-measurement` | 35 | 1 |
-| `apparatus-a11` | 10 | 4 |
-| `apparatus-a8-a12-disk-reclaim` | 14 | 2 |
+| `apparatus-a11` | 10 | 3 |
+| `apparatus-a8-a12-disk-reclaim` | 13 | 1 |
 | `import-symbol-gate` | 2 | 1 |
 | `phase-exit-manifest` | 7 | 1 |
 | `public-contract` | 27 | 1 |

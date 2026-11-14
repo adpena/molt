@@ -34,8 +34,8 @@ Two modes:
     real CLAIMS.md, print live / retired / stale counts + any stale CLAIMED rows.
     A stale claim is flagged, never a hard CI failure; a log row with a status
     outside the vocabulary exits 1, because no reader can classify its lane.
-  * ``--check`` (falsifiable self-test, a proof-plan rule gate + a
-    check_gate_liveness canary): feed the PURE classifier synthetic fixtures and
+  * ``--check`` (falsifiable self-test, a proof-plan rule gate):
+    feed the PURE classifier synthetic fixtures and
     fail (exit 1) if a FALSIFIED row is not RETIRED, a stale CLAIMED is not
     STALE, or a fresh CLAIMED is not LIVE -- the "a gate that cannot fire
     certifies nothing" meta-bug (M34/M42), pointed at this classifier.

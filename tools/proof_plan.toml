@@ -2721,7 +2721,7 @@ timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto"]
-pytest = ["tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_public_source_boundary.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dag_dispatch.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_landing_receipt.py", "tests/tools/test_ledger_edit.py", "tests/tools/test_known_issues.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_subagent_contract.py"]
+pytest = ["tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_public_source_boundary.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dag_dispatch.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_landing_receipt.py", "tests/tools/test_ledger_edit.py", "tests/tools/test_known_issues.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_subagent_contract.py"]
 pytest_worker_memory_gb = 0.5
 toolchains = ["python", "uv"]
 
@@ -5710,7 +5710,7 @@ pytest = [
 [[rule]]
 name = "apparatus-hooks"
 toolchains = ["python"]
-description = "Claude Code hooks (the launcher and the session digest), their typed wiring, the gate-flip auditor and the gate-liveness canary."
+description = "Claude Code hooks (the launcher and the session digest), their typed wiring and the gate-flip auditor."
 globs = [
   ".claude/settings.json",
   "tools/hooks/**",
@@ -5718,32 +5718,26 @@ globs = [
   ".githooks/molt-hook-launch.sh",
   "tools/molt_dev_queue.py",
   "tools/check_gate_flips.py",
-  "tools/check_gate_liveness.py",
   "tests/tools/test_hooks_session_digest.py",
   "tests/tools/test_hooks_fail_open.py",
   "tests/tools/test_check_gate_flips.py",
-  "tests/tools/test_check_gate_liveness.py",
 ]
 gates = [
-  "python tools/check_gate_liveness.py --check",
   "python tools/check_gate_flips.py --check",
 ]
 pytest = [
   "tests/tools/test_hooks_session_digest.py",
   "tests/tools/test_hooks_fail_open.py",
   "tests/tools/test_check_gate_flips.py",
-  "tests/tools/test_check_gate_liveness.py",
 ]
 
 [[rule]]
 name = "apparatus-learning-protection"
 toolchains = ["python"]
-description = "Recurring-harm registry, the no-agent-termination meta-gate, and the memory graph."
+description = "The no-agent-termination meta-gate and the memory graph."
 globs = [
   "tools/apparatus_agent_safety.py",
-  "tools/recurring_harms.toml",
   "tools/memory_graph.py",
-  "tools/check_gate_liveness.py",
   "tests/tools/test_apparatus_agent_safety.py",
   "tests/tools/test_memory_graph.py",
 ]
@@ -5752,7 +5746,6 @@ gates = [
 ]
 pytest = [
   "tests/tools/test_apparatus_agent_safety.py",
-  "tests/tools/test_check_gate_liveness.py",
   "tests/tools/test_memory_graph.py",
 ]
 
@@ -5874,7 +5867,6 @@ gates = [
   "python tools/claims_status.py --check",
   "python tools/check_sister_landed.py --check",
   "python tools/commit_serializer.py --check",
-  "python tools/check_gate_liveness.py --check",
 ]
 pytest = [
   "tests/tools/test_claims_status.py",
@@ -5886,7 +5878,7 @@ pytest = [
 [[rule]]
 name = "apparatus-a8-a12-disk-reclaim"
 toolchains = ["python"]
-description = "Lane maturity, Variant-II perf acceptance, and disk-guard retention: teeth plus liveness."
+description = "Lane maturity, Variant-II perf acceptance, and disk-guard retention."
 globs = [
   "tools/lane_maturity.py",
   "tools/powerplay_acceptance.py",
@@ -5895,7 +5887,6 @@ globs = [
   "tools/disk_guard.py",
   "src/molt/checkout_state.py",
   "tools/drift_harvest.py",
-  "tools/check_gate_liveness.py",
   "tests/tools/test_lane_maturity.py",
   "tests/tools/test_powerplay_acceptance.py",
   "tests/tools/test_proof_queue_lane_maturity.py",
@@ -5904,7 +5895,6 @@ globs = [
   "tests/tools/test_drift_harvest.py",
 ]
 gates = [
-  "python tools/check_gate_liveness.py --check",
   "python tools/apparatus_agent_safety.py --check",
 ]
 pytest = [
@@ -5913,7 +5903,6 @@ pytest = [
   "tests/tools/test_proof_queue_lane_maturity.py",
   "tests/tools/test_proof_queue_disk_capacity.py",
   "tests/tools/test_disk_guard.py",
-  "tests/tools/test_check_gate_liveness.py",
   "tests/tools/test_drift_harvest.py",
 ]
 
@@ -6807,11 +6796,6 @@ state = "strict"
 strict_when = "landed_functional"
 rationale = "Ruff TID251 bans raw functools.lru_cache and functools.cache in src/molt: they erase a function's signature for ty, which let a string reach an ArtifactTarget-typed cached function unseen (HF-628). molt.typed_cache keeps the signature; src/molt had no remaining uses outside the two stdlib-only bootstrap release modules when this landed strict. Those, tools/ and tests/ stay exempt until they move (HF-632)."
 
-[[gate_flip]]
-name = "gate_liveness_canary"
-state = "strict"
-strict_when = "landed_functional"
-rationale = "check_gate_liveness must always fire on known-bad fixtures; a canary that cannot fire is worthless, so it lands strict."
 # --- APPARATUS A4 memo->registry lint (warn-only; A9 [[gate_flip]] entry) ---
 # Lands WARN-ONLY: molt carries an existing backlog of docs/agent + memory lines
 # stating a measured finding (speedup / residual / bench / parity) with no
