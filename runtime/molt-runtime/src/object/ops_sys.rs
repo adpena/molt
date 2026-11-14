@@ -64,42 +64,66 @@ pub(crate) fn decode_slice_bound(
     ))
 }
 
-fn decode_slice_index(py: &PyToken<'_>, obj: MoltObject) -> Result<Option<BigInt>, SliceError> {
+/// A decoded slice index. An inline int stays a machine integer; only an
+/// index beyond the inline window (a heap int or a large `__index__` result)
+/// pays for a big integer.
+enum SliceIndex {
+    Small(i64),
+    Big(BigInt),
+}
+
+fn decode_slice_index(py: &PyToken<'_>, obj: MoltObject) -> Result<Option<SliceIndex>, SliceError> {
     if obj.is_none() {
         return Ok(None);
+    }
+    if let Some(index) = obj.as_int() {
+        return Ok(Some(SliceIndex::Small(index)));
     }
     index_bigint_from_obj(
         py,
         obj.bits(),
         "slice indices must be integers or None or have an __index__ method",
     )
-    .map(Some)
+    .map(|index| Some(SliceIndex::Big(index)))
     .ok_or(SliceError::Type)
 }
 
+/// CPython's `PySlice_AdjustIndices` bound: a negative index counts from the
+/// end, and the result clamps to `[0, len]`, or `[-1, len - 1]` backwards.
 fn adjust_slice_bound(
-    index: Option<&BigInt>,
+    index: Option<&SliceIndex>,
     len: isize,
     default: isize,
     backwards: bool,
 ) -> isize {
-    let Some(index) = index else {
-        return default;
-    };
-    let mut idx = index.clone();
-    let len_big = BigInt::from(len);
-    if idx.is_negative() {
-        idx += &len_big;
-    }
     let lower = if backwards { -1 } else { 0 };
     let upper = if backwards { len - 1 } else { len };
-    if idx < BigInt::from(lower) {
-        return lower;
-    }
-    if idx > BigInt::from(upper) {
-        return upper;
-    }
-    idx.to_isize().unwrap_or(upper)
+    let index = match index {
+        None => return default,
+        // An inline int is below 2**47 in magnitude: the i128 sum is exact.
+        Some(SliceIndex::Small(index)) => {
+            let index = i128::from(*index);
+            if index < 0 {
+                index + len as i128
+            } else {
+                index
+            }
+        }
+        Some(SliceIndex::Big(index)) => {
+            let mut idx = index.clone();
+            if idx.is_negative() {
+                idx += BigInt::from(len);
+            }
+            if idx < BigInt::from(lower) {
+                return lower;
+            }
+            if idx > BigInt::from(upper) {
+                return upper;
+            }
+            return idx.to_isize().unwrap_or(upper);
+        }
+    };
+    index.clamp(lower as i128, upper as i128) as isize
 }
 
 pub(crate) fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<isize, SliceError> {
@@ -126,8 +150,8 @@ pub(crate) fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<is
 /// integers across callbacks; normalize against the receiver's live length
 /// after every callback/RHS conversion has finished.
 pub(crate) struct DecodedSlice {
-    start: Option<BigInt>,
-    stop: Option<BigInt>,
+    start: Option<SliceIndex>,
+    stop: Option<SliceIndex>,
     step: isize,
 }
 
@@ -170,6 +194,22 @@ pub(crate) fn normalize_slice_indices(
     step_obj: MoltObject,
 ) -> Result<(isize, isize, isize), SliceError> {
     Ok(DecodedSlice::decode(_py, start_obj, stop_obj, step_obj)?.adjust(len))
+}
+
+/// The number of indices an adjusted slice selects (`PySlice_AdjustIndices`).
+#[inline]
+pub(crate) fn slice_length(start: isize, stop: isize, step: isize) -> usize {
+    if step < 0 {
+        if stop < start {
+            ((start - stop - 1) / (-step) + 1) as usize
+        } else {
+            0
+        }
+    } else if start < stop {
+        ((stop - start - 1) / step + 1) as usize
+    } else {
+        0
+    }
 }
 
 pub(crate) fn collect_slice_indices(start: isize, stop: isize, step: isize) -> Vec<usize> {

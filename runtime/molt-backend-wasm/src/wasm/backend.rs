@@ -43,6 +43,10 @@ pub struct WasmBackend {
     pub(in crate::wasm) numeric_lane_stats: WasmNumericLaneStats,
     pub(in crate::wasm) module_registry: Option<ModuleRegistryIR>,
     pub(in crate::wasm) module_registry_segment: Option<DataSegmentRef>,
+    /// Each method site's record, by (function index, site index).
+    pub(in crate::wasm) method_site_records: BTreeMap<(u32, u32), DataSegmentRef>,
+    /// Each cell-eligible module's static cell block (call_anatomy.md 4.5a).
+    pub(in crate::wasm) static_cell_blocks: BTreeMap<String, DataSegmentRef>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -158,6 +162,8 @@ impl WasmBackend {
             numeric_lane_stats: WasmNumericLaneStats::default(),
             module_registry: None,
             module_registry_segment: None,
+            method_site_records: BTreeMap::new(),
+            static_cell_blocks: BTreeMap::new(),
         }
     }
 

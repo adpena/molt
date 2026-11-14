@@ -6,7 +6,7 @@ use super::super::common::{
 use super::raw::emit_nonzero_rhs_raw_division_or_boxed;
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal, WasmNumericLaneStats};
+use crate::wasm::{WasmFrameLocals, WasmNumericLaneStats};
 use crate::wasm_abi_generated::WasmNumericOpLoopKind;
 use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -63,7 +63,6 @@ pub(super) fn emit_division_binary_op(
                     operands,
                     import_ids,
                     const_cache,
-                    locals.synthetic(WasmFrameSyntheticLocal::MoltTmp3),
                     reloc_enabled,
                     known_raw_ints,
                     import_name,
@@ -80,11 +79,10 @@ pub(super) fn emit_division_binary_op(
             import_ids,
             import_name,
             division_op,
-            locals,
             reloc_enabled,
-            |func, scratch_local| {
+            |func| {
                 func.instruction(&Instruction::F64Div);
-                emit_plain_f64_arithmetic_result(func, scratch_local);
+                emit_plain_f64_arithmetic_result(func);
             },
         );
     } else {

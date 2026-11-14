@@ -50,6 +50,75 @@ pub(crate) fn molt_sequence_item_builtin(obj_bits: u64, key_bits: u64) -> u64 {
     index_impl(obj_bits, key_bits, true, false).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
+/// The item of an exact generic list without a C view at an inline-int
+/// index, retained for the caller, or None when any of that does not hold or
+/// the index is out of range. The read and the retain take the list's
+/// mutation lock, as every sequence read does; the retain runs no code.
+#[inline]
+unsafe fn exact_list_item(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    index: i64,
+    normalize_negative: bool,
+) -> Option<u64> {
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_LIST
+            || !crate::object::object_is_exact_builtin_list(py, ptr)
+            || (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+            || crate::object::layout::seq_vec_ptr(ptr).is_null()
+        {
+            return None;
+        }
+        let index = if normalize_negative && index < 0 {
+            index + crate::object::seq_access::len(ptr) as i64
+        } else {
+            index
+        };
+        let index = usize::try_from(index).ok()?;
+        crate::object::seq_access::pin_item(py, ptr, index).map(|item| item.into_bits())
+    }
+}
+
+/// Store `value` into an exact generic list without a C view at an
+/// inline-int index in range: `Some(stored)`, where a failed store has raised.
+/// `None`, having changed nothing, when any of that does not hold, including
+/// a store the list's own authority declined without raising.
+#[inline]
+unsafe fn store_exact_list_item(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    index: i64,
+    value: u64,
+) -> Option<bool> {
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_LIST
+            || !crate::object::object_is_exact_builtin_list(py, ptr)
+            || (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+        {
+            return None;
+        }
+        if crate::object::layout::seq_vec_ptr(ptr).is_null() {
+            return None;
+        }
+        let len = crate::object::seq_access::len(ptr) as i64;
+        let index = if index < 0 { index + len } else { index };
+        if !(0..len).contains(&index) {
+            return None;
+        }
+        if crate::object::list_mutation::replace_one_with_projection(
+            py,
+            ptr,
+            index as usize,
+            value,
+            std::ptr::null_mut(),
+        ) {
+            Some(true)
+        } else {
+            exception_pending(py).then_some(false)
+        }
+    }
+}
+
 pub(crate) fn index_impl(
     obj_bits: u64,
     key_bits: u64,
@@ -57,7 +126,37 @@ pub(crate) fn index_impl(
     normalize_negative: bool,
 ) -> Result<u64, ()> {
     crate::with_gil_entry_nopanic!(_py, {
-        // Fast path: dict[key] — skips exception_pending and type dispatch chain.
+        // The exact builtin containers first, on one header load: an exact
+        // list read at an inline int in range is one bounds check and one
+        // load; an exact dict reads its table. An exact builtin is a builtin
+        // receiver, neither foreign nor a native tuple, so no check below
+        // applies to it. Any other receiver, key or index takes the protocol.
+        if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
+            match unsafe { object_type_id(obj_ptr) } {
+                TYPE_ID_LIST => {
+                    if let Some(index) = obj_from_bits(key_bits).as_int()
+                        && let Some(item) =
+                            unsafe { exact_list_item(_py, obj_ptr, index, normalize_negative) }
+                    {
+                        return Ok(item);
+                    }
+                }
+                TYPE_ID_DICT if unsafe { object_is_exact_builtin_dict(_py, obj_ptr) } => {
+                    if let Some(val) = match unsafe { dict_get_in_place(_py, obj_ptr, key_bits) } {
+                        Ok(value) => value,
+                        Err(()) => return Err(()),
+                    } {
+                        if obj_from_bits(val).as_ptr().is_some() {
+                            inc_ref_bits(_py, val);
+                        }
+                        return Ok(val);
+                    }
+                    raise_key_error_with_key::<()>(_py, key_bits);
+                    return Err(());
+                }
+                _ => {}
+            }
+        }
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             unsafe {
                 if !builtin_only && object_type_id(obj_ptr) == crate::TYPE_ID_FOREIGN {
@@ -136,19 +235,6 @@ pub(crate) fn index_impl(
                         crate::object::tuple_storage::TupleStorage::from_bits(_py, obj_bits)
                             .unwrap();
                     return tuple.getitem(key_bits, normalize_negative);
-                }
-                if object_is_exact_builtin_dict(_py, obj_ptr) {
-                    if let Some(val) = match dict_get_in_place(_py, obj_ptr, key_bits) {
-                        Ok(value) => value,
-                        Err(()) => return Err(()),
-                    } {
-                        if obj_from_bits(val).as_ptr().is_some() {
-                            inc_ref_bits(_py, val);
-                        }
-                        return Ok(val);
-                    }
-                    raise_key_error_with_key::<()>(_py, key_bits);
-                    return Err(());
                 }
                 // list_int: flat i64 storage — delegate to specialized getitem
                 let tid = object_type_id(obj_ptr);
@@ -643,30 +729,16 @@ pub(crate) fn index_impl(
                                 };
                             }
                         };
-                        let Some(elems) = crate::object::seq_access::snapshot(
+                        let Some(selected) = crate::object::seq_access::snapshot_slice(
                             _py,
                             ptr,
+                            &slice,
                             "list slice snapshot allocation failed",
                         ) else {
                             return Err(());
                         };
-                        let (start, stop, step) = slice.adjust(elems.len() as isize);
-                        let out_ptr = if step == 1 {
-                            let s = start as usize;
-                            let e = stop as usize;
-                            if s >= e {
-                                alloc_list(_py, &[])
-                            } else {
-                                alloc_list(_py, &elems[s..e])
-                            }
-                        } else {
-                            let indices = collect_slice_indices(start, stop, step);
-                            let mut out = Vec::with_capacity(indices.len());
-                            for idx in indices {
-                                out.push(elems[idx]);
-                            }
-                            alloc_list(_py, out.as_slice())
-                        };
+                        let out_ptr =
+                            crate::object::builders::alloc_list_from_snapshot(_py, selected);
                         if out_ptr.is_null() {
                             return Err(());
                         }
@@ -1194,6 +1266,33 @@ pub(crate) fn molt_setitem_builtin_method_attached_body(
 
 fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        // The exact builtin containers first, on one header load: an exact
+        // list store at an inline int in range replaces one item; an exact
+        // dict stores into its table. Any other receiver, key or index takes
+        // the protocol.
+        if let Some(ptr) = obj_from_bits(obj_bits).as_ptr() {
+            match unsafe { object_type_id(ptr) } {
+                TYPE_ID_LIST => {
+                    if let Some(index) = obj_from_bits(key_bits).as_int()
+                        && let Some(stored) =
+                            unsafe { store_exact_list_item(_py, ptr, index, val_bits) }
+                    {
+                        return if stored {
+                            obj_bits
+                        } else {
+                            MoltObject::none().bits()
+                        };
+                    }
+                }
+                TYPE_ID_DICT if unsafe { object_is_exact_builtin_dict(_py, ptr) } => {
+                    if !unsafe { dict_set_in_place(_py, ptr, key_bits, val_bits) } {
+                        return MoltObject::none().bits();
+                    }
+                    return obj_bits;
+                }
+                _ => {}
+            }
+        }
         let obj = obj_from_bits(obj_bits);
         // Fast path: dict[key] = val — skips type dispatch chain.
         if let Some(ptr) = obj.as_ptr() {

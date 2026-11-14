@@ -511,8 +511,8 @@ mod bit_layout_contract {
     //!
     //! | Type        | Bit pattern                                         |
     //! |-------------|-----------------------------------------------------|
-    //! | **Float**   | Raw `f64` bits.  NaN inputs are canonicalized to     |
-    //! |             | `CANONICAL_NAN_BITS` (`0x7ff0_0000_0000_0001`).      |
+    //! | **Float**   | Raw `f64` bits. A NaN with a set tag field (bits    |
+    //! |             | 48-50) boxes to the default NaN with its sign.      |
     //! | **Int**     | `QNAN \| TAG_INT \| (sign-extended 47-bit payload)`. |
     //! |             | Range: `[-(2^46), 2^46 - 1]`.                        |
     //! | **Bool**    | `QNAN \| TAG_BOOL \| (0 or 1)`.                     |
@@ -529,16 +529,18 @@ mod bit_layout_contract {
     //!
     //! ## Float Detection
     //!
-    //! A value is a float if and only if its QNAN prefix bits are **not** all set:
-    //! `(bits & QNAN) != QNAN`.  This means every non-NaN `f64` is stored verbatim
-    //! and all tagged types (int, bool, none, ptr, pending) are stored in the NaN
-    //! space with QNAN forced on.
+    //! A value is a float if and only if its exponent and tag field are below the
+    //! first tag (runtime spec 2.1.1): `bits & 0x7fff_0000_0000_0000 <
+    //! QNAN | 1 << 48`. Every `f64` whose NaN tag field (bits 48-50) is clear is
+    //! stored verbatim, the default NaNs included; tagged types (int, bool, none,
+    //! ptr, pending) are `QNAN | tag << 48` with tag 1-5. A NaN with a nonzero
+    //! tag field is a heap float.
     //!
     //! ## Cross-Architecture Guarantees
     //!
-    //! - **NaN canonicalization** ensures deterministic float representation across
-    //!   CPUs.  Any NaN input (signaling, quiet, positive, negative) maps to the
-    //!   single `CANONICAL_NAN_BITS` pattern.
+    //! - **NaN payloads** survive moves as CPython's do: a NaN keeps its sign,
+    //!   quiet bit and payload whenever its tag field is clear. The runtime
+    //!   heap-boxes a NaN whose tag field is set (runtime spec 2.1.1).
     //! - **Unsigned 48-bit user addresses** preserve every payload bit, including
     //!   bit 47 on AArch64. Boxing rejects wider addresses in every profile;
     //!   decoding never sign-extends a pointer or consults the compiler host.

@@ -109,7 +109,7 @@ mod tests {
             (WasmRuntimeImport::ArenaAllocObject, 2),
             (WasmRuntimeImport::ArenaFree, 1),
             (WasmRuntimeImport::HandleResolve, 1),
-            (WasmRuntimeImport::LoadMethod, 5),
+            (WasmRuntimeImport::LoadSuperMethod, 6),
         ] {
             assert!(
                 std::panic::catch_unwind(|| super::assert_runtime_i64_call(import, arity)).is_err()

@@ -1410,8 +1410,8 @@ def worker_vanished(
     )
 
 
-# A cell's results may nest: the proof executor writes guard profiles under
-# `<receipt>.d/` and a landing writes per-gate logs. Every run kind shares one
+# A cell's results may nest: a landing writes per-gate logs beside its receipt.
+# Every run kind shares one
 # bound; a member must stay inside a selected cell's directory.
 MAX_RESULT_MEMBER_DEPTH = 16
 MAX_RESULT_MEMBER_BYTES = 512 * 1024 * 1024

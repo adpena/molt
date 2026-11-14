@@ -192,16 +192,10 @@ thread_local! {
     static GPU_LAUNCH_CONTEXT: Cell<GpuLaunchContext> = Cell::new(GpuLaunchContext::default());
 }
 
-struct GpuLaunchContextGuard(GpuLaunchContext);
-
-impl Drop for GpuLaunchContextGuard {
-    fn drop(&mut self) {
-        GPU_LAUNCH_CONTEXT.set(self.0);
-    }
-}
-
 fn with_gpu_launch_context<R>(ctx: GpuLaunchContext, body: impl FnOnce() -> R) -> R {
-    let _context = GpuLaunchContextGuard(GPU_LAUNCH_CONTEXT.replace(ctx));
+    let _context = std::mem::DropGuard::new(GPU_LAUNCH_CONTEXT.replace(ctx), |state| {
+        GPU_LAUNCH_CONTEXT.set(state);
+    });
     body()
 }
 

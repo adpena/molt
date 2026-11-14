@@ -304,6 +304,12 @@ pub(crate) unsafe fn attribute_dictionary_lookup(
             );
             return Err(());
         };
+        // A cell-eligible module's namespace keeps its globals in static
+        // cells (call_anatomy.md 4.5a), never in the dictionary: this
+        // instance-dictionary tier of every attribute lookup reads them.
+        if let Some(value) = crate::builtins::namespace_slots::static_cell_get(py, pointer, name) {
+            return Ok(Some(value));
+        }
         inc_ref_bits(py, dictionary);
         let value = dict_get_in_place(py, pointer, name);
         field_storage::debug::dictionary(

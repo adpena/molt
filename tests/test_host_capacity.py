@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -13,6 +15,7 @@ from molt import host_capacity
 from tests.process_guard_common import (
     check_output_guarded_test_process,
     install_module_view,
+    run_guarded_test_process,
 )
 
 
@@ -358,16 +361,283 @@ def test_a_slice_already_holds_the_machine_reserve(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "performance,allowed,expected", [(6, 18, 6), (6, 2, 2), (None, 8, 8), (0, 8, 8)]
+    "levels,allowed,expected",
+    [
+        # Through M4: performance cores, then efficiency cores.
+        ((("Performance", 6), ("Efficiency", 4)), 18, 6),
+        # M5 Max: Super and Performance cores and no efficiency cores
+        # (2026-11-13: reading level 0 alone gave this host 6 of 18 CPUs).
+        ((("Super", 6), ("Performance", 12)), 18, 18),
+        ((("Super", 6), ("Performance", 12)), 2, 2),
+        # Unreadable levels keep the affinity-bounded count.
+        ((("Performance", None), ("Efficiency", 4)), 8, 8),
+        (None, 8, 8),
+    ],
 )
-def test_executor_cpu_budget_prefers_performance_cores_within_affinity(
-    monkeypatch, performance, allowed, expected
-):
+def test_executor_cpu_budget_leaves_only_efficiency_cores_within_affinity(
+    monkeypatch: pytest.MonkeyPatch,
+    levels: tuple[tuple[str, int | None], ...] | None,
+    allowed: int,
+    expected: int,
+) -> None:
     install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
     monkeypatch.setattr(host_capacity, "cpu_count", lambda: allowed)
+    integers: dict[str, int] = {} if levels is None else {"hw.nperflevels": len(levels)}
+    strings: dict[str, str] = {}
+    for index, (name, physical) in enumerate(levels or ()):
+        strings[f"hw.perflevel{index}.name"] = name
+        if physical is not None:
+            integers[f"hw.perflevel{index}.physicalcpu"] = physical
+    monkeypatch.setattr(host_capacity, "_darwin_sysctl_integer", integers.get)
+    monkeypatch.setattr(host_capacity, "_darwin_sysctl_string", strings.get)
+    assert host_capacity.execution_cpu_count() == expected
+
+
+def test_executor_cpu_budget_reads_level_zero_without_a_level_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 18)
     monkeypatch.setattr(
         host_capacity,
         "_darwin_sysctl_integer",
-        lambda name: performance if name == "hw.perflevel0.physicalcpu" else None,
+        {"hw.perflevel0.physicalcpu": 6}.get,
     )
-    assert host_capacity.execution_cpu_count() == expected
+    assert host_capacity.execution_cpu_count() == 6
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads this Mac's sysctls")
+def test_darwin_sysctl_readers_read_this_host() -> None:
+    assert host_capacity._darwin_sysctl_integer("hw.nperflevels") >= 1
+    assert host_capacity._darwin_sysctl_string("hw.perflevel0.name")
+    assert host_capacity._darwin_sysctl_integer("hw.memsize") > 0
+
+
+# --------------------------------------------------------------------------
+# Host work admission (HF-623)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(host_capacity, "_POLL_SECONDS", 0.01)
+
+
+def _held_elsewhere(state_dir: Path, name: str) -> BinaryIO:
+    """An exclusive lock taken through a separate open, as another job's is."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(state_dir / name, "a+b")  # noqa: SIM115
+    assert host_capacity._try_exclusive(handle)
+    (state_dir / name).with_suffix(".holder").write_text(
+        "landing try run (abc123)\n", encoding="utf-8"
+    )
+    return handle
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_a_heavy_job_waits_for_the_holder_and_names_it(
+    tmp_path: Path, fast_poll: None
+) -> None:
+    import threading
+
+    state = tmp_path / "host-work"
+    holder = _held_elsewhere(state, "development.lock")
+    said: list[str] = []
+    admitted = threading.Event()
+
+    def job() -> None:
+        with host_capacity.host_work_slot(
+            state,
+            label="consumer gate",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=said.append,
+        ):
+            admitted.set()
+
+    worker = threading.Thread(target=job)
+    worker.start()
+    assert not admitted.wait(0.2)  # the slot is taken: the job waits
+    host_capacity._release(state / "development.lock", holder)
+    worker.join(5)
+    assert admitted.is_set()
+    assert said and "waits for landing try run (abc123)" in said[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_landings_and_development_checks_never_wait_for_each_other(
+    tmp_path: Path, fast_poll: None
+) -> None:
+    # 2026-11-13: a lane's 96-file consumer gate held the one shared slot and
+    # stopped every landing for 19 minutes. Integration and development work
+    # now hold separate slots.
+    state = tmp_path / "host-work"
+    landing = _held_elsewhere(state, "landing.lock")
+    integration = _held_elsewhere(state, "heavy.lock")
+    with host_capacity.host_work_slot(
+        state,
+        label="consumer gate",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=lambda _: None,
+    ) as admission:
+        assert admission.waited_seconds < 1
+    host_capacity._release(state / "heavy.lock", integration)
+    host_capacity._release(state / "landing.lock", landing)
+    development = _held_elsewhere(state, "development.lock")
+    with host_capacity.host_work_slot(
+        state,
+        label="landing batch",
+        work=host_capacity.HostWorkClass.INTEGRATION,
+        say=lambda _: None,
+    ) as admission:
+        assert admission.waited_seconds < 1
+    host_capacity._release(state / "development.lock", development)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_work_the_holder_starts_is_admitted_inside_the_holders_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A landing holds the slot and its tests run a consumer gate in a child
+    # process. The child opens the lock files itself, so without the inherited
+    # mark it would wait for its own ancestor until the landing's budget ended.
+    monkeypatch.delenv(host_capacity.HOST_WORK_HELD_ENV, raising=False)
+    state = tmp_path / "host-work"
+    child = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from molt import host_capacity\n"
+        "with host_capacity.host_work_slot(Path(sys.argv[1]), label='gate',"
+        " work=host_capacity.HostWorkClass.DEVELOPMENT, say=print,"
+        " clock=time.monotonic) as a:\n"
+        "    print(f'admitted {a.waited_seconds}')\n"
+    )
+    with host_capacity.host_work_slot(
+        state,
+        label="landing batch",
+        work=host_capacity.HostWorkClass.INTEGRATION,
+        say=lambda _: None,
+    ):
+        mark = host_capacity.held_slot_environment()
+        assert mark == {host_capacity.HOST_WORK_HELD_ENV: str(state.resolve())}
+        # A nested request in the holder's own process is admitted at once.
+        with host_capacity.host_work_slot(
+            state,
+            label="nested gate",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=lambda _: None,
+        ) as inner:
+            assert inner.waited_seconds == 0.0
+        nested = run_guarded_test_process(
+            [sys.executable, "-c", child, str(state)],
+            check=True,
+            timeout=30,
+            env={**os.environ, **mark},
+        )
+    assert nested.stdout.strip() == "admitted 0.0"
+    # The mark ends with the holder's body, and the process environment is
+    # never written (CLI custody).
+    assert host_capacity.held_slot_environment() == {}
+    assert host_capacity.HOST_WORK_HELD_ENV not in os.environ
+
+
+def test_a_landing_is_admitted_at_once_and_releases_both_locks(tmp_path: Path) -> None:
+    state = tmp_path / "host-work"
+    with pytest.raises(RuntimeError, match="gate failed"):
+        with host_capacity.host_work_slot(
+            state,
+            label="landing batch",
+            work=host_capacity.HostWorkClass.INTEGRATION,
+            say=lambda _: None,
+        ) as admission:
+            assert admission.waited_seconds < 1
+            assert (
+                (state / "heavy.holder")
+                .read_text(encoding="utf-8")
+                .startswith("landing batch")
+            )
+            raise RuntimeError("gate failed")
+    # Both locks are free again and no stale holder record remains.
+    for name in ("heavy.lock", "landing.lock"):
+        handle = open(state / name, "a+b")  # noqa: SIM115
+        assert host_capacity._try_exclusive(handle)
+        host_capacity._release(state / name, handle)
+    assert not (state / "heavy.holder").exists()
+    assert not (state / "landing.holder").exists()
+
+
+_QUEUED_CHILD = (
+    "import sys, time\n"
+    "from pathlib import Path\n"
+    "from molt import host_capacity\n"
+    "host_capacity._POLL_SECONDS = 0.02\n"
+    "state, name, log = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])\n"
+    "with host_capacity.host_work_slot(state, label=name,"
+    " work=host_capacity.HostWorkClass.DEVELOPMENT, say=lambda _: None):\n"
+    "    with log.open('a', encoding='utf-8') as out:\n"
+    "        out.write(name + '\\n')\n"
+)
+
+
+def _queued_tickets(state: Path) -> list[Path]:
+    return sorted((state / "development.queue").glob("*.ticket"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_waiters_are_admitted_in_arrival_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-14: a try run that had waited 21 minutes longer lost the slot
+    to a newer one, because a polling flock admits whoever polls first."""
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    monkeypatch.delenv(host_capacity.HOST_WORK_HELD_ENV, raising=False)
+    state = tmp_path / "host-work"
+    log = tmp_path / "admitted.txt"
+    holder = _held_elsewhere(state, "development.lock")
+    children = []
+    try:
+        for name in ("first", "second", "third", "fourth", "fifth"):
+            children.append(
+                start_owned_test_process(
+                    [sys.executable, "-c", _QUEUED_CHILD, str(state), name, str(log)]
+                )
+            )
+            # Each child joins the queue before the next one starts.
+            deadline = time.monotonic() + 300
+            while len(_queued_tickets(state)) < len(children):
+                assert children[-1].poll() is None and time.monotonic() < deadline
+                time.sleep(0.02)
+    finally:
+        host_capacity._release(state / "development.lock", holder)
+        for child in children:
+            assert child.wait(timeout=300) == 0
+            close_owned_test_process(child)
+    assert log.read_text(encoding="utf-8").split() == [
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+    ]
+    assert _queued_tickets(state) == []
+
+
+def test_an_abandoned_ticket_never_blocks_the_queue(tmp_path: Path) -> None:
+    """A waiter that died left its ticket; nobody holds its lock, so the
+    next waiter removes it instead of waiting behind it."""
+    state = tmp_path / "host-work"
+    queue = state / "development.queue"
+    queue.mkdir(parents=True)
+    abandoned = queue / f"{0:020d}-1-deadbeef.ticket"
+    abandoned.write_bytes(b"")
+    with host_capacity.host_work_slot(
+        state,
+        label="consumer gate",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=lambda _: None,
+    ) as admission:
+        assert admission.waited_seconds < 1
+    assert not abandoned.exists()

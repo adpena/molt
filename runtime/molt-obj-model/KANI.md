@@ -62,7 +62,7 @@ cargo kani --tests --harness int_roundtrip
 | `int_none_different_bits`        | Int and none never produce the same bit pattern                 |
 | `none_pending_different_bits`    | None and pending produce different bit patterns                 |
 | `float_int_different_bits`       | Non-NaN float and int never produce the same bit pattern        |
-| `nan_canonicalization`           | All NaN inputs produce `CANONICAL_NAN_BITS`                     |
+| `from_float_nan_keeps_bits_iff_tag_field_clear` | A NaN keeps its bits iff its tag field is clear, else boxes to the default NaN with its sign; both test as float only |
 | `pointer_lower_48_bits_preserved`| Pointer encoding preserves the lower 48 address bits            |
 | `from_bits_identity_int`         | `from_bits(obj.bits()) == obj` for ints                         |
 | `from_bits_identity_float`       | `from_bits(obj.bits()) == obj` for non-NaN floats               |

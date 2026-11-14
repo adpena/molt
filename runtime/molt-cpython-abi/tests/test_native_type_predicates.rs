@@ -26,13 +26,10 @@ fn exact_native_tuple_predicate_terminates_with_a_materialized_tuple_mro() {
             },
             items: [tuple_type.cast(), object_type.cast()],
         };
-        struct RestoreMro(*mut PyTypeObject, *mut PyObject);
-        impl Drop for RestoreMro {
-            fn drop(&mut self) {
-                unsafe { (*self.0).tp_mro = self.1 };
-            }
-        }
-        let _restore = RestoreMro(tuple_type, (*tuple_type).tp_mro);
+        let _restore =
+            std::mem::DropGuard::new((tuple_type, (*tuple_type).tp_mro), |(state0, state1)| {
+                (*state0).tp_mro = state1;
+            });
         (*tuple_type).tp_mro = (&raw mut mro).cast();
         let mut value = PyTupleObject {
             ob_base: PyVarObject {

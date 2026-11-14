@@ -47,6 +47,7 @@ from tools.intrinsic_manifest import (  # noqa: E402
     parse_intrinsic_manifest,
 )
 from tools.public_objects import (  # noqa: E402
+    PublicObjectIdentity,
     PublicObjectProducer,
     PublicObjectKind,
     load_public_objects,
@@ -1239,7 +1240,36 @@ def _render_public_objects() -> tuple[str, str]:
                 f"            molt_runtime_core::ObjectShapeId::{identity.instance_shape} => Some(Self::{public_object_id(runtime)}),\n"
             )
     rust.append("            _ => None,\n        }\n    }\n}\n")
+    # Objects a compiled call with exactly the intrinsic's positional arity
+    # may replace by a direct call of the intrinsic: calling the object binds
+    # its positional words straight to its entry (no declared signature, no
+    # constructor). One authority for the compiler table and the runtime test.
+    direct = [
+        (runtime, identity)
+        for runtime, identity in objects.items()
+        if _is_direct_call_public_object(identity)
+    ]
+    rust.append(
+        "/// Public objects whose call with exactly their intrinsic's positional\n"
+        "/// arity is a direct call of the intrinsic (closed-world bindings).\n"
+        "pub(crate) const DIRECT_CALL_PUBLIC_OBJECTS: &[PublicObjectId] = &[\n"
+    )
+    rust.extend(
+        f"    PublicObjectId::{public_object_id(runtime)},\n" for runtime, _ in direct
+    )
+    rust.append("];\n")
     rust.append(_render_public_constructors(objects))
+    python.append("}\n")
+    python.append(
+        "\n# Public bindings whose call with exactly the intrinsic's positional arity is a\n"
+        "# direct call of the intrinsic: binding -> intrinsic (closed-world bindings).\n"
+        "PUBLIC_DIRECT_CALL_BINDINGS: dict[str, str] = {\n"
+    )
+    python.extend(
+        f"    {binding!r}: {runtime!r},\n"
+        for runtime, identity in direct
+        for binding in identity.bindings
+    )
     python.append("}\n")
     python.extend(
         [
@@ -1258,6 +1288,17 @@ def _render_public_objects() -> tuple[str, str]:
             )
     python.append("}\n")
     return "".join(rust), "".join(python)
+
+
+def _is_direct_call_public_object(identity: PublicObjectIdentity) -> bool:
+    return (
+        identity.kind is PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD
+        and identity.producer is PublicObjectProducer.INTRINSIC
+        and identity.call is None
+        and identity.call_before_314 is None
+        and identity.constructor is None
+        and identity.constructor_312 is None
+    )
 
 
 def _render_public_constructors(objects) -> str:

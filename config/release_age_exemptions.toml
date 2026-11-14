@@ -10,3 +10,10 @@
 # carries an advisory, and on an entry that has aged out; `--prune-expired`
 # deletes those entries.
 schema_version = 1
+
+[[pin]]
+name = "rust"
+version = "1.100.0"
+until = 2026-11-19T18:19:42Z
+cites = "HF-62"
+reason = "owner directive 2026-11-12: \"We must update our rust and fully leverage any new https://blog.rust-lang.org/2026/11/12/Rust-1.100.0/\"; a feature release, not an advisory fix"

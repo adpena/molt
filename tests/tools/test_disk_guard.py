@@ -1377,6 +1377,33 @@ def test_a_removed_checkouts_state_retires_after_the_protection_window(tmp_path)
     assert _gc(ext, env, now).reclaimed == []
 
 
+def test_a_checkout_removed_with_its_parent_retires_after_the_protection_window(
+    tmp_path: Path,
+) -> None:
+    # A Molt test's checkout lives under its pytest basetemp, inside the
+    # artifact root, and pytest removes the whole basetemp. On 2026-11-12,
+    # 1,029 of the artifact volume's 1,066 owner records named such checkouts
+    # and none retired before the max age, because each parent went too.
+    import shutil
+    import time
+
+    from molt import checkout_state
+
+    ext, _projects, env = _checkout_family(tmp_path)
+    basetemp = ext / "pytest-basetemp"
+    gone = basetemp / "test_case0" / "project"
+    gone.mkdir(parents=True)
+    roots = _checkout_state(ext, gone)
+    assert len(checkout_state.stamp_checkout_state(gone, env)) == 5
+    shutil.rmtree(basetemp)
+    now = time.time()
+    _last_used(roots.values(), 1 * HOUR, now)
+    assert _gc(ext, env, now).reclaimed == []  # inside the protection window
+    _last_used(roots.values(), 3 * HOUR, now)
+
+    assert _reclaimed(_gc(ext, env, now)) == _resolved(roots.values())
+
+
 def test_any_checkout_state_retires_once_unused_past_the_max_age(tmp_path):
     import time
 

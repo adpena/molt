@@ -296,14 +296,10 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
         let original = errors::PyErr_GetRaisedException();
         let original_owner = refcount::OwnedPyObject::from_owned(original);
         assert!(!original.is_null());
-        struct ResetCallbackErrorSlots;
-        impl Drop for ResetCallbackErrorSlots {
-            fn drop(&mut self) {
-                CALLBACK_ERROR.store(0, Ordering::SeqCst);
-                CLASS_CALLBACK_ERROR.store(0, Ordering::SeqCst);
-            }
-        }
-        let callback_slots = ResetCallbackErrorSlots;
+        let callback_slots = std::mem::DropGuard::new((), |()| {
+            CALLBACK_ERROR.store(0, Ordering::SeqCst);
+            CLASS_CALLBACK_ERROR.store(0, Ordering::SeqCst);
+        });
         // An allocation-free runtime failure cannot be captured as an
         // OwnedCError. It must supersede both incoming channels without being
         // projected, drained, or replaced by the incoming C exception.

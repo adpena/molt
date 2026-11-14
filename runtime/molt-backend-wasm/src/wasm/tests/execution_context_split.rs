@@ -1440,6 +1440,7 @@ fn symbolic_module_slots_bind_in_final_emission() {
                     .map(|module| molt_ir::ModuleRegistryRowIR {
                         name: module.into(),
                         init_symbol: (module == "sys").then(|| name.into()),
+                        static_cells: None,
                     })
                     .collect(),
                 ..Default::default()

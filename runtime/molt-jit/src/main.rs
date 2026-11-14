@@ -339,10 +339,10 @@ fn runner_main(invocation: Invocation) -> i32 {
             image,
             start_receipt,
             argv,
-        } => match run(&image, start_receipt.as_deref(), &argv) {
-            Ok(never) => match never {},
-            Err(message) => fail(message),
-        },
+        } => {
+            let Err(message) = run(&image, start_receipt.as_deref(), &argv);
+            fail(message)
+        }
     }
 }
 
@@ -384,11 +384,7 @@ impl RemovedBackendEnvironment {
     }
 }
 
-fn run(
-    image_path: &Path,
-    start_receipt: Option<&Path>,
-    argv: &[OsString],
-) -> Result<std::convert::Infallible, String> {
+fn run(image_path: &Path, start_receipt: Option<&Path>, argv: &[OsString]) -> Result<!, String> {
     // SAFETY: the runner has started no thread yet.
     let signals = unsafe { RunnerSignals::ignore() };
     let image = JitImage::read(image_path)?;

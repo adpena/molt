@@ -167,13 +167,6 @@ extern "C" fn init_test_sys(__context: u64) -> u64 {
 }
 
 static PRIVATE_BODY_SPEC: AtomicU64 = AtomicU64::new(0);
-struct PrivateBodySpecScope;
-impl Drop for PrivateBodySpecScope {
-    fn drop(&mut self) {
-        PRIVATE_BODY_SPEC.store(0, Ordering::SeqCst);
-    }
-}
-
 static PRIVATE_SELF_IMPORT: AtomicU64 = AtomicU64::new(0);
 static PRIVATE_SELF_RESULT: AtomicU64 = AtomicU64::new(0);
 
@@ -839,14 +832,6 @@ static BUSY_OBSERVATION_KEY: AtomicU64 = AtomicU64::new(0);
 static BUSY_OBSERVATION_FINALIZED: AtomicU64 = AtomicU64::new(0);
 static BUSY_OBSERVATION_OWNED: AtomicU64 = AtomicU64::new(0);
 
-struct BusyObservationScope;
-impl Drop for BusyObservationScope {
-    fn drop(&mut self) {
-        BUSY_OBSERVATION_TARGET.store(0, Ordering::SeqCst);
-        BUSY_OBSERVATION_KEY.store(0, Ordering::SeqCst);
-    }
-}
-
 extern "C" fn replace_busy_observation(__context: u64, _self_bits: u64) -> u64 {
     assert_eq!(
         __context,
@@ -901,7 +886,10 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
     use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let _scope = BusyObservationScope;
+        let _scope = std::mem::DropGuard::new((), |()| {
+            BUSY_OBSERVATION_TARGET.store(0, Ordering::SeqCst);
+            BUSY_OBSERVATION_KEY.store(0, Ordering::SeqCst);
+        });
         let name = ExceptionValue::adopt(
             py,
             crate::dynamic_attr_name_bits(py, b"_molt_busy_observation").unwrap(),
@@ -1902,7 +1890,9 @@ fn private_script_and_runpy_cached_projection_preserve_versioned_init_globals() 
             ))
             .bits(),
         );
-        let _spec_scope = PrivateBodySpecScope;
+        let _spec_scope = std::mem::DropGuard::new((), |()| {
+            PRIVATE_BODY_SPEC.store(0, Ordering::SeqCst);
+        });
         PRIVATE_BODY_SPEC.store(spec.bits(), Ordering::SeqCst);
         for minor in 12..=15 {
             transaction.with_target_python_minor(py, minor, || {

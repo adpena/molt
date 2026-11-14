@@ -53,8 +53,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             &op.operands,
             "task_new",
         );
-        self.values.insert(result_id, task_bits);
-        self.value_types.insert(result_id, TirType::DynBox);
+        self.values.set_value(result_id, task_bits);
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     pub(super) fn lower_preserved_call_async_op(&mut self, op: &TirOp) -> bool {
@@ -107,8 +110,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             &op.operands,
             "call_async_task_new",
         );
-        self.values.insert(result_id, task_bits);
-        self.value_types.insert(result_id, TirType::DynBox);
+        self.values.set_value(result_id, task_bits);
+        self.values.set_repr(
+            result_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
         true
     }
 
@@ -257,8 +263,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_int_compare(inkwell::IntPredicate::EQ, word, pending, "is_pending")
             .unwrap();
         if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, is_pending.into());
-            self.value_types.insert(result_id, TirType::Bool);
+            self.values.set_value(result_id, is_pending.into());
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+            );
         }
     }
 
@@ -279,11 +288,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         operand: ValueId,
         kind: OpKind,
     ) -> inkwell::values::IntValue<'ctx> {
-        let ty = self
-            .value_types
-            .get(&operand)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let ty = self.repr_ty(operand);
         assert!(
             Self::tir_type_is_dynbox_like(&ty),
             "{kind} in '{}' requires an object carrier, found {ty:?}",

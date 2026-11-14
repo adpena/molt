@@ -181,13 +181,7 @@ fn homes_are_a_stack_of_zeroed_words() {
 
 #[test]
 fn origin_capture_owns_its_entry_preserves_multiplicity_and_is_failure_atomic() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-    struct RestoreBudget;
-    impl Drop for RestoreBudget {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let code = slot_code(py, &[], &[]);
@@ -253,7 +247,7 @@ fn origin_capture_owns_its_entry_preserves_multiplicity_and_is_failure_atomic() 
             max_allocations: Some(0),
             ..Default::default()
         })));
-        let budget = RestoreBudget;
+        let budget = crate::test_support::restore_unlimited_tracker_on_drop();
         crate::builtins::exceptions::molt_exception_frame_origin_attached_body(py, homes);
         drop(budget);
         assert_eq!(crate::exception_last_bits_noinc(py), Some(error));
@@ -489,13 +483,7 @@ fn raw_home_observers_share_the_persistent_binding_identity() {
 
 #[test]
 fn raw_home_publication_failure_preserves_storage_and_first_error() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-    struct RestoreBudget;
-    impl Drop for RestoreBudget {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let _ = missing_bits(py);
@@ -514,7 +502,7 @@ fn raw_home_publication_failure_preserves_storage_and_first_error() {
                 max_allocations: Some(0),
                 ..Default::default()
             })));
-            let budget = RestoreBudget;
+            let budget = crate::test_support::restore_unlimited_tracker_on_drop();
             match observer {
                 0 => assert!(is_missing_bits(
                     py,

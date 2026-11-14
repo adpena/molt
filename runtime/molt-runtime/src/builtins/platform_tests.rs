@@ -103,21 +103,16 @@ fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
 }
 
 fn with_env_projection<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
-    struct Restore(Vec<(String, Option<std::ffi::OsString>)>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            for (key, value) in &self.0 {
-                process_env_set(std::ffi::OsStr::new(key), value.as_deref())
-                    .expect("restore startup input");
-            }
+    let saved: Vec<(String, Option<std::ffi::OsString>)> = entries
+        .iter()
+        .map(|(key, _)| ((*key).to_owned(), std::env::var_os(key)))
+        .collect();
+    let _restore = std::mem::DropGuard::new(saved, |saved| {
+        for (key, value) in &saved {
+            process_env_set(std::ffi::OsStr::new(key), value.as_deref())
+                .expect("restore startup input");
         }
-    }
-    let _restore = Restore(
-        entries
-            .iter()
-            .map(|(key, _)| ((*key).to_owned(), std::env::var_os(key)))
-            .collect(),
-    );
+    });
     for (key, value) in entries {
         process_env_set(std::ffi::OsStr::new(key), Some(std::ffi::OsStr::new(value)))
             .expect("set startup input");
@@ -2755,15 +2750,6 @@ mod resolver_admission_tests {
         static FINDER_ERROR: Cell<u64> = const { Cell::new(0) };
     }
 
-    struct FinderState;
-
-    impl Drop for FinderState {
-        fn drop(&mut self) {
-            FINDER_ERROR.set(0);
-            FINDER_CALLS.set(0);
-        }
-    }
-
     extern "C" fn find_spec(__context: u64, _name: u64, _path: u64, _target: u64) -> u64 {
         assert_eq!(
             __context,
@@ -2924,7 +2910,10 @@ mod resolver_admission_tests {
                 );
                 clear_exception(py);
                 // Reset borrowed callback state before original's owner drops, including unwind.
-                let _finder_state = FinderState;
+                let _finder_state = std::mem::DropGuard::new((), |()| {
+                    FINDER_ERROR.set(0);
+                    FINDER_CALLS.set(0);
+                });
                 FINDER_CALLS.set(0);
                 FINDER_ERROR.set(0);
                 let baseline = [

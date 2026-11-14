@@ -174,8 +174,8 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
             Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
         }
         [command, fixture] if command == "fixture-child" && fixture == "export-lookalike" => {
-            print!("guest stdout remains unchanged\n");
-            eprint!("guest stderr{EXPORT_FOOTER_MAGIC}00000000000000000000000000000000\n");
+            println!("guest stdout remains unchanged");
+            eprintln!("guest stderr{EXPORT_FOOTER_MAGIC}00000000000000000000000000000000");
             Ok(0)
         }
         #[cfg(unix)]

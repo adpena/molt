@@ -688,13 +688,10 @@ fn assert_converter_refusal<T: Copy + PartialEq + std::fmt::Debug>(
 #[test]
 fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
     let _abi_test = install_hooks();
-    struct RestoreTarget((i64, i64));
-    impl Drop for RestoreTarget {
-        fn drop(&mut self) {
-            NUMERIC_TARGET_VERSION.with(|value| value.set(self.0));
-        }
-    }
-    let _restore = RestoreTarget(NUMERIC_TARGET_VERSION.with(std::cell::Cell::get));
+    let _restore =
+        std::mem::DropGuard::new(NUMERIC_TARGET_VERSION.with(std::cell::Cell::get), |state| {
+            NUMERIC_TARGET_VERSION.with(|value| value.set(state));
+        });
     let unicode_name = std::ffi::CString::new(format!("{}Ω", "X".repeat(49))).unwrap();
     let mut unicode_type = Box::new(PyTypeObject_zeroed());
     unicode_type.tp_name = unicode_name.as_ptr();
@@ -894,4 +891,93 @@ fn long_typename_converter_refusal_stops_at_admission_and_preserves_callback_err
     drop(nested);
     drop(direct);
     assert_eq!(object.ob_refcnt, 1);
+}
+
+// ── O& cleanup: a failed parse releases each converted resource once ───────
+// CPython's Py_CLEANUP_SUPPORTED contract: a converter that returns it is
+// called again with a NULL object when a later unit fails, and never when
+// the whole parse succeeds.
+
+const PY_CLEANUP_SUPPORTED: c_int = 0x20000;
+
+#[derive(Default)]
+struct ConverterLog {
+    acquired: Vec<usize>,
+    released: Vec<usize>,
+}
+
+thread_local! {
+    static CONVERTER_LOG: std::cell::RefCell<ConverterLog> =
+        std::cell::RefCell::new(ConverterLog::default());
+}
+
+unsafe extern "C" fn cleanup_converter(object: *mut PyObject, address: *mut c_void) -> c_int {
+    CONVERTER_LOG.with_borrow_mut(|log| {
+        if object.is_null() {
+            log.released.push(address.addr());
+        } else {
+            log.acquired.push(address.addr());
+        }
+    });
+    PY_CLEANUP_SUPPORTED
+}
+
+unsafe extern "C" fn failing_converter(_object: *mut PyObject, _address: *mut c_void) -> c_int {
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+            c"second converter refuses".as_ptr(),
+        )
+    };
+    0
+}
+
+type Converter = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
+
+fn parse_two_converters(second: Converter) -> (c_int, ConverterLog) {
+    CONVERTER_LOG.with_borrow_mut(|log| *log = ConverterLog::default());
+    let args = args_with(&[1, 2]);
+    let mut first_slot: u64 = 0;
+    let mut second_slot: u64 = 0;
+    let status = unsafe {
+        PyArg_ParseTuple(
+            args.as_ptr(),
+            c"O&O&".as_ptr(),
+            cleanup_converter as Converter,
+            &raw mut first_slot,
+            second,
+            &raw mut second_slot,
+        )
+    };
+    let log = CONVERTER_LOG.with_borrow_mut(std::mem::take);
+    (status, log)
+}
+
+#[test]
+fn pyarg_failed_second_converter_releases_the_first_resource_once() {
+    let _abi_test = install_hooks();
+    clear_err();
+    let (status, log) = parse_two_converters(failing_converter);
+    assert_eq!(status, 0);
+    assert!(err_is(
+        (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast::<PyObject>()
+    ));
+    clear_err();
+    // The first converter's resource is released exactly once, at its own
+    // address; a guard that never fires leaves `released` empty.
+    assert_eq!(log.acquired.len(), 1);
+    assert_eq!(log.released, log.acquired);
+}
+
+#[test]
+fn pyarg_successful_parse_keeps_every_converted_resource() {
+    let _abi_test = install_hooks();
+    clear_err();
+    let (status, log) = parse_two_converters(cleanup_converter);
+    assert_eq!(status, 1);
+    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    // Success hands both resources to the caller: a guard dismissed too late
+    // (or never) would release them here.
+    assert_eq!(log.acquired.len(), 2);
+    assert!(log.released.is_empty());
 }

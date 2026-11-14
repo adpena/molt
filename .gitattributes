@@ -284,6 +284,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-runtime/src/attached_exports_generated/call/bind.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/call/bind/arguments.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/call/bind/inline_cache.rs" merge=binary
+"/runtime/molt-runtime/src/attached_exports_generated/call/bind/method_site.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/call/dispatch.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/concurrency/execution.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/concurrency/isolates.rs" merge=binary

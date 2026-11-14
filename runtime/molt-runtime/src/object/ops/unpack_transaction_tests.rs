@@ -1,6 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 static FAILING_ITER_VALUE: AtomicU64 = AtomicU64::new(0);
@@ -87,14 +87,6 @@ fn alloc_test_call_iterator(_py: &PyToken<'_>, target: extern "C" fn(u64) -> u64
     dec_ref_bits(_py, callable_bits);
     assert!(!obj_from_bits(iter_bits).is_none());
     iter_bits
-}
-
-struct TrackerReset;
-
-impl Drop for TrackerReset {
-    fn drop(&mut self) {
-        set_tracker(Box::new(UnlimitedTracker));
-    }
 }
 
 #[test]
@@ -258,7 +250,7 @@ fn exact_builtin_unpack_is_allocation_free_after_source_construction() {
             max_memory: Some(0),
             ..Default::default()
         })));
-        let reset = TrackerReset;
+        let reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
         for source_bits in [tuple_bits, list_bits] {
             let mut outputs = [u64::MAX; 2];

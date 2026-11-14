@@ -1218,6 +1218,25 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
         expected_class = declared_class
         if expected_class is None or class_info is None:
+            module_name = (
+                self._imported_module_binding_target(obj_name)
+                if obj_name is not None and not method_load
+                else None
+            )
+            if module_name is not None:
+                # An import binding names the module whose layout the read
+                # may use; integration stamps the slot and the compiled site
+                # checks the receiver it actually gets (call_anatomy.md 4.5).
+                res = MoltValue(self.next_var(), type_hint="Unknown")
+                self.emit(
+                    MoltOp(
+                        kind="GETATTR_GENERIC_OBJ",
+                        args=[obj, node.attr],
+                        result=res,
+                        metadata={"module_attribute": module_name},
+                    )
+                )
+                return res
             return self._emit_generic_attribute_load(
                 obj, node.attr, "GETATTR_GENERIC_OBJ", method_load=method_load
             )

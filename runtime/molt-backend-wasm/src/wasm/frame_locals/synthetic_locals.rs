@@ -7,7 +7,6 @@ pub(in crate::wasm) enum WasmFrameSyntheticLocal {
     MoltTmp0,
     MoltTmp1,
     MoltTmp2,
-    MoltTmp3,
     WasmTmp0,
     WasmTmp1,
     WasmAllocResolve,
@@ -16,12 +15,8 @@ pub(in crate::wasm) enum WasmFrameSyntheticLocal {
 }
 
 impl WasmFrameSyntheticLocal {
-    pub(in crate::wasm) const MOLT_SCRATCH: [Self; 4] = [
-        Self::MoltTmp0,
-        Self::MoltTmp1,
-        Self::MoltTmp2,
-        Self::MoltTmp3,
-    ];
+    pub(in crate::wasm) const MOLT_SCRATCH: [Self; 3] =
+        [Self::MoltTmp0, Self::MoltTmp1, Self::MoltTmp2];
 
     fn name(self) -> &'static str {
         match self {
@@ -29,7 +24,6 @@ impl WasmFrameSyntheticLocal {
             Self::MoltTmp0 => "__molt_tmp0",
             Self::MoltTmp1 => "__molt_tmp1",
             Self::MoltTmp2 => "__molt_tmp2",
-            Self::MoltTmp3 => "__molt_tmp3",
             Self::WasmTmp0 => "__wasm_tmp0",
             Self::WasmTmp1 => "__wasm_tmp1",
             Self::WasmAllocResolve => "__wasm_alloc_resolve",
@@ -43,12 +37,9 @@ impl WasmFrameSyntheticLocal {
             Self::WasmTmp0 | Self::WasmAllocResolve | Self::ThreadRecord | Self::PendingWorkPtr => {
                 ValType::I32
             }
-            Self::DeadSink
-            | Self::MoltTmp0
-            | Self::MoltTmp1
-            | Self::MoltTmp2
-            | Self::MoltTmp3
-            | Self::WasmTmp1 => ValType::I64,
+            Self::DeadSink | Self::MoltTmp0 | Self::MoltTmp1 | Self::MoltTmp2 | Self::WasmTmp1 => {
+                ValType::I64
+            }
         }
     }
 }

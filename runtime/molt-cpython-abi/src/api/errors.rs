@@ -516,16 +516,8 @@ pub fn with_saved_error<T, F: FnOnce() -> Result<T, crate::ErrorIndicatorSet>>(
 /// including during Rust unwind. This is explicit suppression, unlike fallible
 /// preparation, which keeps a callback failure selected.
 pub fn with_preserved_error<T, F: FnOnce() -> T>(cleanup: F) -> T {
-    struct DrainPendingErrors;
-
-    impl Drop for DrainPendingErrors {
-        fn drop(&mut self) {
-            clear_all_pending_errors();
-        }
-    }
-
     match with_saved_error(|| {
-        let _drain = DrainPendingErrors;
+        let _drain = std::mem::DropGuard::new((), |()| clear_all_pending_errors());
         Ok(cleanup())
     }) {
         Ok(result) => result,
@@ -2831,42 +2823,38 @@ unsafe fn set_from_errno_with_filename_objects(
     if args.is_null() {
         return ptr::null_mut();
     }
+    // One owner releases the tuple on every exit, failed or raised.
+    let owner = unsafe { crate::api::refcount::OwnedPyObject::from_owned(args) };
     let errno_obj = unsafe { crate::api::numbers::PyLong_FromLong(errnum as c_long) };
     let strerror_obj = unsafe { crate::api::strings::PyUnicode_FromString(detail) };
     if errno_obj.is_null() || strerror_obj.is_null() {
         unsafe {
             crate::api::refcount::Py_XDECREF(errno_obj);
             crate::api::refcount::Py_XDECREF(strerror_obj);
-            crate::api::refcount::Py_DECREF(args);
         }
         return ptr::null_mut();
     }
     if unsafe { crate::api::sequences::PyTuple_SetItem(args, 0, errno_obj) } != 0
         || unsafe { crate::api::sequences::PyTuple_SetItem(args, 1, strerror_obj) } != 0
     {
-        unsafe { crate::api::refcount::Py_DECREF(args) };
         return ptr::null_mut();
     }
     if !filename.is_null() {
         unsafe { crate::api::refcount::Py_INCREF(filename) };
         if unsafe { crate::api::sequences::PyTuple_SetItem(args, 2, filename) } != 0 {
-            unsafe { crate::api::refcount::Py_DECREF(args) };
             return ptr::null_mut();
         }
     }
     if !filename2.is_null() {
         let winerror = unsafe { crate::api::numbers::PyLong_FromLong(0) };
         if winerror.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(args) };
             return ptr::null_mut();
         }
         if unsafe { crate::api::sequences::PyTuple_SetItem(args, 3, winerror) } != 0 {
-            unsafe { crate::api::refcount::Py_DECREF(args) };
             return ptr::null_mut();
         }
         unsafe { crate::api::refcount::Py_INCREF(filename2) };
         if unsafe { crate::api::sequences::PyTuple_SetItem(args, 4, filename2) } != 0 {
-            unsafe { crate::api::refcount::Py_DECREF(args) };
             return ptr::null_mut();
         }
     }
@@ -2875,10 +2863,7 @@ unsafe fn set_from_errno_with_filename_objects(
     } else {
         exc_type
     };
-    unsafe {
-        PyErr_SetObject(exc_type, args);
-        crate::api::refcount::Py_DECREF(args);
-    }
+    unsafe { PyErr_SetObject(exc_type, owner.as_ptr()) };
     ptr::null_mut()
 }
 

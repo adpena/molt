@@ -412,13 +412,9 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
             // A subclass hash would choose another dictionary bucket and fail
             // these exact-string reads. Default mutation must never invoke it.
             HASH_CALLS.with(|calls| calls.set(0));
-            struct ResetHash;
-            impl Drop for ResetHash {
-                fn drop(&mut self) {
-                    HASH_FAIL.with(|fail| fail.set(false));
-                }
-            }
-            let _reset_hash = ResetHash;
+            let _reset_hash = std::mem::DropGuard::new((), |()| {
+                HASH_FAIL.with(|fail| fail.set(false));
+            });
             HASH_FAIL.with(|fail| fail.set(true));
             for explicit in [false, true] {
                 if explicit {

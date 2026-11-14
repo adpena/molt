@@ -26,6 +26,17 @@
 //! under the GIL. Free-threaded execution needs a try-increment protocol and
 //! deferred reclamation of displaced values first; until then it does not
 //! use the compiled slot reads.
+//!
+//! A cell-eligible module (call_anatomy.md 4.5a, `molt.cli.static_module_cells`)
+//! has no slot table and no mirror: its namespace dictionary binds the
+//! module's static cells instead ([`StaticCells`]), a fixed-address block in
+//! program data that compiled code reads and stores in place. The dictionary
+//! never holds a layout name, and the cells hold nothing else: every by-name
+//! path of the namespace (module attribute access and mutation, global
+//! lookup and deletion, `dir`, star import, shutdown retirement) consults the
+//! cells first through the registry's sorted layout. The whole-program
+//! analysis proves no code reaches the dictionary of such a module by
+//! identity, so no other path can observe the split.
 
 use crate::*;
 
@@ -33,6 +44,55 @@ use crate::*;
 pub(crate) const UNBOUND: u64 = molt_codegen_abi::NAMESPACE_SLOT_UNBOUND;
 const NO_ROW: u32 = u32::MAX;
 const NO_SLOT: u32 = u32::MAX;
+
+/// The binding a namespace dictionary carries (`DictStorage::slots`): none, a
+/// slot table that mirrors the dictionary, or a cell-eligible module's static
+/// cells. One tagged word: both targets are boxed and at least 2-aligned, so
+/// the low bit tells them apart.
+#[repr(transparent)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NamespaceBinding(usize);
+
+const CELLS_TAG: usize = 1;
+
+impl NamespaceBinding {
+    #[inline(always)]
+    fn is_none(self) -> bool {
+        self.0 == 0
+    }
+
+    #[inline(always)]
+    fn slots(self) -> Option<*mut NamespaceSlots> {
+        (self.0 != 0 && self.0 & CELLS_TAG == 0).then_some(self.0 as *mut NamespaceSlots)
+    }
+
+    #[inline(always)]
+    fn cells(self) -> Option<&'static StaticCells> {
+        (self.0 & CELLS_TAG != 0)
+            .then(|| unsafe { &*((self.0 & !CELLS_TAG) as *const StaticCells) })
+    }
+}
+
+/// A cell-eligible module's static cells (call_anatomy.md 4.5a): the
+/// registry's sorted layout names and the program's block, one word per name
+/// in layout order. The block is program data; each bound word owns one
+/// reference, and an unbound one holds [`UNBOUND`].
+pub(crate) struct StaticCells {
+    /// Slices of the installed registry blob, in strictly sorted order.
+    names: Box<[&'static [u8]]>,
+    words: *mut u64,
+}
+
+impl StaticCells {
+    fn index_of(&self, name: &[u8]) -> Option<usize> {
+        self.names.binary_search(&name).ok()
+    }
+
+    fn cell(&self, k: usize) -> &'static std::sync::atomic::AtomicU64 {
+        debug_assert!(k < self.names.len());
+        unsafe { std::sync::atomic::AtomicU64::from_ptr(self.words.add(k)) }
+    }
+}
 
 /// One namespace's slot table. Owned by its dictionary
 /// (`DictStorage::slots`) and freed with it; never resized or moved, so
@@ -130,11 +190,7 @@ impl NamespaceSlots {
 #[inline]
 unsafe fn table_of(dict: *mut u8) -> Option<&'static mut NamespaceSlots> {
     unsafe {
-        let slots = dict_storage(dict).slots;
-        if slots.is_null() {
-            return None;
-        }
-        let table = &mut *slots;
+        let table = &mut *dict_storage(dict).slots.slots()?;
         (!table.degraded).then_some(table)
     }
 }
@@ -165,7 +221,7 @@ unsafe fn exact_str_key(py: &PyToken<'_>, key: u64) -> bool {
 /// `dict_find_entry` and cost 1.7% on a module-global loop).
 #[inline(always)]
 unsafe fn has_table(dict: *mut u8) -> bool {
-    unsafe { !dict_storage(dict).slots.is_null() }
+    unsafe { dict_storage(dict).slots.slots().is_some() }
 }
 
 /// A key entered row `row` of `dict` with value `value`.
@@ -201,10 +257,9 @@ unsafe fn insert_slotted(py: &PyToken<'_>, dict: *mut u8, row: usize, key: u64, 
 #[inline(always)]
 pub(crate) unsafe fn note_replace(dict: *mut u8, row: usize, value: u64) {
     unsafe {
-        let slots = dict_storage(dict).slots;
-        if slots.is_null() {
+        let Some(slots) = dict_storage(dict).slots.slots() else {
             return;
-        }
+        };
         let table = &mut *slots;
         if let Some(&k) = table.row_slots.get(row)
             && k != NO_SLOT
@@ -288,7 +343,7 @@ pub(crate) unsafe fn bind<'n>(
     names: impl ExactSizeIterator<Item = &'n [u8]>,
 ) {
     unsafe {
-        if object_type_id(dict) != TYPE_ID_DICT || !dict_storage(dict).slots.is_null() {
+        if object_type_id(dict) != TYPE_ID_DICT || !dict_storage(dict).slots.is_none() {
             return;
         }
         let len = names.len();
@@ -330,7 +385,7 @@ pub(crate) unsafe fn bind<'n>(
             rows: vec![NO_ROW; len].into_boxed_slice(),
             values: vec![UNBOUND; len].into_boxed_slice(),
         });
-        dict_storage(dict).slots = Box::into_raw(table);
+        dict_storage(dict).slots = NamespaceBinding(Box::into_raw(table) as usize);
         note_rebuild(py, dict);
     }
 }
@@ -355,14 +410,169 @@ pub(crate) fn bind_module_namespace(py: &PyToken<'_>, dict: *mut u8, module_name
     unsafe { bind(py, dict, id, names.into_iter()) };
 }
 
-/// Free a dictionary's table. Its names are immortal and its values borrowed.
+/// Free a dictionary's binding. A table's names are immortal and its values
+/// borrowed; static cells outlive the dictionary (program data), and their
+/// values are released by shutdown retirement ([`retire_static_cells`]).
 pub(crate) unsafe fn release(dict: *mut u8) {
     unsafe {
-        let slots = std::mem::replace(&mut dict_storage(dict).slots, std::ptr::null_mut());
-        if !slots.is_null() {
+        let binding = std::mem::take(&mut dict_storage(dict).slots);
+        if let Some(slots) = binding.slots() {
             drop(Box::from_raw(slots));
+        } else if binding.cells().is_some() {
+            drop(Box::from_raw((binding.0 & !CELLS_TAG) as *mut StaticCells));
         }
     }
+}
+
+/// The static cell of an exact `str` key in a cell-bound namespace, or None
+/// for every other key and every other dictionary.
+#[inline]
+unsafe fn static_cell(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    key: u64,
+) -> Option<&'static std::sync::atomic::AtomicU64> {
+    unsafe {
+        let cells = dict_storage(dict).slots.cells()?;
+        let name = crate::object::ops::exact_string_bytes(py, key)?;
+        cells.index_of(name).map(|k| cells.cell(k))
+    }
+}
+
+/// A by-name read of a namespace: the cell's value, retained, when `key`
+/// names a bound static cell. `None` sends the caller to the dictionary,
+/// which never holds a layout name, so an unbound cell misses there too.
+pub(crate) fn static_cell_get(py: &PyToken<'_>, dict: *mut u8, key: u64) -> Option<u64> {
+    let word = unsafe { static_cell(py, dict, key)? }.load(std::sync::atomic::Ordering::Acquire);
+    if word == UNBOUND {
+        return None;
+    }
+    inc_ref_bits(py, word);
+    Some(word)
+}
+
+/// A by-name store into a namespace: when `key` names a static cell, the
+/// cell takes `value` (retained) and releases its old word, as a compiled
+/// store does; true. False for every other key.
+pub(crate) fn static_cell_set(py: &PyToken<'_>, dict: *mut u8, key: u64, value: u64) -> bool {
+    let Some(cell) = (unsafe { static_cell(py, dict, key) }) else {
+        return false;
+    };
+    inc_ref_bits(py, value);
+    let old = cell.swap(value, std::sync::atomic::Ordering::AcqRel);
+    if old != UNBOUND {
+        dec_ref_bits(py, old);
+    }
+    true
+}
+
+/// A by-name delete: `Some(true)` when `key` named a bound cell, now unbound;
+/// `Some(false)` when it names an unbound one (the caller raises its
+/// NameError or AttributeError); `None` for a key the cells do not hold.
+pub(crate) fn static_cell_delete(py: &PyToken<'_>, dict: *mut u8, key: u64) -> Option<bool> {
+    let cell = unsafe { static_cell(py, dict, key)? };
+    let old = cell.swap(UNBOUND, std::sync::atomic::Ordering::AcqRel);
+    if old == UNBOUND {
+        return Some(false);
+    }
+    dec_ref_bits(py, old);
+    Some(true)
+}
+
+/// The names and borrowed values of a cell-bound namespace's bound cells, in
+/// layout order: `dir(module)` and `from module import *` list them with the
+/// dictionary's keys. Empty for every other dictionary.
+pub(crate) fn static_cell_items(dict: *mut u8) -> Vec<(&'static [u8], u64)> {
+    let Some(cells) = (unsafe { dict_storage(dict).slots.cells() }) else {
+        return Vec::new();
+    };
+    cells
+        .names
+        .iter()
+        .enumerate()
+        .filter_map(|(k, name)| {
+            let word = cells.cell(k).load(std::sync::atomic::Ordering::Acquire);
+            (word != UNBOUND).then_some((*name, word))
+        })
+        .collect()
+}
+
+/// Shutdown retirement clears a cell-bound namespace as it clears the
+/// dictionary: each bound cell becomes unbound and drops its reference, in
+/// layout order. A finalizer that stores a global again is cleared on the
+/// retirement's next pass.
+pub(crate) fn retire_static_cells(py: &PyToken<'_>, dict: *mut u8) -> bool {
+    let Some(cells) = (unsafe { dict_storage(dict).slots.cells() }) else {
+        return false;
+    };
+    let mut cleared = false;
+    for k in 0..cells.names.len() {
+        let old = cells
+            .cell(k)
+            .swap(UNBOUND, std::sync::atomic::Ordering::AcqRel);
+        if old != UNBOUND {
+            dec_ref_bits(py, old);
+            cleared = true;
+        }
+    }
+    cleared
+}
+
+/// `molt_static_cells_bind`: a cell-eligible module's init binds its static
+/// cell block to the module object it just created, before any store. `base`
+/// is the block as a slot base (an inline int of its address shifted right by
+/// `GLOBAL_SLOT_BASE_SHIFT`). `guard_mask` holds the builtin binding guard
+/// bits (HF-79) of the layout names some code may store: a cell store never
+/// reaches the dictionary's guard state, so they are recorded now, before the
+/// first store. The registry row named like the module supplies
+/// the layout; the slot table that module creation attached is released (it
+/// mirrors nothing yet). Never raises: a module without a matching row keeps
+/// its dictionary namespace, which only costs speed, and the compiler emits
+/// the call only where the row exists.
+pub(crate) fn molt_static_cells_bind_attached_body(
+    py: &crate::PyToken<'_>,
+    module_bits: u64,
+    base_bits: u64,
+    guard_mask_bits: u64,
+) -> u64 {
+    let none = MoltObject::none().bits();
+    let Some(module) = obj_from_bits(module_bits)
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_MODULE)
+    else {
+        return none;
+    };
+    let Some(dict) = obj_from_bits(unsafe { module_dict_bits(module) })
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_DICT)
+    else {
+        return none;
+    };
+    let Some(shifted) = obj_from_bits(base_bits).as_int() else {
+        return none;
+    };
+    let Some(registry) = crate::builtins::module_table::module_registry() else {
+        return none;
+    };
+    let name_bits = unsafe { module_name_bits(module) };
+    let Some(id) = (unsafe { crate::object::ops::exact_string_bytes(py, name_bits) })
+        .and_then(|name| std::str::from_utf8(name).ok())
+        .and_then(|name| registry.id_of(name))
+    else {
+        return none;
+    };
+    let names: Box<[&'static [u8]]> = registry.globals_of(id).iter().collect();
+    debug_assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+    let words = ((shifted as u64) << molt_codegen_abi::global_slot::GLOBAL_SLOT_BASE_SHIFT) as usize
+        as *mut u64;
+    let guard_mask = obj_from_bits(guard_mask_bits).as_int().unwrap_or(-1) as u64;
+    unsafe {
+        crate::builtins::binding_guards::note_namespace_cell_bindings(dict, guard_mask);
+        release(dict);
+        let cells = Box::new(StaticCells { names, words });
+        dict_storage(dict).slots = NamespaceBinding(Box::into_raw(cells) as usize | CELLS_TAG);
+    }
+    none
 }
 
 /// The all-unbound slot words a foreign-globals activation reads: every

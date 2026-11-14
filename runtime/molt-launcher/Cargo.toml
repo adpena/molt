@@ -25,3 +25,6 @@ path = "src/main.rs"
 [[bin]]
 name = "molt-launcher-python-probe"
 path = "tests/support/python_probe.rs"
+
+[lints]
+workspace = true

@@ -312,17 +312,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         trampoline_fn
     }
 
-    /// CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form:
-    /// `molt_load_method(site, receiver, name, len, self_out)` or
+    /// CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form: a method site's
+    /// load body (`method_site.rs`), whose miss is
+    /// `molt_method_site_load(record, receiver, self_out)`, or
     /// `molt_load_super_method(site, class, first_arg, name, len, self_out)`.
-    /// The runtime returns the callable and writes `self_or_null` (the
-    /// receiver or the null sentinel) to an entry-block slot. Operands are
-    /// borrowed; both results are owned.
+    /// The load returns the callable and writes `self_or_null` (the receiver
+    /// or the null sentinel) to an entry-block slot. Operands are borrowed;
+    /// both results are owned.
     pub(super) fn emit_load_method(&mut self, op: &TirOp) {
-        let (symbol, lane, operand_count) = if op.opcode == OpCode::LoadSuperMethod {
-            (RuntimeFn::LoadSuperMethod, "load_super_method", 2)
+        let (lane, operand_count) = if op.opcode == OpCode::LoadSuperMethod {
+            ("load_super_method", 2)
         } else {
-            (RuntimeFn::LoadMethod, "load_method", 1)
+            ("load_method", 1)
         };
         let Some(AttrValue::Str(name)) = op.attrs.get("name") else {
             self.record_fatal(format!(
@@ -346,33 +347,50 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // The slot holds the null sentinel until the runtime writes it, so a
         // call that raises before its write leaves a releasable word.
         self.backend.builder.build_store(self_slot, null).unwrap();
-        let call_fn = self.ensure_runtime_import(symbol);
-        let site_bits = self.next_call_site_bits(lane);
-        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(name);
         let mut custody = self.begin_borrowed_operands(&op.operands, lane);
-        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-            vec![site_bits.into()];
-        for &operand in &op.operands {
-            call_args.push(self.borrowed_operand(&mut custody, operand).into());
-        }
+        let operands: Vec<inkwell::values::IntValue<'ctx>> = op
+            .operands
+            .iter()
+            .map(|&operand| self.borrowed_operand(&mut custody, operand))
+            .collect();
         let self_out = self
             .backend
             .builder
             .build_ptr_to_int(self_slot, i64_ty, &format!("{lane}_self_ptr"))
             .unwrap();
-        call_args.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 3]>([
-            name_ptr.into(),
-            name_len_bits.into(),
-            self_out.into(),
-        ]);
-        let callable = self
-            .backend
-            .builder
-            .build_execution_call(call_fn, &call_args, lane)
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
+        let callable = if op.opcode == OpCode::LoadMethod {
+            let Some(site) = op.method_site() else {
+                self.record_fatal(format!("{op:?}: a method load is a method site"));
+                return;
+            };
+            let Some(callable) = self.emit_method_site_load_call(site, operands[0], self_out)
+            else {
+                self.record_fatal(format!("{op:?}: method site {site} has no record"));
+                return;
+            };
+            callable
+        } else {
+            let call_fn = self.ensure_runtime_import(RuntimeFn::LoadSuperMethod);
+            let site_bits = self.next_call_site_bits(lane);
+            let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(name);
+            let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                vec![site_bits.into()];
+            call_args.extend(operands.iter().map(
+                |&operand| -> inkwell::values::BasicMetadataValueEnum<'ctx> { operand.into() },
+            ));
+            call_args.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 3]>([
+                name_ptr.into(),
+                name_len_bits.into(),
+                self_out.into(),
+            ]);
+            self.backend
+                .builder
+                .build_execution_call(call_fn, &call_args, lane)
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_int_value()
+        };
         // A receiver that could not be boxed was never loaded: its pair is
         // None and the null sentinel, never a previous load's words.
         let callable =
@@ -384,10 +402,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_load(i64_ty, self_slot, &format!("{lane}_self_or_null"))
             .unwrap();
-        self.values.insert(callable_id, callable.into());
-        self.value_types.insert(callable_id, TirType::DynBox);
-        self.values.insert(self_id, self_or_null);
-        self.value_types.insert(self_id, TirType::DynBox);
+        self.values.set_value(callable_id, callable.into());
+        self.values.set_repr(
+            callable_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
+        self.values.set_value(self_id, self_or_null);
+        self.values.set_repr(
+            self_id,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
     }
 
     /// Consume a loaded receiver before evaluating user arguments. The builder
@@ -486,6 +510,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .iter()
             .map(|&operand| self.borrowed_operand(&mut custody, operand))
             .collect();
+        // A method site's call: the shared call body adopts every word too.
+        if let Some(site) = op.method_site()
+            && Self::method_site_call_admits(words.len() - 2)
+        {
+            self.surrender_borrowed_owners(&custody, &op.operands, &[]);
+            let Some(result) = self.emit_method_site_call(site, &words) else {
+                self.record_fatal(format!("{op:?}: method site {site} has no record"));
+                return;
+            };
+            let result =
+                self.finish_borrowed_operands(custody, result, "call_loaded_method_result", |_| {});
+            self.bind_owned_runtime_result(op, result.into());
+            return;
+        }
         let (symbol, call_args): (
             RuntimeFn,
             Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
@@ -672,13 +710,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "direct call target `{target_name}` has no exact native linkage ABI; refusing to invent an i64 signature"
                 ));
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(
+                    self.values.set_value(
                         result_id,
                         i64_ty
                             .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                             .into(),
                     );
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
             }
         } else if !op.operands.is_empty() {
@@ -692,8 +733,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let none_val: BasicValueEnum<'ctx> = i64_ty
                     .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                     .into();
-                self.values.insert(result_id, none_val);
-                self.value_types.insert(result_id, TirType::DynBox);
+                self.values.set_value(result_id, none_val);
+                self.values.set_repr(
+                    result_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
             }
         }
     }
@@ -747,8 +791,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let same = builder
             .build_int_compare(inkwell::IntPredicate::EQ, code, expected, "code_is")
             .unwrap();
-        self.values.insert(op.results[0], same.into());
-        self.value_types.insert(op.results[0], TirType::Bool);
+        self.values.set_value(op.results[0], same.into());
+        self.values.set_repr(
+            op.results[0],
+            crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+        );
     }
 
     /// `DirectCall` (HF-821 D4): hand the callable to the callee's frame entry
@@ -818,10 +865,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap_or(TirType::DynBox)
             })
             .collect();
-        let source_tir_types: Vec<TirType> = operands
-            .iter()
-            .map(|id| self.value_types.get(id).cloned().unwrap_or(TirType::DynBox))
-            .collect();
+        let source_tir_types: Vec<TirType> = operands.iter().map(|id| self.repr_ty(*id)).collect();
         let boxes_for_parameter = |idx: usize| {
             Self::tir_type_is_dynbox_like(&param_tir_types[idx])
                 && !Self::tir_type_is_dynbox_like(&source_tir_types[idx])
@@ -925,8 +969,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             };
             let result =
                 self.finish_borrowed_operands(custody, result, "direct_call_result", |_| {});
-            self.values.insert(result_id, result.into());
-            self.value_types.insert(result_id, TirType::DynBox);
+            self.values.set_value(result_id, result.into());
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
         } else if !target_return_tir_ty.is_unboxed()
             && let Some(result) = returned
         {
@@ -965,11 +1012,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         runtime_name: RuntimeFn,
         owned_callable: bool,
     ) -> inkwell::values::IntValue<'ctx> {
-        let builder_ty = self
-            .value_types
-            .get(&builder)
-            .cloned()
-            .unwrap_or(TirType::DynBox);
+        let builder_ty = self.repr_ty(builder);
         assert!(
             Self::tir_type_is_dynbox_like(&builder_ty),
             "{lane} builder %{} must be an object carrier, not {builder_ty:?}",
@@ -1077,8 +1120,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
             self.finish_borrowed_operands(custody, none, "print_result", |_| {});
             if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, none.into());
-                self.value_types.insert(result_id, TirType::DynBox);
+                self.values.set_value(result_id, none.into());
+                self.values.set_repr(
+                    result_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
             }
         } else if call.wire_kind == OpKind::RangeNew {
             // `range(...)` is a dedicated frontend op (`RANGE_NEW`), not a

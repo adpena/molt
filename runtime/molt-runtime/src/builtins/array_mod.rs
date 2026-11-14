@@ -713,7 +713,7 @@ fn elem_to_bits(py: &PyToken<'_>, elem: ArrayElem) -> Option<u64> {
                 crate::int_bits_from_bigint(py, num_bigint::BigInt::from(v))
             }
         }
-        ArrayElem::Float(v) => MoltObject::from_float(v).bits(),
+        ArrayElem::Float(v) => crate::object::ops::float_result_bits(py, v),
     };
     (!obj_from_bits(bits).is_none()).then_some(bits)
 }

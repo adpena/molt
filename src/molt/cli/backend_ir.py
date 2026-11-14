@@ -4,7 +4,7 @@ from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
 
 from molt.compilation_target import ArtifactTarget, Target, TargetKind
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import hashlib
 import json
@@ -51,6 +51,8 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
+from molt.cli.closed_world_bindings import bind_closed_world_calls
+from molt.cli.static_module_cells import StaticCellPlan, plan_static_module_cells
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
 from molt.cli.module_registry import (
     ModuleRegistry,
@@ -76,6 +78,12 @@ class _PreparedBackendIR:
     # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
     # native lane; None on lanes that keep the legacy isolate dispatch.
     module_registry: Any | None = None
+    # One line per qualifying module attribute call that keeps the generic
+    # path, naming what blocked its closed-world binding.
+    binding_diagnostics: tuple[str, ...] = ()
+    # Static module cells (call_anatomy.md 4.5a): eligible modules, their
+    # cells' InitOnce facts and why every other module keeps its dictionary.
+    static_cell_diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 def _build_version_info_ops(
@@ -2224,7 +2232,17 @@ def _prepare_backend_ir(
             "ops": isolate_bootstrap_ops,
         }
     )
+    # Closed-world bindings (call_anatomy.md 4.5): proven module attribute
+    # calls become direct intrinsic calls; every frontend module guess is
+    # consumed here, on every lane.
+    binding_diagnostics = bind_closed_world_calls(
+        functions,
+        integration_state.module_functions,
+        integration_state.module_namespace_facts,
+        integration_state.module_dep_closures,
+    )
     module_registry: ModuleRegistry | None = None
+    static_cells = StaticCellPlan()
     if catalog_lane:
         # Import bedrock (design doc 69, PR1): the ModuleRegistry replaces the
         # molt_isolate_import string_eq dispatch chain.  Cold dispatch is the
@@ -2252,11 +2270,24 @@ def _prepare_backend_ir(
             )
         # Compiled global slot sites (call_anatomy.md 4.5): the registry row
         # carries each module's layout, so only registered modules are stamped.
+        # Cell-eligible modules keep their globals in static cells (4.5a).
+        registered = {row.name for row in module_registry.rows if row.init_symbol}
+        static_cells = plan_static_module_cells(
+            integration_state.module_functions,
+            integration_state.module_namespace_facts,
+            integration_state.global_layouts,
+            registered,
+            {row.name for row in module_registry.rows if row.kind == "extension"},
+            entry_module=entry_module,
+            dep_closures=integration_state.module_dep_closures,
+        )
         stamp_global_slots(
             functions,
             integration_state.module_functions,
             integration_state.global_layouts,
             {row.name for row in module_registry.rows},
+            static_cells.modules,
+            static_cells.guard_masks,
         )
         if module_table_lane:
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
@@ -2302,7 +2333,15 @@ def _prepare_backend_ir(
     )
     ir["code_slots"] = dict(global_code_ids)
     if module_registry is not None:
-        ir["module_registry"] = module_registry.backend_ir_payload()
+        registry_payload = module_registry.backend_ir_payload()
+        # The backend emits one cell block per eligible module, sized to its
+        # layout: every layout name owns a word, deleted-only names included.
+        registry_rows = registry_payload["rows"]
+        assert isinstance(registry_rows, list)
+        for row in registry_rows:
+            if row["name"] in static_cells.modules:
+                row["static_cells"] = len(integration_state.global_layouts[row["name"]])
+        ir["module_registry"] = registry_payload
     # ModuleRegistry init bodies are reached through relocation slots in
     # MODULE_INIT_TABLE, not through SimpleIR call edges.  They must therefore
     # enter the same reachability authority as explicit roots before runtime
@@ -2366,4 +2405,6 @@ def _prepare_backend_ir(
         },
         required_link_features=required_link_features,
         module_registry=module_registry,
+        binding_diagnostics=tuple(binding_diagnostics),
+        static_cell_diagnostics=static_cells.diagnostics(),
     ), None

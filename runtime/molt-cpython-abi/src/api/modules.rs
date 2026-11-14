@@ -950,21 +950,22 @@ unsafe fn finish_module_creation(
     attach_legacy_state: bool,
     name: *mut PyObject,
 ) -> *mut PyObject {
+    // Every failure releases the module; success hands it to the caller.
+    let unpublished = std::mem::DropGuard::new(module, |module| unsafe {
+        crate::api::refcount::Py_XDECREF(module);
+    });
     if unsafe { register_module_capi(module, def, attach_legacy_state) } != 0 {
-        unsafe { crate::api::refcount::Py_XDECREF(module) };
         return ptr::null_mut();
     }
     // Malformed or unsupported methods fail module creation atomically
     // instead of publishing a partial method table.
     let m_methods = unsafe { (*def).m_methods };
     if !m_methods.is_null() && unsafe { add_module_functions(module, m_methods, name) } != 0 {
-        unsafe { crate::api::refcount::Py_XDECREF(module) };
         return ptr::null_mut();
     }
     let doc = unsafe { (*def).m_doc };
     if !doc.is_null() && unsafe { PyModule_SetDocString(module, doc) } < 0 {
-        unsafe { crate::api::refcount::Py_XDECREF(module) };
         return ptr::null_mut();
     }
-    module
+    std::mem::DropGuard::dismiss(unpublished)
 }

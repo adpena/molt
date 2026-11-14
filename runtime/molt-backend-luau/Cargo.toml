@@ -16,3 +16,6 @@ serde_json = { workspace = true }
 [features]
 default = []
 luau-backend = []
+
+[lints]
+workspace = true

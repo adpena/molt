@@ -855,6 +855,35 @@ pub(crate) unsafe fn reverse(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     true
 }
 
+/// Reverse one range of a generic list without a C view, in place, without
+/// allocation or reference-count churn. `range` maps the live length, read
+/// under the list's mutation lock, to the range. Returns false, having
+/// changed nothing, for any other receiver.
+pub(crate) unsafe fn reverse_range(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    range: impl FnOnce(usize) -> std::ops::Range<usize>,
+) -> bool {
+    crate::gil_assert();
+    if ptr.is_null()
+        || unsafe { object_type_id(ptr) } != TYPE_ID_LIST
+        || unsafe { (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) }
+    {
+        return false;
+    }
+    let base = unsafe { seq_vec_ptr(ptr) };
+    if base.is_null() {
+        return false;
+    }
+    let mutation_guard = unsafe { crate::object::backing::tracked_vec_mutation_lock(base) };
+    let items = unsafe { &mut *base };
+    let range = range(items.len());
+    items[range].reverse();
+    unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
+    drop(mutation_guard);
+    true
+}
+
 /// Replace one contiguous range through the sole published-list mutation
 /// authority. Allocation and replacement ownership are prepared before the
 /// live vector changes. The new canonical shape and generation are published
@@ -946,13 +975,41 @@ pub(crate) unsafe fn replace_range_with_projection(
         };
     }
 
+    let vec_ptr = unsafe { seq_vec_ptr(ptr) };
+    // An equal-length replacement of non-heap words overwrites in place: no
+    // splice, no removed-item vector and no release, since nothing removed
+    // owns a reference.
+    if removed_len == items.len()
+        && !crate::object::refcount_opt::slice_contains_heap_refs(unsafe {
+            &(&*vec_ptr)[low..high]
+        })
+    {
+        for &item in items {
+            inc_ref_bits(py, item);
+        }
+        unsafe { (&mut *vec_ptr)[low..high].copy_from_slice(items) };
+        let contains_refs = unsafe {
+            crate::object::backing::tracked_vec_adjust_heap_edge_count(
+                vec_ptr,
+                0,
+                crate::object::refcount_opt::slice_heap_ref_count(items),
+            )
+        } != 0;
+        let header = unsafe { header_from_obj_ptr(ptr) };
+        unsafe {
+            if contains_refs {
+                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            }
+            note_in_place_mutation(ptr);
+        }
+        return true;
+    }
     let required = result_len;
     let mut removed = Vec::new();
     if removed.try_reserve_exact(removed_len).is_err() {
         crate::record_memory_error_without_allocation(py);
         return false;
     }
-    let vec_ptr = unsafe { seq_vec_ptr(ptr) };
     if !unsafe { crate::object::backing::tracked_vec_reserve_for_len(vec_ptr, required) } {
         crate::record_memory_error_without_allocation(py);
         return false;
@@ -1595,15 +1652,6 @@ mod tests {
         });
     }
 
-    struct RestoreReserveObserver;
-    impl Drop for RestoreReserveObserver {
-        fn drop(&mut self) {
-            crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
-            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-            RESERVE_TARGET.with(|target| target.set(0));
-        }
-    }
-
     #[test]
     fn list_growth_failure_retires_prior_after_unlocking_without_partial_mutation() {
         use crate::builtins::exceptions::ExceptionValue;
@@ -1621,7 +1669,13 @@ mod tests {
                             let ptr = alloc_list(py, &[MoltObject::from_int(7).bits()]);
                             assert!(!ptr.is_null());
                             let list = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
-                            let reset = RestoreReserveObserver;
+                            let reset = std::mem::DropGuard::new((), |()| {
+                                crate::resource::set_tracker(Box::new(
+                                    crate::resource::UnlimitedTracker,
+                                ));
+                                molt_cpython_abi::api::errors::PyErr_Clear();
+                                RESERVE_TARGET.with(|target| target.set(0));
+                            });
                             RESERVE_TARGET.with(|target| target.set(list.bits()));
                             let capacity = (&*seq_vec_ptr(ptr)).capacity();
                             while list_len(ptr) < capacity {

@@ -322,8 +322,9 @@ fn expansion_of(
     }
     // `int` is the two-int arm's op and raw type, or None where the op has no
     // such arm (true division computes on floats); `float` is the op and raw
-    // type every other arm computes with in F64.
-    let numeric = |int: Option<(OpCode, TirType)>, float: (OpCode, TirType)| {
+    // type every other arm computes with in F64, or None where a float operand
+    // is the runtime's (bitwise ops raise TypeError on floats).
+    let numeric = |int: Option<(OpCode, TirType)>, float: Option<(OpCode, TirType)>| {
         let [lhs, rhs] = op.operands[..] else {
             return None;
         };
@@ -354,11 +355,12 @@ fn expansion_of(
             if !(admits(0, payloads[0]) && admits(1, payloads[1])) {
                 continue;
             }
-            let (fast, raw, compute) = match (&int, payloads) {
-                (Some((fast, raw)), [Payload::Int, Payload::Int]) => {
+            let (fast, raw, compute) = match (&int, &float, payloads) {
+                (Some((fast, raw)), _, [Payload::Int, Payload::Int]) => {
                     (*fast, raw.clone(), TirType::I64)
                 }
-                _ => (float.0, float.1.clone(), TirType::F64),
+                (_, Some((fast, raw)), _) => (*fast, raw.clone(), TirType::F64),
+                _ => continue,
             };
             arms.push(NumericArm {
                 payloads,
@@ -371,8 +373,17 @@ fn expansion_of(
         // a boxed word) joins its arms raw; without this case no stage and no
         // backend lane owned the op, and it fell to the runtime with a
         // truthiness call on its result.
-        let raw_result = arms.first().is_some_and(|arm| arm.raw == TirType::Bool)
-            && repr.get(&op.results[0]) == Some(&Repr::Bool);
+        // An int-only op whose result the plan proves inline-safe (a range
+        // proof such as `x & 63`) joins raw too; otherwise the backend saw a
+        // raw result over a boxed operand and called the runtime.
+        let raw_result = arms.first().is_some_and(|arm| match arm.raw {
+            TirType::Bool => repr.get(&op.results[0]) == Some(&Repr::Bool),
+            TirType::I64 => {
+                arms.iter().all(|arm| arm.compute == TirType::I64)
+                    && repr.get(&op.results[0]) == Some(&Repr::RawI64Safe)
+            }
+            _ => false,
+        });
         (!arms.is_empty() && (raw_result || is_boxed_word(repr, op.results[0]))).then_some(
             Expansion::Numeric {
                 arms,
@@ -384,28 +395,33 @@ fn expansion_of(
     match opcode_fast_path_expansion_rule_table(op.opcode) {
         FastPathExpansionRule::NumericAdd => numeric(
             Some((OpCode::Add, TirType::I64)),
-            (OpCode::Add, TirType::F64),
+            Some((OpCode::Add, TirType::F64)),
         ),
         FastPathExpansionRule::NumericSub => numeric(
             Some((OpCode::Sub, TirType::I64)),
-            (OpCode::Sub, TirType::F64),
+            Some((OpCode::Sub, TirType::F64)),
         ),
         // The int product of two inline payloads can leave i64: CheckedMul
         // tests the overflow and the arm leaves for the runtime on it.
         FastPathExpansionRule::NumericMul => numeric(
             Some((OpCode::CheckedMul, TirType::I64)),
-            (OpCode::Mul, TirType::F64),
+            Some((OpCode::Mul, TirType::F64)),
         ),
         // True division computes in F64 on every arm, two ints included: two
         // inline payloads convert exactly, and one IEEE division of exact
         // operands is CPython's correctly rounded int quotient below 2**53
         // (`long_true_divide`). Raw F64 division raises on a zero divisor.
-        FastPathExpansionRule::NumericTrueDiv => numeric(None, (OpCode::Div, TirType::F64)),
+        FastPathExpansionRule::NumericTrueDiv => numeric(None, Some((OpCode::Div, TirType::F64))),
+        // AND, OR and XOR of two inline-int payloads stay within the inline
+        // range, so the int arm never overflows; a float operand is the
+        // runtime's, which raises TypeError.
+        FastPathExpansionRule::NumericBitwise => numeric(Some((op.opcode, TirType::I64)), None),
         // A comparison on two payloads is the same comparison on raw values;
         // float comparisons keep IEEE order, so NaN compares unequal.
-        FastPathExpansionRule::NumericCompare => {
-            numeric(Some((op.opcode, TirType::Bool)), (op.opcode, TirType::Bool))
-        }
+        FastPathExpansionRule::NumericCompare => numeric(
+            Some((op.opcode, TirType::Bool)),
+            Some((op.opcode, TirType::Bool)),
+        ),
         FastPathExpansionRule::Truthiness => (op.operands.len() == 1
             && is_boxed_word(repr, op.operands[0]))
         .then_some(Expansion::Truthiness),
@@ -734,17 +750,18 @@ fn expand_numeric(
         call.mark_exact_result_proof(ty);
     }
     slow_ops.push(call);
-    // Two exact numbers compare to a bool word: read its low bit, as the fast
-    // arms' raw bool, so the join carries one representation.
+    // Two exact numbers compare to a bool word, and a range-proven int result
+    // is an inline-int word: read its payload, as the fast arms' raw value, so
+    // the join carries one representation.
     let slow_result = if raw_result {
-        let truth = fresh_typed(func, TirType::Bool);
-        slow_ops.push(new_op(
-            OpCode::UnboxBoolWord,
-            vec![slow_result],
-            vec![truth],
-            span,
-        ));
-        truth
+        let (raw_type, unbox) = if arms[0].raw == TirType::I64 {
+            (TirType::I64, OpCode::UnboxInlineInt)
+        } else {
+            (TirType::Bool, OpCode::UnboxBoolWord)
+        };
+        let raw = fresh_typed(func, raw_type);
+        slow_ops.push(new_op(unbox, vec![slow_result], vec![raw], span));
+        raw
     } else {
         slow_result
     };

@@ -117,7 +117,7 @@ fuzz_target!(|data: &[u8]| {
     // --- Test 4: tag exclusivity ---
     // A NaN-boxed value must match at most ONE tag. Two tags sharing the same
     // bit pattern would indicate a collision in the encoding scheme.
-    if (bits & QNAN) == QNAN {
+    if !is_float_bits(bits) {
         let tag = bits & TAG_MASK;
         let known_tags = [TAG_INT, TAG_BOOL, TAG_NONE, TAG_PTR, TAG_PENDING];
         let matches: usize = known_tags.iter().filter(|&&t| tag == t).count();

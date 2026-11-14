@@ -3,12 +3,12 @@
 Verifies that WASM compilation is deterministic:
   - Same program compiled twice produces identical binary output.
   - WASM module structure is deterministic (no random section ordering).
-  - NaN canonicalization in WASM output.
+  - NaN constants in WASM output are default NaNs or tagged words.
 
 These tests exercise the guarantees proven in:
   - formal/lean/MoltTIR/Backend/BackendDeterminism.lean
   - formal/lean/MoltTIR/Runtime/WasmNativeCorrect.lean
-  - formal/lean/MoltTIR/Runtime/WasmNative.lean (canonical_nan_is_float)
+  - formal/lean/MoltTIR/Runtime/WasmNative.lean (wasm_is_float_equiv)
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 from molt.wasm_artifact import parse_wasm_section_spans, wasm_section_name
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tools.wasm_link_format import _STANDARD_SECTION_ORDER
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -286,11 +287,12 @@ class TestWasmModuleStructure:
         )
 
     @pytest.mark.parametrize("name,source", DETERMINISM_PROGRAMS[:3])
-    def test_section_order_ascending(
+    def test_section_order_canonical(
         self, tmp_path: Path, name: str, source: str
     ) -> None:
-        """Non-custom sections should appear in ascending ID order per the
-        WASM spec (section 5.5.2).
+        """Non-custom sections appear in the WebAssembly spec's order
+        (binary format 5.5.2), which is not ascending id: tag (13) follows
+        memory and data count (12) precedes code (10).
         """
         src_file = tmp_path / f"{name}.py"
         src_file.write_text(source, encoding="utf-8")
@@ -304,8 +306,9 @@ class TestWasmModuleStructure:
 
         # Filter out custom sections (id=0), which can appear anywhere.
         non_custom = [s.id for s in sections if s.id != 0]
+        ranks = [_STANDARD_SECTION_ORDER[section_id] for section_id in non_custom]
         for i in range(len(non_custom) - 1):
-            assert non_custom[i] <= non_custom[i + 1], (
+            assert ranks[i] < ranks[i + 1], (
                 f"WASM sections out of order: section {non_custom[i]} "
                 f"({wasm_section_name(non_custom[i])}) appears "
                 f"before {non_custom[i + 1]} "
@@ -314,12 +317,11 @@ class TestWasmModuleStructure:
 
 
 class TestWasmNaNCanonicalization:
-    """NaN values in WASM output should be canonicalized.
+    """NaN constants in WASM output are default quiet NaNs or tagged words.
 
-    Reference: WasmNative.lean, canonical_nan_is_float
-    Molt uses QNAN = 0x7ff8000000000000 as its canonical quiet NaN.
-    Any NaN in the WASM binary should match this canonical form or be
-    part of the NaN-boxing tag scheme.
+    Reference: WasmNative.lean, wasm_is_float_equiv. A program's own NaN
+    constant keeps its bits (runtime spec 2.1.1); this program computes its
+    NaN at run time, so the binary holds only the default NaN and tags.
     """
 
     @pytest.fixture(autouse=True)
@@ -358,31 +360,6 @@ class TestWasmNaNCanonicalization:
                 f"0x{val:016X} (tag bits 0x{tag_bits:016X}). "
                 f"Expected canonical QNAN 0x{QNAN:016X} or NaN-boxed value."
             )
-
-    def test_canonical_nan_bits_match_lean(self) -> None:
-        """Verify that our Python constants match the Lean formalization.
-
-        WasmNative.lean defines:
-          QNAN = 0x7ff8000000000000
-          CANONICAL_NAN_BITS = 0x7ff0000000000001
-        """
-        QNAN = 0x7FF8000000000000
-        CANONICAL_NAN_BITS = 0x7FF0000000000001
-
-        # QNAN is a quiet NaN (bit 51 set).
-        assert (QNAN & F64_EXPONENT_MASK) == F64_EXPONENT_MASK
-        assert (QNAN & (1 << 51)) != 0, "QNAN should have quiet bit set"
-
-        # CANONICAL_NAN_BITS is a signaling NaN (bit 51 clear, mantissa nonzero).
-        assert (CANONICAL_NAN_BITS & F64_EXPONENT_MASK) == F64_EXPONENT_MASK
-        assert (CANONICAL_NAN_BITS & F64_MANTISSA_MASK) != 0
-
-        # Both are NaN: exponent all 1s, mantissa nonzero.
-        for name, val in [("QNAN", QNAN), ("CANONICAL_NAN_BITS", CANONICAL_NAN_BITS)]:
-            exponent = (val >> 52) & 0x7FF
-            mantissa = val & F64_MANTISSA_MASK
-            assert exponent == 0x7FF, f"{name} exponent should be all 1s"
-            assert mantissa != 0, f"{name} mantissa should be nonzero (NaN)"
 
     def test_nan_boxing_tag_disjointness(self) -> None:
         """Verify NaN-boxing tags are disjoint, matching WasmABI.lean

@@ -227,14 +227,14 @@ pub(crate) fn emit_mixed_int_float_op(
     builder.seal_block(lhs_int_block);
     let lhs_int_val = unbox_int(builder, lhs, nbc);
     let lhs_conv = builder.ins().fcvt_from_sint(types::F64, lhs_int_val);
-    let rhs_flt = builder.ins().bitcast(types::F64, MemFlagsData::new(), rhs);
+    let rhs_flt = unbox_float_value(builder, rhs);
     let res_a = match f_op {
         0 => builder.ins().fadd(lhs_conv, rhs_flt),
         1 => builder.ins().fsub(lhs_conv, rhs_flt),
         2 => builder.ins().fmul(lhs_conv, rhs_flt),
         _ => unreachable!(),
     };
-    let boxed_a = box_float_value(builder, res_a, nbc);
+    let boxed_a = box_float_value(builder, res_a);
     jump_block(builder, merge_block, &[boxed_a]);
     // Check case_b
     builder.switch_to_block(check_rhs_block);
@@ -247,14 +247,14 @@ pub(crate) fn emit_mixed_int_float_op(
     builder.seal_block(rhs_int_block);
     let rhs_int_val = unbox_int(builder, rhs, nbc);
     let rhs_conv = builder.ins().fcvt_from_sint(types::F64, rhs_int_val);
-    let lhs_flt = builder.ins().bitcast(types::F64, MemFlagsData::new(), lhs);
+    let lhs_flt = unbox_float_value(builder, lhs);
     let res_b = match f_op {
         0 => builder.ins().fadd(lhs_flt, rhs_conv),
         1 => builder.ins().fsub(lhs_flt, rhs_conv),
         2 => builder.ins().fmul(lhs_flt, rhs_conv),
         _ => unreachable!(),
     };
-    let boxed_b = box_float_value(builder, res_b, nbc);
+    let boxed_b = box_float_value(builder, res_b);
     jump_block(builder, merge_block, &[boxed_b]);
     // Not mixed: caller emits slow path
     builder.switch_to_block(not_mixed_block);
@@ -274,17 +274,17 @@ pub(crate) fn box_int_value(
 }
 
 #[cfg(feature = "native-backend")]
-pub(crate) fn box_float_value(
-    builder: &mut FunctionBuilder,
-    val: Value,
-    nbc: &NanBoxConsts,
-) -> Value {
-    // Canonicalize NaN: if the f64 value is NaN, replace with CANONICAL_NAN_BITS
-    // to avoid collision with the QNAN tag prefix used by NaN-boxing.
-    let raw_bits = builder.ins().bitcast(types::I64, MemFlagsData::new(), val);
-    let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
-    let canonical = builder.ins().iconst(types::I64, nbc.canonical_nan);
-    builder.ins().select(is_nan, canonical, raw_bits)
+/// The f64 of a float word: its raw bits (runtime spec 2.1.1).
+#[cfg(feature = "native-backend")]
+pub(crate) fn unbox_float_value(builder: &mut FunctionBuilder, word: Value) -> Value {
+    builder.ins().bitcast(types::F64, MemFlagsData::new(), word)
+}
+
+/// The boxed word for `val`: its bits. Compiled code's floats are inline
+/// floats or arithmetic on them, which stays inline (runtime spec 2.1.1), so
+/// boxing is the identity.
+pub(crate) fn box_float_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+    builder.ins().bitcast(types::I64, MemFlagsData::new(), val)
 }
 
 #[cfg(feature = "native-backend")]

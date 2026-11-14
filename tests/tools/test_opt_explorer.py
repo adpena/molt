@@ -250,3 +250,44 @@ Total number in stack:
     ]
     assert payload["top"][0]["symbol"] == "_RN_local_key_alloc"
     assert "LocalKey<alloc::vec::Vec<u8>>::with" in text
+
+
+@pytest.mark.skipif(
+    not Path("/usr/bin/sample").is_file(), reason="profile needs macOS /usr/bin/sample"
+)
+def test_profile_samples_a_warm_second_run_not_the_first_exec(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A new binary's first exec pays macOS's executable scan (HF-780), which
+    the sampler records as `_dyld_start` (80% of bench_gc_pressure's samples
+    on 2026-11-14); the sampler attaches only to a run after the first."""
+    events: list[tuple[str, object]] = []
+
+    class Process:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+    pids = iter((101, 202))
+
+    class Commands:
+        def start_owned(self, argv: list[str], **_kwargs: object) -> Process:
+            process = Process(next(pids))
+            events.append(("start", process.pid))
+            return process
+
+        def wait_owned(self, process: Process, **_kwargs: object) -> None:
+            events.append(("wait", process.pid))
+
+        def run(self, argv: list[str], **_kwargs: object) -> None:
+            events.append(("sample", int(argv[1])))
+
+    monkeypatch.setattr(opt, "_COMMANDS", Commands())
+    opt.sample_run(tmp_path / "prog", 1.0, [])
+
+    assert events == [
+        ("start", 101),
+        ("wait", 101),
+        ("start", 202),
+        ("sample", 202),
+        ("wait", 202),
+    ]

@@ -910,7 +910,14 @@ def runtime_cargo_unit_stdout(project_root: Path, scratch: Path) -> str:
     the canonical runtime source roots both run.
     """
     crate = project_root / "runtime" / "molt-runtime"
-    unit = scratch.parent / "deps" / "libmolt_runtime-0123456789abcdef.a"
+    unit = (
+        scratch.parent
+        / "build"
+        / "molt-runtime"
+        / "0123456789abcdef"
+        / "out"
+        / "libmolt_runtime-0123456789abcdef.a"
+    )
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_bytes(scratch.read_bytes() if scratch.exists() else b"")
     (unit.parent / "molt_runtime-0123456789abcdef.d").write_text(
@@ -1018,10 +1025,11 @@ def runtime_cargo_stdout(root, outputs, environment, *, package="molt-runtime"):
         raise ValueError("synthetic Cargo unit requires actual output bytes")
     reported = []
     for output in paths:
-        if output.parent.name == "deps":
+        if output.parent.name == "out" and output.parents[3].name == "build":
             reported.append(output)
         else:
-            deps = output.parent / "deps"
+            # The unit's out/ in Cargo 1.100's build-directory layout.
+            deps = output.parent / "build" / package / "0123456789abcdef" / "out"
             deps.mkdir(parents=True, exist_ok=True)
             unit = deps / (
                 f"lib{crate}-hf302.a"

@@ -171,14 +171,11 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
                 return false;
             }
         }
-        if !publish_fields(
+        publish_fields(
             py,
             builtin_classes(py).function,
             &CallableMetadata::PUBLIC_FUNCTION,
-        ) {
-            return false;
-        }
-        true
+        )
     }
 }
 

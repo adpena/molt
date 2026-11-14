@@ -368,6 +368,7 @@ console.log('module-integrity-ok');
     assert run.stdout.strip() == "module-integrity-ok"
 
 
+@pytest.mark.slow
 def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser host direct-mode isolate test")
@@ -581,6 +582,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         server.shutdown()
 
 
+@pytest.mark.slow
 def test_browser_host_direct_mode_import_stat_constants(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser host direct-mode isolate test")
@@ -1165,6 +1167,7 @@ try {{
         server.shutdown()
 
 
+@pytest.mark.slow
 def test_browser_host_direct_mode_import_asyncio_iov_max(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser host direct-mode isolate test")
@@ -1593,6 +1596,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.slow
 def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser direct-mode dict.get test")

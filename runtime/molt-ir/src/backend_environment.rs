@@ -14,7 +14,6 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::convert::Infallible;
 use std::ffi::OsString;
 use std::io;
 use std::process::Command;
@@ -155,10 +154,11 @@ impl BackendEnvironment {
             BackendCodegenTarget::Wasm => &self.wasm_semantics,
         };
         *slot.get_or_init(|| {
-            SemanticBackendIdentity::from_lookup(target, self.values.keys().copied(), |key| {
-                Ok::<_, Infallible>(self.get(key))
-            })
-            .unwrap_or_else(|never| match never {})
+            let Ok(identity) =
+                SemanticBackendIdentity::from_lookup(target, self.values.keys().copied(), |key| {
+                    Ok::<_, !>(self.get(key))
+                });
+            identity
         })
     }
 }

@@ -123,6 +123,17 @@ pub(crate) unsafe fn note_namespace_reset(py: &PyToken<'_>, dict: *mut u8) {
     }
 }
 
+/// A cell-eligible module's static cells (call_anatomy.md 4.5a) bind names
+/// outside the dictionary: its bind records, up front, the guard bits of every
+/// layout name some code may store. An unknown mask covers every name.
+pub(crate) unsafe fn note_namespace_cell_bindings(dict: *mut u8, mask: u64) {
+    unsafe {
+        if let Some(state) = namespace_state(dict) {
+            add_bits(dict, state, mask & BUILTIN_BINDING_GUARD_ALL_MASK);
+        }
+    }
+}
+
 /// Allocate an empty module namespace dictionary that records guard bits.
 pub(crate) fn alloc_namespace_dict(py: &PyToken<'_>) -> *mut u8 {
     crate::object::builders::alloc_dict_with_state(py, NAMESPACE_TRACKED as i64)

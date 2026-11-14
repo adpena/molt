@@ -2890,17 +2890,28 @@ pub(crate) unsafe fn class_mro_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::Mro.load(ptr) }
 }
 
-pub(crate) unsafe fn class_layout_version_bits(ptr: *mut u8) -> u64 {
+/// The class layout version word, which compiled method sites read inline
+/// (`molt_codegen_abi::method_site::CLASS_LAYOUT_VERSION_OFFSET`).
+pub(crate) const CLASS_LAYOUT_VERSION_WORD: usize = 4;
+const _: () = assert!(
+    molt_codegen_abi::method_site::CLASS_LAYOUT_VERSION_OFFSET as usize
+        == CLASS_LAYOUT_VERSION_WORD * std::mem::size_of::<u64>()
+);
+
+unsafe fn class_layout_version_word<'a>(ptr: *mut u8) -> &'a std::sync::atomic::AtomicU64 {
     unsafe {
-        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
-            .load(std::sync::atomic::Ordering::Acquire)
+        &*(ptr.add(CLASS_LAYOUT_VERSION_WORD * std::mem::size_of::<u64>())
+            as *const std::sync::atomic::AtomicU64)
     }
+}
+
+pub(crate) unsafe fn class_layout_version_bits(ptr: *mut u8) -> u64 {
+    unsafe { class_layout_version_word(ptr).load(std::sync::atomic::Ordering::Acquire) }
 }
 
 pub(crate) unsafe fn class_set_layout_version_bits(ptr: *mut u8, bits: u64) {
     unsafe {
-        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
-            .fetch_max(bits, std::sync::atomic::Ordering::AcqRel);
+        class_layout_version_word(ptr).fetch_max(bits, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -3161,7 +3172,7 @@ pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bi
 
 unsafe fn advance_class_layout_version(ptr: *mut u8) {
     unsafe {
-        (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
+        class_layout_version_word(ptr)
             .try_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
@@ -3650,7 +3661,7 @@ mod tests {
         zip_set_result_bits, zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use crate::{alloc_function_obj, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
     use molt_obj_model::MoltObject;
 
@@ -3696,8 +3707,6 @@ mod tests {
         dec_ref_bits(_py, empty_tuple_bits);
         code_ptr
     }
-
-    struct TrackerReset;
 
     #[test]
     fn function_type_code_declaration_publication_is_atomic_and_once_only() {
@@ -3880,12 +3889,6 @@ mod tests {
         });
     }
 
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
-
     #[test]
     fn list_int_storage_denied_growth_keeps_original_buffer() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -3896,7 +3899,7 @@ mod tests {
             max_memory: Some(owner_bytes + initial_buffer + replacement_buffer - 1),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
         let ptr = ListIntStorage::with_capacity(4).expect("storage");
         for value in [1, 2, 3, 4] {

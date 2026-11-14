@@ -1088,7 +1088,7 @@ unsafe fn probe_simple_func(
 /// reach a borrowing entry, and an adopting one only an adopting entry. Any
 /// other entry is reached through the runtime's invocation authority.
 /// Backends must not reproduce this classifier.
-unsafe fn direct_call_function(
+pub(crate) unsafe fn direct_call_function(
     py: &PyToken<'_>,
     func_bits: u64,
     supplied: usize,

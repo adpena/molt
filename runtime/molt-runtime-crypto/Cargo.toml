@@ -46,3 +46,6 @@ full = [
 # Legacy crypto: deprecated or weak algorithms (MD4, RIPEMD-160).
 # Only enabled for stdlib_full builds. Not suitable for edge or server tiers.
 legacy = ["dep:md4", "dep:ripemd"]
+
+[lints]
+workspace = true

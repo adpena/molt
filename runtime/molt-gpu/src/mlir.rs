@@ -306,10 +306,10 @@ fn render_reduction_compute(out: &mut String, kernel: &FusedKernel) {
     writeln!(out, "    }}").unwrap();
 
     let mut values = Vec::with_capacity(kernel.ops.len());
-    for op_idx in 0..reduce_idx {
+    for (op_idx, op) in kernel.ops[..reduce_idx].iter().enumerate() {
         values.push(MlirValue {
             name: format!("%pre_reduce_op{}_unavailable", op_idx),
-            dtype: kernel.ops[op_idx].dst_dtype(),
+            dtype: op.dst_dtype(),
         });
     }
     values.push(MlirValue {

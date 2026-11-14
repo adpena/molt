@@ -144,6 +144,13 @@ addopts = [
     "--durations-min=0.25",
 ]
 norecursedirs = ["third_party", ".git", ".venv", ".molt-venv", ".hypothesis", "dist", "build", "logs"]
+# Each worker deletes a passing test's tmp_path at its teardown and its own
+# basetemp at session end, in parallel and inside test time; the outer
+# guard's scratch then holds only failing tests' directories. With the
+# default ("all") the guard retired whole sessions serially after the tests:
+# 76-137 s for a passing driver suite, and 190-943 s to size a failed one
+# (2026-11-14, guard finalize timings).
+tmp_path_retention_policy = "failed"
 markers = [
     "molt_compile: tests that require a working Molt compiler (use --run-molt)",
     "slow: tests that exercise longer end-to-end toolchain paths",

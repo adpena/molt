@@ -289,6 +289,7 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::ListPop
         | OpKind::ListRemove
         | OpKind::ListReverse
+        | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
@@ -322,6 +323,8 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::GlobalSlotGet
+        | OpKind::StaticCellBase
+        | OpKind::StaticCellSet
         | OpKind::ModuleGetName
         | OpKind::ModuleImport
         | OpKind::ModuleImportFrom

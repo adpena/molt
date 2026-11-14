@@ -37,17 +37,6 @@ def test_threading_gate_intrinsic_exists() -> None:
     assert "molt_wasm_check_module_gate" in content
 
 
-def test_wasm_thread_submit_gate_defined() -> None:
-    """The WASM gate for molt_thread_submit produces RuntimeError."""
-    threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text(encoding="utf-8")
-    # The WASM version should raise RuntimeError
-    assert (
-        'raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")'
-        in content
-    )
-
-
 def test_wasm_thread_start_gate_defined() -> None:
     """The WASM gate for molt_thread_start produces RuntimeError."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"

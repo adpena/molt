@@ -86,7 +86,6 @@ def _wasm_opt(input_path: Path, output_path: Path) -> dict[str, object]:
         output_path=output_path,
         level="Oz",
         extra_passes=("--strip-debug",),
-        required_exports=wasm_optimize._collect_exports(input_path),
         timeout=120,
     )
 
@@ -170,7 +169,6 @@ def test_wasm_pipeline_external_tools_use_guarded_process(
                 "output_path": output_wasm,
                 "level": "Oz",
                 "extra_passes": ("--strip-debug",),
-                "required_exports": set(),
                 "timeout": 120,
             },
         )

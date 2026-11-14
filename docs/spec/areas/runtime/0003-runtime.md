@@ -79,8 +79,47 @@ distinct from managed object pointers and follow their own registered custody.
 - **NaN Space**: `0x7FF0000000000000` to `0xFFFF000000000000`
 - **Pointer (object)**: `QNAN | TAG_PTR` occupies the high bits; the low 48 bits carry an unsigned address. Unboxing masks the tag without sign-extending bit 47. Boxing rejects addresses outside this payload in every profile; decoding also requires the address to fit the target pointer width.
 - **Int (64-bit)**: If it fits in the signed 47-bit inline range, stored inline. Otherwise, a heap pointer to a `BigInt`.
-- **Float**: Standard IEEE 754 double (non-NaN values).
+- **Float**: Standard IEEE 754 double, as its own bits, unless it is a NaN whose
+  bits 48-50 (the tag field) are set; see 2.1.1.
 - **Bool/None**: Specific bit patterns in the NaN space.
+
+### 2.1.1 Float NaN payloads (HF-833)
+
+Invariant: a Python float's bits survive every move (assignment, argument,
+return, container, attribute, `struct`/`array`/C-API round trip), as in
+CPython on every platform.
+
+- **The float test** is a tag boundary, as SpiderMonkey's punboxing uses: a
+  word is a float iff `bits & 0x7fff_0000_0000_0000 <= 0x7ff8_0000_0000_0000`
+  (one mask, one unsigned compare; the cost of the old `bits & QNAN != QNAN`).
+  Tags are `QNAN | tag << 48` with tag 1-5 and the sign bit clear, so a quiet
+  NaN with tag field 0 is a float.
+- **Inline**: every double except a NaN whose tag field is nonzero. That
+  covers both default NaNs (`0x7ff8_0000_0000_0000`, x86's
+  `0xfff8_0000_0000_0000`), every payload below 2^48 and the signaling NaNs
+  that keep the tag field clear, all as their exact bits: no canonical word,
+  no mapping on box or read. A signaling NaN with a set tag field passes the
+  float test but is never inline: quieting it would set bit 51 and forge a
+  tag. `formal/lean/MoltTIR/Runtime/NanBoxCorrect.lean` section 16 proves,
+  over all 2^64 inputs, that the box yields a float and that a quieted boxed
+  NaN stays a float.
+- **Heap**: a NaN with a nonzero tag field is a heap float of exact type
+  `float` (the float-subclass storage; `as_float_extended`,
+  `is_exact_float`), made only where floats enter from external bits
+  (`float_result_bits`: `struct`, `array`, memoryview, the C API, math).
+- **Compiled code boxes by identity.** Its raw floats are inline floats or
+  arithmetic on them; arithmetic quiets a NaN by setting bit 51 (tag field
+  unchanged) or produces a default NaN, and the WASM engine canonicalizes to
+  `0x7ff8_0000_0000_0000`, all inline. So `BoxVal(f64)` is the bit cast on
+  every backend.
+- **Allocation-free fallback**: `MoltObject::from_float`, which cannot
+  allocate, maps a heap NaN to the default NaN with its sign; every site that
+  can see one boxes through `float_result_bits`.
+
+Alternatives rejected: canonicalizing every NaN (owner decision 2026-11-11)
+loses payload and sign; a canonical inline word for the default NaN needs a
+mapping on every read (measured +3% instructions on LLVM spectral_norm) or on
+every compiled unbox (+4-5% on float benchmarks).
 
 ```rust
 pub enum MoltObject {

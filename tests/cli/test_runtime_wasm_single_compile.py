@@ -1138,8 +1138,9 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
     )
 
     profile_root = target_root / "wasm32-wasip1" / early_shared.profile_dir
-    cdylib = profile_root / "deps" / "molt_runtime-feedface.wasm"
-    staticlib = profile_root / "deps" / "libmolt_runtime-feedface.a"
+    # Cargo reports the root unit's uplifted outputs, which later builds reuse.
+    cdylib = profile_root / "molt_runtime.wasm"
+    staticlib = profile_root / "libmolt_runtime.a"
     cargo_calls: list[list[str]] = []
     observations = []
     capture = runtime_wasm_pair_build.cargo_build_reads
@@ -1555,7 +1556,7 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
     shared = shared._replace(target_root=target_root)
     reloc = reloc._replace(target_root=target_root)
     profile_root = target_root / "wasm32-wasip1" / shared.profile_dir
-    deps = profile_root / "deps"
+    deps = profile_root / "build" / "molt-runtime" / "feedfacefeedface" / "out"
     stale_cdylib = profile_root / "molt_runtime.wasm"
     stale_staticlib = profile_root / "libmolt_runtime.a"
     reported_cdylib = deps / "molt_runtime-feedface.wasm"

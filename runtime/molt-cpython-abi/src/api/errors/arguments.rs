@@ -4,6 +4,7 @@
 use super::*;
 use crate::api::refcount::OwnedPyObject;
 use crate::bridge::RuntimeValue;
+use std::mem::DropGuard;
 use std::ops::Range;
 
 struct FormatUnit {
@@ -40,32 +41,24 @@ impl ParseResource {
     }
 }
 
-#[derive(Default)]
-struct ParseCleanup {
-    resources: Vec<ParseResource>,
-    committed: bool,
-}
+/// The resources a parse converted so far. A failed parse releases them;
+/// a successful one hands them to its caller (`DropGuard::dismiss`).
+type ParseResources = Vec<ParseResource>;
 
-impl ParseCleanup {
-    fn retain(&mut self, resource: ParseResource) -> bool {
-        if self.resources.try_reserve(1).is_err() {
-            unsafe { PyErr_NoMemory() };
-            unsafe { resource.release() };
-            return false;
-        }
-        self.resources.push(resource);
-        true
+fn release_parse_resources(resources: ParseResources) {
+    for resource in &resources {
+        unsafe { resource.release() };
     }
 }
 
-impl Drop for ParseCleanup {
-    fn drop(&mut self) {
-        if !self.committed {
-            for resource in &self.resources {
-                unsafe { resource.release() };
-            }
-        }
+fn retain_parse_resource(resources: &mut ParseResources, resource: ParseResource) -> bool {
+    if resources.try_reserve(1).is_err() {
+        unsafe { PyErr_NoMemory() };
+        unsafe { resource.release() };
+        return false;
     }
+    resources.push(resource);
+    true
 }
 
 fn format_error<T>() -> Option<T> {
@@ -350,7 +343,7 @@ unsafe fn parse_arguments(
             return 0;
         }
     }
-    let mut cleanup = ParseCleanup::default();
+    let mut cleanup = DropGuard::new(ParseResources::new(), release_parse_resources);
     for (index, unit) in plan.units.iter().enumerate() {
         if index == plan.positional && nargs > plan.positional {
             unsafe { set_parse_type_error("too many positional arguments") };
@@ -452,7 +445,7 @@ unsafe fn parse_arguments(
         unsafe { set_parse_type_error("invalid keyword arguments") };
         return 0;
     }
-    cleanup.committed = true;
+    DropGuard::dismiss(cleanup);
     1
 }
 
@@ -514,7 +507,7 @@ unsafe fn convert_unit(
     item: &OwnedPyObject,
     format: &[u8],
     outs: &mut [*mut c_void],
-    cleanup: &mut ParseCleanup,
+    cleanup: &mut ParseResources,
     location: &ArgumentLocation<'_>,
 ) -> c_int {
     if format[unit.source.start] != b'(' {
@@ -592,7 +585,7 @@ unsafe fn convert_argument(
     item: &OwnedPyObject,
     fmt: &[u8],
     outs_slice: &mut [*mut c_void],
-    cleanup: &mut ParseCleanup,
+    cleanup: &mut ParseResources,
     location: &ArgumentLocation<'_>,
     source_format: &[u8],
 ) -> c_int {
@@ -779,7 +772,7 @@ unsafe fn convert_argument(
                 {
                     return 0;
                 }
-                if !cleanup.retain(ParseResource::Buffer(view)) {
+                if !retain_parse_resource(cleanup, ParseResource::Buffer(view)) {
                     return 0;
                 }
             }
@@ -860,7 +853,10 @@ unsafe fn convert_argument(
                             return 0;
                         }
                         if status == 0x20000
-                            && !cleanup.retain(ParseResource::Converted(convert, addr))
+                            && !retain_parse_resource(
+                                cleanup,
+                                ParseResource::Converted(convert, addr),
+                            )
                         {
                             return 0;
                         }
@@ -1008,7 +1004,7 @@ unsafe fn convert_argument(
                 }
                 crate::api::refcount::Py_XDECREF(owned_bytes);
             }
-            if buffer.is_null() && !cleanup.retain(ParseResource::Encoded(dest)) {
+            if buffer.is_null() && !retain_parse_resource(cleanup, ParseResource::Encoded(dest)) {
                 return 0;
             }
         }
@@ -1059,7 +1055,7 @@ unsafe fn convert_argument(
                     {
                         return 0;
                     }
-                    if !cleanup.retain(ParseResource::Buffer(view)) {
+                    if !retain_parse_resource(cleanup, ParseResource::Buffer(view)) {
                         return 0;
                     }
                     return 1;
@@ -1094,7 +1090,7 @@ unsafe fn convert_argument(
                 {
                     return 0;
                 }
-                if !cleanup.retain(ParseResource::Buffer(view)) {
+                if !retain_parse_resource(cleanup, ParseResource::Buffer(view)) {
                     return 0;
                 }
                 return 1;

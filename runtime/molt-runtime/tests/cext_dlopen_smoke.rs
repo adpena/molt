@@ -2,7 +2,7 @@
 //!
 //! The runtime, the CPython-ABI exports and the extension loader live in one
 //! image: the `cext_host` example, built explicitly in this test's Cargo
-//! target/profile. This executable compiles `hello.c` against that exact
+//! target/profile and named by MOLT_CEXT_HOST_LIBRARY. This executable compiles `hello.c` against that exact
 //! image, loads it and runs the whole scenario inside it through one C entry
 //! point, passing only C strings and a POD status. It links neither the
 //! runtime nor the ABI itself. A missing host or C toolchain is a failure,

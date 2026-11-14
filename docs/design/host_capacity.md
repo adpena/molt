@@ -112,7 +112,9 @@ An independent audit (2026-10-17) found more:
 6. **One executor CPU budget, per-peer memory slices.** The 2026-11-02
    host-wide jobserver attempt was rejected: leaked allotments and blocked
    I/O defeated its assumptions. The executor instead divides one observed
-   CPU budget (performance cores first on macOS, affinity/quota bounded)
+   CPU budget (every macOS core but the efficiency cores, affinity/quota
+   bounded; an M5 Max has 6 Super and 12 Performance cores and no
+   efficiency cores, so its budget is 18)
    among its pytest gates. It admits at most that many pytest sessions;
    serial sessions also reserve one CPU. Shares return when commands finish.
    This does not claim to budget other processes on the host. A parent
@@ -220,6 +222,46 @@ requires both the raw lifetime trip and the isolated subject's successful exit.
 Benchmark executable-image attribution and scheduler cost qualification remain
 HF-334/V1-07 obligations; lifetime RSS alone cannot satisfy those claims. The
 guest binary pays none of this test-observer cost.
+
+## Cross-job admission (2026-11-12, HF-623)
+
+Each tool above sizes its workers from the memory free when it starts, so two
+suite-sized jobs started near each other each claim the whole machine. On
+2026-11-12 two consumer gates (`-n auto`, about 16,000 tests each), two
+landings and benchmark builds shared this host: the C6 and HF-833 landings
+both ran past `land --fast`'s 90-minute try-run budget (5,490 s), which
+cancelled their crate-test gate, and no landing completed until the load was
+cut.
+
+Heavy work therefore takes a slot of its class first
+(`host_capacity.host_work_slot`, `HostWorkClass`): an exclusive lock in the
+install's shared control state (`host_work_dir`, `control_state_dir(...,
+"host-work")`). A landing batch takes the integration slot (`heavy.lock`),
+after a landing lock it holds from the moment it queues. Development work
+takes the development slot (`development.lock`): the consumer gate's importer
+run, a lane's try run (before its budget clock starts), postsubmit and a
+receipt rerun. The two classes never wait for each other: a lane's checks
+never stop the landing queue (2026-11-13: a consumer gate held every landing
+for 19 minutes), and a batch never stops a lane's try run (2026-11-14: try
+runs waited 17 and 39 minutes for batches). A second job of a class waits and
+names the holder instead of sharing the machine. Each lock admits its waiters
+in arrival order through a ticket queue beside it (`<lock>.queue/*.ticket`):
+a waiter tries the lock only when no live waiter queued earlier. A waiter is
+live while it holds its ticket's lock, which the operating system drops when
+it dies, so an abandoned ticket never blocks the queue; the first waiter to
+find one unlocked removes it. A polling lock alone admitted whoever polled
+first: on 2026-11-14 a try run that had waited 21 minutes longer lost the
+slot to a newer one. The operating system releases every lock when its
+holder dies.
+
+Work the holder starts belongs to the holder's job. The holder exports
+`MOLT_HOST_WORK_SLOT_HELD` (the resolved slot directory) for its body, and a
+descendant that asks for the same slot is admitted at once; otherwise a
+landing's tests that run a consumer gate would wait for their own landing. The
+tests that drive a landing or a gate directly (`tests/test_molt_dev.py`,
+`tests/tools/test_consumer_gate.py`) take a slot directory of their own. Prior
+art: Bazel's single server lock per output base, Cargo's build-directory lock,
+GNU make's jobserver, which its sub-makes inherit through the environment.
 
 ## Storage
 

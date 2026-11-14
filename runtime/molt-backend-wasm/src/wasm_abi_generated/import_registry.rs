@@ -631,6 +631,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "global_slot_set",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::StaticCellsBind,
+        name: "static_cells_bind",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::BuildClassBuiltin,
         name: "build_class_builtin",
     },
@@ -771,8 +775,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "call_bind_ic_owned",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::LoadMethod,
-        name: "load_method",
+        import: WasmRuntimeImport::MethodSiteLoad,
+        name: "method_site_load",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoadSuperMethod,
@@ -1633,6 +1637,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListReverse,
         name: "list_reverse",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ListReverseSlice,
+        name: "list_reverse_slice",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListSort,
@@ -11603,6 +11611,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_global_slot_base" => Some(WasmRuntimeImport::GlobalSlotBase),
         "global_slot_set" => Some(WasmRuntimeImport::GlobalSlotSet),
         "molt_global_slot_set" => Some(WasmRuntimeImport::GlobalSlotSet),
+        "static_cells_bind" => Some(WasmRuntimeImport::StaticCellsBind),
+        "molt_static_cells_bind" => Some(WasmRuntimeImport::StaticCellsBind),
         "build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
         "molt_build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
         "class_builder_check" => Some(WasmRuntimeImport::ClassBuilderCheck),
@@ -11675,8 +11685,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_call_bind_ic" => Some(WasmRuntimeImport::CallBindIc),
         "call_bind_ic_owned" => Some(WasmRuntimeImport::CallBindIcOwned),
         "molt_call_bind_ic_owned" => Some(WasmRuntimeImport::CallBindIcOwned),
-        "load_method" => Some(WasmRuntimeImport::LoadMethod),
-        "molt_load_method" => Some(WasmRuntimeImport::LoadMethod),
+        "method_site_load" => Some(WasmRuntimeImport::MethodSiteLoad),
+        "molt_method_site_load" => Some(WasmRuntimeImport::MethodSiteLoad),
         "load_super_method" => Some(WasmRuntimeImport::LoadSuperMethod),
         "molt_load_super_method" => Some(WasmRuntimeImport::LoadSuperMethod),
         "call_loaded_method0" => Some(WasmRuntimeImport::CallLoadedMethod0),
@@ -12107,6 +12117,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_list_remove" => Some(WasmRuntimeImport::ListRemove),
         "list_reverse" => Some(WasmRuntimeImport::ListReverse),
         "molt_list_reverse" => Some(WasmRuntimeImport::ListReverse),
+        "list_reverse_slice" => Some(WasmRuntimeImport::ListReverseSlice),
+        "molt_list_reverse_slice" => Some(WasmRuntimeImport::ListReverseSlice),
         "list_sort" => Some(WasmRuntimeImport::ListSort),
         "molt_list_sort" => Some(WasmRuntimeImport::ListSort),
         "map_builtin" => Some(WasmRuntimeImport::MapBuiltin),

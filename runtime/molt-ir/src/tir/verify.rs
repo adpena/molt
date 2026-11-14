@@ -1754,7 +1754,7 @@ mod tests {
                 crate::OpKind::CodeSlotSet | crate::OpKind::TraceEnterSlot => {
                     Some("preserved_shape")
                 }
-                crate::OpKind::ModuleSlot => Some("fixture.module"),
+                crate::OpKind::ModuleSlot | crate::OpKind::StaticCellBase => Some("fixture.module"),
                 _ => None,
             };
             if let Some(symbol) = symbol {
@@ -1774,13 +1774,16 @@ mod tests {
                     origin,
                     runtime: None,
                     dialect: Dialect::Molt,
-                    opcode: if shape.kind == crate::OpKind::ModuleSlot {
-                        OpCode::ModuleSlot
-                    } else {
-                        OpCode::Copy
+                    opcode: match shape.kind {
+                        crate::OpKind::ModuleSlot => OpCode::ModuleSlot,
+                        crate::OpKind::StaticCellBase => OpCode::StaticCellBase,
+                        _ => OpCode::Copy,
                     },
                     operands: (0..shape.operands).map(|i| ValueId(i as u32)).collect(),
-                    results: if shape.kind == crate::OpKind::ModuleSlot {
+                    results: if matches!(
+                        shape.kind,
+                        crate::OpKind::ModuleSlot | crate::OpKind::StaticCellBase
+                    ) {
                         vec![ValueId(100)]
                     } else {
                         vec![]
@@ -1819,7 +1822,10 @@ mod tests {
                     }
                     let errors = verify_operation_shapes(&func).unwrap_err();
                     assert_eq!(errors.len(), 1);
-                    let expected = if shape.kind == crate::OpKind::ModuleSlot {
+                    let expected = if matches!(
+                        shape.kind,
+                        crate::OpKind::ModuleSlot | crate::OpKind::StaticCellBase
+                    ) {
                         "nonempty canonical module name"
                     } else {
                         "nonempty code-owner symbol"

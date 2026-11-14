@@ -198,6 +198,7 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::InstanceSetField
         | OpKind::Int
         | OpKind::IsNot
+        | OpKind::ListReverseSlice
         | OpKind::LoadAttr
         | OpKind::LoadLocal
         | OpKind::LoopCarryInit

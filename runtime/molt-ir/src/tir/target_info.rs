@@ -231,6 +231,15 @@ pub struct SimpleIrLoweringFeatures {
     /// runtime hands every activation the all-unbound slot words, so its
     /// sites keep the by-name path until reads take a try-retain protocol.
     pub module_global_slots: bool,
+    /// Whether method loads and the calls that consume them become compiled
+    /// method sites (call_anatomy.md 4.5 "Methods"): the backend lowers each
+    /// by the shared `molt_codegen_abi::method_site` generators against a
+    /// record in the program's data.
+    pub method_sites: bool,
+    /// Whether a proven reversed slice store becomes the in-place reverse
+    /// `list_reverse_slice`, a shared boxed runtime call the backend lowers
+    /// from the generated `runtime_boxed_op_abi` table (HF-837).
+    pub list_reverse_slice: bool,
 }
 
 /// Whether a target's backend consumes final TIR, so the late lowering stage
@@ -344,18 +353,24 @@ impl TargetInfo {
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::BackendLanes,
                 module_global_slots: true,
+                method_sites: true,
+                list_reverse_slice: true,
             },
             TargetKind::Wasm => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::BackendLanes,
                 module_global_slots: true,
+                method_sites: true,
+                list_reverse_slice: true,
             },
             TargetKind::Llvm => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::FinalTir,
                 module_global_slots: true,
+                method_sites: true,
+                list_reverse_slice: true,
             },
             // Luau publishes line and columns with each location and has no
             // code table to recover them; the Rust target captures no Origin.
@@ -364,6 +379,8 @@ impl TargetInfo {
                 cold_origin_frame_location: false,
                 final_lowering: FinalLowering::BackendLanes,
                 module_global_slots: false,
+                method_sites: false,
+                list_reverse_slice: false,
             },
         }
     }

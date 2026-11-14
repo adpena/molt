@@ -150,13 +150,6 @@ fn append(py: &PyToken<'_>, output: &mut Vec<u8>, value: &[u8]) -> Result<(), u6
 
 /// The pre-3.15 join keeps every Python chunk alive until completion and
 /// retires them in list order (last to first), including on callback failure.
-struct ReadChunks<'py>(Vec<OwnedRuntimeValue<'py>>);
-impl Drop for ReadChunks<'_> {
-    fn drop(&mut self) {
-        while self.0.pop().is_some() {}
-    }
-}
-
 pub(crate) extern "C" fn raw_io_base_readall(__context: u64, self_bits: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
@@ -164,7 +157,12 @@ pub(crate) extern "C" fn raw_io_base_readall(__context: u64, self_bits: u64) -> 
         let _self = OwnedRuntimeValue::retain(py.core_token(), self_bits);
         let modern = crate::object::ops_sys::runtime_target_at_least(py, 3, 15);
         let size = MoltObject::from_int(default_buffer_size(py)).bits();
-        let mut chunks = ReadChunks(Vec::new());
+        let mut chunks = std::mem::DropGuard::new(
+            Vec::new(),
+            |mut chunks: Vec<OwnedRuntimeValue<'_>>| {
+                while chunks.pop().is_some() {}
+            },
+        );
         let mut output = Vec::new();
         loop {
             let result = owned(py, call(py, self_bits, crate::NameId::Read, Some(size)));
@@ -175,7 +173,7 @@ pub(crate) extern "C" fn raw_io_base_readall(__context: u64, self_bits: u64) -> 
                 return MoltObject::none().bits();
             }
             if obj_from_bits(result.bits()).is_none() {
-                if chunks.0.is_empty() && output.is_empty() {
+                if chunks.is_empty() && output.is_empty() {
                     return result.into_bits();
                 }
                 break;
@@ -196,25 +194,25 @@ pub(crate) extern "C" fn raw_io_base_readall(__context: u64, self_bits: u64) -> 
                     return error;
                 }
             } else {
-                if chunks.0.try_reserve(1).is_err() {
+                if chunks.try_reserve(1).is_err() {
                     return raise_exception(
                         py,
                         BuiltinExc::MemoryError,
                         "cannot retain raw readall chunks",
                     );
                 }
-                chunks.0.push(result);
+                chunks.push(result);
             }
         }
-        if chunks.0.len() == 1 {
-            let pointer = obj_from_bits(chunks.0[0].bits()).as_ptr().unwrap();
+        if chunks.len() == 1 {
+            let pointer = obj_from_bits(chunks[0].bits()).as_ptr().unwrap();
             let class = unsafe { object_class_bits(pointer) };
             if class == 0 || class == builtin_classes(py).bytes {
                 // Legacy bytes.join returns its sole exact bytes chunk unchanged.
-                return chunks.0.pop().unwrap().into_bits();
+                return chunks.pop().unwrap().into_bits();
             }
         }
-        for chunk in &chunks.0 {
+        for chunk in chunks.iter() {
             let pointer = obj_from_bits(chunk.bits()).as_ptr().unwrap();
             let value =
                 unsafe { std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)) };

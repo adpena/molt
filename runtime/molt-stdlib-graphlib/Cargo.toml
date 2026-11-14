@@ -10,3 +10,6 @@ description = "graphlib (TopologicalSorter) stdlib intrinsics for the Molt runti
 [dependencies]
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+
+[lints]
+workspace = true

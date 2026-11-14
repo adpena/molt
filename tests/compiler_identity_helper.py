@@ -182,7 +182,8 @@ def compiler_cargo_stdout(
     write_compiler_source(root, product=product)
     package = root / "runtime" / product.value
     source = package / "src/main.rs"
-    deps = output.parent / "deps"
+    # The unit's out/ in Cargo 1.100's build-directory layout.
+    deps = output.parent / "build" / product.value / "0123456789abcdef" / "out"
     deps.mkdir(parents=True, exist_ok=True)
     unit = deps / (
         product.value.replace("-", "_")

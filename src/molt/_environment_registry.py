@@ -1724,6 +1724,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_CEXT_HOST_LIBRARY",
+      "output_neutral": false,
+      "owner": "runtime/test_support/cext_fixture.rs",
+      "summary": "The `cext_host` example cdylib that Cargo's JSON `filenames` reported for the running C-extension test's target and profile; the test links fixture extensions against it and panics when it is unset or absent.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "30",
       "kind": "float",
@@ -4190,6 +4200,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_HOST_WORK_SLOT_HELD",
+      "output_neutral": true,
+      "owner": "src/molt/host_capacity.py",
+      "summary": "The resolved host-work slot directory an ancestor process holds: molt.host_capacity.host_work_slot exports it for the body it admits, so a heavy job that the holder starts (a landing's tests running a consumer gate, say) belongs to the holder's job and is admitted at once instead of waiting for its own ancestor.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "0",
       "kind": "bool",
@@ -5755,6 +5775,16 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/cargo_execution_policy.py",
       "summary": "Forbids source builds and provenance refreshes of runtime and backend artifacts when set to exactly 1, so a build that needs one fails with a message naming the variable; default off; release verification refuses it.",
+      "values": []
+    },
+    {
+      "audience": "user",
+      "default": "0",
+      "kind": "bool",
+      "name": "MOLT_SLICE_REVERSE_REPORT",
+      "output_neutral": false,
+      "owner": "runtime/molt-passes/src/tir/passes/slice_reverse.rs",
+      "summary": "Set to exactly 1 to print, to stderr during the build, each slice store of a reversed slice of the same list that the slice_reverse pass could not prove reverses one range, with the missing proof; unset or any other value prints nothing.",
       "values": []
     },
     {

@@ -2,7 +2,7 @@ use super::*;
 use crate::BuiltinExc;
 use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending_attached_body};
 use crate::object::seq_access;
-use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 use crate::test_support::RuntimeTestTransaction;
 
 fn text(py: &PyToken<'_>, value: &str) -> u64 {
@@ -272,14 +272,6 @@ fn token_and_encoding_tuples_transfer_exactly_one_owned_reference_per_child() {
     });
 }
 
-struct RestoreBudget;
-
-impl Drop for RestoreBudget {
-    fn drop(&mut self) {
-        set_tracker(Box::new(UnlimitedTracker));
-    }
-}
-
 #[test]
 fn token_constructors_fail_atomically_and_preserve_the_original_pending_error() {
     let _transaction = RuntimeTestTransaction::new();
@@ -308,7 +300,7 @@ fn token_constructors_fail_atomically_and_preserve_the_original_pending_error() 
                     max_allocations: Some(limit + 1),
                     ..Default::default()
                 })));
-                let budget = RestoreBudget;
+                let budget = crate::test_support::restore_unlimited_tracker_on_drop();
                 let sentinel = crate::object::backing::tracked_vec_box_with_capacity::<u64>(0)
                     .expect("one separately owned allocation witness");
                 let result = constructor();

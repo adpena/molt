@@ -22,6 +22,7 @@ import pytest
 
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
+
 from tests.integration_driver_fixture import (
     clone_tree,
     isolated_checkout_artifacts as isolated_checkout_artifacts,
@@ -34,6 +35,22 @@ from tools.molt_dev_change_ids import landing_representation, read_commit_record
 from tools.driver_errors import EXIT_OK, EXIT_FAIL, EXIT_USAGE, DriverError  # noqa: E402
 from tests.integration_driver_fixture import FIXTURE_LEDGER  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _private_host_work_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lane's gates under test take a slot of their own, not this host's
+    (HF-623)."""
+    from molt import host_capacity
+
+    monkeypatch.setattr(
+        host_capacity, "host_work_dir", lambda _repo: tmp_path / "host-work"
+    )
+
+
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow child is not a stuck one. The properties
+# under test are orderings, which the ready and go files assert.
+_HANG_BOUND_S = 300.0
 CHANGE_A = "I" + "a1" * 20
 CHANGE_B = "I" + "b2" * 20
 
@@ -227,6 +244,7 @@ def test_lane_env_files_name_the_environment_that_provisioning_selects(
     assert _record(family, "fresh")["dx_env"]["UV_PROJECT_ENVIRONMENT"] == str(selected)
 
 
+@pytest.mark.slow  # 88-90 s per case on an 18-core host (2026-11-13)
 @pytest.mark.parametrize("legacy", [False, True])
 def test_pinned_assets_share_one_generation_and_survive_handoff_without_archival(
     family, legacy
@@ -617,7 +635,7 @@ import sys, time
 from pathlib import Path
 sys.path.insert(0, {root!r})
 from molt import checkout_provisioning as cp
-from tests.test_molt_dev_lanes import _args, _fixture_checkout_input
+from tests.test_molt_dev_lanes import _HANG_BOUND_S, _args, _fixture_checkout_input
 from tools import molt_dev_lanes as lanes
 from tools.driver_errors import DriverError
 cp.checkout_input = _fixture_checkout_input
@@ -629,7 +647,7 @@ if {hold!r}:
         after_release = {hold!r} == "release_slot"
         result = real(*args, **kwargs) if after_release else None
         Path({ready!r}).write_text("ready")
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not Path({go!r}).exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         return result if after_release else real(*args, **kwargs)
@@ -673,7 +691,7 @@ def _lane_child(
 def _await_hold(process, ready: Path, what: str) -> None:
     import time
 
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + _HANG_BOUND_S
     while not ready.exists():
         assert process.poll() is None, process.communicate()
         assert time.monotonic() < deadline, f"the child never reached {what}"
@@ -2073,6 +2091,7 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
         assert sibling in _registered(main)
 
 
+@pytest.mark.slow  # 66 s on an 18-core host (2026-11-13)
 def test_already_published_lane_retires_and_replay_uses_closed_custody(
     family: Path,
     monkeypatch: pytest.MonkeyPatch,

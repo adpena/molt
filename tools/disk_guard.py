@@ -2624,10 +2624,10 @@ def reclaim_checkout_state(
                 continue
             target = checkout_target_of(owner)
             if target is None:
-                if owner.path != checkout or not owner_is_absent(owner):
+                if owner.path != checkout or not owner_is_absent(owner, owner_root):
                     continue
             elif target.name != component or not (
-                target in retired_targets or owner_is_absent(owner)
+                target in retired_targets or owner_is_absent(owner, owner_root)
             ):
                 continue
             candidate = Candidate(
@@ -2653,12 +2653,12 @@ def reclaim_checkout_state(
                     current_target = checkout_target_of(current_owner)
                     if current_target is None:
                         if current_owner.path != checkout or not owner_is_absent(
-                            current_owner
+                            current_owner, owner_root
                         ):
                             return "checkout-owner-live"
                     elif current_target.name != component or not (
                         current_target in retired_targets
-                        or owner_is_absent(current_owner)
+                        or owner_is_absent(current_owner, owner_root)
                     ):
                         return "checkout-target-live"
                     allowed, reason = decide_owner_reclaim(
@@ -2974,7 +2974,7 @@ def _incremental_coordinate(path: Path, root: Path) -> tuple[Path, Path]:
     owner = bound_checkout_owner(session, root)
     if owner is None or owner.kind != "cargo-target":
         raise ValueError("incremental session lacks its bound checkout owner")
-    if not owner.path.is_dir() and not owner_is_absent(owner):
+    if not owner.path.is_dir() and not owner_is_absent(owner, root):
         raise ValueError(
             "incremental checkout owner is inaccessible or not a directory"
         )

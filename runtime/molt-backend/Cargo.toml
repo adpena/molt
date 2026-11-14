@@ -136,3 +136,6 @@ required-features = ["wasm-backend"]
 [[test]]
 name = "cbor_round_trip"
 required-features = ["cbor"]
+
+[lints]
+workspace = true

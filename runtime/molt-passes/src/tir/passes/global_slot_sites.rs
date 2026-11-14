@@ -16,6 +16,20 @@
 //!   Call[molt_global_slot_set] %m, %k, %module|None, %name, %value
 //! ```
 //!
+//! A stamp of a cell-eligible module (`cell`, call_anatomy.md 4.5a) names a
+//! static cell instead: its base is the module's block, a link-time
+//! constant, and a store is the shared inline swap, not a runtime call:
+//!
+//! ```text
+//!   %v = ModuleGetGlobal %module, %name          {cell M:k}
+//! becomes
+//!   %b = StaticCellBase[M] ; %v = GlobalSlotGet %b, %module, %name
+//!
+//!   ModuleSetAttr %module, %name, %value         {cell M:k}
+//! becomes
+//!   %b = StaticCellBase[M] ; StaticCellSet %b, %value   {cell M:k}
+//! ```
+//!
 //! `GlobalSlotBase` is pure within an activation, so the cleanup round after
 //! this pass merges every base of one module into one per function and
 //! hoists it out of loops. A read's meaning (slot load, unbound test, retain,
@@ -63,7 +77,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 rewritten.push(op);
                 continue;
             };
-            let site = if op.opcode == OpCode::ModuleGetGlobal {
+            let site_kind = if op.opcode == OpCode::ModuleGetGlobal {
                 Site::Read
             } else if is_store(&op) && op.results.iter().all(|result| !used.contains(result)) {
                 Site::Store
@@ -72,20 +86,46 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 // by-name op: the runtime entry returns None.
                 Site::ByName
             };
-            if site == Site::ByName {
+            if site_kind == Site::ByName {
                 let mut unchanged = op;
                 unchanged.set_global_slot(None);
                 rewritten.push(unchanged);
                 continue;
             }
             let span = op.source_span;
+            if slot.cell {
+                // A static cell (call_anatomy.md 4.5a): the block's address
+                // is a link-time constant, and a store is the shared
+                // inline swap, not a runtime call.
+                let base = fresh(func, TirType::I64);
+                let mut block = new_op(OpCode::StaticCellBase, vec![], vec![base], span);
+                block
+                    .attrs
+                    .insert("s_value".into(), AttrValue::Str(slot.module.clone()));
+                rewritten.push(block);
+                let mut site = op;
+                site.origin = None;
+                if site_kind == Site::Read {
+                    site.opcode = OpCode::GlobalSlotGet;
+                    site.operands.insert(0, base);
+                } else {
+                    let value = site.operands[2];
+                    site.opcode = OpCode::StaticCellSet;
+                    site.operands = vec![base, value];
+                    site.results.clear();
+                }
+                rewritten.push(site);
+                stats.ops_added += 1;
+                stats.values_changed += 1;
+                continue;
+            }
             let module_id = fresh(func, TirType::I64);
             let mut module_slot = new_op(OpCode::ModuleSlot, vec![], vec![module_id], span);
             module_slot
                 .attrs
                 .insert("s_value".into(), AttrValue::Str(slot.module.clone()));
             rewritten.push(module_slot);
-            if site == Site::Read {
+            if site_kind == Site::Read {
                 let base = fresh(func, TirType::I64);
                 rewritten.push(new_op(
                     OpCode::GlobalSlotBase,

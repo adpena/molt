@@ -592,12 +592,10 @@ fn observe_member_warning() {
 
 // Declare after a stack-backed traceback so a failing assertion clears the
 // pending exception before that traceback's fixture storage leaves scope.
-struct PendingErrorReset;
-
-impl Drop for PendingErrorReset {
-    fn drop(&mut self) {
+fn pending_error_reset() -> std::mem::DropGuard<(), fn(())> {
+    std::mem::DropGuard::new((), |()| {
         unsafe { errors::PyErr_Clear() };
-    }
+    })
 }
 
 /// A conforming native deallocator may inspect the active error, but must
@@ -1043,7 +1041,7 @@ fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
             ob_refcnt: 1,
             ob_type: &raw mut member_abi::PyTraceBack_Type,
         };
-        let _pending_reset = PendingErrorReset;
+        let _pending_reset = pending_error_reset();
         errors::PyErr_SetString(
             (&raw mut member_abi::PyExc_DeprecationWarning).cast(),
             c"__index__ returned non-int (type MemberIndexResult).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.".as_ptr(),
@@ -1301,7 +1299,7 @@ fn stringifier_and_richcompare_results_retire_with_the_exact_active_error() {
             ob_refcnt: 1,
             ob_type: &raw mut member_abi::PyTraceBack_Type,
         };
-        let _pending_reset = PendingErrorReset;
+        let _pending_reset = pending_error_reset();
         errors::PyErr_SetString(
             (&raw mut member_abi::PyExc_ValueError).cast(),
             c"truth conversion failed".as_ptr(),
@@ -1471,7 +1469,7 @@ fn type_attribute_descriptors_retire_at_their_public_lookup_boundaries() {
             ob_refcnt: 1,
             ob_type: &raw mut member_abi::PyTraceBack_Type,
         };
-        let _pending_reset = PendingErrorReset;
+        let _pending_reset = pending_error_reset();
         errors::PyErr_SetString(
             (&raw mut member_abi::PyExc_LookupError).cast(),
             c"metatype descriptor failed".as_ptr(),
@@ -1482,15 +1480,11 @@ fn type_attribute_descriptors_retire_at_their_public_lookup_boundaries() {
             errors::PyException_SetTraceback(failure.as_ptr(), &raw mut traceback),
             0
         );
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                TYPE_ATTRIBUTE_META.with(|value| value.set(0));
-                TYPE_ATTRIBUTE_DICT.with(|value| value.set(0));
-                TYPE_ATTRIBUTE_FAILURE.with(|value| value.set(0));
-            }
-        }
-        let _reset = Reset;
+        let _reset = std::mem::DropGuard::new((), |()| {
+            TYPE_ATTRIBUTE_META.with(|value| value.set(0));
+            TYPE_ATTRIBUTE_DICT.with(|value| value.set(0));
+            TYPE_ATTRIBUTE_FAILURE.with(|value| value.set(0));
+        });
         TYPE_ATTRIBUTE_META.with(|value| value.set(meta_descriptor.as_ptr() as usize));
         TYPE_ATTRIBUTE_DICT.with(|value| value.set(metaclass.tp_dict as usize));
         TYPE_ATTRIBUTE_FAILURE.with(|value| value.set(failure.as_ptr() as usize));

@@ -853,14 +853,7 @@ fn runtime_native_tasks_never_fabricate_python_frames() {
 
 #[test]
 fn frame_materialization_denial_never_looks_like_an_absent_frame() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-
-    struct RestoreBudget;
-    impl Drop for RestoreBudget {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
@@ -896,7 +889,7 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
                 max_allocations: Some(limit),
                 ..Default::default()
             })));
-            let budget = RestoreBudget;
+            let budget = crate::test_support::restore_unlimited_tracker_on_drop();
             match construct() {
                 Some(frame) => {
                     let frame = crate::builtins::exceptions::ExceptionValue::adopt(py, frame);

@@ -13,6 +13,16 @@ from tools import consumer_gate
 from tools.test_dependency_graph import DirectReaders
 
 
+@pytest.fixture(autouse=True)
+def _private_host_work_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gate under test takes a slot of its own, not this host's (HF-623)."""
+    from molt import host_capacity
+
+    monkeypatch.setattr(
+        host_capacity, "host_work_dir", lambda _repo: tmp_path / "host-work"
+    )
+
+
 def _git(root: Path, *args: str) -> str:
     return run_guarded_test_process(["git", "-C", str(root), *args], check=True).stdout
 
@@ -54,7 +64,9 @@ def _graph(monkeypatch, importers: tuple[str, ...]) -> list[list[str]]:
     seen: list[list[str]] = []
 
     class Graph:
-        def direct_readers(self, changed):
+        def direct_readers(
+            self, changed: list[str], *, before: object = None
+        ) -> DirectReaders:
             seen.append(list(changed))
             return DirectReaders(importers=importers, data_readers=())
 
@@ -91,6 +103,34 @@ def test_a_failing_importer_test_leaves_no_receipt(repo, monkeypatch):
     assert consumer_gate.check(repo, paths) == 1
 
 
+def test_a_test_that_fails_under_load_and_passes_alone_is_rerun_and_recorded(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-11-13: three tests with wall-clock liveness deadlines failed beside
+    # the suite's load and passed alone; each cost a full gate rerun. The gate
+    # now reruns the failures alone once and records them, as the landing does.
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    marker = repo / "first-run-done"
+    (repo / "tests/test_lib.py").write_text(
+        "from pathlib import Path\n\n"
+        "class TestUnderLoad:\n"
+        "    def test_value(self):\n"
+        f"        marker = Path({str(marker)!r})\n"
+        "        if not marker.exists():\n"
+        "            marker.write_text('x')\n"
+        "            raise AssertionError('deadline missed under load')\n",
+        encoding="utf-8",
+    )
+    paths = ["tests/test_lib.py"]
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, paths)
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["flaky_reruns"] == ["tests/test_lib.py::TestUnderLoad::test_value"]
+
+
 def test_generator_outputs_alone_need_no_receipt(repo):
     (repo / "generated.txt").write_text("2\n", encoding="utf-8")
     assert consumer_gate.check(repo, ["generated.txt"]) == 0
@@ -120,10 +160,68 @@ def test_commit_tree_matches_what_a_pathspec_commit_records(repo):
     assert tree == recorded
 
 
+def _commit(repo: Path, message: str) -> None:
+    _git(
+        repo,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "-q",
+        "--no-verify",
+        "-am",
+        message,
+    )
+
+
+def test_a_committed_deletion_names_a_path_the_tree_already_lacks(repo: Path) -> None:
+    """2026-11-14: gating a rebased stack that deleted files raised in `git
+    add` (the path is in neither the worktree nor HEAD); it changes nothing."""
+    (repo / "lib.py").unlink()
+    _commit(repo, "delete lib")
+
+    tree = consumer_gate.commit_tree(repo, ["lib.py"])
+
+    assert tree == _git(repo, "rev-parse", "HEAD^{tree}").strip()
+
+
+def test_run_against_a_base_gates_a_committed_stack(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured from HEAD, committed work is no change and runs nothing; a
+    stack names the main it lands on and runs the tests its commits reach."""
+    seen = _graph(monkeypatch, ("tests/test_lib.py",))
+    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree, base: [])
+    main = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _commit(repo, "change lib")
+
+    assert (
+        consumer_gate.run(repo, ["lib.py"], pytest_args=["-p", "no:cacheprovider"]) == 0
+    )
+    assert seen == [[]]
+    assert (
+        consumer_gate.run(
+            repo, ["lib.py"], pytest_args=["-p", "no:cacheprovider"], base=main
+        )
+        == 0
+    )
+    assert seen[-1] == ["lib.py"]
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, ["lib.py"])
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["base"] == main and receipt["importers"] == ["tests/test_lib.py"]
+
+
 def test_a_failing_static_gate_blocks_the_receipt_before_any_test(repo, monkeypatch):
     seen = _graph(monkeypatch, ("tests/test_lib.py",))
     failing = 'python -c "import sys; sys.exit(3)"'
-    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree: [failing])
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": [failing]
+    )
     (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 1
@@ -134,7 +232,9 @@ def test_a_failing_static_gate_blocks_the_receipt_before_any_test(repo, monkeypa
 def test_a_passing_run_records_its_static_gates(repo, monkeypatch):
     _graph(monkeypatch, ())
     passing = 'python -c "pass"'
-    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree: [passing])
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": [passing]
+    )
     (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 0

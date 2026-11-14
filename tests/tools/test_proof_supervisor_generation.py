@@ -98,7 +98,7 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
         if during_build is not None:
             during_build(source)
         binary.write_bytes(b"immutable supervisor image")
-        deps = binary.parent / "deps"
+        deps = binary.parent / "build"
         message = json.loads(
             _unit(
                 deps,
@@ -112,7 +112,7 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
                 },
             )
         )
-        # Cargo reports the uplifted executable and its deps image. The real
+        # Cargo reports the uplifted executable and its unit image. The real
         # reader must bind that final output to the populated rustc rule.
         Path(message["filenames"][0]).write_bytes(binary.read_bytes())
         message["executable"] = str(binary)

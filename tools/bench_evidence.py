@@ -482,18 +482,20 @@ class AdmittedBenchmarkWorkload:
     def reference_invocation(
         self, command: Sequence[str], environment: Mapping[str, str]
     ) -> BenchmarkInvocation:
+        # A reference interpreter reads no Python settings of the harness
+        # (PYTHONPATH would load the checkout's sitecustomize before every
+        # sample); a fixed hash seed keeps its output comparable with Molt's.
         env = ProcessEnvironment(environment)
+        env = env.without(
+            name for name in env if env.rule.key(name).startswith("PYTHON")
+        ).updated({"PYTHONHASHSEED": "0"})
         flags: tuple[str, ...] = ()
         if self._seal is not None:
             # The compiler image remains independent. Application references
             # load only their declared packages plus the selected stdlib.
-            env = env.without(
-                name for name in env if env.rule.key(name).startswith("PYTHON")
-            )
             env = env.updated(
                 {
                     "PYTHONPATH": self._python_paths(),
-                    "PYTHONHASHSEED": "0",
                     "PYTHONDONTWRITEBYTECODE": "1",
                 }
             )

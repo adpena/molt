@@ -645,13 +645,9 @@ fn string_and_bytes_constructors_forward_the_selected_failure_once() {
         let _other_owner = refcount::OwnedPyObject::from_owned(other);
         assert!(!other.is_null());
 
-        struct ResetAllocationError;
-        impl Drop for ResetAllocationError {
-            fn drop(&mut self) {
-                SELECTED_ALLOCATION_ERROR.with(|selected| selected.set(0));
-            }
-        }
-        let _reset = ResetAllocationError;
+        let _reset = std::mem::DropGuard::new((), |()| {
+            SELECTED_ALLOCATION_ERROR.with(|selected| selected.set(0));
+        });
         for incoming in [false, true] {
             for selected in [prior, other] {
                 for constructor in 0..4 {

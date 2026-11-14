@@ -29,7 +29,7 @@ import os
 import sys
 import tempfile
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -61,17 +61,29 @@ def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 def commit_tree(root: Path, paths: list[str]) -> str:
     """The tree ``git commit --only -- paths`` would record: HEAD plus the
-    working-tree bytes of ``paths`` (a deleted path is removed)."""
+    working-tree bytes of ``paths`` (a deleted path is removed).
+
+    A path absent from both the working tree and HEAD (a deletion already
+    committed) changes nothing; ``git add`` would refuse it as unmatched.
+    """
     with tempfile.TemporaryDirectory(prefix="molt-consumer-gate-") as scratch:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(scratch) / "index"))
         _git(root, "read-tree", "HEAD", env=env)
-        if paths:
-            _git(root, "add", "--all", "--", *paths, env=env)
+        tracked = set(
+            _git(root, "ls-files", "-z", "--", *paths, env=env).split("\0")
+            if paths
+            else ()
+        )
+        present = [
+            path for path in paths if os.path.lexists(root / path) or path in tracked
+        ]
+        if present:
+            _git(root, "add", "--all", "--", *present, env=env)
         return _git(root, "write-tree", env=env)
 
 
-def changed_paths(root: Path, tree: str) -> list[str]:
-    output = _git(root, "diff", "--name-only", "HEAD", tree)
+def changed_paths(root: Path, tree: str, *, base: str = "HEAD") -> list[str]:
+    output = _git(root, "diff", "--name-only", base, tree)
     return [line for line in output.splitlines() if line]
 
 
@@ -93,7 +105,7 @@ def _needs_receipt(root: Path, changed: list[str]) -> bool:
     return bool(changed) and not set(changed) <= generator_outputs(root)
 
 
-def static_gates(root: Path, tree: str) -> list[str]:
+def static_gates(root: Path, tree: str, *, base: str = "HEAD") -> list[str]:
     """The landing's static gates for this commit tree, as their commands.
 
     The selection is the landing's own (select_landing_gates over a dangling
@@ -107,7 +119,7 @@ def static_gates(root: Path, tree: str) -> list[str]:
     from tools.molt_dev_gates import display
     from tools.molt_dev_policy import select_landing_gates
 
-    head = _git(root, "rev-parse", "HEAD")
+    head = _git(root, "rev-parse", base)
     # A dangling, never-published probe: it names its own identity so a host
     # with no Git user configured (a farm checkout) can create it.
     identity = {
@@ -205,12 +217,25 @@ def presubmit_pytest_argv(root: Path, tests: Sequence[str]) -> list[str]:
     return [sys.executable, *command[1:]]
 
 
-def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
-    from tools.test_dependency_graph import load_graph
+def run(
+    root: Path,
+    paths: list[str],
+    *,
+    pytest_args: list[str] | None,
+    base: str = "HEAD",
+) -> int:
+    """Gate the tree a commit of ``paths`` would record, against ``base``.
 
+    ``base`` is HEAD for work about to be committed. A committed stack (a
+    rebase onto a new main, a bypass push) names the main it lands on, so
+    every commit since that main is the change.
+    """
+    from tools.test_dependency_graph import git_blob_reader, load_graph
+
+    base = _git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     tree = commit_tree(root, paths)
-    changed = changed_paths(root, tree)
-    statics = static_gates(root, tree)
+    changed = changed_paths(root, tree, base=base)
+    statics = static_gates(root, tree, base=base)
     print(f"consumer-gate: {len(statics)} static gate(s) the landing selects")
     failed = run_static_gates(root, statics)
     if failed:
@@ -220,7 +245,11 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
             file=sys.stderr,
         )
         return 1
-    readers = load_graph(root).direct_readers(changed)
+    # A changed module selects the tests that reach the definitions it
+    # changes, not every test below a conftest that uses one of its functions.
+    readers = load_graph(root).direct_readers(
+        changed, before=git_blob_reader(root, base)
+    )
     landing_built = landing_built_tests(root, readers.importers)
     run_now = [test for test in readers.importers if test not in landing_built]
     print(f"consumer-gate: {len(changed)} changed path(s), tree {tree[:12]}")
@@ -235,13 +264,42 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
         print(f"# {label}: {len(tests)}")
         for test in tests:
             print(f"  {test}")
+    flaky_reruns: list[str] = []
     if run_now:
         if pytest_args is None:
             argv = presubmit_pytest_argv(root, run_now)
         else:
             argv = [sys.executable, "-m", "pytest", "-q", *pytest_args, *run_now]
-        print("consumer-gate: " + " ".join(argv), flush=True)
-        if _COMMANDS.run(argv, cwd=root).returncode != 0:
+        from molt import host_capacity
+
+        # The importer run is suite-sized: it takes the host's one heavy-work
+        # slot, behind any landing, instead of sharing the machine with it.
+        with host_capacity.host_work_slot(
+            host_capacity.host_work_dir(root),
+            label=f"consumer gate ({root.name}, {len(run_now)} test files)",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=lambda message: print(message, flush=True),
+        ) as admission:
+            if admission.waited_seconds >= 1:
+                print(
+                    f"consumer-gate: admitted after {admission.waited_seconds:.0f} s",
+                    flush=True,
+                )
+            print("consumer-gate: " + " ".join(argv), flush=True)
+            # The importer tests are the holder's job: a test that runs a
+            # consumer gate in a child is admitted inside this slot.
+            env = {**os.environ, **host_capacity.held_slot_environment()}
+            report = Path(tempfile.mkdtemp(prefix="consumer-gate-")) / "junit.xml"
+            failed = (
+                _COMMANDS.run(
+                    [*argv, f"--junitxml={report}"], cwd=root, env=env
+                ).returncode
+                != 0
+            )
+            if failed:
+                flaky_reruns = _rerun_failures_alone(root, report, env)
+                failed = flaky_reruns is None
+        if failed:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
     if commit_tree(root, paths) != tree:
@@ -252,6 +310,7 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
     payload = {
         "schema": SCHEMA,
         "tree": tree,
+        "base": base,
         "changed": changed,
         "static_gates": statics,
         "importers": run_now,
@@ -259,10 +318,59 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
             test: list(deps) for test, deps in landing_built.items()
         },
         "data_readers": list(readers.data_readers),
+        # Tests that failed beside the suite's load and passed alone (Chromium's
+        # retry rule); tests/ owners replace their wall-clock waits.
+        "flaky_reruns": flaky_reruns,
     }
     path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
     print(f"consumer-gate: receipt {path}")
     return 0
+
+
+# More failures than this are a broken change, not load: no rerun.
+RERUN_LIMIT = 10
+
+
+def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
+    """The pytest node ids that failed or errored in a JUnit report, or None
+    when the report is missing or names a case no test file owns."""
+    import xml.etree.ElementTree as ElementTree
+
+    try:
+        cases = ElementTree.parse(report).getroot().iter("testcase")
+    except (OSError, ElementTree.ParseError):
+        return None
+    ids: list[str] = []
+    for case in cases:
+        if case.find("failure") is None and case.find("error") is None:
+            continue
+        parts = case.get("classname", "").split(".")
+        for split in range(len(parts), 0, -1):
+            path = "/".join(parts[:split]) + ".py"
+            if (root / path).is_file():
+                ids.append("::".join([path, *parts[split:], case.get("name", "")]))
+                break
+        else:
+            return None
+    return ids
+
+
+def _rerun_failures_alone(
+    root: Path, report: Path, env: Mapping[str, str]
+) -> list[str] | None:
+    """Rerun the failed tests once, alone and in order, as the landing reruns
+    a failed gate alone (Chromium's retry rule). Return the tests that passed
+    alone, or None when the failure is the change's."""
+    ids = _failed_node_ids(root, report)
+    if not ids or len(ids) > RERUN_LIMIT:
+        return None
+    print(f"consumer-gate: rerunning {len(ids)} failed test(s) alone once", flush=True)
+    rerun = [sys.executable, "-m", "pytest", "-q", *ids]
+    if _COMMANDS.run(rerun, cwd=root, env=env).returncode != 0:
+        return None
+    for test in ids:
+        print(f"consumer-gate: flaky under load, passed alone: {test}", flush=True)
+    return ids
 
 
 def check(root: Path, paths: list[str]) -> int:
@@ -306,11 +414,19 @@ def main(argv: list[str] | None = None) -> int:
             "presubmit options (-n auto, declared worker memory, --skip-slow)"
         ),
     )
+    parser.add_argument(
+        "--base",
+        default="HEAD",
+        help=(
+            "run: the commit the change is measured from (default HEAD, the "
+            "work about to be committed); a committed stack names its main"
+        ),
+    )
     parser.add_argument("paths", nargs="*", help="the paths the commit names")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     if args.mode == "run":
-        return run(root, args.paths, pytest_args=args.pytest_arg)
+        return run(root, args.paths, pytest_args=args.pytest_arg, base=args.base)
     return check(root, args.paths)
 
 

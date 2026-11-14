@@ -167,12 +167,6 @@ fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)
 fn slice_construction_preserves_callback_key_identity_and_original_index_error() {
     use crate::builtins::exceptions::ExceptionValue;
     use refcount::OwnedPyObject;
-    struct IndexErrorBinding;
-    impl Drop for IndexErrorBinding {
-        fn drop(&mut self) {
-            INDEX_ERROR.with(|slot| slot.set(0));
-        }
-    }
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::concurrency::gil::with_gil(|py| unsafe {
         OBSERVED_KEYS.with(|keys| keys.borrow_mut().clear());
@@ -200,7 +194,9 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
         let error = MoltObject::from_ptr(error).bits();
         let _error_owner = ExceptionValue::adopt(py, error);
         INDEX_ERROR.with(|slot| slot.set(error));
-        let _error_binding = IndexErrorBinding;
+        let _error_binding = std::mem::DropGuard::new((), |()| {
+            INDEX_ERROR.with(|slot| slot.set(0));
+        });
         let error_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(error);
         assert!(!error_view.is_null());
         let bound_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bound);

@@ -175,12 +175,16 @@ pub(super) fn wasm_loaded_method_ir(
         .into_iter()
         .chain((0..extra_arg_count).map(|idx| format!("arg{idx}")))
         .collect();
+    // A method load and its call are one method site (the TIR pass
+    // `method_sites` numbers them); a zero-argument `super()` load is not.
+    let method_site = (load_kind == molt_ir::OpKind::LoadMethod).then_some(0);
     let load = OpIR {
         var: Some("callable".to_string()),
         out: Some("self_or_null".to_string()),
         args: Some(load_args.clone()),
         s_value: Some("selected_method".to_string()),
         source_op_idx: Some(0),
+        method_site,
         ..OpIR::new(load_kind)
     };
     let call = OpIR {
@@ -190,6 +194,7 @@ pub(super) fn wasm_loaded_method_ir(
             call_args.len()
         ]),
         args: Some(call_args.clone()),
+        method_site,
         ..OpIR::new(molt_ir::OpKind::CallLoadedMethod)
     };
     let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["out"]);
@@ -352,6 +357,43 @@ pub(super) fn wasm_operator_debug_for_export(wasm: &[u8], export_name: &str) -> 
         |op| operators.push(format!("{op:?}")),
     );
     operators
+}
+
+/// The defined functions whose bodies call the runtime import `import`.
+pub(super) fn wasm_import_callers(wasm: &[u8], import: &str) -> BTreeSet<u32> {
+    let imports = wasm_function_import_indices(wasm);
+    let import_count = wasm_function_import_names(wasm).len() as u32;
+    let mut callers = BTreeSet::new();
+    let Some(&target) = imports.get(import) else {
+        return callers;
+    };
+    let mut body_index = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.expect("valid WASM module payload") {
+            let mut ops = body.get_operators_reader().expect("valid WASM operators");
+            while !ops.eof() {
+                if let wasmparser::Operator::Call { function_index } =
+                    ops.read().expect("valid WASM instruction")
+                    && function_index == target
+                {
+                    callers.insert(import_count + body_index);
+                }
+            }
+            body_index += 1;
+        }
+    }
+    callers
+}
+
+/// The one generated body that calls the runtime import `import`.
+pub(super) fn wasm_import_body(wasm: &[u8], import: &str) -> u32 {
+    let callers = wasm_import_callers(wasm, import);
+    assert_eq!(
+        callers.len(),
+        1,
+        "exactly one body calls {import}: {callers:?}"
+    );
+    *callers.first().unwrap()
 }
 
 /// Callees of a module's dynamic RC sites, keyed "retain" and "release".

@@ -6033,6 +6033,44 @@ def test_probe_resolves_a_bare_command_in_its_own_environment(
     assert rest == ["which", "tool"]
 
 
+def test_executor_writes_command_profiles_outside_the_source_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-11-13: CI's docs gates passed `--receipt proof-receipts/x.json` and
+    # each command's profile went to `proof-receipts/x.d/` inside the checkout;
+    # every test that ran a guarded child under the storage authority failed.
+    from molt.memory_guard_paths import harness_guard_artifact_dir
+
+    command = _synthetic_executor_command("profiled")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", _admit_synthetic_python)
+    seen: list[Path] = []
+
+    def run(
+        _plan: object,
+        current: object,
+        _cancel: object,
+        *,
+        environment: dict[str, str],
+        memory_share: object,
+        allocation: object = None,
+    ) -> object:
+        seen.append(Path(environment["MOLT_GUARD_PROFILE_LOG"]))
+        return _successful_synthetic_record(current)
+
+    monkeypatch.setattr(proof_plan, "_run_command", run)
+    receipt = tmp_path / "proof-receipts" / "family.json"
+    assert proof_plan.execute_commands(plan, (command,), receipt) == 0
+    (profile,) = seen
+    assert not profile.is_relative_to(receipt.parent)
+    assert not profile.is_relative_to(proof_plan.ROOT)
+    assert profile.is_relative_to(
+        harness_guard_artifact_dir(proof_plan.ROOT, os.environ)
+    )
+    assert profile.name == "profiled.attempt-1.profile.jsonl"
+
+
 def test_executor_preserves_admitted_path_provider_when_managed_projection_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

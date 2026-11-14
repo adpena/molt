@@ -1942,18 +1942,10 @@ mod literal_failure_tests {
         molt_bytes_from_bytes, molt_bytes_from_bytes_attached_body, molt_string_from_bytes,
         molt_string_from_bytes_attached_body,
     };
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use crate::{MoltObject, dec_ref_bits, exception_pending, obj_from_bits};
 
     type Materializer = unsafe extern "C" fn(u64, *const u8, u64, *mut u64) -> i32;
-
-    struct RestoreTracker;
-
-    impl Drop for RestoreTracker {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
 
     #[test]
     fn literal_invalid_inputs_define_unaligned_outputs_and_record_exceptions() {
@@ -2051,7 +2043,7 @@ mod literal_failure_tests {
                 max_memory: Some(0),
                 ..Default::default()
             })));
-            let reset = RestoreTracker;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             for (materialize, bytes, _) in cases {
                 let mut out = 0;
                 assert_eq!(

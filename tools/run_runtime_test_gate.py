@@ -1196,8 +1196,10 @@ def zlib_wasi_artifact(
             "provider requires opt0, checked arithmetic and rust-allocator only"
         )
     binary = Path(artifact["executable"])
-    target_root = Path(loads_exact(metadata)["target_directory"]).resolve()
-    if not binary.is_relative_to(target_root / WASI_TARGET) or binary.suffix != ".wasm":
+    # A test executable is an intermediate artifact: Cargo writes it to the
+    # build directory, which cargo metadata reports apart from the target.
+    build_root = Path(loads_exact(metadata)["build_directory"]).resolve()
+    if not binary.is_relative_to(build_root / WASI_TARGET) or binary.suffix != ".wasm":
         raise RuntimeError("provider image is not in the selected WASI target")
     with binary.open("rb") as stream:
         if stream.read(8) != b"\0asm\x01\0\0\0":

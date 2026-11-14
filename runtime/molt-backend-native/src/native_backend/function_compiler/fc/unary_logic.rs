@@ -218,7 +218,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 {
                     neg_f
                 } else {
-                    box_float_value(&mut *builder, neg_f, nbc)
+                    box_float_value(&mut *builder, neg_f)
                 }
             } else if op_prefers_int_lane(op) {
                 // -i64::MIN needs a BigInt; only a proven inline result can
@@ -350,7 +350,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 {
                     src_f
                 } else {
-                    box_float_value(&mut *builder, src_f, nbc)
+                    box_float_value(&mut *builder, src_f)
                 }
             } else if op_prefers_int_lane(op) {
                 let src_name = &args[0];

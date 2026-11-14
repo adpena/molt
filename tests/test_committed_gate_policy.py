@@ -342,8 +342,6 @@ def test_portability_cells_of_another_os_defer_to_their_own_cell(
 @pytest.mark.parametrize(
     "source,owner,readers",
     [
-        # tools/check_gate_liveness.py imports the encoding gate, so its test
-        # reads it at the second hop: postsubmit runs it, presubmit does not.
         ("tools/encoding_gate.py", "tests/tools/test_encoding_gate.py", set()),
         ("tools/check_ratio_direction.py", "tests/tools/test_signed_ratio.py", set()),
         (
@@ -410,10 +408,12 @@ def test_scanner_leaf_source_and_test_select_their_owner(source, owner, readers)
 
 def test_second_hop_readers_run_in_postsubmit_only():
     cfg = GateConfig.load(COMMITTED_GATES)
-    reader = "tests/tools/test_check_gate_liveness.py"
-    assert reader not in _selected_pytest_targets(cfg, ["tools/encoding_gate.py"])
+    # tools/check_environment_registry.py imports tools/_io_utf8.py, so its test
+    # reads that module at the second hop: postsubmit runs it, presubmit does not.
+    reader = "tests/tools/test_check_environment_registry.py"
+    assert reader not in _selected_pytest_targets(cfg, ["tools/_io_utf8.py"])
     assert reader in _selected_pytest_targets(
-        cfg, ["tools/encoding_gate.py"], mode=LandingMode.POSTSUBMIT
+        cfg, ["tools/_io_utf8.py"], mode=LandingMode.POSTSUBMIT
     )
 
 

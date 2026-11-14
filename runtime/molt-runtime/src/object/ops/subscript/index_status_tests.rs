@@ -17,14 +17,13 @@ thread_local! {
     static CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
-struct CallbackReset;
-impl Drop for CallbackReset {
-    fn drop(&mut self) {
+fn callback_reset() -> std::mem::DropGuard<(), fn(())> {
+    std::mem::DropGuard::new((), |()| {
         FAIL.set(false);
         SEEN.set(ptr::null_mut());
         CALLS.set(0);
         unsafe { errors::PyErr_Clear() };
-    }
+    })
 }
 
 unsafe extern "C" fn mapping_item(_: *mut PyObject, _: *mut PyObject) -> *mut PyObject {
@@ -50,7 +49,7 @@ fn native_mapping_slot_status_preserves_prior_and_legitimate_none() {
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let _reset = CallbackReset;
+            let _reset = callback_reset();
             let prior_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
                 BuiltinExc::LookupError,
@@ -128,7 +127,7 @@ fn managed_and_native_sequence_none_remains_success_with_prior_error() {
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let _reset = CallbackReset;
+            let _reset = callback_reset();
             let prior_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
                 BuiltinExc::LookupError,

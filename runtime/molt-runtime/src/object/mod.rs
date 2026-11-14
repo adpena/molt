@@ -2819,6 +2819,21 @@ pub(crate) unsafe fn object_is_exact_builtin_dict(_py: &PyToken<'_>, ptr: *mut u
         || builtin_classes_if_initialized(_py).is_some_and(|builtins| class_bits == builtins.dict)
 }
 
+/// `type(obj) is list`, for any of the list storage representations: no
+/// subclass, so no override of an item protocol.
+#[inline]
+pub(crate) unsafe fn object_is_exact_builtin_list(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    if !matches!(
+        unsafe { object_type_id(ptr) },
+        TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL
+    ) {
+        return false;
+    }
+    let class_bits = unsafe { object_class_bits(ptr) };
+    class_bits == 0
+        || builtin_classes_if_initialized(_py).is_some_and(|builtins| class_bits == builtins.list)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClassEdgeOwnership {
     Owned,
@@ -4659,28 +4674,36 @@ unsafe fn dec_ref_ptr_terminal_body(
         } else {
             None
         };
-        let (terminal_edge_count, terminal_resource_count) =
-            heap_lifecycle::terminal_detach_capacity(py, ptr);
-        let terminal_resource_count = terminal_resource_count
-            .checked_add(usize::from(
-                (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0,
-            ))
-            .unwrap_or_else(|| std::process::abort());
-        let terminal_edge_count = terminal_edge_count
-            .checked_add(usize::from(module_registry_edge.is_some()))
-            .unwrap_or_else(|| std::process::abort());
-        let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
-            terminal_edge_count,
-            terminal_resource_count,
-        );
-        heap_lifecycle::detach_terminal_owned_edges(py, ptr, &mut terminal_edges);
-        if let Some(bits) = module_registry_edge {
-            terminal_edges.detach_if_heap(bits);
+        // A payload of non-heap words with no side owner detaches nothing:
+        // its backing store is freed below without the edge sink, its census
+        // or the detach walk. Every other object takes the full transaction.
+        let detaches_edges = module_registry_edge.is_some()
+            || retired_runtime_view.is_some()
+            || !heap_lifecycle::retires_without_edges(ptr, terminal_flags, header_aux.kind);
+        if detaches_edges {
+            let (terminal_edge_count, terminal_resource_count) =
+                heap_lifecycle::terminal_detach_capacity(py, ptr);
+            let terminal_resource_count = terminal_resource_count
+                .checked_add(usize::from(
+                    (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0,
+                ))
+                .unwrap_or_else(|| std::process::abort());
+            let terminal_edge_count = terminal_edge_count
+                .checked_add(usize::from(module_registry_edge.is_some()))
+                .unwrap_or_else(|| std::process::abort());
+            let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
+                terminal_edge_count,
+                terminal_resource_count,
+            );
+            heap_lifecycle::detach_terminal_owned_edges(py, ptr, &mut terminal_edges);
+            if let Some(bits) = module_registry_edge {
+                terminal_edges.detach_if_heap(bits);
+            }
+            if let Some(view) = retired_runtime_view {
+                terminal_edges.detach_resource(heap_lifecycle::DetachedResource::RuntimeView(view));
+            }
+            terminal_edges.release_all(py);
         }
-        if let Some(view) = retired_runtime_view {
-            terminal_edges.detach_resource(heap_lifecycle::DetachedResource::RuntimeView(view));
-        }
-        terminal_edges.release_all(py);
         let total_size =
             total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
         terminal_resource_drop_no_unwind(|| {
@@ -5050,13 +5073,7 @@ mod tests {
                 max_memory: Some(small_plan.alloc_size),
                 ..Default::default()
             })));
-            struct TrackerReset;
-            impl Drop for TrackerReset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let denied = alloc_object(_py, large_total, TYPE_ID_OBJECT);
             assert!(denied.is_null());
@@ -5082,13 +5099,7 @@ mod tests {
                 max_memory: Some(plan.alloc_size),
                 ..Default::default()
             })));
-            struct TrackerReset;
-            impl Drop for TrackerReset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let denied = alloc_object(_py, total, TYPE_ID_GENERATOR);
             assert!(
@@ -5463,15 +5474,10 @@ mod tests {
                 .expect("builtin str class");
             let class_header = unsafe { super::header_from_obj_ptr(class_ptr) };
             let old_flags = unsafe { (*class_header).load_metadata_flags() };
-            struct RestoreClassFlags(*mut super::MoltHeader, u32);
-            impl Drop for RestoreClassFlags {
-                fn drop(&mut self) {
-                    unsafe {
-                        (*self.0).store_flags(self.1);
-                    }
-                }
-            }
-            let _restore = RestoreClassFlags(class_header, old_flags);
+            let _restore =
+                std::mem::DropGuard::new((class_header, old_flags), |(header, flags)| unsafe {
+                    (*header).store_flags(flags);
+                });
             unsafe {
                 (*class_header).fetch_or_flags(super::HEADER_FLAG_CLASS_DECLARES_FINALIZER);
             }

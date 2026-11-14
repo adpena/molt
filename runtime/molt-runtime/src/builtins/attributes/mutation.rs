@@ -273,18 +273,14 @@ impl<'a, 'gil> TypeMutation<'a, 'gil> {
             let Some(native) = self.native.as_mut() else {
                 return true;
             };
-            struct PublicationRetirement<'a>(&'a mut molt_cpython_abi::bridge::RuntimeTypeMutation);
-            impl Drop for PublicationRetirement<'_> {
-                fn drop(&mut self) {
-                    crate::object::foreign::retire_native_reference(|| self.0.retire_published());
-                }
-            }
             // Declared outside the saved-error scope: restoration runs before
             // this guard on both return and unwind, before caller displaced
             // owners. Prepared declaration/registry pins stay in the transaction.
-            let retirement = PublicationRetirement(native);
+            let mut retirement = std::mem::DropGuard::new(native, |native| {
+                crate::object::foreign::retire_native_reference(|| native.retire_published());
+            });
             let mut publish = || {
-                if retirement.0.publish() == 0 {
+                if retirement.publish() == 0 {
                     Ok(())
                 } else {
                     Err(molt_cpython_abi::ErrorIndicatorSet)
@@ -954,6 +950,13 @@ unsafe fn module_delattr_namespace(
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
             && object_type_id(dict_ptr) == TYPE_ID_DICT
         {
+            // An unbound cell misses like an absent key: the generic path
+            // below raises the module's AttributeError.
+            if let Some(true) =
+                crate::builtins::namespace_slots::static_cell_delete(_py, dict_ptr, attr_bits)
+            {
+                return Ok(());
+            }
             let annotations_bits = crate::NameId::DunderAnnotations.bits(_py);
             if annotations_bits == 0 {
                 return Err(());

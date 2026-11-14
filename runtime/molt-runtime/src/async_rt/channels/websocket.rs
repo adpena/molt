@@ -1601,14 +1601,7 @@ mod host_send_result_tests {
 
     #[test]
     fn websocket_pair_tuple_failure_retires_both_unpublished_handles() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreBudget;
-        impl Drop for RestoreBudget {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
-
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for has_prior_error in [false, true] {
@@ -1640,7 +1633,7 @@ mod host_send_result_tests {
                     max_allocations: Some(0),
                     ..Default::default()
                 })));
-                let budget = RestoreBudget;
+                let budget = crate::test_support::restore_unlimited_tracker_on_drop();
                 let result = super::ws_pair_into_tuple(py, left, right);
                 drop(budget);
                 assert_eq!(result, crate::MoltObject::none().bits());

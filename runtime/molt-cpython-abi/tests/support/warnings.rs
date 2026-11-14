@@ -93,14 +93,10 @@ unsafe fn set_error_instance(error: *mut PyObject) {
 /// # Safety
 /// `error` must be a live exception instance for the duration of `run`.
 pub unsafe fn with_error_instance(error: *mut PyObject, run: impl FnOnce()) {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            unsafe { set_error_instance(ptr::null_mut()) };
-        }
-    }
     unsafe { set_error_instance(error) };
-    let _reset = Reset;
+    let _reset = std::mem::DropGuard::new((), |()| {
+        unsafe { set_error_instance(ptr::null_mut()) };
+    });
     run();
 }
 
@@ -117,18 +113,14 @@ pub fn clear() {
 }
 
 pub fn with_provider(run: impl FnOnce()) {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            set_as_error(false);
-            set_observer(None);
-            unsafe { set_error_instance(ptr::null_mut()) };
-        }
-    }
     clear();
     set_as_error(false);
     set_observer(None);
     unsafe { set_error_instance(ptr::null_mut()) };
-    let _reset = Reset;
+    let _reset = std::mem::DropGuard::new((), |()| {
+        set_as_error(false);
+        set_observer(None);
+        unsafe { set_error_instance(ptr::null_mut()) };
+    });
     run();
 }

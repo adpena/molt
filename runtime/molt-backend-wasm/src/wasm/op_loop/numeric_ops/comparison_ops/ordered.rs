@@ -76,9 +76,8 @@ pub(super) fn emit_ordered_compare_op(
             import_ids,
             import_name,
             compare_op,
-            locals,
             reloc_enabled,
-            |func, _scratch_local| {
+            |func| {
                 emit_f64_ordered_compare(func, compare_op);
                 emit_box_bool_from_i32(func);
             },

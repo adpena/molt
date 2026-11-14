@@ -177,60 +177,65 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     }),
                 );
             }
-            let (symbol, operand_count) = if op.kind == OpKind::LoadMethod {
-                (RuntimeFn::LoadMethod, 1)
-            } else {
-                (RuntimeFn::LoadSuperMethod, 2)
-            };
+            let operand_count = if op.kind == OpKind::LoadMethod { 1 } else { 2 };
             assert_eq!(operands.len(), operand_count, "{} operands", op.kind);
             let attr_name = op
                 .s_value
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} has no attribute name", op.kind));
-            let data_id = module
-                .declare_data(
-                    &format!("mname_{}_{}", func_name, op_idx),
-                    Linkage::Local,
-                    false,
-                    false,
-                )
-                .unwrap();
-            let mut data_ctx = DataDescription::new();
-            data_ctx.define(attr_name.as_bytes().to_vec().into_boxed_slice());
-            module.define_data(data_id, &data_ctx).unwrap();
-            let global_ptr = module.declare_data_in_func(data_id, builder.func);
-            let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-            let name_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let source_op_idx = op.required_source_op_index(op_idx, op.kind);
-            let site_bits = builder.ins().iconst(
-                types::I64,
-                box_int(stable_ic_site_id(
-                    func_name,
-                    source_op_idx,
-                    op.kind.as_str(),
-                )),
-            );
             let self_slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 8,
                 3,
             ));
-            // The slot holds the null sentinel until the runtime writes it, so
-            // a call that raises before its write leaves a releasable word.
+            // The slot holds the null sentinel until the load writes it, so a
+            // call that raises before its write leaves a releasable word.
             let null = builder
                 .ins()
                 .iconst(types::I64, molt_codegen_abi::loaded_method_null_bits());
             let pointer_type = module.target_config().pointer_type();
             builder.ins().stack_store(pointer_type, null, self_slot, 0);
             let self_out = builder.ins().stack_addr(types::I64, self_slot, 0);
-            let mut call_args = vec![site_bits];
-            call_args.extend_from_slice(&operands);
-            call_args.extend_from_slice(&[name_ptr, name_len, self_out]);
-            let callee =
-                SimpleBackend::import_runtime_func_id_split(&mut *module, &mut *import_ids, symbol);
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &call_args);
-            let callable = builder.inst_results(call)[0];
+            let callable = if op.kind == OpKind::LoadMethod {
+                // A method site: the shared load body against the site's
+                // record, whose miss is `molt_method_site_load`.
+                let site = op
+                    .method_site
+                    .unwrap_or_else(|| panic!("a method load in {func_name} is a method site"));
+                let record = crate::native_backend::simple_backend::method_site_record(
+                    &mut *module,
+                    &mut *builder,
+                    func_name,
+                    site,
+                    Some(attr_name.as_bytes()),
+                );
+                let sites = super::calls::native_method_site_sites(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                );
+                let cold = import_runtime_func_ref(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    RuntimeFn::MethodSiteLoad,
+                );
+                crate::native_backend::simple_backend::emit_method_site_load(
+                    builder,
+                    sites,
+                    record,
+                    operands[0],
+                    self_out,
+                    cold,
+                )
+            } else {
+                emit_load_super_method(
+                    op, op_idx, func_name, attr_name, &operands, self_out, module, import_ids,
+                    builder,
+                )
+            };
             let self_or_null = builder
                 .ins()
                 .stack_load(pointer_type, types::I64, self_slot, 0);
@@ -699,4 +704,55 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }
     OpFlow::Proceed
+}
+
+/// CPython's `LOAD_SUPER_ATTR` in method form for zero-argument `super()`:
+/// `molt_load_super_method(site, class, first_arg, name, len, self_out)`.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn emit_load_super_method(
+    op: &OpIR,
+    op_idx: usize,
+    func_name: &str,
+    attr_name: &str,
+    operands: &[Value],
+    self_out: Value,
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder<'_>,
+) -> Value {
+    let data_id = module
+        .declare_data(
+            &format!("mname_{}_{}", func_name, op_idx),
+            Linkage::Local,
+            false,
+            false,
+        )
+        .unwrap();
+    let mut data_ctx = DataDescription::new();
+    data_ctx.define(attr_name.as_bytes().to_vec().into_boxed_slice());
+    module.define_data(data_id, &data_ctx).unwrap();
+    let global_ptr = module.declare_data_in_func(data_id, builder.func);
+    let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+    let name_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+    let source_op_idx = op.required_source_op_index(op_idx, op.kind);
+    let site_bits = builder.ins().iconst(
+        types::I64,
+        box_int(stable_ic_site_id(
+            func_name,
+            source_op_idx,
+            op.kind.as_str(),
+        )),
+    );
+    let mut call_args = vec![site_bits];
+    call_args.extend_from_slice(operands);
+    call_args.extend_from_slice(&[name_ptr, name_len, self_out]);
+    let callee = SimpleBackend::import_runtime_func_id_split(
+        &mut *module,
+        &mut *import_ids,
+        RuntimeFn::LoadSuperMethod,
+    );
+    let local_callee = module.declare_func_in_func(callee, builder.func);
+    let call = builder.ins().call(local_callee, &call_args);
+    builder.inst_results(call)[0]
 }

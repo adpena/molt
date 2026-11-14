@@ -1396,7 +1396,17 @@ def _uv_lock(packages: dict[str, tuple[str, str]], *, exempt: str = "") -> str:
     return "".join(lines)
 
 
+def _cargo_rule(root: Path) -> None:
+    """The repository's Cargo resolver applies the release-age rule."""
+    (root / ".cargo").mkdir(exist_ok=True)
+    (root / ".cargo" / "config.toml").write_text(
+        f'[registry]\nglobal-min-publish-age = "{pin_freshness.CARGO_MIN_PUBLISH_AGE}"\n',
+        encoding="utf-8",
+    )
+
+
 def _uv_root(tmp_path: Path, pyproject: str, packages: dict) -> Path:
+    _cargo_rule(tmp_path)
     (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
     (tmp_path / "uv.lock").write_text(_uv_lock(packages), encoding="utf-8")
     return tmp_path
@@ -1624,6 +1634,7 @@ NPM_EXEMPT = (
 def _npm_root(
     tmp_path: Path, npmrc: str | None, locked: str = "5.1", spec: str = "5.1"
 ) -> Path:
+    _cargo_rule(tmp_path)
     project = tmp_path / "web"
     project.mkdir()
     manifest = {"name": "web", "devDependencies": {"@s/types": spec}}
@@ -1733,11 +1744,38 @@ def test_an_npm_exemption_citing_an_advisory_must_name_its_oldest_fix(
         ) in out.getvalue()
 
 
+@pytest.mark.parametrize(
+    ("config", "problem"),
+    [
+        ("", 'global-min-publish-age must be "7 days"'),
+        ('[registry]\nglobal-min-publish-age = "3 days"\n', 'must be "7 days"'),
+        (
+            '[registry]\nglobal-min-publish-age = "7 days"\n'
+            '[resolver]\nincompatible-publish-age = "allow"\n',
+            'incompatible-publish-age must stay "deny"',
+        ),
+        (
+            '[registry]\nglobal-min-publish-age = "7 days"\n'
+            '[registries.mirror]\nmin-publish-age = "0"\n',
+            "[registries.mirror] min-publish-age overrides the global rule",
+        ),
+    ],
+)
+def test_cargo_resolver_must_apply_the_release_age_rule(
+    tmp_path: Path, config: str, problem: str
+) -> None:
+    (tmp_path / ".cargo").mkdir()
+    (tmp_path / ".cargo" / "config.toml").write_text(config, encoding="utf-8")
+    (found,) = pin_freshness.cargo_policy(tmp_path).problems
+    assert problem in found
+
+
 def test_every_repository_resolver_and_pin_applies_the_release_age_rule() -> None:
-    """uv, every tracked npm project and the pin record apply the 7-day rule,
+    """uv, every tracked npm project, Cargo and the pin record apply the 7-day rule,
     and every exemption names its release, its reason and when it ages out."""
     assert pin_freshness.uv_policy(ROOT).problems == ()
     assert pin_freshness.npm_policy(ROOT).problems == ()
+    assert pin_freshness.cargo_policy(ROOT).problems == ()
     rows = set(finding_status.read_ledger(ROOT).open_keys)
     assert pin_freshness.pin_policy(ROOT, rows).problems == ()
     # Every pin record names a pin the tool reads.

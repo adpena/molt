@@ -555,6 +555,7 @@ outputs = [
   "runtime/molt-runtime/src/attached_exports_generated/c_api/molt_api.rs",
   "runtime/molt-runtime/src/attached_exports_generated/call/bind/arguments.rs",
   "runtime/molt-runtime/src/attached_exports_generated/call/bind/inline_cache.rs",
+  "runtime/molt-runtime/src/attached_exports_generated/call/bind/method_site.rs",
   "runtime/molt-runtime/src/attached_exports_generated/call/bind.rs",
   "runtime/molt-runtime/src/attached_exports_generated/call/dispatch.rs",
   "runtime/molt-runtime/src/attached_exports_generated/concurrency/execution.rs",

@@ -31,7 +31,6 @@ const PHYSICAL_PARAMS: u32 = 4;
 const WORDS: u32 = 96;
 const PREDICATES: u32 = 24;
 const FIRST_WORD: u32 = PHYSICAL_PARAMS;
-const FIRST_PREDICATE: u32 = FIRST_WORD + WORDS;
 
 /// Function indices of one module's generated frame bodies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,22 +78,20 @@ pub(in crate::wasm) fn emit_frame_bodies(backend: &mut WasmBackend, reloc: bool)
             Body::Push => push_type,
             Body::Pop { .. } | Body::PopLinked => pop_type,
         });
-        let mut locals = vec![ValType::I64; WORDS as usize];
-        locals.extend(std::iter::repeat_n(ValType::I32, PREDICATES as usize));
-        let mut func = Function::new_with_locals_types(locals);
+        let mut func = Function::new_with_locals_types(WasmBodyLayout::scratch_locals());
         func.attach_context(
             PHYSICAL_PARAMS as usize,
             backend.execution_call_abis.clone(),
         );
-        let mut b = WasmFrameBuilder {
-            func: &mut func,
+        let mut b = WasmFrameBuilder::new(
+            &mut func,
             reloc,
-            imports: &backend.import_ids,
-            word_count: 0,
-            predicate_count: 0,
-            open: 0,
-            attempts: Vec::new(),
-        };
+            &backend.import_ids,
+            WasmBodyLayout {
+                admission: ADMISSION_PARAM,
+                first_word: FIRST_WORD,
+            },
+        );
         crate::wasm::pending_work::emit_thread_record(b.func);
         let thread = b.word();
         match body {
@@ -116,7 +113,7 @@ pub(in crate::wasm) fn emit_frame_bodies(backend: &mut WasmBackend, reloc: bool)
             ),
             Body::PopLinked => generate_linked_frame_pop(&mut b, SUBJECT_PARAM),
         }
-        assert_eq!(b.open, 0, "a frame body left a control label open");
+        assert!(b.closed(), "a frame body left a control label open");
         func.instruction(&Instruction::End);
         backend.codes.function(&func);
         backend.func_count += 1;
@@ -131,20 +128,70 @@ pub(in crate::wasm) fn emit_frame_bodies(backend: &mut WasmBackend, reloc: bool)
     backend.import_ids.set_frame_bodies(bodies);
 }
 
-struct WasmFrameBuilder<'a> {
-    func: &'a mut Function,
-    reloc: bool,
-    imports: &'a TrackedImportIds,
+/// Where a generated body keeps its RC admission parameter and its scratch:
+/// `WORDS` i64 locals from `first_word`, then `PREDICATES` i32 locals.
+#[derive(Clone, Copy)]
+pub(in crate::wasm) struct WasmBodyLayout {
+    pub(in crate::wasm) admission: u32,
+    pub(in crate::wasm) first_word: u32,
+}
+
+impl WasmBodyLayout {
+    /// The scratch locals a body with this layout declares after its
+    /// parameters.
+    pub(in crate::wasm) fn scratch_locals() -> Vec<ValType> {
+        let mut locals = vec![ValType::I64; WORDS as usize];
+        locals.extend(std::iter::repeat_n(ValType::I32, PREDICATES as usize));
+        locals
+    }
+}
+
+/// WASM's spelling of the shared control and word primitives in a generated
+/// body. The method site generators reuse it (`method_site.rs`).
+pub(in crate::wasm) struct WasmFrameBuilder<'a> {
+    pub(in crate::wasm) func: &'a mut Function,
+    pub(in crate::wasm) reloc: bool,
+    pub(in crate::wasm) imports: &'a TrackedImportIds,
+    layout: WasmBodyLayout,
     word_count: u32,
     predicate_count: u32,
     /// Control labels open at the emission point.
     open: u32,
     /// For each open `attempt`, `open` just inside its fast-path block.
     attempts: Vec<u32>,
+    /// The function type of a fixed-arity compiled entry, by its number of
+    /// Python arguments, for a method site's call body.
+    pub(in crate::wasm) entry_types: std::collections::BTreeMap<usize, u32>,
+}
+
+impl<'a> WasmFrameBuilder<'a> {
+    pub(in crate::wasm) fn new(
+        func: &'a mut Function,
+        reloc: bool,
+        imports: &'a TrackedImportIds,
+        layout: WasmBodyLayout,
+    ) -> Self {
+        Self {
+            func,
+            reloc,
+            imports,
+            layout,
+            word_count: 0,
+            predicate_count: 0,
+            open: 0,
+            attempts: Vec::new(),
+            entry_types: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Whether every control label the body opened is closed.
+    pub(in crate::wasm) fn closed(&self) -> bool {
+        self.open == 0
+    }
 }
 
 impl WasmFrameBuilder<'_> {
-    fn push(&mut self, instruction: Instruction<'static>) {
+    pub(in crate::wasm) fn push(&mut self, instruction: Instruction<'static>) {
         self.func.instruction(&instruction);
     }
     fn fresh_word(&mut self) -> u32 {
@@ -152,12 +199,12 @@ impl WasmFrameBuilder<'_> {
             self.word_count < WORDS,
             "shared frame generator exhausted its word scratch"
         );
-        let slot = FIRST_WORD + self.word_count;
+        let slot = self.layout.first_word + self.word_count;
         self.word_count += 1;
         slot
     }
     /// Pop the i64 on the operand stack into a fresh scratch word.
-    fn word(&mut self) -> u32 {
+    pub(in crate::wasm) fn word(&mut self) -> u32 {
         let slot = self.fresh_word();
         self.push(Instruction::LocalSet(slot));
         slot
@@ -167,12 +214,12 @@ impl WasmFrameBuilder<'_> {
             self.predicate_count < PREDICATES,
             "shared frame generator exhausted its predicate scratch"
         );
-        let slot = FIRST_PREDICATE + self.predicate_count;
+        let slot = self.layout.first_word + WORDS + self.predicate_count;
         self.predicate_count += 1;
         self.push(Instruction::LocalSet(slot));
         slot
     }
-    fn push_get(&mut self, slot: u32) {
+    pub(in crate::wasm) fn push_get(&mut self, slot: u32) {
         self.push(Instruction::LocalGet(slot));
     }
     /// Push the i32 linear-memory address `pointer + offset`.
@@ -184,7 +231,7 @@ impl WasmFrameBuilder<'_> {
     }
     fn refcount(&mut self, bits: u32, operation: RefcountOperation) {
         self.push_get(bits);
-        self.push_get(ADMISSION_PARAM);
+        self.push_get(self.layout.admission);
         emit_call(self.func, self.reloc, self.imports.refcount_body(operation));
     }
 }

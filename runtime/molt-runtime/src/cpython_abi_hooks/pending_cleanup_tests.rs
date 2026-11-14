@@ -1219,14 +1219,10 @@ fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary(
         };
         kind.tp_as_buffer = (&raw mut slots).cast();
         assert_eq!(unsafe { kind.ready() }, 0);
-        struct HostileReset;
-        impl Drop for HostileReset {
-            fn drop(&mut self) {
-                RETIREMENT_HOSTILE.with(|cell| cell.set(false));
-                RETIREMENT_GET_RESULT.with(|cell| cell.set(None));
-            }
-        }
-        let _reset = HostileReset;
+        let _reset = std::mem::DropGuard::new((), |()| {
+            RETIREMENT_HOSTILE.with(|cell| cell.set(false));
+            RETIREMENT_GET_RESULT.with(|cell| cell.set(None));
+        });
         for lease in [false, true] {
             for policy in 0..3 {
                 RETIREMENT_OBSERVATION.with(|cell| cell.set(RetirementObservation::default()));
@@ -1614,16 +1610,14 @@ unsafe extern "C" fn oom_prior_payload_drop(object: *mut PyObject) {
     })
 }
 
-struct RestoreOomObserver;
-
-impl Drop for RestoreOomObserver {
-    fn drop(&mut self) {
+fn restore_oom_observer() -> std::mem::DropGuard<(), fn(())> {
+    std::mem::DropGuard::new((), |()| {
         OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(false));
         OOM_REENTRY_NAME.with(|cell| cell.set(ptr::null()));
         OOM_ARRAY_HANDLE.with(|cell| cell.set(0));
         // All declarations outlive this guard, including failed assertions.
         unsafe { errors::PyErr_Clear() };
-    }
+    })
 }
 
 unsafe fn install_oom_prior(kind: *mut PyTypeObject, runtime: bool) -> *mut PyObject {
@@ -1708,7 +1702,7 @@ fn semantic_raise_replaces_either_prior_channel_before_native_retirement() {
             );
             payload_type.tp_dealloc = Some(oom_prior_payload_drop);
             assert_eq!(payload_type.ready(), 0);
-            let _reset = RestoreOomObserver;
+            let _reset = restore_oom_observer();
             for prior in 0..3 {
                 // Exercise direct recording, a cold explicit raise, and the
                 // existing-trace transport branch through their real callers.
@@ -1800,7 +1794,7 @@ fn numeric_allocation_failure_uses_the_declared_result_and_keeps_origins_unpubli
             );
             payload_type.tp_dealloc = Some(oom_prior_payload_drop);
             assert_eq!(payload_type.ready(), 0);
-            let _reset = RestoreOomObserver;
+            let _reset = restore_oom_observer();
             // Clean, C-prior and runtime-prior observations share real sources.
             // The prior exception is the only remaining payload owner at OOM.
             for prior in 0..3 {
@@ -1933,7 +1927,7 @@ fn allocation_failure_completes_displaced_c_owner_error_transport() {
             );
             payload_type.tp_dealloc = Some(oom_prior_payload_drop);
             assert_eq!(payload_type.ready(), 0);
-            let _reset = RestoreOomObserver;
+            let _reset = restore_oom_observer();
             for runtime in [false, true] {
                 for tuple in [false, true] {
                     install_oom_prior(&raw mut *payload_type, runtime);
@@ -2041,7 +2035,7 @@ fn string_allocation_status_preserves_success_and_propagates_failure() {
             );
             payload_type.tp_dealloc = Some(oom_prior_payload_drop);
             assert_eq!(payload_type.ready(), 0);
-            let _reset = RestoreOomObserver;
+            let _reset = restore_oom_observer();
             for runtime in [false, true] {
                 for constructor in 0..4 {
                     for failed in [false, true] {
@@ -2107,7 +2101,7 @@ fn container_backing_failure_selects_memory_error_before_partial_cleanup() {
             );
             payload_type.tp_dealloc = Some(oom_prior_payload_drop);
             assert_eq!(payload_type.ready(), 0);
-            let _reset = RestoreOomObserver;
+            let _reset = restore_oom_observer();
             let bytearray_class = crate::builtin_classes(py).bytearray;
             for runtime in [false, true] {
                 for constructor in 0..6 {
@@ -2175,7 +2169,7 @@ fn canonical_cache_allocation_failure_reentry_and_ascii_no_retry() {
                 );
                 payload_type.tp_dealloc = Some(oom_prior_payload_drop);
                 assert_eq!(payload_type.ready(), 0);
-                let _reset = RestoreOomObserver;
+                let _reset = restore_oom_observer();
                 for runtime in [false, true] {
                     for fixed_slot in [false, true] {
                         let outer_name = std::ffi::CString::new(format!(
@@ -2186,7 +2180,7 @@ fn canonical_cache_allocation_failure_reentry_and_ascii_no_retry() {
                             "molt_oom_retirement_identifier_{runtime}_{fixed_slot}"
                         ))
                         .unwrap();
-                        let _iteration_observer = RestoreOomObserver;
+                        let _iteration_observer = restore_oom_observer();
                         install_oom_prior(&raw mut *payload_type, runtime);
                         OOM_PRIOR_ROUNDTRIP.with(|cell| cell.set(true));
                         OOM_SELECTED_INSTANCE.with(|cell| cell.set(0));
@@ -2336,7 +2330,7 @@ fn array_allocation_failure_releases_storage_before_prior_retirement() {
                         MoltObject::none().bits()
                     );
                     assert!(!crate::exception_pending(py));
-                    let _reset = RestoreOomObserver;
+                    let _reset = restore_oom_observer();
                     install_oom_prior(&raw mut *payload_type, runtime);
                     OOM_ARRAY_HANDLE.with(|cell| cell.set(array.bits()));
                     OOM_ARRAY_OBSERVATION.with(|cell| cell.set((false, None, None, 0)));
@@ -2462,7 +2456,7 @@ fn array_index_and_slice_coercion_reenter_before_live_storage_selection() {
                     array.bits(),
                     MoltObject::from_int(7).bits(),
                 );
-                let _reset = RestoreOomObserver;
+                let _reset = restore_oom_observer();
                 OOM_ARRAY_HANDLE.with(|cell| cell.set(array.bits()));
                 ARRAY_INDEX_OBSERVATION.with(|cell| cell.set((0, false)));
                 let result = match operation {

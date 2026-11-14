@@ -471,6 +471,30 @@ fn runtime_classinfo_match(
     classinfo: u64,
     protocol: ClassInfoProtocol,
 ) -> Option<bool> {
+    // CPython's PyObject_IsInstance answers an exact type match before it
+    // looks up `__instancecheck__` (Objects/abstract.c, "Quick test for an
+    // exact match"): no user code runs, so the value needs no pin and the
+    // raised-exception state no save. `type_of_bits` is the object's real type,
+    // as `Py_IS_TYPE` reads `ob_type`, never an overridden `__class__`.
+    if matches!(protocol, ClassInfoProtocol::Instance) {
+        let exact = type_of_bits(py, value);
+        if exact != 0 && exact == classinfo {
+            return Some(true);
+        }
+        // A class whose metaclass is exactly `type` keeps the default
+        // `__instancecheck__`, which CPython runs as object_isinstance: the
+        // real-type subtype test first, and a `__class__` lookup (which may run
+        // user code) only when that test fails. So a subtype hit is the answer
+        // for any value; a miss is the answer only for an immediate (int, bool,
+        // float, None), whose `__class__` cannot be overridden.
+        if exact != 0 && type_of_bits(py, classinfo) == builtin_classes(py).type_obj {
+            let subtype =
+                unsafe { crate::object::class_layout::is_real_subtype(py, exact, classinfo) };
+            if subtype || obj_from_bits(value).as_ptr().is_none() {
+                return Some(subtype);
+            }
+        }
+    }
     let _value = crate::builtins::exceptions::ExceptionValue::pin(py, value);
     let mut matched = None;
     crate::builtins::exceptions::with_saved_raised_exception(py, || {

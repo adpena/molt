@@ -850,6 +850,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     record_slot,
                     module,
                     builder,
+                    sealed_blocks,
                 );
                 if let Some(continuation) = builder.current_block() {
                     carry_internal_cfg_tracking(

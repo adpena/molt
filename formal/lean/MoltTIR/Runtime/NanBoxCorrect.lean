@@ -47,11 +47,11 @@ instance (v : UInt64) : Decidable (IsPtr v) :=
 instance (v : UInt64) : Decidable (IsPending v) :=
   inferInstanceAs (Decidable (v &&& TAG_CHECK = QNAN ||| TAG_PEND))
 
-instance (v : UInt64) : Decidable (IsTagged v) :=
-  inferInstanceAs (Decidable (v &&& QNAN = QNAN))
-
 instance (v : UInt64) : Decidable (IsFloat v) :=
-  inferInstanceAs (Decidable (v &&& QNAN ≠ QNAN))
+  inferInstanceAs (Decidable (v &&& TAG_CHECK < FIRST_TAG_BOUNDARY))
+
+instance (v : UInt64) : Decidable (IsTagged v) :=
+  inferInstanceAs (Decidable (¬IsFloat v))
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 0: Additional constants matching Rust runtime
@@ -65,9 +65,6 @@ def INT_SHIFT : Nat := 17
 
 /-- POINTER_MASK = 0x0000_FFFF_FFFF_FFFF (48-bit address space). -/
 def POINTER_MASK : UInt64 := 0x0000FFFFFFFFFFFF
-
-/-- CANONICAL_NAN_BITS = 0x7ff0_0000_0000_0001 (from molt-obj-model). -/
-def CANONICAL_NAN_BITS : UInt64 := 0x7ff0000000000001
 
 /-- The expected tag pattern for the fused XOR check: QNAN | TAG_INT. -/
 def EXPECTED_INT_TAG : UInt64 := QNAN ||| TAG_INT
@@ -105,8 +102,8 @@ def toNanBox : Value → UInt64
 /-- Decode a NaN-boxed UInt64 back to a Value.
     Matches the Rust is_*/as_* methods in molt-obj-model/src/lib.rs. -/
 def fromNanBox (bits : UInt64) : Option Value :=
-  if bits &&& QNAN ≠ QNAN then
-    -- Float: QNAN bits not fully set
+  if bits &&& TAG_CHECK < FIRST_TAG_BOUNDARY then
+    -- Float: exponent and tag field below the first tag
     some (.float bits)
   else if bits &&& TAG_CHECK = QNAN ||| TAG_INT then
     -- Int: extract 47-bit payload with sign extension
@@ -253,14 +250,8 @@ private theorem int_mask_and_qnan_or_int : INT_MASK &&& (QNAN ||| TAG_INT) = 0 :
 /-- POINTER_MASK &&& (QNAN ||| TAG_PTR) = 0. -/
 private theorem pointer_mask_and_qnan_or_ptr : POINTER_MASK &&& (QNAN ||| TAG_PTR) = 0 := by native_decide
 
-/-- Concrete: POINTER_MASK &&& QNAN = 0. -/
-private theorem pointer_mask_and_qnan : POINTER_MASK &&& QNAN = 0 := by native_decide
-
 /-- Concrete: (QNAN ||| TAG_PTR) &&& POINTER_MASK = 0. -/
 private theorem qnan_or_ptr_and_pointer_mask : (QNAN ||| TAG_PTR) &&& POINTER_MASK = 0 := by native_decide
-
-/-- Concrete: INT_MASK &&& QNAN = 0. -/
-private theorem int_mask_and_qnan : INT_MASK &&& QNAN = 0 := by native_decide
 
 /-- Concrete: (QNAN ||| TAG_INT) &&& INT_MASK = 0. -/
 private theorem qnan_or_int_and_int_mask_v2 : (QNAN ||| TAG_INT) &&& INT_MASK = 0 := by native_decide
@@ -346,25 +337,11 @@ theorem int_roundtrip_concrete_min_negative :
 -- Helper lemmas for ptr and int roundtrip proofs
 -- ══════════════════════════════════════════════════════════════════
 
-/-- The QNAN bits are set in a ptr-encoded value. -/
-private theorem ptr_encoded_qnan (addr : UInt64) :
-    (QNAN ||| TAG_PTR ||| (addr &&& POINTER_MASK)) &&& QNAN = QNAN := by
-  rw [uint64_and_or_distrib_right']
-  have : (QNAN ||| TAG_PTR) &&& QNAN = QNAN := by native_decide
-  rw [this, uint64_and_assoc', pointer_mask_and_qnan, uint64_and_zero', uint64_or_zero']
-
 /-- The payload extraction recovers addr for ptr values. -/
 private theorem ptr_payload_extract (addr : UInt64) (h : addr &&& POINTER_MASK = addr) :
     (QNAN ||| TAG_PTR ||| (addr &&& POINTER_MASK)) &&& POINTER_MASK = addr := by
   rw [uint64_and_or_distrib_right', qnan_or_ptr_and_pointer_mask,
       uint64_and_idem_pointer_mask, h, uint64_zero_or]
-
-/-- The QNAN bits are set in an int-encoded value. -/
-private theorem int_encoded_qnan (raw : UInt64) :
-    (QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) &&& QNAN = QNAN := by
-  rw [uint64_and_or_distrib_right']
-  have : (QNAN ||| TAG_INT) &&& QNAN = QNAN := by native_decide
-  rw [this, uint64_and_assoc', int_mask_and_qnan, uint64_and_zero', uint64_or_zero']
 
 /-- The payload extraction for int values: upper bits vanish, payload is idempotent. -/
 private theorem int_payload_extract (raw : UInt64) :
@@ -379,8 +356,8 @@ theorem ptr_roundtrip (addr : UInt64) (hrange : addr &&& POINTER_MASK = addr) :
   unfold fromNanBox
   -- Navigate all 7 branches of the if-chain
   split
-  · -- Cond 1: bits &&& QNAN ≠ QNAN (float) — contradiction
-    rename_i hne; exact absurd (ptr_encoded_qnan addr) hne
+  · -- Cond 1: float test — contradiction (the masked word is QNAN ||| TAG_PTR)
+    rename_i hlt; rw [fromPtr_isPtr_aux addr] at hlt; exact absurd hlt (by native_decide)
   · -- Cond 1 false; check cond 2
     split
     · -- Cond 2: TAG_INT — contradiction
@@ -417,9 +394,10 @@ theorem int_roundtrip (n : Int) (hrange : -2^46 ≤ n ∧ n < 2^46) :
   unfold fromNanBox
   -- Navigate the if-chain using split
   split
-  · -- bits &&& QNAN ≠ QNAN — contradiction (QNAN is set in int encoding)
-    rename_i hne
-    exact absurd (int_encoded_qnan (UInt64.ofBitVec (BitVec.ofInt 64 n))) hne
+  · -- Float test — contradiction (the masked word is QNAN ||| TAG_INT)
+    rename_i hlt
+    rw [fromInt_isInt_aux (UInt64.ofBitVec (BitVec.ofInt 64 n))] at hlt
+    exact absurd hlt (by native_decide)
   · split
     · -- bits &&& TAG_CHECK = QNAN ||| TAG_INT — correct branch!
       -- After the tag match, we need to show the sign extension recovers n
@@ -533,11 +511,12 @@ theorem int_roundtrip (n : Int) (hrange : -2^46 ≤ n ∧ n < 2^46) :
 
     This is the fundamental correctness property of the NaN-boxing scheme.
     For integers, requires |n| < 2^46 (47-bit signed range).
-    For floats, requires non-NaN (NaN is canonicalized, losing identity).
+    For floats, requires the float test (a NaN keeps its bits iff its tag
+    field is clear; the runtime heap-boxes the rest).
     For pointers, requires addr fits in 48 bits. -/
 theorem nanbox_roundtrip (v : Value)
     (hrange : match v with
-      | .float bits => bits &&& QNAN ≠ QNAN  -- not in NaN space
+      | .float bits => bits &&& TAG_CHECK < FIRST_TAG_BOUNDARY  -- IsFloat
       | .int n => -2^46 ≤ n ∧ n < 2^46       -- 47-bit signed range
       | .ptr addr => addr &&& POINTER_MASK = addr  -- fits 48 bits
       | _ => True) :
@@ -558,7 +537,7 @@ theorem nanbox_roundtrip (v : Value)
     to the same bits, they must be the same value.
 
     Preconditions ensure values are in the representable range:
-    - Floats must not have the QNAN prefix (they are non-NaN)
+    - Floats must pass the float test (below the first tag)
     - Ints must be in 47-bit signed range
     - Ptrs must fit in 48 bits
 
@@ -567,12 +546,12 @@ theorem nanbox_roundtrip (v : Value)
     encodes to the same bits as Value.none without the float precondition. -/
 theorem tag_injective (v1 v2 : Value)
     (h1 : match v1 with
-      | .float bits => bits &&& QNAN ≠ QNAN
+      | .float bits => bits &&& TAG_CHECK < FIRST_TAG_BOUNDARY
       | .int n => -2^46 ≤ n ∧ n < 2^46
       | .ptr addr => addr &&& POINTER_MASK = addr
       | _ => True)
     (h2 : match v2 with
-      | .float bits => bits &&& QNAN ≠ QNAN
+      | .float bits => bits &&& TAG_CHECK < FIRST_TAG_BOUNDARY
       | .int n => -2^46 ≤ n ∧ n < 2^46
       | .ptr addr => addr &&& POINTER_MASK = addr
       | _ => True) :
@@ -1022,29 +1001,30 @@ theorem fused_bor_none_none_fails :
 -- Section 10: Float passthrough correctness
 -- ══════════════════════════════════════════════════════════════════
 
-/-- A non-NaN float is stored as-is: the NaN-boxing scheme does not modify
-    float bit patterns. This is the key performance property — float operations
-    never need to box/unbox.
+/-- A float is stored as-is: the NaN-boxing scheme does not modify float bit
+    patterns. This is the key performance property — the compiled box and
+    unbox are bit casts.
 
-    Precondition: the float's bits do not have the QNAN pattern set (i.e., it
-    is not a NaN value). NaN values are canonicalized to CANONICAL_NAN_BITS. -/
-theorem float_passthrough (bits : UInt64) (_h : bits &&& QNAN ≠ QNAN) :
+    Precondition: the float test (runtime spec 2.1.1). Every non-NaN and every
+    NaN whose tag field is clear passes it; the runtime heap-boxes the rest. -/
+theorem float_passthrough (bits : UInt64) (_h : IsFloat bits) :
     toNanBox (.float bits) = bits := by
   unfold toNanBox; rfl
 
 /-- Float values are correctly identified by IsFloat. -/
-theorem float_is_float (bits : UInt64) (h : bits &&& QNAN ≠ QNAN) :
+theorem float_is_float (bits : UInt64) (h : IsFloat bits) :
     IsFloat (toNanBox (.float bits)) := by
-  unfold toNanBox IsFloat; exact h
+  unfold toNanBox; exact h
 
 /-- Float values are NOT tagged. -/
-theorem float_not_tagged_val (bits : UInt64) (h : bits &&& QNAN ≠ QNAN) :
+theorem float_not_tagged_val (bits : UInt64) (h : IsFloat bits) :
     ¬IsTagged (toNanBox (.float bits)) := by
   exact float_not_tagged (toNanBox (.float bits)) (float_is_float bits h)
 
 /-- Float roundtrip: encoding then decoding recovers the value. -/
-theorem float_roundtrip (bits : UInt64) (h : bits &&& QNAN ≠ QNAN) :
+theorem float_roundtrip (bits : UInt64) (h : IsFloat bits) :
     fromNanBox (toNanBox (.float bits)) = some (.float bits) := by
+  unfold IsFloat at h
   unfold toNanBox fromNanBox
   simp [h]
 
@@ -1187,28 +1167,61 @@ theorem pointer_payload_tag_disjoint : POINTER_MASK &&& TAG_CHECK = 0 := by nati
 theorem bool_payload_tag_disjoint : (1 : UInt64) &&& TAG_CHECK = 0 := by native_decide
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 16: NaN canonicalization correctness
+-- Section 16: NaN payloads (runtime spec 2.1.1, HF-833)
 -- ══════════════════════════════════════════════════════════════════
 
-/-- CANONICAL_NAN_BITS (0x7ff0_0000_0000_0001) does NOT have the full QNAN
-    prefix set (bit 51 is clear), so it is detected as a float by the NaN-box
-    scheme. This is correct: Molt canonicalizes all NaN inputs to this single
-    pattern, and it lives in the IEEE 754 NaN space but NOT in Molt's tagged
-    NaN space (which requires QNAN = 0x7ff8... prefix).
+/-- The float box of molt-codegen-abi `box_float_bits`: a NaN keeps its bits iff
+    its tag field is clear; a NaN with a set tag field becomes the default quiet
+    NaN with its sign (the runtime heap-boxes the value itself). -/
+def boxFloat (bits : UInt64) : UInt64 :=
+  if bits &&& 0x7fffffffffffffff > 0x7ff0000000000000 ∧ bits &&& TAG_MASK ≠ 0 then
+    QNAN ||| (bits &&& 0x8000000000000000)
+  else
+    bits
 
-    This is a critical safety property: the canonical NaN cannot be confused
-    with any tagged value type. -/
-theorem canonical_nan_is_float : IsFloat CANONICAL_NAN_BITS := by native_decide
+/-- The shift form that molt-codegen-abi `is_float_bits` compiles: the shift
+    drops the sign, and the bound's low 49 bits are zero, so the compare reads
+    only the exponent and the tag field. -/
+theorem isFloat_iff_shifted (v : UInt64) :
+    IsFloat v ↔ v <<< 1 < FIRST_TAG_BOUNDARY <<< 1 := by
+  unfold IsFloat TAG_CHECK FIRST_TAG_BOUNDARY QNAN TAG_MASK TAG_INT
+  bv_decide
 
-/-- CANONICAL_NAN_BITS is not tagged (does not have full QNAN prefix). -/
-theorem canonical_nan_not_tagged : ¬IsTagged CANONICAL_NAN_BITS := by native_decide
+/-- Every boxed float tests as a float, for all 2^64 inputs: no f64 can forge a
+    tagged word. With the 15 disjointness theorems this makes the encoding
+    total and unambiguous. -/
+theorem boxFloat_is_float (bits : UInt64) : IsFloat (boxFloat bits) := by
+  unfold boxFloat IsFloat TAG_CHECK FIRST_TAG_BOUNDARY QNAN TAG_MASK TAG_INT
+  split <;> bv_decide
 
-/-- CANONICAL_NAN_BITS is not detected as any tagged type. -/
-theorem canonical_nan_not_int : ¬IsInt CANONICAL_NAN_BITS := by native_decide
-theorem canonical_nan_not_bool : ¬IsBool CANONICAL_NAN_BITS := by native_decide
-theorem canonical_nan_not_none : ¬IsNone_ CANONICAL_NAN_BITS := by native_decide
-theorem canonical_nan_not_ptr : ¬IsPtr CANONICAL_NAN_BITS := by native_decide
-theorem canonical_nan_not_pending : ¬IsPending CANONICAL_NAN_BITS := by native_decide
+/-- The box keeps every non-NaN and every NaN whose tag field is clear. A
+    signaling NaN with a set tag field passes the float test but is not kept:
+    quieting it would set bit 51 and forge a tagged word. -/
+theorem boxFloat_keeps_untagged (bits : UInt64)
+    (h : bits &&& 0x7fffffffffffffff ≤ 0x7ff0000000000000 ∨ bits &&& TAG_MASK = 0) :
+    boxFloat bits = bits := by
+  unfold TAG_MASK at h
+  unfold boxFloat QNAN TAG_MASK
+  split
+  · bv_decide
+  · rfl
+
+/-- Quieting a boxed NaN (hardware arithmetic sets bit 51) still yields a float,
+    for all 2^64 inputs: compiled float arithmetic can box its result with a bit
+    cast and never forge a tag. -/
+theorem quieted_boxFloat_is_float (bits : UInt64)
+    (hnan : boxFloat bits &&& 0x7fffffffffffffff > 0x7ff0000000000000) :
+    IsFloat (boxFloat bits ||| 0x0008000000000000) := by
+  revert hnan
+  unfold boxFloat IsFloat TAG_CHECK FIRST_TAG_BOUNDARY QNAN TAG_MASK TAG_INT
+  split <;> bv_decide
+
+/-- Concrete: the default quiet NaN of both signs and a signaling NaN keep
+    their bits; the first tagged word is not a float. -/
+theorem default_nan_is_float : IsFloat QNAN := by native_decide
+theorem negative_default_nan_is_float : IsFloat (QNAN ||| 0x8000000000000000) := by native_decide
+theorem signaling_nan_is_float : IsFloat 0x7ff0000000000001 := by native_decide
+theorem first_tag_not_float : ¬IsFloat FIRST_TAG_BOUNDARY := by native_decide
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 17: Bit-width safety lemmas

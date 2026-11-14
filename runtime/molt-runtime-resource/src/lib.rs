@@ -21,6 +21,13 @@ pub use temp_arena::TempArena;
 #[cfg(test)]
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Returns a guard that restores the unlimited allocation tracker when it
+/// drops, so a test that installs a limited tracker cannot leak it.
+#[cfg(test)]
+fn restore_unlimited_tracker_on_drop() -> std::mem::DropGuard<(), fn(())> {
+    std::mem::DropGuard::new((), |()| set_tracker(Box::new(UnlimitedTracker)))
+}
+
 // ---------------------------------------------------------------------------
 // ResourceError
 // ---------------------------------------------------------------------------

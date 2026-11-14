@@ -584,13 +584,7 @@ mod tests {
 
     #[test]
     fn callable_failure_retries_and_startup_names_need_no_allocation() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
                 let _ = builtin_classes(py);
@@ -605,7 +599,7 @@ mod tests {
                     max_memory: Some(0),
                     ..Default::default()
                 })));
-                let reset = RestoreTracker;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 assert_eq!(
                     builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
                     0

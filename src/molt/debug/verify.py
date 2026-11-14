@@ -114,27 +114,27 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         scope="native",
         description="invoke_ffi uses dedicated invoke_ffi_ic bridge/deopt lane",
         pattern=(
-            r'OpKind::InvokeFfi\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?box_bool\(if bridge_lane \{ 1 \} else \{ 0 \}\)[\s\S]*?"molt_invoke_ffi_ic"'
+            r'OpKind::InvokeFfi\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?box_bool\(if bridge_lane \{ 1 \} else \{ 0 \}\)[\s\S]*?RuntimeFn::InvokeFfiIc\b'
         ),
     ),
     SemanticAssertion(
         scope="native",
         description="call_bind/call_indirect keep distinct call-site labels + dedicated imports",
         pattern=(
-            r'OpKind::CallBind\s*\|\s*OpKind::CallIndirect\s*=>[\s\S]*?"molt_call_indirect_ic"[\s\S]*?"molt_call_bind_ic"[\s\S]*?if op\.kind == OpKind::CallIndirect\s*\{\s*"call_indirect"\s*\}\s*else\s*\{\s*"call_bind"'
+            r'OpKind::CallBind\s*\|\s*OpKind::CallIndirect\s*=>[\s\S]*?RuntimeFn::CallIndirectIc\b[\s\S]*?RuntimeFn::CallBindIc\b[\s\S]*?if op\.kind == OpKind::CallIndirect\s*\{\s*"call_indirect"\s*\}\s*else\s*\{\s*"call_bind"'
         ),
     ),
     SemanticAssertion(
         scope="native",
         description="guard_tag uses molt_guard_type runtime guard",
         pattern=(
-            r'OpKind::GuardType\s*\|\s*OpKind::GuardTag\s*=>[\s\S]*?"molt_guard_type"'
+            r"OpKind::GuardType\s*\|\s*OpKind::GuardTag\s*=>[\s\S]*?RuntimeFn::GuardType\b"
         ),
     ),
     SemanticAssertion(
         scope="native",
         description="guard_layout uses molt_guard_layout runtime guard",
-        pattern=(r'OpKind::GuardLayout\s*=>[\s\S]*?"molt_guard_layout"'),
+        pattern=(r"OpKind::GuardLayout\s*=>[\s\S]*?RuntimeFn::GuardLayout\b"),
     ),
     SemanticAssertion(
         scope="native",

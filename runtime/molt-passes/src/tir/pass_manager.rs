@@ -390,7 +390,7 @@ impl PassManager {
     }
 }
 
-/// Build the default 27-pass optimization pipeline in the canonical order.
+/// Build the default 28-pass optimization pipeline in the canonical order.
 ///
 /// ## RC drop insertion runs in a SEPARATE final phase — NOT here (round-7)
 ///
@@ -437,7 +437,7 @@ impl PassManager {
 /// * `Cfg` — may add/remove blocks, redirect edges, or rewrite terminators:
 ///   range_devirt, iter_devirt, loop_unroll, block_versioning, licm (preheader
 ///   insertion), type_guard_hoist (moves ops across blocks), sccp (branch
-///   fold), branchless_count (folds a CondBranch cond-block to a Branch and
+///   fold), slice_reverse (splits a statement's chain), branchless_count (folds a CondBranch cond-block to a Branch and
 ///   removes the then/else blocks), check_exception_elim (drops blocks), dce
 ///   (block removal).
 /// * `OpsOnly` — rewrites/removes ops within blocks, never an exception-edge
@@ -508,6 +508,18 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("sccp", Cfg, |f, _am, _tti| passes::sccp::run(f)),
         pass("strength_reduction", OpsOnly, |f, _am, _tti| {
             passes::strength_reduction::run(f)
+        }),
+        // A slice store of a reversed slice of the same list, over a range
+        // the bounds prove equal, becomes one in-place reverse.
+        pass("slice_reverse", Cfg, |f, _am, tti| {
+            if tti.lowering.list_reverse_slice {
+                passes::slice_reverse::run(f)
+            } else {
+                PassStats {
+                    name: "slice_reverse",
+                    ..Default::default()
+                }
+            }
         }),
         pass("fast_math", OpsOnly, |f, _am, _tti| {
             passes::fast_math::run(f)
@@ -850,7 +862,7 @@ mod tests {
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
 
-    /// The default pipeline must preserve the EXACT canonical pass order (27
+    /// The default pipeline must preserve the EXACT canonical pass order (28
     /// `run` invocations — canonicalize runs twice). The RC drop-insertion passes
     /// (design 20) are NOT in this pipeline — they run in the separate terminal
     /// [`build_drop_pipeline`] (round-7), and block-argument pruning runs only
@@ -910,6 +922,7 @@ mod tests {
                 "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
+                "slice_reverse",
                 "fast_math",
                 "branchless_count",
                 "bce",
@@ -1038,7 +1051,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let stats = build_default_pipeline(TargetInfo::luau_release_fast()).run(&mut func);
-        assert_eq!(stats.len(), 27);
+        assert_eq!(stats.len(), 28);
         assert!(
             func.blocks
                 .values()
@@ -1101,6 +1114,7 @@ mod tests {
                 "licm",
                 "type_guard_hoist",
                 "sccp",
+                "slice_reverse",
                 "branchless_count",
                 "async_work_poll",
                 "check_exception_elim",
@@ -1207,11 +1221,11 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 27 optimization-pipeline pass invocations ran (canonicalize runs
+        // All 28 optimization-pipeline pass invocations ran (canonicalize runs
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
-        assert_eq!(stats.len(), 27);
+        assert_eq!(stats.len(), 28);
         assert!(
             func.blocks
                 .values()

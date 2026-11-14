@@ -35,16 +35,12 @@ impl ObjectBridge {
         bits: AbiHandle,
         operation: impl FnOnce() -> T,
     ) -> (T, usize) {
-        struct Restore(Option<(usize, AbiHandle, usize)>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                DENIED_PUBLICATION.with(|state| state.set(self.0));
-            }
-        }
         assert_ne!(bits, 0);
         let previous = DENIED_PUBLICATION
             .with(|state| state.replace(Some((std::ptr::from_ref(self).addr(), bits, 0))));
-        let _restore = Restore(previous);
+        let _restore = std::mem::DropGuard::new(previous, |previous| {
+            DENIED_PUBLICATION.with(|state| state.set(previous));
+        });
         let result = operation();
         let attempts = DENIED_PUBLICATION.with(|state| state.get().unwrap().2);
         (result, attempts)

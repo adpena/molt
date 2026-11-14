@@ -459,6 +459,7 @@ impl RustBackend {
             | molt_ir::OpKind::ListPop
             | molt_ir::OpKind::ListRemove
             | molt_ir::OpKind::ListReverse
+            | molt_ir::OpKind::ListReverseSlice
             | molt_ir::OpKind::LoadConst
             | molt_ir::OpKind::Matmul
             | molt_ir::OpKind::Mod_
@@ -466,6 +467,8 @@ impl RustBackend {
             | molt_ir::OpKind::ModuleDelGlobalIfPresent
             | molt_ir::OpKind::ModuleGetGlobal
             | molt_ir::OpKind::GlobalSlotGet
+            | molt_ir::OpKind::StaticCellBase
+            | molt_ir::OpKind::StaticCellSet
             | molt_ir::OpKind::ModuleImport
             | molt_ir::OpKind::ModuleImportFrom
             | molt_ir::OpKind::ModuleImportStar

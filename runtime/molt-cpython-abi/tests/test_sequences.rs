@@ -169,14 +169,13 @@ mod native_lists {
         }
     }
 
-    struct CallbackState;
-    impl Drop for CallbackState {
-        fn drop(&mut self) {
+    fn callback_state() -> std::mem::DropGuard<(), fn(())> {
+        std::mem::DropGuard::new((), |()| {
             DESTINATION.with(|v| v.set(ptr::null_mut()));
             REENTER.with(|v| v.set(ptr::null_mut()));
             ERROR.with(|v| v.set(ptr::null_mut()));
             VALUES.with(|v| v.borrow_mut().clear());
-        }
+        })
     }
 
     fn reset() {
@@ -201,7 +200,7 @@ mod native_lists {
             let b = item(class.as_ptr(), 2, 2);
             let c = item(class.as_ptr(), 1, 3);
             let list = list();
-            let _callback_state = CallbackState;
+            let _callback_state = callback_state();
             assert_eq!(sequences::PyList_Append(list.as_ptr(), a.as_ptr()), 0);
             assert_eq!((*a.as_ptr()).ob_refcnt, 2);
             assert_eq!(sequences::PyList_Insert(list.as_ptr(), -99, b.as_ptr()), 0);
@@ -256,7 +255,7 @@ mod native_lists {
                 .map(|tag| item(class.as_ptr(), tag as i32, tag))
                 .collect();
             let list = list();
-            let _callback_state = CallbackState;
+            let _callback_state = callback_state();
             for value in &values {
                 assert_eq!(sequences::PyList_Append(list.as_ptr(), value.as_ptr()), 0);
             }
@@ -346,7 +345,7 @@ mod native_lists {
                 ob_type: class.as_ptr(),
             };
             let list = list();
-            let _callback_state = CallbackState;
+            let _callback_state = callback_state();
             DESTINATION.with(|v| v.set(list.as_ptr()));
             VALUES.with(|v| v.borrow_mut().extend([a.as_ptr(), b.as_ptr()]));
             HINT.with(|v| v.set(isize::MAX));
@@ -411,7 +410,7 @@ mod native_lists {
                 .collect();
             let extra = item(class.as_ptr(), 9, 9);
             let list = list();
-            let _callback_state = CallbackState;
+            let _callback_state = callback_state();
             DESTINATION.with(|v| v.set(list.as_ptr()));
             for value in &values {
                 assert_eq!(sequences::PyList_Append(list.as_ptr(), value.as_ptr()), 0);

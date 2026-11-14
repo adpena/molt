@@ -1276,3 +1276,45 @@ fn boxed_true_division_divides_floats_on_every_arm() {
     };
     assert_eq!(*else_block, slow);
 }
+
+#[test]
+fn boxed_bitwise_ops_take_only_the_inline_int_arm() {
+    // 2026-11-13: `i & 63` on a boxed loop index called molt_bit_and on every
+    // iteration (about 12% of an isinstance loop's samples, LLVM).
+    for (opcode, runtime) in [
+        (OpCode::BitAnd, RuntimeFn::BitAnd),
+        (OpCode::BitOr, RuntimeFn::BitOr),
+        (OpCode::BitXor, RuntimeFn::BitXor),
+    ] {
+        let (mut func, _) = binary(opcode, [TirType::DynBox, TirType::DynBox]);
+        assert_eq!(run(&mut func).values_changed, 1, "{opcode:?}");
+        assert_valid(&func);
+        // One arm: int with int. A float operand raises TypeError, so no float
+        // arm exists and every other word takes the runtime entry.
+        assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 2, "{opcode:?}");
+        assert!(ops(&func, OpCode::IsFloatWord).is_empty(), "{opcode:?}");
+        assert!(ops(&func, OpCode::IntToFloat).is_empty(), "{opcode:?}");
+        let fast = arm_block(&func, OpCode::UnboxInlineInt);
+        assert_eq!(
+            block_opcodes(&func, fast),
+            [
+                OpCode::UnboxInlineInt,
+                OpCode::UnboxInlineInt,
+                opcode,
+                OpCode::BoxVal
+            ],
+            "{opcode:?}"
+        );
+        let raw = ops(&func, opcode)
+            .into_iter()
+            .find(|(block, _)| *block == fast)
+            .unwrap()
+            .1;
+        for operand in &raw.operands {
+            assert_eq!(func.value_types[operand], TirType::I64, "{opcode:?}");
+        }
+        let calls = ops(&func, OpCode::CallRuntime);
+        assert_eq!(calls.len(), 1, "{opcode:?}");
+        assert_eq!(calls[0].1.runtime, Some(runtime), "{opcode:?}");
+    }
+}

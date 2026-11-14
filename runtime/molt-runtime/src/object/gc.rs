@@ -335,20 +335,14 @@ impl GcRuntimeState {
     #[inline(always)]
     fn with_membership<R>(&self, _py: &PyToken<'_>, body: impl FnOnce(&mut Membership) -> R) -> R {
         #[cfg(debug_assertions)]
-        struct Borrow<'a>(&'a std::sync::atomic::AtomicBool);
-        #[cfg(debug_assertions)]
-        impl Drop for Borrow<'_> {
-            fn drop(&mut self) {
-                self.0.store(false, AtomicOrdering::Relaxed);
-            }
-        }
-        #[cfg(debug_assertions)]
         let _borrow = {
             assert!(
                 !self.membership_borrowed.swap(true, AtomicOrdering::Relaxed),
                 "GC membership re-entered"
             );
-            Borrow(&self.membership_borrowed)
+            std::mem::DropGuard::new(&self.membership_borrowed, |borrowed| {
+                borrowed.store(false, AtomicOrdering::Relaxed);
+            })
         };
         // SAFETY: the GIL serializes every access, and no body re-enters.
         body(unsafe { &mut *self.membership.get() })
@@ -3199,7 +3193,9 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
         if gc_running.swap(true, AtomicOrdering::AcqRel) {
             return CollectStats::failure(py, GcCollectStatus::ReentrantNoop);
         }
-        let _guard = GcRunningGuard(gc_running);
+        let _guard = std::mem::DropGuard::new(gc_running, |running| {
+            running.store(false, AtomicOrdering::Release);
+        });
         crate::runtime_state(py)
             .gc_last_failure
             .store(0, AtomicOrdering::Release);
@@ -3571,14 +3567,6 @@ unsafe fn run_node_finalizer_once(py: &PyToken<'_>, node: GcNode) {
                 _ => std::process::abort(),
             }
         }
-    }
-}
-
-/// Reentrancy flag for `collect_cycles` (CPython `gcstate->collecting`).
-struct GcRunningGuard(&'static std::sync::atomic::AtomicBool);
-impl Drop for GcRunningGuard {
-    fn drop(&mut self) {
-        self.0.store(false, AtomicOrdering::Release);
     }
 }
 

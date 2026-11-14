@@ -41,6 +41,7 @@ impl WasmBackend {
 
         let reloc_enabled = self.options.reloc_enabled;
         self.prepare_module_registry_segment(reloc_enabled);
+        super::global_slot::prepare_static_cell_blocks(&mut self, reloc_enabled);
         let runtime_surface = self.emit_runtime_import_surface(ir);
         let native_callable_imports = self.emit_native_callable_import_surface(ir);
         let WasmRuntimeSurfacePlan {
@@ -73,6 +74,12 @@ impl WasmBackend {
             reloc_enabled,
             &super::global_slot::read_indices(ir),
         );
+        super::global_slot::emit_static_cell_store_bodies(
+            &mut self,
+            reloc_enabled,
+            &super::global_slot::store_indices(ir),
+        );
+        super::method_site::emit_method_site_bodies(&mut self, reloc_enabled, ir);
 
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.

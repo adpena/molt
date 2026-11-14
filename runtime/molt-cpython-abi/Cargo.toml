@@ -73,3 +73,6 @@ cc = "1"
 name = "l7_numeric_perf_attestation"
 path = "tests/l7_numeric_perf_attestation.rs"
 required-features = ["l7-test-probe"]
+
+[lints]
+workspace = true

@@ -77,6 +77,7 @@ def _driver() -> ModuleType:
 REQUEST_SCHEMA = "molt.landing-request.v2"
 RESULT_SCHEMA = "molt.landing-result.v2"
 PLAN_SCHEMA = "molt.landing-plan.v1"
+TESTED_SCHEMA = "molt.landing-tested.v1"
 # Batching pays only when most candidates pass: at a per-candidate pass rate p
 # a batch of k passes with probability p**k. On 2026-11-02 p was about 0.2 and
 # 24 failed batch blocks cost 7.6 h of bisection. Raise this only while p holds
@@ -209,6 +210,34 @@ def _postsubmit_failures(output: Path, repo: Path) -> tuple[str, ...]:
     return tuple(failures)
 
 
+def prior_main(git: Git, paths: QueuePaths, head: str, green: str | None) -> str | None:
+    """The main postsubmit last observed before ``head``: its diff base.
+
+    The newest postsubmit result whose commit is a proper ancestor of
+    ``head``, or the last green main when that is newer. Without either,
+    ``head``'s first parent. On 2026-11-14 a two-week red streak measured
+    check_typed_facts from the last green main 1,174 commits back and
+    reported 1,474 facts that predate the rule.
+    """
+
+    def ancestor(commit: str) -> bool:
+        return commit != head and git.is_ancestor(commit, head)
+
+    candidates = [
+        str(record["commit"])
+        for record in postsubmit_results(paths)
+        if ancestor(str(record["commit"]))
+    ]
+    observed = candidates[0] if candidates else None
+    if green is not None and ancestor(green):
+        if observed is None or git.is_ancestor(observed, green):
+            observed = green
+    if observed is not None:
+        return observed
+    parent = git._run(["rev-parse", "--verify", "--quiet", f"{head}^1"], check=False)
+    return parent.stdout.strip() or None
+
+
 def _postsubmit_reverts(
     git, head: str, green: str | None
 ) -> tuple[list[str], list[str]]:
@@ -245,7 +274,13 @@ def _run_postsubmit_gates(
     drv = _driver()
     repo = git.repo
     policy, config, _touched, gates, _rules = select_landing_gates(
-        git, repo, head, green, extra=[], mode=LandingMode.POSTSUBMIT
+        git,
+        repo,
+        head,
+        green,
+        extra=[],
+        mode=LandingMode.POSTSUBMIT,
+        diff_base=prior_main(git, queue_paths(repo), head, green),
     )
     drv._assert_integration_source(git, head)
     prepared = config.prepare(
@@ -469,6 +504,11 @@ class QueuePaths:
     @property
     def plan(self) -> Path:
         return self.root / "plan.json"
+
+    @property
+    def tested(self) -> Path:
+        """The batch that passed its gates before main moved under its push."""
+        return self.root / "tested.json"
 
     @property
     def runner_lock(self) -> Path:
@@ -813,6 +853,44 @@ def bisect(
 
 def retire_batch_plan(paths: QueuePaths, batch: Sequence[LandingRequest]) -> None:
     _write_plan(paths, _remaining_groups(paths, batch))
+    paths.tested.unlink(missing_ok=True)
+
+
+def _batch_key(batch: Sequence[LandingRequest]) -> list[list[str]]:
+    return [[request.id, request.head] for request in batch]
+
+
+def record_tested(
+    paths: QueuePaths, batch: Sequence[LandingRequest], *, tree: str, base: str
+) -> None:
+    """Keep the (tree, base) of a batch whose gates passed before main moved,
+    so its replay on the new base carries what the move cannot affect."""
+    _write_json(
+        paths.tested,
+        {
+            "schema": TESTED_SCHEMA,
+            "requests": _batch_key(batch),
+            "tree": tree,
+            "base": base,
+        },
+    )
+
+
+def tested_receipt(
+    paths: QueuePaths, batch: Sequence[LandingRequest]
+) -> tuple[str, str] | None:
+    """The (tree, base) an earlier run of exactly this batch passed on, if any."""
+    try:
+        data = json.loads(paths.tested.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(data, dict)
+        or data.get("schema") != TESTED_SCHEMA
+        or data.get("requests") != _batch_key(batch)
+    ):
+        return None
+    return str(data["tree"]), str(data["base"])
 
 
 # --------------------------------------------------------------------------
@@ -1371,6 +1449,7 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
     if not candidate.included:
         retire_batch_plan(paths, batch)
         return False
+    tested = tested_receipt(paths, candidate.included)
     integration = drv.build_parser().parse_args(
         [
             "integrate",
@@ -1388,12 +1467,29 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
                 if args.pinned_controller
                 else ["--candidate-controller"]
             ),
+            *(
+                ["--carry-tree", tested[0], "--carry-base", tested[1]]
+                if tested is not None
+                else []
+            ),
         ]
     )
     try:
         drv.cmd_integrate(integration)
-    except (RebaseConflict, PublicationRace) as exc:
+    except RebaseConflict as exc:
         # main moved under the batch; the next runner rebuilds it on the new tip.
+        _warn(f"main moved; rebuilding the batch: {exc}")
+        return False
+    except PublicationRace as exc:
+        # main moved under the push. When the gates had passed, their receipt
+        # is keyed by this tree on this base; the rebuilt batch reruns only
+        # the gates main's move can affect. Without a receipt, all run again.
+        record_tested(
+            paths,
+            candidate.included,
+            tree=sandbox.rev_parse(f"{sandbox.head_sha()}^{{tree}}"),
+            base=upstream,
+        )
         _warn(f"main moved; rebuilding the batch: {exc}")
         return False
     except CandidateFailure as exc:

@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_a229df9be5a8e025_gil_v11")]
+#[unsafe(export_name = "molt_generated_object_abi_ebf97f9874de84e5_gil_v12")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,7 +34,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_a229df9be5a8e025_free_threaded_v11")]
+#[unsafe(export_name = "molt_generated_object_abi_ebf97f9874de84e5_free_threaded_v12")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // Read-only semantic identity. Callable construction uses fn_addr! below to
@@ -678,7 +678,9 @@ pub use crate::builtins::lzma::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::module_table::molt_module_initialization_spec;
 pub use crate::builtins::modules::*;
-pub use crate::builtins::namespace_slots::{molt_global_slot_base, molt_global_slot_set};
+pub use crate::builtins::namespace_slots::{
+    molt_global_slot_base, molt_global_slot_set, molt_static_cells_bind,
+};
 pub(crate) use crate::builtins::numbers::{
     ComplexParts, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref,
     bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_strict,

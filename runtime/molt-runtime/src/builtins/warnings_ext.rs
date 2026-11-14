@@ -1429,9 +1429,8 @@ mod tests {
         }
     }
 
-    struct ResetWarnings;
-    impl Drop for ResetWarnings {
-        fn drop(&mut self) {
+    fn reset_warnings() -> std::mem::DropGuard<(), fn(())> {
+        std::mem::DropGuard::new((), |()| {
             CALLBACK_ERROR.with(|value| value.set(0));
             SHOWN.with(|value| value.borrow_mut().clear());
             crate::with_gil_entry_nopanic!(py, {
@@ -1446,7 +1445,7 @@ mod tests {
                 clear_exception(py);
                 molt_warnings_resetwarnings_attached_body(py);
             });
-        }
+        })
     }
 
     /// Start from a state that has never been used: the next access creates
@@ -1561,7 +1560,7 @@ mod tests {
     fn native_warning_emission_uses_cold_filters_and_preserves_category() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::cpython_abi_hooks::register_cpython_hooks();
-        let _reset = ResetWarnings;
+        let _reset = reset_warnings();
         crate::with_gil_entry_nopanic!(py, {
             let name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"warnings").unwrap());
             let module = ExceptionValue::adopt(
@@ -1825,7 +1824,7 @@ mod tests {
     #[test]
     fn first_use_installs_cpython_default_filters() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        let _reset = ResetWarnings;
+        let _reset = reset_warnings();
         crate::with_gil_entry_nopanic!(py, {
             fresh_state(py);
             let filters = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
@@ -1885,14 +1884,8 @@ mod tests {
 
     #[test]
     fn first_use_allocation_failure_leaves_the_state_unset() {
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
-            }
-        }
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        let _reset = ResetWarnings;
+        let _reset = reset_warnings();
         crate::with_gil_entry_nopanic!(py, {
             // Resolve the cached classes and names before memory is denied.
             fresh_state(py);
@@ -1907,7 +1900,7 @@ mod tests {
                     ..Default::default()
                 },
             )));
-            let denied = RestoreTracker;
+            let denied = crate::test_support::restore_unlimited_tracker_on_drop();
             let result = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             assert!(obj_from_bits(result.bits()).is_none());
             assert!(exception_pending(py));
@@ -1923,7 +1916,7 @@ mod tests {
     #[test]
     fn add_filter_moves_duplicates_and_ages_registries() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        let _reset = ResetWarnings;
+        let _reset = reset_warnings();
         crate::with_gil_entry_nopanic!(py, {
             let filters = ExceptionValue::adopt(py, molt_warnings_filters_get_attached_body(py));
             molt_warnings_resetwarnings_attached_body(py);
@@ -2041,7 +2034,7 @@ mod tests {
     fn native_registries_follow_cpython_keys() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::cpython_abi_hooks::register_cpython_hooks();
-        let _reset = ResetWarnings;
+        let _reset = reset_warnings();
         crate::with_gil_entry_nopanic!(py, {
             let _module = install_warnings_module(py);
             let category = class(py, crate::BuiltinExc::UserWarning);
@@ -2135,7 +2128,7 @@ mod tests {
     fn native_emission_follows_the_loaded_module() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::cpython_abi_hooks::register_cpython_hooks();
-        let _reset = ResetWarnings;
+        let _reset = reset_warnings();
         crate::with_gil_entry_nopanic!(py, {
             set_action(py, b"always");
             let module = install_warnings_module(py);

@@ -24,6 +24,11 @@ from tests.process_guard_common import (
     run_in_fresh_guard_observer,
 )
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow thread is not a stuck one. The properties
+# under test are orderings, which the events assert.
+_HANG_BOUND_S = 300.0
+
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
@@ -1671,7 +1676,7 @@ def test_custody_decision_waits_out_adoption_contention_an_observer_does_not(
         # The observer gives up while another party holds the lock (the bound
         # here is a hang guard; the observer returns after the 0.5 s bound)...
         observer.start()
-        assert finished["observer"].wait(120)
+        assert finished["observer"].wait(_HANG_BOUND_S)
         assert outcomes["observer"] == ()
         # ...and the decision still waits well past the observer's bound.
         decision.start()
@@ -1772,7 +1777,7 @@ def test_reader_waits_for_receipt_index_transaction(lease, tmp_path, monkeypatch
         original(target, payload, **kwargs)
         if target.name.endswith(".identity.json"):
             published.set()
-            assert proceed.wait(5)
+            assert proceed.wait(_HANG_BOUND_S)
 
     monkeypatch.setattr(suite, "write_exact", pause_receipt)
 
@@ -1794,15 +1799,15 @@ def test_reader_waits_for_receipt_index_transaction(lease, tmp_path, monkeypatch
     writer = threading.Thread(target=write)
     reader = threading.Thread(target=read)
     writer.start()
-    assert published.wait(5)
+    assert published.wait(_HANG_BOUND_S)
     reader.start()
-    assert read_started.wait(5)
+    assert read_started.wait(_HANG_BOUND_S)
     try:
         assert not read_done.wait(0.05)
     finally:
         proceed.set()
-        writer.join(5)
-        reader.join(5)
+        writer.join(_HANG_BOUND_S)
+        reader.join(_HANG_BOUND_S)
     assert not writer.is_alive() and not reader.is_alive() and errors == []
     record_result = next(
         result for result in results if len(result) == 2 and isinstance(result[1], list)

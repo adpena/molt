@@ -246,17 +246,9 @@ include!("attached_exports_generated/arena.rs");
 mod tests {
     use super::*;
     use crate::object::HEADER_FLAG_SCOPED;
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use crate::{MoltHeader, TYPE_ID_OBJECT};
     use std::mem::size_of;
-
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
 
     #[test]
     fn arena_alloc_object_returns_nan_boxed_pointer() {
@@ -373,7 +365,7 @@ mod tests {
                 max_allocations: Some(1),
                 ..Default::default()
             })));
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
             let arena = molt_arena_new_attached_body(_py);
             assert!(!arena.is_null());
             let bits = molt_arena_alloc_object_attached_body(_py, arena, 16);
@@ -394,7 +386,7 @@ mod tests {
                 max_memory: Some(SCOPE_ARENA_CHUNK_SIZE - 1),
                 ..Default::default()
             })));
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let arena = molt_arena_new_attached_body(py);
             assert!(
@@ -412,7 +404,7 @@ mod tests {
                 max_memory: Some(SCOPE_ARENA_CHUNK_SIZE),
                 ..Default::default()
             })));
-            let _reset = TrackerReset;
+            let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
 
             let arena = molt_arena_new_attached_body(py);
             assert!(!arena.is_null());

@@ -142,6 +142,9 @@ impl<'a, 'py> ModuleRetirement<'a, 'py> {
             if unsafe { object_type_id(ptr) } == TYPE_ID_DICT {
                 cleared.push(dictionary);
                 unsafe { dict_clear_in_place_shutdown(self.py, ptr) };
+                // A cell-eligible module's globals are its static cells
+                // (call_anatomy.md 4.5a); they retire with its dictionary.
+                crate::builtins::namespace_slots::retire_static_cells(self.py, ptr);
             }
         }
         for bits in modules {

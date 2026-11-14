@@ -1,18 +1,10 @@
-use crate::resource::{LimitedTracker, ResourceLimits, ResourceTracker, UnlimitedTracker};
+use crate::resource::{LimitedTracker, ResourceLimits, ResourceTracker};
 use crate::*;
 use molt_runtime_core::OwnedRuntimeValue;
 use molt_runtime_regex::regex::{
     molt_re_compile_attached_body, molt_re_group_values_attached_body,
     molt_re_pattern_info_attached_body, molt_re_split_attached_body, molt_re_sub_attached_body,
 };
-
-struct TrackerReset;
-
-impl Drop for TrackerReset {
-    fn drop(&mut self) {
-        crate::resource::set_tracker(Box::new(UnlimitedTracker));
-    }
-}
 
 struct LiveAllocationCounter(std::rc::Rc<std::cell::Cell<isize>>);
 
@@ -303,7 +295,7 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
             // The same warmed reversed-span path now runs under a live-owner
             // counter. A nonzero count after clearing the exception means the
             // first boxed capture escaped the aggregate's rollback.
-            let reset = TrackerReset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LiveAllocationCounter(live.clone())));
             let failed = molt_re_group_values_attached_body(
                 py.core_token(),
@@ -324,7 +316,7 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
             // A tuple refusal after both captures were boxed must propagate
             // MemoryError and release both boxes. The remaining two-allocation
             // budget then serves as an independent capacity probe.
-            let reset = TrackerReset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_allocations: Some(2),
                 ..ResourceLimits::default()

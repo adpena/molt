@@ -108,14 +108,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return false;
                 };
                 let src_val = self.resolve(src_id);
-                let src_ty = self
-                    .value_types
-                    .get(&src_id)
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
+                let src_ty = self.repr_ty(src_id);
                 for &result_id in &op.results {
-                    self.values.insert(result_id, src_val);
-                    self.value_types.insert(result_id, src_ty.clone());
+                    self.values.set_value(result_id, src_val);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&src_ty.clone()),
+                    );
                 }
                 true
             }
@@ -212,8 +211,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -227,8 +229,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -242,8 +247,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -257,8 +265,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -272,8 +283,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -287,8 +301,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -302,8 +319,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -320,8 +340,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .unwrap_basic()
                 };
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -335,8 +358,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -350,8 +376,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -365,8 +394,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -448,8 +480,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -503,8 +538,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -569,8 +607,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -586,8 +627,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    self.values.set_value(result_id, result);
+                    self.values.set_repr(
+                        result_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
                 }
                 true
             }
@@ -681,14 +725,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "LLVM alias '{kind}' lacks generated ownership classification"
                 );
                 let src_val = self.resolve(src_id);
-                let ty = self
-                    .value_types
-                    .get(&src_id)
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
+                let ty = self.repr_ty(src_id);
                 if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, src_val);
-                    self.value_types.insert(result_id, ty);
+                    self.values.set_value(result_id, src_val);
+                    self.values
+                        .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty));
                 }
                 true
             }
@@ -855,14 +896,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 let source = op.operands[0];
                 let value = self.resolve(source);
-                let ty = self
-                    .value_types
-                    .get(&source)
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
+                let ty = self.repr_ty(source);
                 for &result in &op.results {
-                    self.values.insert(result, value);
-                    self.value_types.insert(result, ty.clone());
+                    self.values.set_value(result, value);
+                    self.values
+                        .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&ty.clone()));
                 }
                 true
             }

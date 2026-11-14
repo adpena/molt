@@ -99,7 +99,13 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
         })
         .compile(wasm_loaded_method_ir(load_kind, extra_arg_count));
         let reloc_imports = wasm_function_import_names(&reloc_wasm);
-        for import_name in [load_kind.as_str(), expected_call] {
+        let site = load_kind == molt_ir::OpKind::LoadMethod;
+        let load_import = if site {
+            "method_site_load"
+        } else {
+            load_kind.as_str()
+        };
+        for import_name in [load_import, expected_call] {
             assert!(
                 reloc_imports.iter().any(|name| name == import_name),
                 "{case} must retain {import_name}; imports={reloc_imports:?}"
@@ -123,10 +129,17 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
         .compile(wasm_loaded_method_ir(load_kind, extra_arg_count));
         let import_indices = wasm_function_import_indices(&direct_wasm);
         let call_indices = wasm_direct_call_indices_for_export(&direct_wasm, "molt_main");
-        for import_name in [load_kind.as_str(), expected_call] {
-            let index = *import_indices
-                .get(import_name)
-                .unwrap_or_else(|| panic!("{case}: {import_name} import must exist"));
+        for import_name in [load_import, expected_call] {
+            // A site reaches a runtime import through its generated body; a
+            // call above four arguments, and every super site, call it
+            // themselves.
+            let index = if site && (import_name == load_import || extra_arg_count <= 4) {
+                wasm_import_body(&direct_wasm, import_name)
+            } else {
+                *import_indices
+                    .get(import_name)
+                    .unwrap_or_else(|| panic!("{case}: {import_name} import must exist"))
+            };
             assert!(
                 call_indices.contains(&index),
                 "{case} must directly call {import_name}; calls={call_indices:?}"
@@ -135,7 +148,9 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
         assert!(
             wasm_data_segment_payloads(&direct_wasm)
                 .iter()
-                .any(|payload| payload.as_slice() == b"selected_method"),
+                .any(|payload| payload
+                    .windows(b"selected_method".len())
+                    .any(|window| window == b"selected_method")),
             "{case} must materialize the method name"
         );
     }
@@ -152,6 +167,7 @@ fn method_load_reads_its_out_word_before_releasing_a_discarded_callable() {
         args: Some(vec!["receiver".to_string()]),
         s_value: Some("selected_method".to_string()),
         source_op_idx: Some(0),
+        method_site: Some(0),
         ..OpIR::new(molt_ir::OpKind::LoadMethod)
     };
     let ir = SimpleIR {
@@ -171,12 +187,14 @@ fn method_load_reads_its_out_word_before_releasing_a_discarded_callable() {
     wasmparser::Validator::new()
         .validate_all(&output.wasm)
         .unwrap();
-    let imports = wasm_function_import_indices(&output.wasm);
     let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
-    let call = |name: &str| format!("Call {{ function_index: {} }}", imports[name]);
+    let load_body = format!(
+        "Call {{ function_index: {} }}",
+        wasm_import_body(&output.wasm, "method_site_load")
+    );
     let load_position = operators
         .iter()
-        .position(|operator| operator == &call("load_method"))
+        .position(|operator| operator == &load_body)
         .unwrap_or_else(|| panic!("missing the load call; operators={operators:?}"));
     let after_load = &operators[load_position + 1..];
     let word_read = after_load

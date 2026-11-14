@@ -165,8 +165,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+                let lhs_f = unbox_float_value(builder, *lhs);
+                let rhs_f = unbox_float_value(builder, *rhs);
                 let fcmp = builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f);
                 let flt_res = box_bool_value(&mut *builder, fcmp, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -288,8 +288,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+                let lhs_f = unbox_float_value(builder, *lhs);
+                let rhs_f = unbox_float_value(builder, *rhs);
                 let fcmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f);
                 let flt_res = box_bool_value(&mut *builder, fcmp, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -411,8 +411,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+                let lhs_f = unbox_float_value(builder, *lhs);
+                let rhs_f = unbox_float_value(builder, *rhs);
                 let fcmp = builder.ins().fcmp(FloatCC::GreaterThan, lhs_f, rhs_f);
                 let flt_res = box_bool_value(&mut *builder, fcmp, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -534,8 +534,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+                let lhs_f = unbox_float_value(builder, *lhs);
+                let rhs_f = unbox_float_value(builder, *rhs);
                 let fcmp = builder
                     .ins()
                     .fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);

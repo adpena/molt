@@ -160,15 +160,7 @@ pub unsafe extern "C" fn __molt_bridge_free_u64(ptr: *mut u64, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker, with_tracker};
-
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::{LimitedTracker, ResourceLimits, set_tracker, with_tracker};
 
     #[test]
     fn bridge_buffer_export_charges_and_free_releases() {
@@ -176,7 +168,7 @@ mod tests {
             max_memory: Some(8),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::restore_unlimited_tracker_on_drop();
         let mut out_ptr: *const u8 = std::ptr::null();
         let mut out_len = 0usize;
         assert_eq!(
@@ -196,7 +188,7 @@ mod tests {
             max_memory: Some(4),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::restore_unlimited_tracker_on_drop();
         let mut out_ptr: *const u64 = std::ptr::null();
         let mut out_len = 0usize;
         assert_eq!(
@@ -214,7 +206,7 @@ mod tests {
             max_memory: Some(8),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::restore_unlimited_tracker_on_drop();
         let mut out_ptr: *const u64 = std::ptr::dangling::<u64>();
         let mut out_len = usize::MAX;
         assert_eq!(
@@ -234,7 +226,7 @@ mod tests {
             max_memory: Some(7),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::restore_unlimited_tracker_on_drop();
         let mut out_ptr: *const u64 = std::ptr::dangling::<u64>();
         let mut out_len = usize::MAX;
         assert_eq!(

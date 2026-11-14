@@ -63,7 +63,27 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
             ) else {
                 return none;
             };
-            let ptr = alloc_tuple(py, &keys);
+            // A cell-eligible module's bound globals live in its static
+            // cells (call_anatomy.md 4.5a), never in the dictionary.
+            let mut cell_names = Vec::new();
+            for (name, _) in crate::builtins::namespace_slots::static_cell_items(src_dict) {
+                let Some(key) = crate::dynamic_attr_name_bits(py, name) else {
+                    for key in cell_names {
+                        dec_ref_bits(py, key);
+                    }
+                    return none;
+                };
+                cell_names.push(key);
+            }
+            let all: Vec<u64> = keys
+                .iter()
+                .copied()
+                .chain(cell_names.iter().copied())
+                .collect();
+            let ptr = alloc_tuple(py, &all);
+            for key in cell_names {
+                dec_ref_bits(py, key);
+            }
             if ptr.is_null() {
                 return none;
             }
@@ -136,7 +156,9 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
                 if exception_pending(py) {
                     return none;
                 }
-                let completed = dict_set_in_place(py, dst_dict, name, value);
+                let completed =
+                    crate::builtins::namespace_slots::static_cell_set(py, dst_dict, name, value)
+                        || dict_set_in_place(py, dst_dict, name, value);
                 if !completed {
                     return none;
                 }

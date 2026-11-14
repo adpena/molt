@@ -205,3 +205,31 @@ unsafe fn tuple_names_are<T: AsRef<[u8]>>(
         .unwrap_or(false)
     }
 }
+
+#[cfg(test)]
+mod direct_call_tests {
+    use super::super::public_objects_generated::{DIRECT_CALL_PUBLIC_OBJECTS, PublicObjectKind};
+
+    /// The compiler replaces a call of each listed object with exactly its
+    /// intrinsic's positional arity by a direct call of the intrinsic. That is
+    /// sound only while calling the object binds its positional words straight
+    /// to its entry: a declared call signature would bind keywords, defaults or
+    /// varargs first, so no member may carry one on any target version.
+    #[test]
+    fn direct_call_public_objects_declare_no_call_signature() {
+        assert!(!DIRECT_CALL_PUBLIC_OBJECTS.is_empty());
+        for &id in DIRECT_CALL_PUBLIC_OBJECTS {
+            assert_eq!(
+                id.identity().kind,
+                PublicObjectKind::BuiltinFunctionOrMethod,
+                "{id:?}"
+            );
+            for python_314 in [false, true] {
+                assert!(
+                    id.call_signature(python_314).is_none(),
+                    "{id:?} declares a call signature (python_314={python_314})"
+                );
+            }
+        }
+    }
+}

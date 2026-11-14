@@ -9998,6 +9998,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_static_cells_bind",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_staticmethod_call",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -12547,6 +12552,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_crypto_type_name__molt_context_047a33b55bc1b76d",
         },
+        "__molt_float_result_bits" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "__molt_float_result_bits__molt_context_047a33b55bc1b76d",
+        },
         "__molt_gpu_alloc_bytearray" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_gpu_alloc_bytearray__molt_context_047a33b55bc1b76d",
@@ -13106,10 +13115,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "__molt_math_float_as_double" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_math_float_as_double__molt_context_047a33b55bc1b76d",
-        },
-        "__molt_math_float_result_bits" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "__molt_math_float_result_bits__molt_context_047a33b55bc1b76d",
         },
         "__molt_math_format_obj" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -21575,6 +21580,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_list_reverse__molt_context_047a33b55bc1b76d",
         },
+        "molt_list_reverse_slice" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_list_reverse_slice__molt_context_047a33b55bc1b76d",
+        },
         "molt_list_richcompare" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,
             physical_symbol: "molt_list_richcompare",
@@ -21586,10 +21595,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_load_intrinsic_runtime" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_load_intrinsic_runtime__molt_context_047a33b55bc1b76d",
-        },
-        "molt_load_method" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_load_method__molt_context_047a33b55bc1b76d",
         },
         "molt_load_super_method" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -22170,6 +22175,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_method_ne" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_method_ne__molt_context_047a33b55bc1b76d",
+        },
+        "molt_method_site_load" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_method_site_load__molt_context_047a33b55bc1b76d",
         },
         "molt_min_builtin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -25454,6 +25463,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_stateful_locals_register" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_stateful_locals_register__molt_context_047a33b55bc1b76d",
+        },
+        "molt_static_cells_bind" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_static_cells_bind__molt_context_047a33b55bc1b76d",
         },
         "molt_staticmethod_builtin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

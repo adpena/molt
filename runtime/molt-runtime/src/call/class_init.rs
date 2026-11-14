@@ -878,13 +878,7 @@ mod tests {
 
     #[test]
     fn function_metadata_failure_never_publishes_or_replaces_a_dictionary() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let _ = builtin_classes(py);
@@ -910,7 +904,7 @@ mod tests {
                     max_memory: Some(0),
                     ..Default::default()
                 })));
-                let reset = RestoreTracker;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 assert!(!super::function_set_attr_bits(
                     py, function, name_bits, value_bits
                 ));
@@ -1034,13 +1028,7 @@ mod tests {
 
     #[test]
     fn class_instance_allocation_failure_preserves_class_owner_and_can_retry() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class_ptr = obj_from_bits(builtin_classes(py).object)
@@ -1055,7 +1043,7 @@ mod tests {
                     max_memory: Some(0),
                     ..Default::default()
                 })));
-                let reset = RestoreTracker;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 let result = alloc_instance_for_class(py, class_ptr);
                 assert!(obj_from_bits(result).is_none());
                 assert!(exception_pending(py));

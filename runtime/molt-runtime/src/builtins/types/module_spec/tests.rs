@@ -3,33 +3,32 @@ use super::*;
 #[test]
 fn suffix_policy_survives_failed_initialization_and_commits_one_owner() {
     use crate::builtins::exceptions::ExceptionValue;
-    struct RestoreSuffixPolicy(u64, u64);
-    impl Drop for RestoreSuffixPolicy {
-        fn drop(&mut self) {
-            crate::with_gil_entry_nopanic!(py, {
-                let state = types_state(py);
-                let displaced = state
-                    .module_spec_suffix_namespace
-                    .swap(self.0, AtomicOrdering::AcqRel);
-                state
-                    .module_spec_suffix_bound
-                    .store(self.1, AtomicOrdering::Release);
-                if displaced != 0 {
-                    dec_ref_bits(py, displaced);
-                }
-            });
-        }
-    }
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let state = types_state(py);
-        let _restore = RestoreSuffixPolicy(
-            state
-                .module_spec_suffix_namespace
-                .swap(0, AtomicOrdering::AcqRel),
-            state
-                .module_spec_suffix_bound
-                .swap(0, AtomicOrdering::AcqRel),
+        let _restore = std::mem::DropGuard::new(
+            (
+                state
+                    .module_spec_suffix_namespace
+                    .swap(0, AtomicOrdering::AcqRel),
+                state
+                    .module_spec_suffix_bound
+                    .swap(0, AtomicOrdering::AcqRel),
+            ),
+            |(state0, state1)| {
+                crate::with_gil_entry_nopanic!(py, {
+                    let state = types_state(py);
+                    let displaced = state
+                        .module_spec_suffix_namespace
+                        .swap(state0, AtomicOrdering::AcqRel);
+                    state
+                        .module_spec_suffix_bound
+                        .store(state1, AtomicOrdering::Release);
+                    if displaced != 0 {
+                        dec_ref_bits(py, displaced);
+                    }
+                });
+            },
         );
         let original = ExceptionValue::adopt(
             py,
@@ -141,16 +140,6 @@ extern "C" fn observed_setattr(
 
 #[test]
 fn runtime_factory_obeys_mutable_class_attribute_protocol() {
-    struct RemoveAttribute(u64, u64);
-    impl Drop for RemoveAttribute {
-        fn drop(&mut self) {
-            crate::with_gil_entry_nopanic!(py, {
-                crate::molt_del_attr_name_attached_body(py, self.0, self.1);
-                dec_ref_bits(py, self.1);
-                dec_ref_bits(py, self.0);
-            });
-        }
-    }
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let class = module_spec_class(py);
@@ -162,7 +151,13 @@ fn runtime_factory_obeys_mutable_class_attribute_protocol() {
         .bits();
         let setter_name = str_bits(py, b"__setattr__");
         inc_ref_bits(py, class);
-        let _restore_class = RemoveAttribute(class, setter_name);
+        let _restore_class = std::mem::DropGuard::new((class, setter_name), |(state0, state1)| {
+            crate::with_gil_entry_nopanic!(py, {
+                crate::molt_del_attr_name_attached_body(py, state0, state1);
+                dec_ref_bits(py, state1);
+                dec_ref_bits(py, state0);
+            });
+        });
         crate::molt_set_attr_name_attached_body(py, class, setter_name, setter);
         dec_ref_bits(py, setter);
         assert!(!exception_pending(py));

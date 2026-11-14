@@ -153,14 +153,6 @@ extern "C" fn observe_committed_bindings(__context: u64, _self_bits: u64) -> u64
     }
 }
 
-struct TrackerReset;
-
-impl Drop for TrackerReset {
-    fn drop(&mut self) {
-        set_tracker(Box::new(UnlimitedTracker));
-    }
-}
-
 /// A distinct mortal exact `str`, so key-object identity stays observable.
 fn string_key(py: &PyToken<'_>, name: &[u8]) -> u64 {
     let ptr = crate::object::builders::alloc_string_nointern(py, name);
@@ -363,7 +355,7 @@ fn string_binding_failure_leaves_every_binding_unchanged() {
             let epoch = dict_structural_epoch(dict);
             let owners_before = (owners(old), owners(value));
             let entries = [(present, value), (first, value), (second, value)];
-            let reset = TrackerReset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
                 ..Default::default()
@@ -1126,7 +1118,7 @@ fn exact_string_reads_setdefault_reservation_failure_keeps_entries_and_owners() 
                 assert!(!dict.is_null());
                 let epoch = dict_structural_epoch(dict);
                 let before = (owners(key), owners(default));
-                let _reset = TrackerReset;
+                let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_memory: Some(0),
                     max_allocations: Some(0),
@@ -1177,7 +1169,7 @@ fn sparse_erase_is_allocation_free_and_reinsertion_preserves_live_order() {
             );
             let entries_owner = dict_entries_ptr(dict);
             let table_owner = dict_table_ptr(dict);
-            let reset = TrackerReset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
                 max_allocations: Some(0),
@@ -1989,7 +1981,7 @@ fn dictionary_general_key_conversion_reserves_before_compacting_or_publishing() 
             assert_eq!(dict_storage(dict).kind, DictKeyKind::Unicode);
             let rows = dict_entries(dict).clone();
             let conversion_epoch = dict_structural_epoch(dict);
-            let reset = TrackerReset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
                 max_allocations: Some(0),

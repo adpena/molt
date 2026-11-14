@@ -124,18 +124,12 @@ def _wasm_cargo_toolchain_input_paths(plan: RuntimeCargoPlan) -> tuple[Path, ...
 
 
 def _runtime_target_candidates(primary: Path) -> list[Path]:
-    """Enumerate Cargo primary/deps/hash shapes; receipts alone admit reuse."""
-    deps = primary.parent / "deps"
-    candidates = [path for path in (primary, deps / primary.name) if path.exists()]
-    hashed: list[tuple[int, str, Path]] = []
-    for path in deps.glob(f"{primary.stem}-*{primary.suffix}"):
-        try:
-            metadata = path.stat()
-        except OSError:
-            continue
-        hashed.append((metadata.st_mtime_ns, path.name, path))
-    candidates.extend(path for _mtime, _name, path in sorted(hashed, reverse=True))
-    return candidates
+    """Cargo's final artifact, when present; receipts alone admit reuse.
+
+    Cargo's intermediate unit outputs are not a stable interface. A build
+    reads the exact artifact from Cargo's JSON messages instead.
+    """
+    return [primary] if primary.exists() else []
 
 
 def _wasm_cpython_abi_staticlib_candidates(
@@ -152,10 +146,6 @@ def _wasm_runtime_staticlib_candidates(
     return _runtime_target_candidates(
         _wasm_runtime_staticlib_path(target_root, profile_dir)
     )
-
-
-def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
-    return target_root / "wasm32-wasip1" / profile_dir / "deps"
 
 
 def _ensure_wasm_cpython_abi_staticlib(
@@ -451,7 +441,9 @@ def _runtime_cargo_report_missing_artifact_path(
 ) -> Path:
     suffix = "a" if artifact_kind is RuntimeCrateType.STATICLIB else "wasm"
     return (
-        _wasm_runtime_deps_dir(target_root, profile_dir)
+        target_root
+        / "wasm32-wasip1"
+        / profile_dir
         / f".molt_runtime.cargo-report-missing.{suffix}"
     )
 

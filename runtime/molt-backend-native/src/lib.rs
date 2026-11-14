@@ -46,6 +46,10 @@ pub(crate) mod app_resolver_abi;
 mod application_ir;
 #[cfg(feature = "native-backend")]
 pub use application_ir::prepare_native_application_ir;
+// The shared walker's first consumer is LLVM; Cranelift joins it at W3
+// (docs/design/foundation/codegen_walker.md), and the cfg widens then.
+#[cfg(feature = "llvm")]
+pub(crate) mod codegen_ssa;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 mod exception_observer_abi;
 #[cfg(feature = "llvm")]
@@ -79,8 +83,8 @@ pub use crate::passes::{
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 #[allow(unused_imports)]
 pub(crate) use molt_codegen_abi::{
-    CANONICAL_NAN_BITS, CLASS_POLICY_INSTANCE_KIND_SHIFT, CLASS_POLICY_WORD_OFFSET,
-    FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_NONE, GENERATOR_CONTROL_BYTES,
+    CLASS_POLICY_INSTANCE_KIND_SHIFT, CLASS_POLICY_WORD_OFFSET, FUNC_DEFAULT_DICT_POP,
+    FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_NONE, GENERATOR_CONTROL_BYTES,
     HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_HAS_PTRS, HEADER_FLAGS_OFFSET, HEADER_SIZE_BYTES,
     HEADER_TYPE_ID_OFFSET, INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE,
     INT_MIN_INLINE, INT_SHIFT, INT_SIGN_BIT, INT_WIDTH, JIT_TYPE_ID_LIST_BOOL,

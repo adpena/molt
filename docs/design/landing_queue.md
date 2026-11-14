@@ -445,7 +445,11 @@ One runner owns main. Agents enqueue and continue.
   confirms. A failed batch splits into halves: a passing first half lands,
   and the rest retest on the new tip. A single failing lane leaves the queue
   with its log. A move of main rebuilds the candidate; it never needs a
-  person. Speculation is a candidate chain (main + L1, main + L1 + L2, ...)
+  person. When the batch's gates had passed and only the push lost the race,
+  the rebuilt batch reruns the static gates and the gates the move can
+  affect, by the rule `land --fast` uses below, and carries the rest from
+  the earlier base (2026-11-14: two batches of one request were each run
+  again in full, 35 minutes apiece, after unrelated pushes). Speculation is a candidate chain (main + L1, main + L1 + L2, ...)
   that runs as far as the admitted capacity allows: one chain on this Mac,
   wider on the farm.
   Direct materialization uses Git's
@@ -1155,6 +1159,24 @@ selected about 1,000 files and stopped twice on host memory pressure. Postsubmit
 must still prove that every left reader ran before last-green moves (next
 step).
 
+**Definitions, not files (2026-11-12, HF-623).** An importer is selected when
+its first hop reaches a definition the change touches, not any part of a
+touched file. The graph already holds one node per top-level definition and
+one for module-level code (`path::name`, `path#init`); a changed module that
+parses on both sides is refined to the definitions whose syntax differs, plus
+those that name a changed module-level binding, closed over the module's own
+callers (`changed_module_nodes`, `DependencyGraph.changed_nodes`). A change to
+module-level code selects the tests that import the module themselves; tests
+that reach it only through a conftest run it at import the same way, in
+postsubmit. A test that holds the whole module (an attribute call the graph
+cannot resolve), a new or deleted module, a module that does not parse, and a
+module-level statement with an import-time effect beyond binding names stay
+file-level. The consumer gate refines against `HEAD`; a landing against its
+upstream (`GateConfig.change_base`). Measured on the venv_exec bootstrap change
+(`dx.py`, `checkout_provisioning.py`, `molt_dev.py`, `venv_exec.py`): 992 test
+files file-level, because the root conftest uses two `dx.py` functions, and 60
+refined. Postsubmit still selects every dependent through the whole graph.
+
 ## Costs
 
 Commit metadata comes from one typed, NUL-framed Git history read: original
@@ -1292,8 +1314,9 @@ took 1423 seconds against its 900-second deadline. These are the motivating
 measurements, not qualification of the changes below.
 
 The proof executor owns one CPU budget for its batch, using the existing
-`molt.host_capacity` authority: affinity/quota, with performance cores first
-on macOS. It divides that budget among the possible concurrent pytest gates
+`molt.host_capacity` authority: affinity/quota, without the efficiency cores
+on macOS (until 2026-11-14 it took only `hw.perflevel0`, 6 of an M5 Max's 18
+cores, so every batch ran its pytest gates at `-n 3`). It divides that budget among the possible concurrent pytest gates
 within their resource limits. Every pytest gate reserves at least one CPU,
 including serial `-n 0`; a one-CPU host serializes pytest sessions. The runner
 bounds each share by its existing memory slice and declared per-worker memory,

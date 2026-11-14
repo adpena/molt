@@ -291,6 +291,9 @@ class GateConfig:
     # The graph that selects tests by what they read. Without one (a driver
     # test's synthetic policy), rules alone select.
     dependency_graph: Callable[[], DependencyGraph] | None = None
+    # The revision the change applies to; with it, presubmit refines a touched
+    # module to the definitions the change touches (``direct_readers``).
+    change_base: str | None = None
     # Mechanical repairs, in order; `land` applies them before its precheck.
     repair: list[str] = field(default_factory=list)
     # One graph selection per request: the gates it selects and the receipt
@@ -459,7 +462,13 @@ class GateConfig:
         if self.dependency_graph is None or not (touched or recent_failures):
             return None
         # The provider is part of the request: a reassigned graph is another one.
-        key = (self.dependency_graph, tuple(touched), mode, tuple(recent_failures))
+        key = (
+            self.dependency_graph,
+            tuple(touched),
+            mode,
+            tuple(recent_failures),
+            self.change_base,
+        )
         if key not in self._graph_selections:
             self._graph_selections[key] = self._compute_graph_selection(
                 touched, mode=mode, recent_failures=recent_failures
@@ -491,6 +500,7 @@ class GateConfig:
             mode=mode,
             recent_failures=recent_failures,
             foreign_cells=self.foreign_cells(),
+            base=self.change_base,
             observations=(
                 ObservedTestInputs(
                     observation_directory(
@@ -1263,11 +1273,17 @@ def select_landing_gates(
     extra: list[str],
     mode: LandingMode = LandingMode.PRESUBMIT,
     recent_failures: Collection[str] = (),
+    diff_base: str | None = None,
 ) -> tuple[str, GateConfig, list[str], list[SelectedGate], list[GateRule]]:
     """The policy, touched paths and bound gates of ``commit`` over ``upstream``.
 
     Policy comes from the same immutable commit whose clean source executes it.
     Without a known green base, postsubmit selects every tracked input.
+    ``{integration_upstream_commit}`` binds to ``diff_base`` when given, else
+    to ``upstream``: postsubmit selects over everything since the last green
+    main but measures its diff-relative gates (added lines, changed crates,
+    commit attribution) from the main it last observed, so a red streak does
+    not widen them to every commit since green.
     """
     if upstream is None and mode is not LandingMode.POSTSUBMIT:
         raise DriverError(
@@ -1299,6 +1315,8 @@ def select_landing_gates(
 
     # The selected commit's tree, read through Git objects: what executes.
     config.dependency_graph = lambda: cached_graph(repo, commit=commit)
+    # Postsubmit (no upstream) selects every tracked input; nothing to refine.
+    config.change_base = upstream
 
     plan_changes = None
     if upstream is None:
@@ -1318,11 +1336,12 @@ def select_landing_gates(
             replace(
                 gate,
                 command=bind_local_gate_command(
-                    gate.command, upstream_commit=upstream or commit
+                    gate.command, upstream_commit=diff_base or upstream or commit
                 ),
                 collection_command=(
                     bind_local_gate_command(
-                        gate.collection_command, upstream_commit=upstream or commit
+                        gate.collection_command,
+                        upstream_commit=diff_base or upstream or commit,
                     )
                     if gate.collection_command is not None
                     else None

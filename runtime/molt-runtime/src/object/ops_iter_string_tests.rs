@@ -122,14 +122,7 @@ fn string_iterators_preserve_codepoint_spans_and_exhaustion_in_both_directions()
 
 #[test]
 fn string_iteration_allocation_failure_matches_cpython_directional_transitions() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-
-    struct ResetTracker;
-    impl Drop for ResetTracker {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
@@ -151,7 +144,7 @@ fn string_iteration_allocation_failure_matches_cpython_directional_transitions()
                     assert!(!crate::exception_pending(py));
                     assert_eq!(refcount(source), source_owners + 1);
                     let ptr = MoltObject::from_bits(iter).as_ptr().expect("iterator");
-                    let reset = ResetTracker;
+                    let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                     set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                         max_allocations: Some(0),
                         ..ResourceLimits::default()

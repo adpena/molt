@@ -11,3 +11,6 @@ description = "Collections and container intrinsics for the Molt runtime (Ordere
 # Core runtime types used by the collection implementations
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+
+[lints]
+workspace = true

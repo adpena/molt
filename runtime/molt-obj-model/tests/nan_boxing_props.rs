@@ -5,7 +5,7 @@
 
 use proptest::prelude::*;
 
-use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MAX_INLINE, INT_MIN_INLINE, QNAN};
+use molt_codegen_abi::{DEFAULT_NAN_BITS, INT_MAX_INLINE, INT_MIN_INLINE, QNAN, TAG_MASK};
 use molt_lang_obj_model::MoltObject;
 
 proptest! {
@@ -13,23 +13,18 @@ proptest! {
     // Float round-trip
     // ------------------------------------------------------------------
 
-    /// Any f64 survives round-trip through from_float / as_float.
-    /// NaN inputs are canonicalized to CANONICAL_NAN_BITS.
+    /// Any f64 survives round-trip through from_float / as_float bit for bit,
+    /// except a NaN whose tag field (bits 48-50) is set: it boxes to the
+    /// default NaN with its sign (runtime spec 2.1.1).
     #[test]
     fn float_roundtrip(f in any::<f64>()) {
         let v = MoltObject::from_float(f);
-        if f.is_nan() {
-            // All NaN variants must collapse to the single canonical NaN.
-            prop_assert_eq!(v.bits(), CANONICAL_NAN_BITS);
-            // The canonical NaN must still decode as a NaN float.
-            // Note: is_float() is false for the canonical NaN because its
-            // QNAN bits are set, but as_float() returns None. Instead we
-            // verify the bit pattern directly.
-            let decoded = f64::from_bits(v.bits());
-            prop_assert!(decoded.is_nan());
+        prop_assert!(v.is_float());
+        let out = v.as_float().unwrap();
+        if f.is_nan() && f.to_bits() & TAG_MASK != 0 {
+            prop_assert_eq!(v.bits(), DEFAULT_NAN_BITS | (f.to_bits() & (1u64 << 63)));
+            prop_assert!(out.is_nan());
         } else {
-            prop_assert!(v.is_float());
-            let out = v.as_float().unwrap();
             prop_assert_eq!(f.to_bits(), out.to_bits());
         }
     }
@@ -253,13 +248,17 @@ proptest! {
 
 // Non-proptest supplementary assertions for singleton / edge values.
 #[test]
-fn canonical_nan_bits_are_deterministic() {
-    let nan1 = MoltObject::from_float(f64::NAN);
-    let nan2 = MoltObject::from_float(-f64::NAN);
-    // f64::NAN and -f64::NAN have different raw bits but must
-    // both canonicalize to the same CANONICAL_NAN_BITS.
-    assert_eq!(nan1.bits(), nan2.bits());
-    assert_eq!(nan1.bits(), CANONICAL_NAN_BITS);
+fn default_and_payload_nans_keep_their_bits() {
+    // A NaN with a clear tag field is stored verbatim: sign, quiet bit and
+    // payload survive boxing (runtime spec 2.1.1).
+    for bits in [
+        f64::NAN.to_bits(),
+        (-f64::NAN).to_bits(),
+        0x7ff0_0000_0000_0001,
+        0xfff8_0000_dead_beef,
+    ] {
+        assert_eq!(MoltObject::from_float(f64::from_bits(bits)).bits(), bits);
+    }
 }
 
 #[test]

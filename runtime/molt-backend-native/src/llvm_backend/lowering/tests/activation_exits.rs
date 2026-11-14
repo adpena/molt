@@ -327,11 +327,12 @@ fn drop_inserted_lowering_rejects_a_hidden_suspension() {
     );
     let first = func.fresh_block();
     let resume = func.fresh_block();
+    let none = func.fresh_value();
     func.blocks
         .get_mut(&func.entry_block)
         .unwrap()
         .ops
-        .push(const_none_def(ValueId(1)));
+        .push(const_none_def(none));
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
         cases: vec![(RESUME_STATE, resume, vec![])],
         default: first,
@@ -344,7 +345,7 @@ fn drop_inserted_lowering_rejects_a_hidden_suspension() {
             args: vec![],
             ops: vec![tir_op(
                 OpCode::StateYield,
-                vec![ValueId(1)],
+                vec![none],
                 vec![],
                 state_attr(RESUME_STATE),
             )],
@@ -357,9 +358,7 @@ fn drop_inserted_lowering_rejects_a_hidden_suspension() {
             id: resume,
             args: vec![],
             ops: vec![],
-            terminator: Terminator::Return {
-                values: vec![ValueId(1)],
-            },
+            terminator: Terminator::Return { values: vec![none] },
         },
     );
     let _ = try_lower_tir_to_llvm(&func, &backend);

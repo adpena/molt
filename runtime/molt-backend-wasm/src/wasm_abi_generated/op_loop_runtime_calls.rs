@@ -234,6 +234,19 @@ pub(crate) fn op_loop_runtime_call(
                     discard_result: false,
                 }
             }
+            molt_ir::runtime_fn_generated::RuntimeFn::ListReverseSlice => OpLoopRuntimeCallSpec {
+                import: WasmRuntimeImport::ListReverseSlice,
+                args: &[
+                    OpLoopRuntimeArgSpec::Local(0),
+                    OpLoopRuntimeArgSpec::Local(1),
+                    OpLoopRuntimeArgSpec::Local(2),
+                    OpLoopRuntimeArgSpec::Local(3),
+                    OpLoopRuntimeArgSpec::Local(4),
+                    OpLoopRuntimeArgSpec::Local(5),
+                ],
+                required_imports: &[WasmRuntimeImport::ListReverseSlice],
+                discard_result: false,
+            },
             molt_ir::runtime_fn_generated::RuntimeFn::StringCount => OpLoopRuntimeCallSpec {
                 import: WasmRuntimeImport::StringCount,
                 args: &[

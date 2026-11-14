@@ -14,10 +14,7 @@ pub(super) fn is_simple_literal(s: &str) -> bool {
         }
     }
     // String: starts and ends with "
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        return true;
-    }
-    false
+    s.len() >= 2 && s.starts_with('"') && s.ends_with('"')
 }
 
 pub(super) fn is_ident_char(b: u8) -> bool {
@@ -168,10 +165,7 @@ pub(super) fn is_pure_expr(s: &str) -> bool {
         }
     }
     // Must not contain an embedded assignment.
-    if s.contains(" = ") {
-        return false;
-    }
-    true
+    !s.contains(" = ")
 }
 
 /// Check if an expression contains binary operators at the top level

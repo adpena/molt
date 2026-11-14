@@ -216,9 +216,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder
-                    .ins()
-                    .bitcast(types::F64, MemFlagsData::new(), slow_res);
+                let slow_f = unbox_float_value(builder, slow_res);
                 if out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {
@@ -231,7 +229,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 if out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[result_f]);
                 } else {
-                    let fast_res = box_float_value(&mut *builder, result_f, nbc);
+                    let fast_res = box_float_value(&mut *builder, result_f);
                     jump_block(&mut *builder, merge_block, &[fast_res]);
                 }
                 switch_to_block_materialized(&mut *builder, merge_block);
@@ -303,7 +301,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 if div_out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[result_f]);
                 } else {
-                    let fast_res = box_float_value(&mut *builder, result_f, nbc);
+                    let fast_res = box_float_value(&mut *builder, result_f);
                     jump_block(&mut *builder, merge_block, &[fast_res]);
                 }
 
@@ -311,9 +309,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder
-                    .ins()
-                    .bitcast(types::F64, MemFlagsData::new(), slow_res);
+                let slow_f = unbox_float_value(builder, slow_res);
                 if div_out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {
@@ -390,7 +386,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[result_f]);
                 } else {
-                    let fast_res = box_float_value(&mut *builder, result_f, nbc);
+                    let fast_res = box_float_value(&mut *builder, result_f);
                     jump_block(&mut *builder, merge_block, &[fast_res]);
                 }
 
@@ -407,8 +403,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-                let rhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+                let lhs_ff = unbox_float_value(builder, *lhs);
+                let rhs_ff = unbox_float_value(builder, *rhs);
                 // Dynamic boxed floats have the same zero-divisor boundary as
                 // producer-known raw floats. Only the nonzero path may use fdiv.
                 let zero_f = builder.ins().f64const(0.0);
@@ -423,7 +419,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[flt_quot]);
                 } else {
-                    let flt_res = box_float_value(&mut *builder, flt_quot, nbc);
+                    let flt_res = box_float_value(&mut *builder, flt_quot);
                     jump_block(&mut *builder, merge_block, &[flt_res]);
                 }
 
@@ -431,9 +427,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder
-                    .ins()
-                    .bitcast(types::F64, MemFlagsData::new(), slow_res);
+                let slow_f = unbox_float_value(builder, slow_res);
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {

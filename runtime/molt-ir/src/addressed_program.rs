@@ -455,6 +455,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         source_line: _,
         bce_safe: _,
         global_slot,
+        method_site: _,
         exception_edge: _,
         exception_source: _,
         frame_location: _,

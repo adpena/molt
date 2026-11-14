@@ -498,14 +498,6 @@ mod tests {
         LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker, with_tracker,
     };
 
-    struct TrackerReset;
-
-    impl Drop for TrackerReset {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
-
     #[test]
     fn tracked_vec_capacity_is_charged_and_released() {
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
@@ -552,7 +544,7 @@ mod tests {
                     ),
                     ..Default::default()
                 })));
-                let _reset = TrackerReset;
+                let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 let sentinel = tracked_vec_box_with_capacity::<u64>(0).unwrap();
                 let ptr = tracked_vec_box_with_capacity::<u64>(capacity).unwrap();
                 let contents = unsafe { tracked_vec_take_contents(ptr) };
@@ -590,7 +582,7 @@ mod tests {
             max_memory: Some(initial_charge + replacement_bytes - 1),
             ..Default::default()
         })));
-        let _reset = TrackerReset;
+        let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
         let ptr = tracked_vec_box_with_capacity::<u64>(4).expect("tracked vec");
         unsafe {
             (*ptr).extend_from_slice(&[1, 2, 3, 4]);
@@ -606,7 +598,7 @@ mod tests {
     #[test]
     fn tracked_vec_growth_is_amortized() {
         set_tracker(Box::new(UnlimitedTracker));
-        let _reset = TrackerReset;
+        let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
         let ptr = tracked_vec_box_with_capacity::<u64>(4).expect("tracked vec");
         unsafe {
             (*ptr).extend_from_slice(&[1, 2, 3, 4]);

@@ -11,7 +11,7 @@ fn heap_refcount(bits: u64) -> u32 {
 
 #[test]
 fn ordinary_missing_observation_needs_no_allocation() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let name = crate::NameId::DunderDeepcopy.bits(py);
@@ -39,13 +39,7 @@ fn ordinary_missing_observation_needs_no_allocation() {
             ),
             Ok(None)
         );
-        struct ResetTracker;
-        impl Drop for ResetTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
-        let reset = ResetTracker;
+        let reset = crate::test_support::restore_unlimited_tracker_on_drop();
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
             max_allocations: Some(0),
             ..ResourceLimits::default()
@@ -874,7 +868,7 @@ fn completed_native_absence_is_reusable_without_preparing_other_declarations() {
 
 #[test]
 fn native_default_missing_observation_needs_no_allocation_or_error_replacement() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use molt_cpython_abi::abi_types::{Py_TPFLAGS_READY, PyObject, PyType_Type, PyTypeObject};
     use molt_cpython_abi::api::{errors, mapping, object, refcount};
     use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -928,13 +922,7 @@ fn native_default_missing_observation_needs_no_allocation_or_error_replacement()
             );
             assert!(output.is_null());
             assert!(errors::PyErr_Occurred().is_null());
-            struct ResetTracker;
-            impl Drop for ResetTracker {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let reset = ResetTracker;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_allocations: Some(0),
                 ..ResourceLimits::default()

@@ -21,11 +21,18 @@ pub(crate) struct NativeFrameSites {
     pub(crate) exit: FuncRef,
 }
 
-struct NativeFrameBuilder<'a, 'b> {
-    words: NativeWords<'a, 'b>,
-    sites: NativeFrameSites,
+/// Cranelift's spelling of the shared control and word primitives, inline in
+/// the function being compiled. The method site generators reuse it
+/// (`method_site.rs`).
+pub(crate) struct NativeFrameBuilder<'a, 'b> {
+    pub(crate) words: NativeWords<'a, 'b>,
+    pub(crate) sites: NativeFrameSites,
     /// The cold block of each open `attempt`, innermost last.
-    slow_blocks: Vec<Block>,
+    pub(crate) slow_blocks: Vec<Block>,
+    /// Every block this generator sealed. Its last one is the caller's
+    /// current block when it returns, so a caller that tracks sealed blocks
+    /// must learn them or it seals that continuation a second time.
+    pub(crate) sealed: Vec<Block>,
 }
 
 impl<'a, 'b> WordBuilder for NativeFrameBuilder<'a, 'b> {
@@ -37,7 +44,12 @@ impl NativeFrameBuilder<'_, '_> {
         // Every block here is private to the generator and entered once all
         // its predecessors exist.
         self.words.builder.switch_to_block(block);
+        self.seal(block);
+    }
+
+    fn seal(&mut self, block: Block) {
         self.words.builder.seal_block(block);
+        self.sealed.push(block);
     }
 }
 
@@ -172,7 +184,7 @@ impl FrameBuilder for NativeFrameBuilder<'_, '_> {
         body(self, index);
         self.words.builder.ins().jump(header, &[]);
         // The back edge is in: the header has all its predecessors.
-        self.words.builder.seal_block(header);
+        self.seal(header);
         self.enter_block(done);
     }
 }
@@ -190,9 +202,11 @@ fn load_thread_record(builder: &mut FunctionBuilder<'_>, slot: Option<StackSlot>
 /// Enter this invocation's frame for code slot `code_slot` and return its
 /// record base: zero when nothing was linked. A frame with a `shape` (a
 /// synchronous function's) pushes its record inline; any other frame is
-/// linked by the runtime.
+/// linked by the runtime. The inline push leaves the builder in a block it
+/// already sealed, so every block it seals joins `sealed_blocks`.
 pub(crate) fn emit_frame_record_push(
     builder: &mut FunctionBuilder<'_>,
+    sealed_blocks: &mut std::collections::BTreeSet<Block>,
     sites: NativeFrameSites,
     thread_record_slot: Option<StackSlot>,
     code_slot: Value,
@@ -207,6 +221,7 @@ pub(crate) fn emit_frame_record_push(
         words: NativeWords { builder },
         sites,
         slow_blocks: Vec::new(),
+        sealed: Vec::new(),
     };
     let base = generate_frame_push(
         &mut frames,
@@ -214,7 +229,9 @@ pub(crate) fn emit_frame_record_push(
         code_slot,
         HomeCount::Constant(shape.homes),
     );
-    frames.get(base)
+    let base = frames.get(base);
+    sealed_blocks.extend(frames.sealed);
+    base
 }
 
 /// Pop the frame `base` names, if this invocation entered one.
@@ -230,6 +247,7 @@ pub(crate) fn emit_frame_record_pop(
         words: NativeWords { builder },
         sites,
         slow_blocks: Vec::new(),
+        sealed: Vec::new(),
     };
     match shape {
         Some(shape) => generate_frame_pop(

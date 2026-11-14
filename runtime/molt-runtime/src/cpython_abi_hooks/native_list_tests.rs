@@ -493,14 +493,6 @@ thread_local! {
     static SORT_FAILURE: std::cell::Cell<*mut PyObject> = const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
-struct SortMutationObservation;
-impl Drop for SortMutationObservation {
-    fn drop(&mut self) {
-        SORT_APPEND.set(false);
-        SORT_FAILURE.set(std::ptr::null_mut());
-    }
-}
-
 unsafe extern "C" fn mutate_during_comparison(
     left: *mut PyObject,
     right: *mut PyObject,
@@ -575,7 +567,10 @@ fn both_list_sorts_select_failure_before_retiring_sole_callback_added_values() {
                 let comparison_error =
                     NativeObjectOwner::from_owned(errors::PyErr_GetRaisedException());
                 assert!(!comparison_error.as_ptr().is_null());
-                let _sort_observation = SortMutationObservation;
+                let _sort_observation = std::mem::DropGuard::new((), |()| {
+                    SORT_APPEND.set(false);
+                    SORT_FAILURE.set(std::ptr::null_mut());
+                });
                 let _removals = RemovalObservation::start(None);
                 SORT_APPEND.set(true);
                 SORT_FAILURE.set(if comparison_fails {
@@ -762,12 +757,6 @@ thread_local! {
     static KEY_TARGET: std::cell::Cell<*mut PyObject> = const { std::cell::Cell::new(std::ptr::null_mut()) };
     static KEY_CALLS: std::cell::RefCell<Vec<(i64, isize)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
-struct KeyObservation;
-impl Drop for KeyObservation {
-    fn drop(&mut self) {
-        KEY_TARGET.set(std::ptr::null_mut());
-    }
-}
 unsafe extern "C" fn last_digit_key(
     _: *mut PyObject,
     args: *mut PyObject,
@@ -827,7 +816,9 @@ fn native_keyed_sort_uses_physical_keys_and_stable_reverse_order() {
                     c"sort".as_ptr(),
                 ));
                 assert!(!method.as_ptr().is_null());
-                let _observation = KeyObservation;
+                let _observation = std::mem::DropGuard::new((), |()| {
+                    KEY_TARGET.set(std::ptr::null_mut());
+                });
                 KEY_TARGET.set(list.as_ptr());
                 KEY_CALLS.with(|calls| calls.borrow_mut().clear());
                 let mut args = [

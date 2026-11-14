@@ -346,14 +346,6 @@ pub fn current_thread_is_main() -> bool {
     }
 }
 
-struct HandlingGuard<'a>(&'a AtomicBool);
-
-impl Drop for HandlingGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
 fn drain_queue<const N: usize, const COUNTER_BITS: u32>(
     queue: &PendingCallQueue<N, COUNTER_BITS>,
     handling: &AtomicBool,
@@ -366,7 +358,9 @@ fn drain_queue<const N: usize, const COUNTER_BITS: u32>(
         // outer pass remains responsible for calls queued by its callbacks.
         return Ok(());
     }
-    let _handling = HandlingGuard(handling);
+    let _handling = std::mem::DropGuard::new(handling, |handling| {
+        handling.store(false, Ordering::Release);
+    });
     for _ in 0..N {
         let Some(call) = queue.pop() else {
             return Ok(());

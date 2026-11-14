@@ -565,6 +565,73 @@ pub(crate) fn molt_list_reverse_attached_body(_py: &crate::PyToken<'_>, list_bit
     })
 }
 
+/// `seq[lo:hi] = seq[start:stop:-1]` where the compiler proved `hi` is
+/// `start + 1` (or both None) and `lo` is `stop + 1` (or both None): reverse
+/// `seq[lo:hi]` in place and return True, or return False having done
+/// nothing, and the caller runs the statement as written.
+///
+/// Each bound arrives as the base value and constant offset the compiler
+/// proved it is (`n - 1` is base `n`, offset -1), or as None when its
+/// `shape` bit says it is the constant None (bit 0: start, bit 1: stop). It
+/// runs only when the statement provably runs no Python code: `seq` is an
+/// exact list without a C view and each base is an inline int, so every bound
+/// is exact int arithmetic, and each bound is `>= 0`. Then CPython's
+/// normalization gives both slices one range: with `n = len(seq)`, the source
+/// holds items `min(start, n - 1)` down to `min(stop, n - 1) + 1`, which is
+/// `[min(stop + 1, n), min(start + 1, n))`, the target's range. A negative
+/// bound counts from the end and breaks the equality, so it declines.
+pub(crate) fn molt_list_reverse_slice_attached_body(
+    _py: &crate::PyToken<'_>,
+    seq_bits: u64,
+    start_base_bits: u64,
+    start_offset_bits: u64,
+    stop_base_bits: u64,
+    stop_offset_bits: u64,
+    shape_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let shape = obj_from_bits(shape_bits).as_int().unwrap_or(-1);
+        // None for a constant-None bound, Some(index) for a non-negative int.
+        let bound = |base_bits: u64, offset_bits: u64, none: bool| -> Option<Option<usize>> {
+            let base = obj_from_bits(base_bits);
+            if none {
+                return base.is_none().then_some(None);
+            }
+            let index = base
+                .as_int()?
+                .checked_add(obj_from_bits(offset_bits).as_int()?)?;
+            usize::try_from(index).ok().map(Some)
+        };
+        let declined = MoltObject::from_bool(false).bits();
+        if !(0..4).contains(&shape) {
+            return declined;
+        }
+        let (Some(start), Some(stop)) = (
+            bound(start_base_bits, start_offset_bits, shape & 1 != 0),
+            bound(stop_base_bits, stop_offset_bits, shape & 2 != 0),
+        ) else {
+            return declined;
+        };
+        let Some(ptr) = list_storage_ptr(seq_bits) else {
+            return declined;
+        };
+        unsafe {
+            if !crate::object::object_is_exact_builtin_list(py, ptr)
+                || (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+            {
+                return declined;
+            }
+            promote_specialized_list_to_list(py, ptr);
+            let done = crate::object::list_mutation::reverse_range(py, ptr, |len| {
+                let hi = start.map_or(len, |start| start.saturating_add(1).min(len));
+                let lo = stop.map_or(0, |stop| stop.saturating_add(1).min(len));
+                lo..hi.max(lo)
+            });
+            MoltObject::from_bool(done).bits()
+        }
+    })
+}
+
 pub(crate) fn reverse_in_place(py: &PyToken<'_>, list_bits: u64) -> bool {
     let Some(storage) = list_receiver(py, list_bits, "reverse") else {
         return false;

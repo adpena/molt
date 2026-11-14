@@ -1164,6 +1164,7 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
     thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     module: &mut dyn Module,
     builder: &mut FunctionBuilder<'_>,
+    sealed_blocks: &mut BTreeSet<Block>,
 ) {
     let code_slot = emit_program_slot_id(
         molt_ir::code_slots::ProgramSlotKind::Code,
@@ -1171,7 +1172,14 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
         module,
         builder,
     );
-    let base = emit_frame_record_push(builder, sites, thread_record_slot, code_slot, shape);
+    let base = emit_frame_record_push(
+        builder,
+        sealed_blocks,
+        sites,
+        thread_record_slot,
+        code_slot,
+        shape,
+    );
     builder.def_var(entered, base);
 }
 

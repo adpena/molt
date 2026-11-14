@@ -35,7 +35,9 @@ fn operation_shape_fixture(
                 molt_ir::OpKind::CodeSlotSet | molt_ir::OpKind::TraceEnterSlot => {
                     Some("operation_shape_fixture".into())
                 }
-                molt_ir::OpKind::ModuleSlot => Some("fixture.module".into()),
+                molt_ir::OpKind::ModuleSlot | molt_ir::OpKind::StaticCellBase => {
+                    Some("fixture.module".into())
+                }
                 _ => None,
             },
             // A class statement carrier names its statement (HF-220).
@@ -43,7 +45,11 @@ fn operation_shape_fixture(
                 .kind
                 .carries_class_definition()
                 .then(|| "class:fixture:Owner".into()),
-            out: (shape.kind == molt_ir::OpKind::ModuleSlot).then(|| "module_id".into()),
+            out: matches!(
+                shape.kind,
+                molt_ir::OpKind::ModuleSlot | molt_ir::OpKind::StaticCellBase
+            )
+            .then(|| "module_id".into()),
             ..OpIR::new(shape.kind)
         }],
     );

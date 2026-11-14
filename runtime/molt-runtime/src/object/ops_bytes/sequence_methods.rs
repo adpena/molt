@@ -1717,7 +1717,7 @@ include!("../../attached_exports_generated/object/ops_bytes/sequence_methods.rs"
 mod partition_contract_tests {
     use super::*;
     use crate::object::seq_access::with_immutable_tuple_slice;
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
 
     fn refs(bits: u64) -> u32 {
         unsafe {
@@ -1875,18 +1875,12 @@ mod partition_contract_tests {
                 }
                 assert_eq!(refs(item), count);
             }
-            struct RestoreBudget;
-            impl Drop for RestoreBudget {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
                 max_allocations: Some(0),
                 ..Default::default()
             })));
-            let budget = RestoreBudget;
+            let budget = crate::test_support::restore_unlimited_tracker_on_drop();
             let result = partition_to_tuple(py, b"left<>right", b"<>", false, |_, _| {
                 inc_ref_bits(py, item);
                 Some(item)

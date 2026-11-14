@@ -182,6 +182,7 @@ _FAST_PATH_EXPANSION_RULES = {
     "numeric_sub": "NumericSub",
     "numeric_mul": "NumericMul",
     "numeric_true_div": "NumericTrueDiv",
+    "numeric_bitwise": "NumericBitwise",
     "numeric_compare": "NumericCompare",
     "guarded_call": "GuardedCall",
     "truthiness": "Truthiness",

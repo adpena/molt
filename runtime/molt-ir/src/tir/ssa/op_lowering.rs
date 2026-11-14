@@ -374,6 +374,7 @@ impl<'a> SsaContext<'a> {
             source_span: None,
         };
         tir_op.set_global_slot(op.global_slot.as_ref());
+        tir_op.set_method_site(op.method_site);
         // A source call's typed operand custody is aligned with `args`,
         // which are exactly the call's operands.
         if let Some(custody) = &op.argument_custody {

@@ -33,8 +33,6 @@ use crate::llvm_backend::runtime_imports::runtime_function;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
-use inkwell::FloatPredicate;
-#[cfg(feature = "llvm")]
 use inkwell::attributes::AttributeLoc;
 
 #[cfg(feature = "llvm")]
@@ -96,6 +94,8 @@ mod container_ops;
 #[cfg(feature = "llvm")]
 mod frame_record;
 mod global_slot;
+#[cfg(feature = "llvm")]
+mod method_site;
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
@@ -243,6 +243,76 @@ impl<'ctx> nanbox::word::WordBuilder for LlvmWords<'_, 'ctx> {
     }
 }
 
+/// The LLVM builder a word builder spells into.
+#[cfg(feature = "llvm")]
+pub(super) trait LlvmBranchWords<'ctx> {
+    fn llvm(&self) -> LlvmWords<'_, 'ctx>;
+}
+
+#[cfg(feature = "llvm")]
+impl<'ctx> LlvmBranchWords<'ctx> for LlvmWords<'_, 'ctx> {
+    fn llvm(&self) -> LlvmWords<'_, 'ctx> {
+        *self
+    }
+}
+
+/// `BranchBuilder::choose` in LLVM: a conditional branch to two blocks of the
+/// current function that join in one i64 phi. Every LLVM word builder uses it.
+#[cfg(feature = "llvm")]
+pub(super) fn llvm_choose<'ctx, S: LlvmBranchWords<'ctx>>(
+    s: &mut S,
+    condition: inkwell::values::IntValue<'ctx>,
+    yes: impl FnOnce(&mut S) -> inkwell::values::IntValue<'ctx>,
+    no: impl FnOnce(&mut S) -> inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let (context, function) = {
+        let words = s.llvm();
+        let block = words
+            .builder
+            .get_insert_block()
+            .expect("choose inside a block");
+        (
+            words.context,
+            block.get_parent().expect("a block has a function"),
+        )
+    };
+    let yes_block = context.append_basic_block(function, "choose_yes");
+    let no_block = context.append_basic_block(function, "choose_no");
+    let join = context.append_basic_block(function, "choose_join");
+    s.llvm()
+        .builder
+        .build_conditional_branch(condition, yes_block, no_block)
+        .unwrap();
+    s.llvm().builder.position_at_end(yes_block);
+    let taken = yes(s);
+    let taken_end = s.llvm().builder.get_insert_block().unwrap();
+    s.llvm().builder.build_unconditional_branch(join).unwrap();
+    s.llvm().builder.position_at_end(no_block);
+    let fallback = no(s);
+    let fallback_end = s.llvm().builder.get_insert_block().unwrap();
+    s.llvm().builder.build_unconditional_branch(join).unwrap();
+    s.llvm().builder.position_at_end(join);
+    let phi = s
+        .llvm()
+        .builder
+        .build_phi(context.i64_type(), "choose_value")
+        .unwrap();
+    phi.add_incoming(&[(&taken, taken_end), (&fallback, fallback_end)]);
+    phi.as_basic_value().into_int_value()
+}
+
+#[cfg(feature = "llvm")]
+impl<'ctx> nanbox::word::BranchBuilder for LlvmWords<'_, 'ctx> {
+    fn choose(
+        &mut self,
+        condition: Self::Predicate,
+        yes: impl FnOnce(&mut Self) -> Self::Word,
+        no: impl FnOnce(&mut Self) -> Self::Word,
+    ) -> Self::Word {
+        llvm_choose(self, condition, yes, no)
+    }
+}
+
 /// Full-range runtime integer boxing (`molt_int_from_i64`): the inline box when
 /// the value fits, otherwise one fresh heap BigInt owner, or None with
 /// MemoryError pending when that allocation fails.
@@ -344,18 +414,8 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
                 .build_bit_cast(float_val, i64_ty, "f64_to_i64")
                 .unwrap()
                 .into_int_value();
-            let is_nan = builder
-                .build_float_compare(FloatPredicate::UNO, float_val, float_val, "f64_is_nan")
-                .unwrap();
-            builder
-                .build_select(
-                    is_nan,
-                    i64_ty.const_int(nanbox::CANONICAL_NAN_BITS, false),
-                    raw_bits,
-                    "f64_nan_canonical_bits",
-                )
-                .unwrap()
-                .into_int_value()
+            // A float is its own word (runtime spec 2.1.1): boxing is the cast.
+            raw_bits
         }
         // A None annotation still carries the actual boxed word. Only a
         // ConstNone producer can supply the singleton, including in homes.
@@ -470,10 +530,8 @@ struct FunctionLowering<'ctx, 'func> {
     entry_trampoline_bb: Option<BasicBlock<'ctx>>,
     /// Maps TIR BlockId -> LLVM BasicBlock.
     block_map: HashMap<BlockId, BasicBlock<'ctx>>,
-    /// Maps TIR ValueId -> lowered LLVM value.
-    values: HashMap<ValueId, BasicValueEnum<'ctx>>,
-    /// Maps TIR ValueId -> its TirType (for type-specialized dispatch).
-    value_types: HashMap<ValueId, TirType>,
+    /// Every TIR value's lowered LLVM value and its type: one slot per value.
+    values: crate::codegen_ssa::ValueTable<BasicValueEnum<'ctx>>,
     /// Phi nodes that need incoming values wired up after all blocks are emitted.
     /// (target_block, arg_index, phi_node)
     pending_phis: Vec<(BlockId, usize, PhiValue<'ctx>)>,
@@ -609,8 +667,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         llvm_fn,
         entry_trampoline_bb: None,
         block_map: HashMap::new(),
-        values: HashMap::new(),
-        value_types: HashMap::new(),
+        values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         pending_phis: Vec::new(),
         phi_edges: Vec::new(),
         pgo_branch_weights,
@@ -924,8 +981,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         ));
         let undef: BasicValueEnum<'ctx> = self.backend.context.i64_type().get_undef().into();
         for &result_id in &op.results {
-            self.values.insert(result_id, undef);
-            self.value_types.insert(result_id, TirType::DynBox);
+            self.values.set_value(result_id, undef);
+            self.values.set_repr(
+                result_id,
+                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+            );
         }
     }
 
@@ -975,8 +1035,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let value = self.coerce_to_tir_type(value, &linkage_ty, &effective_ty, bb, None);
                 let value =
                     self.coerce_to_type(value, lower_type(self.backend.context, &effective_ty), bb);
-                self.values.insert(arg.id, value);
-                self.value_types.insert(arg.id, effective_ty);
+                self.values.set_value(arg.id, value);
+                self.values
+                    .set_repr(arg.id, crate::codegen_ssa::HeldCarrier::of(&effective_ty));
             }
         } else {
             // Non-entry blocks: create phi nodes for block arguments.
@@ -990,8 +1051,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_phi(llvm_ty, &format!("phi_{}", arg.id.0))
                     .unwrap();
-                self.values.insert(arg.id, phi.as_basic_value());
-                self.value_types.insert(arg.id, effective_ty);
+                self.values.set_value(arg.id, phi.as_basic_value());
+                self.values
+                    .set_repr(arg.id, crate::codegen_ssa::HeldCarrier::of(&effective_ty));
                 self.pending_phis.push((block_id, i, phi));
             }
         }

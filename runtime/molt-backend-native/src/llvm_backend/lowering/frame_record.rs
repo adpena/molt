@@ -18,7 +18,7 @@ use molt_codegen_abi::word::WordBuilder;
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
     /// The thread record as a word, for the frame helpers' address arithmetic.
-    fn thread_record_word(&mut self) -> IntValue<'ctx> {
+    pub(super) fn thread_record_word(&mut self) -> IntValue<'ctx> {
         let record = self.thread_record();
         self.backend
             .builder
@@ -150,6 +150,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
             exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
+            recursion: None,
         };
         match helper {
             FrameHelper::Push { homes } => {
@@ -187,18 +188,24 @@ enum FrameHelper {
     PopRuntimeLinked,
 }
 
-struct LlvmFrameBuilder<'a, 'ctx> {
-    words: LlvmWords<'a, 'ctx>,
-    function: FunctionValue<'ctx>,
+/// LLVM's spelling of the shared control and word primitives, in an
+/// always-inlined helper body. The method site generators reuse it
+/// (`method_site.rs`).
+pub(super) struct LlvmFrameBuilder<'a, 'ctx> {
+    pub(super) words: LlvmWords<'a, 'ctx>,
+    pub(super) function: FunctionValue<'ctx>,
     /// Holds only the helper's local slots; it branches to the body last.
-    entry: BasicBlock<'ctx>,
-    admission: IntValue<'ctx>,
-    retain: FunctionValue<'ctx>,
-    release: FunctionValue<'ctx>,
-    enter: FunctionValue<'ctx>,
-    exit: FunctionValue<'ctx>,
+    pub(super) entry: BasicBlock<'ctx>,
+    pub(super) admission: IntValue<'ctx>,
+    pub(super) retain: FunctionValue<'ctx>,
+    pub(super) release: FunctionValue<'ctx>,
+    pub(super) enter: FunctionValue<'ctx>,
+    pub(super) exit: FunctionValue<'ctx>,
     /// The cold block of each open `attempt`, innermost last.
-    slow_blocks: Vec<BasicBlock<'ctx>>,
+    pub(super) slow_blocks: Vec<BasicBlock<'ctx>>,
+    /// `molt_recursion_enter_fast` and `molt_recursion_exit_fast`, for a
+    /// method site's call; a frame helper has none.
+    pub(super) recursion: Option<(FunctionValue<'ctx>, FunctionValue<'ctx>)>,
 }
 
 impl<'ctx> LlvmFrameBuilder<'_, 'ctx> {

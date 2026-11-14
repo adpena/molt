@@ -1111,12 +1111,6 @@ mod tests {
                 }
             }
         }
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
-            }
-        }
         // Every epoch starts cold, so both receipt reset and the real compiler
         // startup order (builtins first, compiled version second) are exercised.
         for minor in [12, 14, 12, 14] {
@@ -1272,7 +1266,7 @@ mod tests {
                         if minor >= 14 {
                             // Real allocation denial cannot partially publish
                             // target facts, namespaces, epochs or cache tags.
-                            let tracker = RestoreTracker;
+                            let tracker = crate::test_support::restore_unlimited_tracker_on_drop();
                             crate::resource::set_tracker(Box::new(
                                 crate::resource::LimitedTracker::new(
                                     &crate::resource::ResourceLimits {

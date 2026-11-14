@@ -2734,13 +2734,14 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
             };
         }
         Ok(Some(result)) => {
+            // One owner releases the __complex__ result on every exit.
+            let result = unsafe { crate::api::refcount::OwnedPyObject::from_owned(result) };
             use crate::api::abstract_number::{
                 NumericResultKind, numeric_class_name, numeric_result_class,
             };
             let Ok((actual, kind)) = (unsafe {
-                numeric_result_class(result, &raw mut crate::abi_types::PyComplex_Type)
+                numeric_result_class(result.as_ptr(), &raw mut crate::abi_types::PyComplex_Type)
             }) else {
-                unsafe { crate::api::refcount::Py_DECREF(result) };
                 return Py_complex {
                     real: -1.0,
                     imag: 0.0,
@@ -2758,7 +2759,6 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
                             .cast::<crate::abi_types::PyObject>(),
                         message.as_ptr(),
                     );
-                    crate::api::refcount::Py_DECREF(result);
                 }
                 return Py_complex {
                     real: -1.0,
@@ -2778,28 +2778,25 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
                     )
                 } != 0
                 {
-                    unsafe { crate::api::refcount::Py_DECREF(result) };
                     return Py_complex {
                         real: -1.0,
                         imag: 0.0,
                     };
                 }
             }
-            let value = if let Some(value) = unsafe { layout_complex_value(result) } {
+            let value = if let Some(value) = unsafe { layout_complex_value(result.as_ptr()) } {
                 value
             } else {
                 unsafe {
                     crate::bridge::ensure_result_error(
                         c"complex result has no physical complex payload",
                     );
-                    crate::api::refcount::Py_DECREF(result);
                 }
                 return Py_complex {
                     real: -1.0,
                     imag: 0.0,
                 };
             };
-            unsafe { crate::api::refcount::Py_DECREF(result) };
             return value;
         }
         Ok(None) => {}

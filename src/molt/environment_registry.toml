@@ -743,6 +743,14 @@ owner = "runtime/molt-runtime/src/cpython_abi_hooks.rs"
 summary = "tools/benchmark_cext_trampoline.py sets it on Windows to the single-bit process affinity mask for the timed child, and configure_cext_benchmark_process in cpython_abi_hooks.rs applies that mask as a usize and panics when it is unset, non-numeric, holds more than one bit, or disagrees with MOLT_CEXT_BENCH_TARGET_CPU."
 
 [[variable]]
+name = "MOLT_CEXT_HOST_LIBRARY"
+audience = "internal"
+kind = "path"
+default = ""
+owner = "runtime/test_support/cext_fixture.rs"
+summary = "The `cext_host` example cdylib that Cargo's JSON `filenames` reported for the running C-extension test's target and profile; the test links fixture extensions against it and panics when it is unset or absent."
+
+[[variable]]
 name = "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS"
 audience = "user"
 kind = "float"
@@ -2674,6 +2682,15 @@ owner = "tools/throughput_env.sh"
 summary = "tools/molt_shell_env.sh exports it from molt_init_shell_context as the repo root in the selected Python's path form (cygpath or wslpath host form when that Python uses Windows paths); tools/throughput_env.sh and tools/witness_cycle.sh read it as their ROOT."
 
 [[variable]]
+name = "MOLT_HOST_WORK_SLOT_HELD"
+audience = "internal"
+kind = "path"
+output_neutral = true
+default = ""
+owner = "src/molt/host_capacity.py"
+summary = "The resolved host-work slot directory an ancestor process holds: molt.host_capacity.host_work_slot exports it for the body it admits, so a heavy job that the holder starts (a landing's tests running a consumer gate, say) belongs to the holder's job and is admitted at once instead of waiting for its own ancestor."
+
+[[variable]]
 name = "MOLT_INLINE_STATS"
 audience = "user"
 kind = "bool"
@@ -3914,6 +3931,14 @@ kind = "bool"
 default = "0"
 owner = "src/molt/cargo_execution_policy.py"
 summary = "Forbids source builds and provenance refreshes of runtime and backend artifacts when set to exactly 1, so a build that needs one fails with a message naming the variable; default off; release verification refuses it."
+
+[[variable]]
+name = "MOLT_SLICE_REVERSE_REPORT"
+audience = "user"
+kind = "bool"
+default = "0"
+owner = "runtime/molt-passes/src/tir/passes/slice_reverse.rs"
+summary = "Set to exactly 1 to print, to stderr during the build, each slice store of a reversed slice of the same list that the slice_reverse pass could not prove reverses one range, with the missing proof; unset or any other value prints nothing."
 
 [[variable]]
 name = "MOLT_SOURCE_EXTENSION_SET_REGISTRY_CONFIG"

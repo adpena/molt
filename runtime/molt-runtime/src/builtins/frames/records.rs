@@ -106,7 +106,7 @@ fn arena_take(words: usize) -> Option<(*mut u64, bool)> {
     let top = tls.arena_top.get();
     if tls.arena_limit.get() - top >= bytes {
         tls.arena_top.set(top + bytes);
-        return Some((top as usize as *mut u64, false));
+        return Some((crate::provenance::abi::mut_ptr::<u64>(top)?, false));
     }
     CHUNKS
         .try_with(|arena| {
@@ -201,7 +201,7 @@ pub(crate) struct FrameRecord(NonNull<u64>);
 
 impl FrameRecord {
     fn from_word(word: u64) -> Option<Self> {
-        NonNull::new(word as usize as *mut u64).map(Self)
+        NonNull::new(crate::provenance::abi::mut_ptr::<u64>(word)?).map(Self)
     }
 
     #[inline]
@@ -230,8 +230,12 @@ impl FrameRecord {
     /// is decided.
     #[inline]
     fn owned(self) -> Option<*mut Owned> {
-        (self.flags() & FRAME_RECORD_OWNED != 0)
-            .then(|| unsafe { *self.header(FRAME_RECORD_FUNCTION_OFFSET) } as usize as *mut Owned)
+        if self.flags() & FRAME_RECORD_OWNED == 0 {
+            return None;
+        }
+        crate::provenance::abi::mut_ptr::<Owned>(unsafe {
+            *self.header(FRAME_RECORD_FUNCTION_OFFSET)
+        })
     }
 
     /// The function object of a compiled record.
@@ -333,22 +337,6 @@ impl FrameRecord {
             },
             class_cell_bits: super::bindings::frame_class_cell(&bindings, code_bits),
         }
-    }
-
-    /// The site the frame last published, read from its location word.
-    #[inline]
-    pub(crate) fn location(self) -> LocationId {
-        LocationId::from_word(unsafe { *self.header(molt_codegen_abi::FRAME_LOCATION_OFFSET) })
-    }
-
-    /// The frame's current source position, decoded from its code's location
-    /// table. Reads the record's code and location words only.
-    pub(crate) fn source_position(self) -> Option<super::locations::CodeLocation> {
-        let code = obj_from_bits(self.code_bits()).as_ptr()?;
-        if unsafe { crate::object_type_id(code) } != crate::TYPE_ID_CODE {
-            return None;
-        }
-        unsafe { super::locations::code_location(code, self.location()) }
     }
 
     /// A copy of the frame's facts, every edge borrowed from the record.

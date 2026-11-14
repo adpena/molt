@@ -373,6 +373,7 @@ pub(crate) unsafe fn commit_function_metadata_change(
     unsafe {
         if user && FunctionBindingField::from_name(name).is_some() {
             crate::object::layout::bump_function_mutation_version(func_ptr);
+            crate::call::bind::forget_method_site_call_plans(func_ptr);
         }
         crate::call::bind::refresh_function_requires_binder_flag(py, func_ptr);
     }

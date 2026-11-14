@@ -1222,6 +1222,7 @@ unsafe fn publish_function_metadata_code(
         // guards. Reentry may already have attached code during initialization.
         if user_mutation || replacing {
             crate::object::layout::bump_function_mutation_version(func_ptr);
+            crate::call::bind::forget_method_site_call_plans(func_ptr);
         }
         let detached = crate::call::bind::detach_callable_ic_caches();
         // All scalar, code, version, and cache-visible derived state is coherent
@@ -2215,13 +2216,7 @@ mod function_type_execution_kind_tests {
             NativeCallableKind as Kind, NativeCallableSpec, configure_native_callable,
         };
         use crate::object::function_metadata::FunctionMetadataField as Field;
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-        struct RestoreTracker;
-        impl Drop for RestoreTracker {
-            fn drop(&mut self) {
-                set_tracker(Box::new(UnlimitedTracker));
-            }
-        }
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
@@ -2259,7 +2254,7 @@ mod function_type_execution_kind_tests {
                         max_memory: Some(0),
                         ..Default::default()
                     })));
-                    let reset = RestoreTracker;
+                    let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                     assert!(!configure_native_callable(
                         py,
                         function,

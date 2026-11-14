@@ -308,7 +308,7 @@ fn handle_add_op(
         {
             result_f
         } else {
-            box_float_value(&mut *builder, result_f, nbc)
+            box_float_value(&mut *builder, result_f)
         }
     } else if op_prefers_int_lane(op) {
         // LuaJIT-style unboxed arithmetic chain with overflow guard.
@@ -513,10 +513,10 @@ fn handle_add_op(
 
         switch_to_block_materialized(&mut *builder, float_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-        let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-        let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+        let lhs_f = unbox_float_value(builder, *lhs);
+        let rhs_f = unbox_float_value(builder, *rhs);
         let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
-        let flt_res = box_float_value(&mut *builder, flt_sum, nbc);
+        let flt_res = box_float_value(&mut *builder, flt_sum);
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
@@ -984,7 +984,7 @@ fn handle_inplace_add_op(
         {
             result_f
         } else {
-            box_float_value(&mut *builder, result_f, nbc)
+            box_float_value(&mut *builder, result_f)
         }
     } else if op_prefers_int_lane(op) {
         // Raw chain: both operands already unboxed + overflow guard.
@@ -1140,10 +1140,10 @@ fn handle_inplace_add_op(
 
         switch_to_block_materialized(&mut *builder, float_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-        let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-        let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+        let lhs_f = unbox_float_value(builder, *lhs);
+        let rhs_f = unbox_float_value(builder, *rhs);
         let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
-        let flt_res = box_float_value(&mut *builder, flt_sum, nbc);
+        let flt_res = box_float_value(&mut *builder, flt_sum);
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
@@ -1266,7 +1266,7 @@ fn handle_sub_op(
         {
             result_f
         } else {
-            box_float_value(&mut *builder, result_f, nbc)
+            box_float_value(&mut *builder, result_f)
         }
     } else if op_prefers_int_lane(op) {
         // LuaJIT-style unboxed arithmetic chain with overflow guard.
@@ -1437,10 +1437,10 @@ fn handle_sub_op(
 
         switch_to_block_materialized(&mut *builder, float_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-        let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-        let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+        let lhs_f = unbox_float_value(builder, *lhs);
+        let rhs_f = unbox_float_value(builder, *rhs);
         let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
-        let flt_res = box_float_value(&mut *builder, flt_diff, nbc);
+        let flt_res = box_float_value(&mut *builder, flt_diff);
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
@@ -1564,7 +1564,7 @@ fn handle_inplace_sub_op(
         {
             result_f
         } else {
-            box_float_value(&mut *builder, result_f, nbc)
+            box_float_value(&mut *builder, result_f)
         }
     } else if op
         .out
@@ -1715,10 +1715,10 @@ fn handle_inplace_sub_op(
 
         switch_to_block_materialized(&mut *builder, float_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-        let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-        let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+        let lhs_f = unbox_float_value(builder, *lhs);
+        let rhs_f = unbox_float_value(builder, *rhs);
         let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
-        let flt_res = box_float_value(&mut *builder, flt_diff, nbc);
+        let flt_res = box_float_value(&mut *builder, flt_diff);
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
@@ -1839,7 +1839,7 @@ fn handle_mul_op(
         {
             result_f
         } else {
-            box_float_value(&mut *builder, result_f, nbc)
+            box_float_value(&mut *builder, result_f)
         }
     } else if op_prefers_int_lane(op) {
         // LuaJIT-style unboxed arithmetic chain with overflow guard.
@@ -2008,10 +2008,10 @@ fn handle_mul_op(
 
         switch_to_block_materialized(&mut *builder, float_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-        let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-        let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+        let lhs_f = unbox_float_value(builder, *lhs);
+        let rhs_f = unbox_float_value(builder, *rhs);
         let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
-        let flt_res = box_float_value(&mut *builder, flt_prod, nbc);
+        let flt_res = box_float_value(&mut *builder, flt_prod);
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
@@ -2133,7 +2133,7 @@ fn handle_inplace_mul_op(
         {
             result_f
         } else {
-            box_float_value(&mut *builder, result_f, nbc)
+            box_float_value(&mut *builder, result_f)
         }
     } else if op
         .out
@@ -2281,10 +2281,10 @@ fn handle_inplace_mul_op(
 
         switch_to_block_materialized(&mut *builder, float_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-        let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
-        let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
+        let lhs_f = unbox_float_value(builder, *lhs);
+        let rhs_f = unbox_float_value(builder, *rhs);
         let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
-        let flt_res = box_float_value(&mut *builder, flt_prod, nbc);
+        let flt_res = box_float_value(&mut *builder, flt_prod);
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);

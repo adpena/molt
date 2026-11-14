@@ -24,6 +24,16 @@ def _writes(source: str, package: str | None = "pkg.sub") -> set[tuple]:
     return {
         (write.module, write.name, write.construct)
         for write in _summary(source, package).foreign_writes
+        if write.construct not in {"reflection", "code"}
+    }
+
+
+def _reflections(source: str, package: str | None = "pkg.sub") -> set[str | None]:
+    """The modules whose namespace mapping ``source`` reaches by identity."""
+    return {
+        write.module
+        for write in _summary(source, package).foreign_writes
+        if write.construct == "reflection"
     }
 
 
@@ -1070,3 +1080,216 @@ def test_same_line_namespace_cache_writes_keep_source_site_order():
     )
     assert [write.source_site for write in refined.foreign_writes] == [first, second]
     assert reversed_input == refined
+
+
+@pytest.mark.parametrize(
+    ("body", "written"),
+    [
+        # typing.get_type_hints' shape: an alias passed to same-module readers
+        # and an eval sink writes nothing.
+        (
+            "def look(ns, key):\n    return ns[key] if key in ns else None\n"
+            "def evaluate(value, ns):\n"
+            "    found = look(ns, value)\n"
+            "    return found if found is not None else eval(value, ns)\n"
+            "def hints(name):\n"
+            "    ns = sys.modules[name].__dict__\n"
+            "    return evaluate('x', ns)\n",
+            False,
+        ),
+        # A resolved callee that item-writes its parameter writes the mapping.
+        (
+            "def put(ns):\n    ns['x'] = 1\n"
+            "def run(name):\n    ns = sys.modules[name].__dict__\n    put(ns)\n",
+            True,
+        ),
+        # A parameter passed on to a writing parameter is written (fixed point).
+        (
+            "def put(ns):\n    ns.update(x=1)\n"
+            "def relay(ns):\n    put(ns)\n"
+            "def run(name):\n    relay(sys.modules[name].__dict__)\n",
+            True,
+        ),
+        # A callee this module does not define may write through its argument.
+        ("def run(name):\n    other.write(sys.modules[name].__dict__)\n", True),
+        # An alias that escapes any other way (returned) is a write.
+        ("def run(name):\n    ns = sys.modules[name].__dict__\n    return ns\n", True),
+        # A direct item write on the namespace stays a write.
+        ("def run(name):\n    sys.modules[name].__dict__['x'] = 1\n", True),
+    ],
+)
+def test_foreign_namespace_escape_follows_parameter_write_summaries(
+    body: str, written: bool
+) -> None:
+    source = "import sys\n" + body
+    namespace_rows = [
+        write
+        for write in _summary(source).foreign_writes
+        if write.construct == "namespace"
+    ]
+    assert bool(namespace_rows) is written, namespace_rows
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # 1. A nested function captures the alias and writes through it.
+        "def f(ns):\n    def g():\n        ns['sqrt'] = 1\n    g()\n"
+        "def run(name):\n    f(sys.modules[name].__dict__)\n",
+        # 1. A lambda captures the parameter and writes through it.
+        "def f(ns):\n    return (lambda: ns.update(x=1))\n"
+        "def run(name):\n    f(sys.modules[name].__dict__)\n",
+        # 2. The alias is declared global: it escapes the function.
+        "keep = None\n"
+        "def run(name):\n    global keep\n    keep = sys.modules[name].__dict__\n",
+        # 3. A decorated callee binds the decorator's result, not the body.
+        "def deco(fn):\n    return lambda ns: ns.update(x=1)\n"
+        "@deco\ndef reader(ns):\n    return ns.get('x')\n"
+        "def run(name):\n    reader(sys.modules[name].__dict__)\n",
+        # 3. A callee name the module binds twice may name the writer.
+        "def reader(ns):\n    return ns.get('x')\n"
+        "def writer(ns):\n    ns['x'] = 1\n"
+        "if flag:\n    reader = writer\n"
+        "def run(name):\n    reader(sys.modules[name].__dict__)\n",
+        # 4. A module-level `eval` is not the excluded builtin.
+        "def eval(source, ns):\n    ns['x'] = 1\n"
+        "def run(name):\n    eval('x', sys.modules[name].__dict__)\n",
+    ],
+)
+def test_namespace_escape_through_an_unproven_reader_stays_a_write(body: str) -> None:
+    source = "import sys\n" + body
+    rows = [w for w in _summary(source).foreign_writes if w.construct == "namespace"]
+    assert rows, "the premise must stay poisoned"
+
+
+# Read-side facts (static module cells, call_anatomy.md 4.5a): a module whose
+# namespace mapping any code reaches by identity keeps its dictionary
+# namespace, so every such use must be recorded, read or write. A read of a
+# literal dunder key never needs a global, so it is not a reflection.
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import m\nseen = m.__dict__.get('k')\n", {"m"}),
+        ("import m\npresent = 'k' in vars(m)\n", {"m"}),
+        ("import m\nfor key in m.__dict__:\n    pass\n", {"m"}),
+        ("import m\nregister(vars(m))\n", {"m"}),
+        ("import m\nnamespace = getattr(m, '__dict__')\n", {"m"}),
+        ("import sys\nsys.modules[name].__dict__.get('k')\n", {None}),
+        ("import sys\nns = sys.modules['pkg.literal'].__dict__\n", {"pkg.literal"}),
+        ("def f(fn):\n    return fn.__globals__['helper']\n", {None}),
+        ("def f(frame):\n    return dict(frame.f_globals)\n", {None}),
+        ("def f(frame):\n    return getattr(frame, 'f_globals')\n", {None}),
+        # Literal dunder keys stay in every module's dictionary.
+        ("import m\nname = m.__dict__['__name__']\n", set()),
+        ("def f(frame):\n    return frame.f_globals.get('__name__', 'x')\n", set()),
+        ("def f(tb):\n    return '__name__' in tb.tb_frame.f_globals\n", set()),
+        # A private name is a global, not a dunder: unittest's marker reads it.
+        ("def f(tb):\n    return '__unittest' in tb.tb_frame.f_globals\n", {None}),
+        (
+            "def f(caller):\n"
+            "    ns = getattr(caller, 'f_globals', None)\n"
+            "    if isinstance(ns, dict):\n"
+            "        return ns.get('__name__')\n",
+            set(),
+        ),
+        # An alias that reads a non-dunder key is a reflection.
+        (
+            "def f(caller):\n    ns = caller.f_globals\n    return ns.get('helper')\n",
+            {None},
+        ),
+        # An attribute that is not a namespace mapping reaches nothing.
+        ("import m\nvalue = m.helper\n", set()),
+        ("def f(obj):\n    return obj.__dict__['x']\n", set()),
+    ],
+)
+def test_namespace_mapping_reads_are_reflections(
+    source: str, expected: set[str | None]
+) -> None:
+    assert _reflections(source) == expected
+
+
+def _code_rows(source: str) -> int:
+    """How many sites of ``source`` may hand a code object to FunctionType."""
+    return sum(
+        write.construct == "code" for write in _summary(source, None).foreign_writes
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "rows"),
+    [
+        # Each spelling that yields a code object, handed on.
+        (
+            "import types\ndef f(g, ns):\n    return types.FunctionType(g.__code__, ns)\n",
+            1,
+        ),
+        ("def f(frame):\n    return frame.f_code\n", 1),
+        ("def f(gen):\n    keep(gen.gi_code)\n", 1),
+        ("def f(coro):\n    return getattr(coro, 'cr_code')\n", 1),
+        ("def f(agen):\n    x = [agen.ag_code]\n", 1),
+        # Code stored into a function is a rebinding too.
+        ("def f(a, b):\n    a.__code__ = b.__code__\n", 1),
+        # Nested code objects and copies are code objects.
+        ("def f(g):\n    return g.__code__.co_consts\n", 1),
+        ("def f(g):\n    return g.__code__.replace(co_name='x')\n", 1),
+        # An alias with one read that hands the object on.
+        ("def f(g):\n    c = g.__code__\n    print(c.co_name)\n    return c\n", 1),
+        # Metadata, identity, truth and type reads cannot run the code.
+        ("def f(g):\n    return g.__code__.co_name\n", 0),
+        ("def f(g):\n    return g.__code__.co_flags & 0x80\n", 0),
+        ("def f(g):\n    return g.__code__ is None\n", 0),
+        ("def f(g):\n    if getattr(g, '__code__', None):\n        return 1\n", 0),
+        ("def f(g):\n    return not g.__code__\n", 0),
+        ("def f(g):\n    return getattr(g, '__code__', None).__class__\n", 0),
+        ("def f(g):\n    g.__code__\n", 0),
+        (
+            "def f(frame):\n"
+            "    code = getattr(frame, 'f_code', None)\n"
+            "    if code is None:\n"
+            "        return ''\n"
+            "    return getattr(code, 'co_filename', '')\n",
+            0,
+        ),
+        # An alias that several code reads store, read only for metadata.
+        (
+            "def f(gen):\n"
+            "    try:\n"
+            "        code = gen.cr_code\n"
+            "    except AttributeError:\n"
+            "        code = gen.gi_code\n"
+            "    return code.co_qualname\n",
+            0,
+        ),
+        # An accessor named for a code attribute forwards it to a reader whose
+        # own read of that name is classified where it happens.
+        (
+            "class W:\n"
+            "    @property\n"
+            "    def gi_code(self):\n"
+            "        return self._wrapped.gi_code\n",
+            0,
+        ),
+        # Not a code attribute.
+        ("def f(g):\n    return g.__name__\n", 0),
+    ],
+)
+def test_code_object_reads_are_code_rows(source: str, rows: int) -> None:
+    assert _code_rows(source) == rows
+
+
+@pytest.mark.parametrize(
+    ("source", "line"),
+    [
+        ("x = 1\nnames = globals()\n", 2),
+        ("x = 1\nvalue = globals()['x']\n", 2),
+        ("x = 1\nlocal = locals()\n", 2),
+        ("x = 1\ndef f():\n    return vars()\n", 0),
+        ("x = 1\ndef f():\n    return globals().get('x')\n", 3),
+        ("x = 1\nexec('y = 2')\n", 2),
+        ("x = 1\nprint(x)\n", 0),
+    ],
+)
+def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:
+    assert _summary(source, None).own_namespace_line == line

@@ -812,6 +812,15 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
             "SYNC_DEV": "false",
             "SYNC_GROUPS": "fixture-a,fixture-z" if mode == "explicit" else "",
             "SYNC_PROJECT_GROUPS": "false" if mode == "explicit" else "true",
+            # The runner and the earlier custody step provide these; the step
+            # publishes the synced environment's executables on GITHUB_PATH.
+            "RUNNER_OS": "Windows"
+            if os.name == "nt"
+            else "macOS"
+            if sys.platform == "darwin"
+            else "Linux",
+            "GITHUB_PATH": (tmp_path / "github_path").as_posix(),
+            "UV_PROJECT_ENVIRONMENT": (tmp_path / "venv").as_posix(),
         },
         capture_output=True,
         text=True,

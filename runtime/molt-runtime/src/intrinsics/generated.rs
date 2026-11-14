@@ -8475,6 +8475,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
     IntrinsicSpec {
+        name: "molt_static_cells_bind",
+        symbol: "molt_static_cells_bind",
+        arity: 3,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_build_class_builtin",
         symbol: "molt_build_class_builtin",
         arity: 2,

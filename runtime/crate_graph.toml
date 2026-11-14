@@ -327,13 +327,6 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
-name = "molt-runtime-net"
-runtime_layer = "stdlib"
-stdlib_domain = "net"
-layer = 3
-role = "stdlib satellite"
-
-[[crate]]
 name = "molt-runtime-path"
 runtime_layer = "stdlib"
 stdlib_domain = "path"

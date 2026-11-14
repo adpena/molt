@@ -117,14 +117,6 @@ class TestNanBoxConstants:
         expected = lean_nanbox_consts["QNAN"] | lean_nanbox_consts["TAG_MASK"]
         assert lean_nanbox_consts["TAG_CHECK"] == expected
 
-    def test_canonical_nan_bits_in_rust(
-        self, rust_nanbox_consts: dict[str, int]
-    ) -> None:
-        """CANONICAL_NAN_BITS must be present in Rust."""
-        assert "CANONICAL_NAN_BITS" in rust_nanbox_consts, (
-            "CANONICAL_NAN_BITS not found in Rust source"
-        )
-
     def test_pointer_mask_in_rust(self, rust_nanbox_consts: dict[str, int]) -> None:
         """POINTER_MASK must be present in Rust."""
         assert "POINTER_MASK" in rust_nanbox_consts, (

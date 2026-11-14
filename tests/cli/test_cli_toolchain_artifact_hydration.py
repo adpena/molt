@@ -126,9 +126,16 @@ def _cargo_wasi_declared_inputs_stdout(
         sibling = wasi.sdk / "VERSION"
         assert sibling.is_file()
         paths.append(sibling)
-    out_dir = output.parent / "build-input-fixture" / "out"
+    # The build script's unit in Cargo 1.100's <profile>/build layout.
+    build_root = (
+        output.parents[3]
+        if output.parent.name == "out" and output.parents[3].name == "build"
+        else output.parent / "build"
+    )
+    out_dir = build_root / "build-input-fixture" / "0123456789abcdef" / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir.parent / "output").write_text(
+    (out_dir.parent / "run").mkdir(exist_ok=True)
+    (out_dir.parent / "run" / "stdout").write_text(
         "".join(f"cargo:rerun-if-changed={path}\n" for path in paths),
         encoding="utf-8",
     )
@@ -160,6 +167,19 @@ def _cargo_cpython_abi_artifact_stdout(
     ).encode("utf-8")
 
 
+def _cargo_unit_out_dir(target_root: Path, profile_dir: str) -> Path:
+    """One unit's output directory in Cargo's build-directory layout."""
+    return (
+        target_root
+        / "wasm32-wasip1"
+        / profile_dir
+        / "build"
+        / "molt-runtime"
+        / "feedface00000000"
+        / "out"
+    )
+
+
 def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_artifact(
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
@@ -170,17 +190,12 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target_root, profile_dir
     )
-    deps_primary = (
-        RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "molt_runtime.wasm"
-    )
+    deps_primary = _cargo_unit_out_dir(target_root, profile_dir) / "molt_runtime.wasm"
     stale_hashed = (
-        RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "molt_runtime-deadbeef.wasm"
+        _cargo_unit_out_dir(target_root, profile_dir) / "molt_runtime-deadbeef.wasm"
     )
     reported = (
-        RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "molt_runtime-feedface.wasm"
+        _cargo_unit_out_dir(target_root, profile_dir) / "molt_runtime-feedface.wasm"
     )
     for path, payload in (
         (primary, b"old-primary"),
@@ -392,8 +407,7 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
         target_root, profile_dir
     )
     reported = (
-        RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "libmolt_runtime-feedface.a"
+        _cargo_unit_out_dir(target_root, profile_dir) / "libmolt_runtime-feedface.a"
     )
     primary.parent.mkdir(parents=True, exist_ok=True)
     primary.write_bytes(b"old-staticlib")
@@ -478,16 +492,11 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_cpython_abi_staticlib_path(
         target_root, profile_dir
     )
-    reported = (
-        RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "libmolt_cpython_abi-feedface.a"
-    )
-    for path, payload in (
-        (primary, b"stale-primary"),
-        (reported, _FAKE_STATICLIB),
-    ):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(payload)
+    # Cargo 1.100 reports a root unit's uplifted output (checked with
+    # `cargo rustc --lib --crate-type staticlib --message-format=json`).
+    reported = primary
+    reported.parent.mkdir(parents=True, exist_ok=True)
+    reported.write_bytes(_FAKE_STATICLIB)
     products_before = {
         path: (path.read_bytes(), path.stat().st_mtime_ns)
         for path in (primary, reported)
@@ -559,7 +568,6 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         assert failure is not None
         assert failure.stage == "cpython-abi-cargo-input-observation"
         assert "outside" in failure.summary and "VERSION" in failure.summary
-    assert primary.read_bytes() == b"stale-primary"
     reported_fp = cli_artifact_state._runtime_target_fingerprint_path(
         state_root,
         reported,
@@ -1065,8 +1073,6 @@ def test_stored_native_generation_keeps_portable_dependency_custody(
     "placement",
     (
         "primary",
-        "deps",
-        "hashed",
         "reported",
         "reported-undeclared-sdk",
         "reported-plan-drift",
@@ -1145,20 +1151,13 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         target, spec.profile_dir
     )
     primary = primary_reloc if reloc else primary_shared
+    # Cargo reports a root unit's uplifted final artifact; hydration reuses
+    # only that artifact, never an intermediate unit output.
     selected = primary
-    if placement != "primary":
-        selected = primary.parent / "deps" / primary.name
-    if placement == "hashed" or placement.startswith("reported"):
-        selected = selected.with_name(
-            "libmolt_runtime-feedface.a" if reloc else "molt_runtime-feedface.wasm"
-        )
-    primary.parent.mkdir(parents=True, exist_ok=True)
     selected.parent.mkdir(parents=True, exist_ok=True)
-    old_bytes = static_archive_bytes(b"stale") if reloc else _valid_wasm_bytes(b"stale")
     new_bytes = (
         static_archive_bytes(b"selected") if reloc else _valid_wasm_bytes(b"selected")
     )
-    primary.write_bytes(old_bytes)
     selected.write_bytes(new_bytes)
     fingerprint = spec.staticlib_fingerprint if reloc else spec.fingerprint
     assert fingerprint is not None
@@ -1219,7 +1218,6 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
                 target_label="wasm32-wasip1",
             ).exists()
             assert selected.read_bytes() == new_bytes
-            assert primary.read_bytes() == old_bytes
             return
         assert published is not None
     else:
@@ -1271,8 +1269,6 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         destination.unlink()
     assert linked == ([selected, selected] if reloc else [])
     assert selected.read_bytes() == new_bytes
-    if selected != primary:
-        assert primary.read_bytes() == old_bytes
     assert cli_runtime_fingerprints._read_runtime_fingerprint(selected_fp)[
         "artifact_content_identity"
     ] == artifact_content_identity(selected)

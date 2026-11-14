@@ -170,6 +170,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "frontend": _P,
         "compiler_analysis": _P,
         # Drivers that compute, scan, encode and validate frontend records.
+        "cli/closed_world_bindings.py": _P,
         "cli/frontend_execution.py": _P,
         "cli/frontend_integration.py": _P,
         "cli/frontend_parallel.py": _P,
@@ -187,6 +188,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/module_stdlib_policy.py": _P,
         "cli/python_import_resolution.py": _P,
         "cli/python_import_topology.py": _P,
+        "cli/static_module_cells.py": _P,
         "cli/models.py": _P,
         # Defaults (stdlib profile names) that drivers read as constants.
         "cli/config_resolution.py": _P,

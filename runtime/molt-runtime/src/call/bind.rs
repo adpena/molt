@@ -97,11 +97,16 @@ pub(crate) use {
 };
 
 mod inline_cache;
-use inline_cache::{call_bind_ic_entry_for_call, try_call_bind_ic_fast};
-pub(crate) use inline_cache::{
-    clear_call_bind_ic_cache, clear_method_ic_cache, clear_super_ic_cache,
-    detach_callable_ic_caches,
+use inline_cache::{
+    LoadedMethod, call_bind_ic_entry_for_call, publish_loaded_method, try_call_bind_ic_fast,
 };
+pub(crate) use inline_cache::{
+    clear_call_bind_ic_cache, clear_super_ic_cache, detach_callable_ic_caches,
+};
+mod method_site;
+#[allow(unused_imports)]
+pub use method_site::molt_method_site_load;
+pub(crate) use method_site::{forget_method_site_call_plans, release_method_site_records};
 
 #[cfg(test)]
 pub(crate) fn call_bind_ic_site_cached_for_test(site_id: u64) -> bool {
@@ -114,7 +119,7 @@ pub use {
     inline_cache::molt_call_loaded_method0, inline_cache::molt_call_loaded_method1,
     inline_cache::molt_call_loaded_method2, inline_cache::molt_call_loaded_method3,
     inline_cache::molt_call_loaded_method4, inline_cache::molt_invoke_ffi_ic,
-    inline_cache::molt_load_method, inline_cache::molt_load_super_method,
+    inline_cache::molt_load_super_method,
 };
 #[allow(unused_imports)]
 pub(crate) use {
@@ -127,7 +132,7 @@ pub(crate) use {
     inline_cache::molt_call_loaded_method2_attached_body,
     inline_cache::molt_call_loaded_method3_attached_body,
     inline_cache::molt_call_loaded_method4_attached_body,
-    inline_cache::molt_invoke_ffi_ic_attached_body, inline_cache::molt_load_method_attached_body,
+    inline_cache::molt_invoke_ffi_ic_attached_body,
     inline_cache::molt_load_super_method_attached_body,
 };
 

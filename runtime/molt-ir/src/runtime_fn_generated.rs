@@ -1624,9 +1624,9 @@ pub enum RuntimeFn {
     ListPop,
     ListRemove,
     ListReverse,
+    ListReverseSlice,
     ListSort,
     LoadIntrinsicRuntime,
-    LoadMethod,
     LoadSuperMethod,
     LocalDrop,
     LocalGetDict,
@@ -1760,6 +1760,7 @@ pub enum RuntimeFn {
     MemoryviewTobytes,
     MemoryviewTolist,
     MemoryviewToreadonly,
+    MethodSiteLoad,
     MinBuiltin,
     Missing,
     Mod,
@@ -2454,6 +2455,7 @@ pub enum RuntimeFn {
     StatIssock,
     StatIswht,
     StatefulLocalsRegister,
+    StaticCellsBind,
     StaticmethodCall,
     StaticmethodGet,
     StaticmethodInit,
@@ -4467,9 +4469,9 @@ impl RuntimeFn {
         Self::ListPop,
         Self::ListRemove,
         Self::ListReverse,
+        Self::ListReverseSlice,
         Self::ListSort,
         Self::LoadIntrinsicRuntime,
-        Self::LoadMethod,
         Self::LoadSuperMethod,
         Self::LocalDrop,
         Self::LocalGetDict,
@@ -4603,6 +4605,7 @@ impl RuntimeFn {
         Self::MemoryviewTobytes,
         Self::MemoryviewTolist,
         Self::MemoryviewToreadonly,
+        Self::MethodSiteLoad,
         Self::MinBuiltin,
         Self::Missing,
         Self::Mod,
@@ -5297,6 +5300,7 @@ impl RuntimeFn {
         Self::StatIssock,
         Self::StatIswht,
         Self::StatefulLocalsRegister,
+        Self::StaticCellsBind,
         Self::StaticmethodCall,
         Self::StaticmethodGet,
         Self::StaticmethodInit,
@@ -5793,7 +5797,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2839;
+    pub const COUNT: usize = 2841;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -24084,6 +24088,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
+        symbol: "molt_list_reverse_slice",
+        linker_symbol: "molt_list_reverse_slice__molt_context_047a33b55bc1b76d",
+        context: RuntimeExecutionContext::Attached,
+        params: 6,
+        param_types: PARAMS_WWWWWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable_trampoline: None,
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
         symbol: "molt_list_sort",
         linker_symbol: "molt_list_sort__molt_context_047a33b55bc1b76d",
         context: RuntimeExecutionContext::Attached,
@@ -24105,18 +24121,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
-        effects: RuntimeEffects::Impure,
-    },
-    RuntimeFnAbi {
-        symbol: "molt_load_method",
-        linker_symbol: "molt_load_method__molt_context_047a33b55bc1b76d",
-        context: RuntimeExecutionContext::Attached,
-        params: 5,
-        param_types: PARAMS_WWAWW,
-        result_type: Some(RuntimeMachineType::Word),
-        callable_trampoline: None,
-        result: RuntimeReturnContract::OwnedObject,
-        form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
@@ -25713,6 +25717,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_method_site_load",
+        linker_symbol: "molt_method_site_load__molt_context_047a33b55bc1b76d",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable_trampoline: None,
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
@@ -34044,6 +34060,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
+        symbol: "molt_static_cells_bind",
+        linker_symbol: "molt_static_cells_bind__molt_context_047a33b55bc1b76d",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
         symbol: "molt_staticmethod_call",
         linker_symbol: "molt_staticmethod_call__molt_context_047a33b55bc1b76d",
         context: RuntimeExecutionContext::Attached,
@@ -40014,13 +40042,6 @@ const PARAMS_WAWWW: &[RuntimeMachineType] = &[
     RuntimeMachineType::Word,
 ];
 const PARAMS_WW: &[RuntimeMachineType] = &[RuntimeMachineType::Word, RuntimeMachineType::Word];
-const PARAMS_WWAWW: &[RuntimeMachineType] = &[
-    RuntimeMachineType::Word,
-    RuntimeMachineType::Word,
-    RuntimeMachineType::Address,
-    RuntimeMachineType::Word,
-    RuntimeMachineType::Word,
-];
 const PARAMS_WWW: &[RuntimeMachineType] = &[
     RuntimeMachineType::Word,
     RuntimeMachineType::Word,
@@ -40141,6 +40162,7 @@ pub const RUNTIME_BOXED_OP_KINDS: &[crate::OpKind] = &[
     crate::OpKind::BytesFindSlice,
     crate::OpKind::BytesStartswith,
     crate::OpKind::BytesStartswithSlice,
+    crate::OpKind::ListReverseSlice,
     crate::OpKind::StringCount,
     crate::OpKind::StringCountSlice,
     crate::OpKind::StringEndswith,
@@ -40169,6 +40191,7 @@ pub const fn runtime_boxed_op_abi(kind: crate::OpKind) -> Option<RuntimeBoxedAbi
         crate::OpKind::BytesFindSlice => RuntimeFn::BytesFindSlice.boxed_abi(),
         crate::OpKind::BytesStartswith => RuntimeFn::BytesStartswith.boxed_abi(),
         crate::OpKind::BytesStartswithSlice => RuntimeFn::BytesStartswithSlice.boxed_abi(),
+        crate::OpKind::ListReverseSlice => RuntimeFn::ListReverseSlice.boxed_abi(),
         crate::OpKind::StringCount => RuntimeFn::StringCount.boxed_abi(),
         crate::OpKind::StringCountSlice => RuntimeFn::StringCountSlice.boxed_abi(),
         crate::OpKind::StringEndswith => RuntimeFn::StringEndswith.boxed_abi(),
@@ -40418,7 +40441,7 @@ pub const fn preserved_op_runtime_fn(kind: crate::OpKind) -> Option<RuntimeFn> {
         crate::OpKind::ListPop => Some(RuntimeFn::ListPop),
         crate::OpKind::ListRemove => Some(RuntimeFn::ListRemove),
         crate::OpKind::ListReverse => Some(RuntimeFn::ListReverse),
-        crate::OpKind::LoadMethod => Some(RuntimeFn::LoadMethod),
+        crate::OpKind::ListReverseSlice => Some(RuntimeFn::ListReverseSlice),
         crate::OpKind::LoadSuperMethod => Some(RuntimeFn::LoadSuperMethod),
         crate::OpKind::Lshift => Some(RuntimeFn::Lshift),
         crate::OpKind::Lt => Some(RuntimeFn::Lt),

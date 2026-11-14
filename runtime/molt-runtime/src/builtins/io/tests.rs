@@ -1610,13 +1610,7 @@ fn codec_failure_preserves_open_order_and_retires_selected_descriptor_owner() {
 #[cfg(all(feature = "stdlib_fs_extra", not(target_arch = "wasm32")))]
 #[test]
 fn lazy_raw_publication_failure_preserves_live_stream_and_detach_identity() {
-    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-    struct RestoreTracker;
-    impl Drop for RestoreTracker {
-        fn drop(&mut self) {
-            set_tracker(Box::new(UnlimitedTracker));
-        }
-    }
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
         "fs.read,fs.write",
         |py| {
@@ -1647,7 +1641,7 @@ fn lazy_raw_publication_failure_preserves_live_stream_and_detach_identity() {
                     max_allocations: Some(limit),
                     ..Default::default()
                 })));
-                let restore = RestoreTracker;
+                let restore = crate::test_support::restore_unlimited_tracker_on_drop();
                 let raw = unsafe { super::file_handle_raw_bits(py, pointer) };
                 drop(restore);
                 let raw = if let Some(raw) = raw {

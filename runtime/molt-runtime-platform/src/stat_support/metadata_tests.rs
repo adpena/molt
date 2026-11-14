@@ -136,13 +136,9 @@ fn windows_metadata_retains_actual_tags_follow_intent_and_shared_handles() {
             .as_nanos()
     ));
     std::fs::create_dir(&root).unwrap();
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(root.clone());
+    let _cleanup = std::mem::DropGuard::new(root.clone(), |state| {
+        let _ = std::fs::remove_dir_all(&state);
+    });
     let value = root.join("value");
     std::fs::write(&value, b"record").unwrap();
     let held = std::fs::File::open(&value).unwrap();

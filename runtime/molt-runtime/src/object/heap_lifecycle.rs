@@ -1002,6 +1002,57 @@ pub(crate) unsafe fn detached_managed_edge_count(py: &PyToken<'_>, ptr: *mut u8)
     count
 }
 
+/// Whether terminal retirement of `ptr` would detach no managed edge and no
+/// resource, so the edge sink, its capacity census and the detach walk can be
+/// skipped. `header_flags` and `aux_kind` are the terminal snapshot.
+///
+/// The answer is exact, never a heuristic: an object qualifies only when it has
+/// no side owner (C view, weak reference, scheduler retain), no sidecar (frame
+/// context, awaited value, frame bindings), no owned class edge or instance
+/// fields, and a payload of a closed set of kinds whose every value is a
+/// non-heap word. Its storage is read directly: the reference count is zero,
+/// so no borrower holds it. The scan costs one tag test per item; a list of
+/// inline ints retires with no edge traffic.
+pub(crate) unsafe fn retires_without_edges(ptr: *mut u8, header_flags: u32, aux_kind: u16) -> bool {
+    const SIDE_OWNERS: u32 =
+        HEADER_FLAG_HAS_ABI_VIEW | super::HEADER_FLAG_HAS_WEAKREF | crate::HEADER_FLAG_SPAWN_RETAIN;
+    if header_flags & SIDE_OWNERS != 0 || aux_kind == super::HEADER_AUX_KIND_SIDECAR {
+        return false;
+    }
+    unsafe {
+        if object_class_bits(ptr) != 0
+            && (!object_class_edge_is_borrowed(ptr) || super::native_instance::has_fields(ptr))
+        {
+            return false;
+        }
+        let no_heap = |items: &[u64]| {
+            !items
+                .iter()
+                .any(|&bits| super::refcount_opt::is_heap_ref(bits))
+        };
+        match heap_lifecycle_handler(object_type_id(ptr)) {
+            Some(HeapLifecycleHandler::List) => {
+                let items = super::layout::seq_vec_ptr(ptr);
+                items.is_null() || no_heap(&*items)
+            }
+            Some(HeapLifecycleHandler::Tuple) => {
+                crate::object::seq_access::with_immutable_tuple_slice(ptr, no_heap).unwrap_or(false)
+            }
+            Some(HeapLifecycleHandler::Slice) => no_heap(&[
+                super::layout::slice_start_bits(ptr),
+                super::layout::slice_stop_bits(ptr),
+                super::layout::slice_step_bits(ptr),
+            ]),
+            Some(HeapLifecycleHandler::Range) => no_heap(&[
+                super::layout::range_start_bits(ptr),
+                super::layout::range_stop_bits(ptr),
+                super::layout::range_step_bits(ptr),
+            ]),
+            _ => false,
+        }
+    }
+}
+
 pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) -> (usize, usize) {
     // Includes both sidecar namespace owners, even when they alias.
     let count = unsafe { detached_managed_edge_count(py, ptr) };

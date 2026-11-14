@@ -3738,7 +3738,9 @@ def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
     assert sorted(direct_calls - runtime_exports) == []
 
 
-def test_shared_boxed_ops_admit_only_complete_text_predicate_family() -> None:
+def test_shared_boxed_ops_admit_only_declared_complete_families() -> None:
+    # The complete text predicate family, plus the in-place reverse the TIR
+    # transform emits for a proven reversed slice store (HF-837).
     data = manifest.load_manifest()
     rows = manifest.runtime_boxed_op_specs(data)
     expected = {
@@ -3747,6 +3749,7 @@ def test_shared_boxed_ops_admit_only_complete_text_predicate_family() -> None:
         for method in ("find", "startswith", "endswith", "count")
         for suffix in ("", "_slice")
     }
+    expected["list_reverse_slice"] = 6
     assert {row["kind"]: len(row["args"]) for row in rows} == expected
     abi = {row["runtime_name"]: row for row in manifest.runtime_boxed_call_specs(data)}
     for row in rows:
@@ -4050,7 +4053,8 @@ def test_runtime_fn_carries_machine_types_and_their_wasm32_projection() -> None:
     for entry in data["runtime_import"]:
         assert manifest.runtime_export_name(entry) in specs, entry["name"]
     # A pointer is `ptr` on the identity and `i32` in every WASM projection.
-    assert specs["molt_load_method"]["machine_params"] == [
+    assert specs["molt_load_super_method"]["machine_params"] == [
+        "i64",
         "i64",
         "i64",
         "ptr",
@@ -4059,8 +4063,11 @@ def test_runtime_fn_carries_machine_types_and_their_wasm32_projection() -> None:
     ]
     assert specs["molt_handle_resolve"]["machine_result"] == "ptr"
     assert specs["molt_string_from_bytes"]["machine_result"] == "i32"
-    row = next(entry for entry in data["import"] if entry["name"] == "load_method")
+    row = next(
+        entry for entry in data["import"] if entry["name"] == "load_super_method"
+    )
     assert data["static_type"][row["type"]]["params"] == [
+        "i64",
         "i64",
         "i64",
         "i32",
@@ -4082,7 +4089,9 @@ def test_runtime_fn_refuses_a_machine_type_its_runtime_export_contradicts(
     forged = dict(real)
     # A runtime export that takes a word where the manifest declares a pointer
     # would truncate or misread an address at every call.
-    forged["molt_load_method"] = {(("i64", "i64", "i64", "i64", "i64"), "i64")}
+    forged["molt_load_super_method"] = {
+        (("i64", "i64", "i64", "i64", "i64", "i64"), "i64")
+    }
 
     def signatures(
         *, include_native: bool = False, machine: bool = False
@@ -4096,5 +4105,5 @@ def test_runtime_fn_refuses_a_machine_type_its_runtime_export_contradicts(
         )
 
     monkeypatch.setattr(manifest, "_rust_export_signatures", signatures)
-    with pytest.raises(manifest.WasmAbiManifestError, match="molt_load_method"):
+    with pytest.raises(manifest.WasmAbiManifestError, match="molt_load_super_method"):
         manifest.runtime_fn_specs(data)

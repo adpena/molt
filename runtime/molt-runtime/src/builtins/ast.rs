@@ -1375,7 +1375,7 @@ mod snapshot_tests {
     }
     #[test]
     fn constructor_tuple_custody_needs_no_copy_or_element_retain() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             // Constructor validation concerns the table shape; the parse path
@@ -1385,13 +1385,7 @@ mod snapshot_tests {
             let tuple = alloc_tuple_bits(py, &[item; 14]);
             let item_refs = owners(item);
             let tuple_refs = owners(tuple);
-            struct Reset;
-            impl Drop for Reset {
-                fn drop(&mut self) {
-                    set_tracker(Box::new(UnlimitedTracker));
-                }
-            }
-            let reset = Reset;
+            let reset = crate::test_support::restore_unlimited_tracker_on_drop();
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_allocations: Some(0),
                 ..ResourceLimits::default()
@@ -1418,7 +1412,7 @@ mod snapshot_tests {
 
     #[test]
     fn ast_snapshot_denial_remains_memory_error_at_all_decode_boundaries() {
-        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
@@ -1435,13 +1429,7 @@ mod snapshot_tests {
             crate::molt_set_attr_name_attached_body(py, node, body_key, source);
             let _ = missing_bits(py);
             for boundary in 0..5 {
-                struct Reset;
-                impl Drop for Reset {
-                    fn drop(&mut self) {
-                        set_tracker(Box::new(UnlimitedTracker));
-                    }
-                }
-                let reset = Reset;
+                let reset = crate::test_support::restore_unlimited_tracker_on_drop();
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()

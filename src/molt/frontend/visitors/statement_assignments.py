@@ -114,9 +114,34 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         return None
 
     def _emit_assign_statement(self, node: ast.Assign) -> None:
+        if self._emit_parallel_assign(node):
+            return
         value_node = self.visit(node.value)
         for target in node.targets:
             self._emit_assign_target(target, value_node, node.value)
+
+    def _emit_parallel_assign(self, node: ast.Assign) -> bool:
+        """``a, b = x, y`` without the tuple: each value left to right, then
+        each target left to right, as CPython compiles it. The display and its
+        unpacking run no Python code and cannot fail when the lengths match, so
+        building neither is unobservable. A starred element on either side, a
+        length mismatch, a chained assignment or an async body (whose values
+        would live across a suspension) keeps the general lowering."""
+        if len(node.targets) != 1 or self.is_async():
+            return False
+        target, value = node.targets[0], node.value
+        if not (
+            isinstance(target, (ast.Tuple, ast.List))
+            and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+        ):
+            return False
+        if any(isinstance(elt, ast.Starred) for elt in (*target.elts, *value.elts)):
+            return False
+        items = self._emit_expr_list(value.elts)
+        for elt, item, source in zip(target.elts, items, value.elts, strict=True):
+            self._emit_assign_target(elt, item, source)
+        return True
 
     def _emit_dict_increment_statement(self, node: ast.Assign) -> bool:
         """``d[k] = d.get(k, 0) + delta`` as one fused update, when the statement

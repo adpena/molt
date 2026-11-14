@@ -8,12 +8,16 @@ command sizes itself on an 8 GB laptop, a 128 GB workstation and a CI runner.
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import threading
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _CGROUP_MEMBERSHIP = Path("/proc/self/cgroup")
@@ -61,18 +65,47 @@ def cpu_count(
     return count
 
 
-def execution_cpu_count() -> int:
-    """One batch's CPU budget, preferring macOS performance cores.
+# The macOS name of the core class a batch leaves to other host work. Apple
+# names each performance level (``hw.perflevelN.name``): "Performance" and
+# "Efficiency" through M4; "Super" and "Performance" on M5 Max, which has no
+# efficiency cores.
+_DARWIN_EFFICIENCY_LEVEL = "Efficiency"
 
-    Efficiency cores remain available to other host work. Intel Macs and
-    other platforms use the affinity/cgroup-bounded count. A fractional Linux
-    quota retains cpu_count's one-execution floor.
+
+def _darwin_execution_cores() -> int | None:
+    """The physical cores of every macOS performance level but efficiency.
+
+    None when the levels cannot be read; the caller keeps its count then.
+    """
+    levels = _darwin_sysctl_integer("hw.nperflevels")
+    if levels is None:
+        performance = _darwin_sysctl_integer("hw.perflevel0.physicalcpu")
+        return performance if performance is not None and performance > 0 else None
+    cores = 0
+    for level in range(levels):
+        name = _darwin_sysctl_string(f"hw.perflevel{level}.name")
+        physical = _darwin_sysctl_integer(f"hw.perflevel{level}.physicalcpu")
+        if name is None or physical is None:
+            return None
+        if name != _DARWIN_EFFICIENCY_LEVEL:
+            cores += physical
+    return cores or None
+
+
+def execution_cpu_count() -> int:
+    """One batch's CPU budget: every macOS core but the efficiency cores.
+
+    Efficiency cores remain available to other host work. On 2026-11-13 the
+    budget read only ``hw.perflevel0`` and gave an M5 Max (6 Super and 12
+    Performance cores) 6 CPUs, so every batch ran its pytest gates at -n 3.
+    Intel Macs and other platforms use the affinity/cgroup-bounded count. A
+    fractional Linux quota retains cpu_count's one-execution floor.
     """
     count = cpu_count()
     if sys.platform == "darwin":
-        performance = _darwin_sysctl_integer("hw.perflevel0.physicalcpu")
-        if performance is not None and performance > 0:
-            count = min(count, performance)
+        cores = _darwin_execution_cores()
+        if cores is not None:
+            count = min(count, cores)
     return count
 
 
@@ -313,8 +346,9 @@ def _read_memory_integer(path: Path, *, allow_zero: bool = False) -> int | None:
     return value if value > 0 or (allow_zero and value == 0) else None
 
 
-def _darwin_sysctl_integer(name: str) -> int | None:
-    """Read an integer sysctl without spawning the ``sysctl`` executable."""
+def _darwin_sysctl_bytes(name: str, *, limit: int) -> bytes | None:
+    """Read a sysctl's raw value, at most ``limit`` bytes, without spawning
+    the ``sysctl`` executable."""
 
     if sys.platform != "darwin":
         return None
@@ -335,14 +369,30 @@ def _darwin_sysctl_integer(name: str) -> int | None:
         size = ctypes.c_size_t()
         if sysctlbyname(encoded, None, ctypes.byref(size), None, 0) != 0:
             return None
-        if size.value <= 0 or size.value > ctypes.sizeof(ctypes.c_uint64):
+        if size.value <= 0 or size.value > limit:
             return None
         storage = ctypes.create_string_buffer(size.value)
         if sysctlbyname(encoded, storage, ctypes.byref(size), None, 0) != 0:
             return None
     except (AttributeError, OSError, ValueError):
         return None
-    return int.from_bytes(storage.raw[: size.value], byteorder=sys.byteorder)
+    return storage.raw[: size.value]
+
+
+def _darwin_sysctl_integer(name: str) -> int | None:
+    """Read an integer sysctl."""
+    import ctypes
+
+    raw = _darwin_sysctl_bytes(name, limit=ctypes.sizeof(ctypes.c_uint64))
+    return None if raw is None else int.from_bytes(raw, byteorder=sys.byteorder)
+
+
+def _darwin_sysctl_string(name: str) -> str | None:
+    """Read a NUL-terminated string sysctl."""
+    raw = _darwin_sysctl_bytes(name, limit=256)
+    if raw is None:
+        return None
+    return raw.split(b"\0", 1)[0].decode("ascii", errors="replace") or None
 
 
 def _read_cgroup_inactive_file_bytes(path: Path) -> int:
@@ -599,3 +649,257 @@ def darwin_available_bytes(page_size: int, pages: Mapping[str, int]) -> int | No
     if page_size <= 0 or available_pages <= 0:
         return None
     return available_pages * page_size
+
+
+# --------------------------------------------------------------------------
+# Host work admission
+# --------------------------------------------------------------------------
+
+# Each tool above sizes its own workers from the memory free when it starts,
+# so two suites started together each claim the whole machine and both slow
+# down past their budgets (HF-623). Heavy work therefore takes a slot first; a
+# second heavy job of the same class waits instead of sharing the machine.
+# Integration (landing batches) and development checks (consumer gates, lane
+# try runs, postsubmit) hold separate slots, so at most one of each runs: a
+# lane's checks never stop the landing queue, and a batch never stops a lane's
+# checks (2026-11-13: a 96-file consumer gate held every landing for 19
+# minutes behind the one shared slot; 2026-11-14: lane try runs waited 17 and
+# 39 minutes for batches and for each other).
+HOST_WORK_DIRNAME = "host-work"
+
+
+class HostWorkClass(StrEnum):
+    """The slot a heavy job takes."""
+
+    # A landing batch: it tests main plus queued lanes, then publishes.
+    INTEGRATION = "integration"
+    # Work on one lane or on landed main: consumer gates, try runs, postsubmit.
+    DEVELOPMENT = "development"
+
+
+_HEAVY_LOCK = "heavy.lock"
+_DEVELOPMENT_LOCK = "development.lock"
+# Held by a landing from the moment it queues for the slot until it releases
+# it, so landings take the integration slot in arrival order.
+_LANDING_LOCK = "landing.lock"
+_POLL_SECONDS = 5.0
+_REPORT_SECONDS = 60.0
+# The slot directory the current process tree already holds. The holder
+# exports it for its body; its descendants inherit it.
+HOST_WORK_HELD_ENV = "MOLT_HOST_WORK_SLOT_HELD"
+
+
+def host_work_dir(repo_root: Path) -> Path:
+    """This host's work-slot directory: disk control state every checkout of
+    the install shares (``molt.dx.control_state_dir``)."""
+    from molt.dx import control_state_dir
+
+    return control_state_dir(repo_root, HOST_WORK_DIRNAME)
+
+
+# The slots this process holds. A nested request in the same process is admitted
+# at once; children learn of the hold through ``held_slot_environment``.
+_HELD_SLOTS: set[str] = set()
+
+
+@dataclass(frozen=True, slots=True)
+class HostWorkAdmission:
+    """What admission cost: the seconds spent waiting for the slot."""
+
+    waited_seconds: float
+
+
+def _try_exclusive(handle: BinaryIO) -> bool:
+    """One non-blocking exclusive lock attempt on an open file."""
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _holder(lock: Path) -> str:
+    try:
+        return lock.with_suffix(".holder").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "an unrecorded holder"
+
+
+def _take_ticket(queue: Path) -> tuple[Path, BinaryIO]:
+    """Join the slot's queue: a ticket file this process holds locked.
+
+    The name orders tickets by arrival. The ticket appears under its final
+    name only once locked (POSIX rename), so no waiter reads a newborn ticket
+    as abandoned.
+    """
+    queue.mkdir(parents=True, exist_ok=True)
+    name = f"{time.time_ns():020d}-{os.getpid()}-{secrets.token_hex(4)}"
+    ticket = queue / f"{name}.ticket"
+    if os.name == "nt":
+        handle = open(ticket, "a+b")  # noqa: SIM115 - held while queued
+        while not _try_exclusive(handle):
+            time.sleep(0.01)
+        return ticket, handle
+    staging = queue / f"{name}.joining"
+    handle = open(staging, "a+b")  # noqa: SIM115 - held while queued
+    if not _try_exclusive(handle):
+        raise OSError(f"host-work ticket {staging} is locked by another process")
+    os.replace(staging, ticket)
+    return ticket, handle
+
+
+def _drop_ticket(ticket: Path, handle: BinaryIO) -> None:
+    handle.close()
+    ticket.unlink(missing_ok=True)
+
+
+def _first_in_line(queue: Path, ticket: Path) -> bool:
+    """Whether no live waiter queued before ``ticket``.
+
+    A waiter is live while it holds its ticket's lock, which the operating
+    system drops when the waiter dies, so an abandoned ticket never blocks
+    the queue: the first waiter to find one unlocked removes it.
+    """
+    for earlier in sorted(queue.glob("*.ticket")):
+        if earlier.name >= ticket.name:
+            return True
+        try:
+            probe = open(earlier, "a+b")  # noqa: SIM115 - closed below
+        except FileNotFoundError:
+            continue
+        try:
+            if not _try_exclusive(probe):
+                return False
+            if os.name != "nt":
+                earlier.unlink(missing_ok=True)
+        finally:
+            probe.close()
+        if os.name == "nt":
+            try:
+                earlier.unlink(missing_ok=True)
+            except PermissionError:
+                pass  # its owner reopened it; the next pass decides again
+    return True
+
+
+def _acquire(
+    lock: Path, label: str, say: Callable[[str], None], clock: Callable[[], float]
+) -> BinaryIO:
+    """Block until this process holds ``lock``; report the holder while waiting.
+
+    Waiters are admitted in arrival order (a ticket queue beside the lock):
+    a polling flock alone admits whoever polls first, so a waiter could
+    starve; on 2026-11-14 a try run that had waited 21 minutes longer lost
+    the slot to a newer one.
+    """
+    handle = open(lock, "a+b")  # noqa: SIM115 - the caller owns its lifetime
+    queue = lock.with_suffix(".queue")
+    ticket, ticket_handle = _take_ticket(queue)
+    try:
+        started = reported = clock()
+        first = True
+        while not (_first_in_line(queue, ticket) and _try_exclusive(handle)):
+            now = clock()
+            if first or now - reported >= _REPORT_SECONDS:
+                say(
+                    f"host-work: {label} waits for {_holder(lock)} "
+                    f"({now - started:.0f} s)"
+                )
+                reported, first = now, False
+            time.sleep(_POLL_SECONDS)
+    except BaseException:
+        handle.close()
+        raise
+    finally:
+        _drop_ticket(ticket, ticket_handle)
+    lock.with_suffix(".holder").write_text(
+        f"{label} (pid {os.getpid()}, since {time.strftime('%H:%M:%S')})\n",
+        encoding="utf-8",
+    )
+    return handle
+
+
+def _release(lock: Path, handle: BinaryIO) -> None:
+    try:
+        lock.with_suffix(".holder").unlink(missing_ok=True)
+    finally:
+        _unlock(handle)
+        handle.close()
+
+
+@contextmanager
+def host_work_slot(
+    state_dir: Path,
+    *,
+    label: str,
+    work: HostWorkClass,
+    say: Callable[[str], None],
+    clock: Callable[[], float] = time.monotonic,
+) -> Generator[HostWorkAdmission]:
+    """Hold this host's heavy-work slot of the job's class for the body.
+
+    A landing batch first holds the landing lock, then waits for the
+    integration slot. Development work waits only for the development slot,
+    so the two classes never wait for each other. Each lock admits its
+    waiters in arrival order. The operating system releases the locks when a
+    holder dies, so a crashed job never leaves a slot taken.
+
+    Work the holder starts is part of the holder's job: a nested request in
+    this process is admitted at once, and a child started with
+    ``held_slot_environment()`` carries ``MOLT_HOST_WORK_SLOT_HELD`` naming
+    this slot, so its request is admitted at once too. Without that rule a
+    landing's tests that run a consumer gate would wait for their own landing.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    slot = str(state_dir.resolve())
+    if slot in _HELD_SLOTS or os.environ.get(HOST_WORK_HELD_ENV) == slot:
+        yield HostWorkAdmission(0.0)
+        return
+    integration = work is HostWorkClass.INTEGRATION
+    heavy = state_dir / (_HEAVY_LOCK if integration else _DEVELOPMENT_LOCK)
+    landing_lock = state_dir / _LANDING_LOCK
+    started = clock()
+    held: list[tuple[Path, BinaryIO]] = []
+    try:
+        if integration:
+            held.append((landing_lock, _acquire(landing_lock, label, say, clock)))
+        held.append((heavy, _acquire(heavy, label, say, clock)))
+        _HELD_SLOTS.add(slot)
+        yield HostWorkAdmission(clock() - started)
+    finally:
+        _HELD_SLOTS.discard(slot)
+        for lock, handle in reversed(held):
+            _release(lock, handle)
+
+
+def held_slot_environment() -> dict[str, str]:
+    """The mark a child of this process inherits while the process holds the
+    slot: the child's own request for that slot is then admitted at once.
+
+    The process environment is never written (CLI custody); every spawner of a
+    slot holder's children adds this mark to the environment it builds.
+    """
+    return {HOST_WORK_HELD_ENV: slot for slot in sorted(_HELD_SLOTS)[:1]}

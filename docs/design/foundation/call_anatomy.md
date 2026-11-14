@@ -18,8 +18,8 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5) | guarded call promotion design (HF-773 slice D); `module.attr` slot reads and the guarded builtin call (lane module-slots) | HF-507, HF-79, HF-200 |
-| 4 inline caches | not started | - | - | HF-202, HF-206 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a) | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
 | 7 TIR inlining | not started | - | - | HF-773 |
@@ -114,6 +114,8 @@ WASM through LLVM) do:
 2. One codegen walker over final TIR, generic over a builder trait (word ops, loads and stores,
    blocks and branches, block parameters, calls by `RuntimeFn`). `WordBuilder` and `FrameBuilder`
    in molt-codegen-abi are its first parts. Cranelift and LLVM implement the trait and nothing else.
+   Design and migration (W1 walker, W2 LLVM families, W3 Cranelift switch):
+   [codegen_walker.md](codegen_walker.md).
 3. WASM through LLVM's `wasm32` target from the same walker, if a measured spike holds (speed, size,
    build latency, split runtime, attached context, exception handling); molt-backend-wasm then
    keeps host, link and ABI glue, and its op lowerings are deleted, not migrated.
@@ -126,7 +128,7 @@ builder trait and walker with LLVM as its first implementation; Cranelift onto f
 native backends already call runtime entries only by typed `RuntimeFn`, decoded once at the TIR
 lift ([typed runtime imports](typed_runtime_imports.md), 2026-11-12). Measured reason the order matters (2026-11-11, LLVM release,
 macOS arm64, instructions retired, managed CPython 3.12.16 -I): the worst gaps are fannkuch 8.2x
-CPython (27.0 G excess), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
+CPython (27.0 G excess; below CPython's count since HF-837, below), `bench_method_defaults` 2.9x (16.4 G), `bench_math_numeric` 5.6x (6.8 G),
 mandelbrot 4.7x (6.6 G), `bench_dict` and `bench_list` 2.3x; their buckets (object lifecycle,
 container access) are fast paths every backend needs, so each is written once on the foundation.
 
@@ -151,6 +153,56 @@ which raises the int message. `spectral_norm` (whose `eval_A` divides ints and a
 int), LLVM release, macOS arm64, instructions retired, min of 2: 11.50 to 8.27 billion (-28.1%,
 output identical), below Cranelift's 9.58 billion; `bench_float`, `nbody` and `mandelbrot` within
 0.13%. Cranelift keeps its backend-local mixed paths until it consumes final TIR.
+
+fannkuch list lifecycle (2026-11-12, HF-837). The 8.2x gap was the runtime, not the call path: a
+symbolized profile of `fannkuch_redux.py 10` on main (LLVM release, 9,165 self samples) held list
+destroy 27.0%, allocation 17.4%, slicing 12.4%, index get/set 8.6%, range and list iteration
+6.6%, GC membership 4.1% and compiled code 1.6%. The general causes are fixed once for every
+backend:
+
+- Destroy: a terminal release built an edge sink, counted its capacity by walking the payload,
+  and detached every item, for a list of inline ints with nothing to release.
+  `heap_lifecycle::retires_without_edges` proves the empty case from the header (no C view, weak
+  reference, scheduler retain, sidecar or owned class edge) and one tag test per item of a list,
+  tuple, slice or range; such an object frees its storage directly.
+- Slicing: every slice bound became a `BigInt` (`DecodedSlice`); an inline int now stays an
+  `i64`. A list slice copied the whole list, built an index vector, then copied again;
+  `seq_access::snapshot_slice` copies only the selected items into the new list's own backing. An
+  equal-length slice store of non-heap words overwrites in place.
+- Index get/set: `index_impl` and `store_index_impl` serve the exact builtin containers first, on
+  one header load: an exact list at an inline int in range is one locked bounds check and load or
+  one item replacement, and an exact dict goes straight to its table.
+- Parallel assignment `a, b = x, y` no longer builds and unpacks a tuple: the values evaluate left
+  to right, then the targets, as CPython compiles it.
+
+Release, macOS arm64, instructions retired and user time, minimum of 7 interleaved runs against
+main 49242cd306 built in its own worktree, output identical: `fannkuch_redux.py 9` LLVM 27.75 G to
+18.77 G (-32.4%, 0.95 to 0.63 s), Cranelift 28.03 G to 19.14 G (-31.7%, 0.96 to 0.65 s); managed
+CPython 3.12.16 -I runs it in 3.97 G and 0.16 s. `bench_list` LLVM -7.4%, Cranelift -5.6%;
+`bench_dict` LLVM 0.0%, Cranelift +1.0%. The same profile on the lane (LLVM, 5,995 self samples
+against 9,165): list destroy 18.0%, allocation 18.9%, slicing 11.8%, index get/set 10.1%,
+iteration 9.9%, GC membership 6.0%, compiled code 2.3%.
+
+The flip `perm[:k + 1] = perm[k::-1]` is the TIR pass `slice_reverse` (after SCCP, every backend):
+a `StoreIndex` whose value is an `Index` of the same SSA list by a step -1 slice becomes one
+in-place reverse when the bounds name one range. Each bound decomposes into a base value plus a
+constant offset through copies and `Add`/`Sub` of int constants, and the target's offset must be
+the source's plus one (or both None), so `seq[:k + 1] = seq[k::-1]`, `n = k + 1; seq[:n] =
+seq[n - 1::-1]`, `seq[i:j] = seq[j - 1:i - 1:-1]` and `seq[:] = seq[::-1]` qualify and a near
+miss does not. The pass emits `list_reverse_slice(seq, start base, offset, stop base, offset,
+shape)`, a shared boxed runtime call every backend lowers from the generated table, before the
+statement's chain of blocks: the kernel reverses in place for an exact list without a C view whose
+bases are inline ints and whose bounds are `>= 0`, and otherwise declines to the statement as
+written. A shape whose proof is missing is reported under `MOLT_SLICE_REVERSE_REPORT=1`. Release,
+macOS arm64, minimum of 7 interleaved runs against main 388c6de982 in its own worktree, output
+identical: `fannkuch_redux.py 9` LLVM 18.76 G to 3.63 G (-80.7%, 0.65 to 0.12 s), Cranelift
+19.13 G to 4.09 G (-78.6%, 0.67 to 0.14 s), below CPython's 3.97 G and 0.16 s; `bench_list` and
+`bench_dict` within 0.3%. Profile (LLVM, 1,216 self samples against 9,165 on ee6d276030): list
+destroy 11.9%, allocation 16.4%, slicing and the in-place reverse 14.9%, index get/set 20.0%,
+iteration 1.5%, GC membership 3.4%, compiled code 9.8%. What remains is the call-threaded shape:
+every list index is a runtime call on LLVM and WASM (Cranelift keeps a backend-local fast path),
+`for r in rxrange` iterates a range object through the runtime, and `perm1[:]` allocates a list per
+permutation; these move to the codegen foundation as compiled list and range primitives.
 
 P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
@@ -328,6 +380,9 @@ replaces:
 | 6 | Unboxed loop carriers and observation-point locals | HF-185 (loop half), HF-229 | inline-int loop → ≤ 8; call loop → ≤ 80; attr → ≤ 40 |
 | 7 | TIR inlining of proven small callees with inline frames in the location table | new | call loop → ≤ 12 |
 
+Stages 3 and 4 first bind statically on whole-program facts (section 4.5a). The inline caches in
+stage 4 serve only sites where the program contains a possible writer.
+
 A stage's target assumes the stages it depends on have landed. The end state is 10-80 instructions
 for a Python call and single-digit instructions for a scalar loop iteration: 45-300x below today on
 every row, and 5-70x below CPython. Stages 1, 4 and 5 touch disjoint authorities and can run in
@@ -463,6 +518,9 @@ dead int costs `dec_ref_ptr_terminal` 33.7% because a leaf int runs the generic 
 - **Method (q4):** `molt_call_loaded_method1` 58.6% (frame push/pop again inside),
   `molt_load_method` 23.7%. `molt_load_method` takes the name as `(ptr, len)` bytes, so each call
   hashes and validates the name (`hash_string_bytes`, `from_utf8`) and pins an IC entry.
+  Method sites (2026-11-12, section 4.5) replaced both runtime entries on the hit path: p4 runs
+  at 352 instructions per call on LLVM against 2,046 before, and a symbolized profile of
+  `bench_method_defaults` shows no method load, call dispatch or method cache.
 - **Constructor (p5, the perf-gate `struct` row):** `call_type_with_arguments` 51.6%:
   `construct_regular_class` looks up `__init__` through the MRO (`class_namespace_lookup_mro`
   12.3%), allocates a bound method per construction (`molt_bound_method_new` 10.4%), allocates
@@ -1252,8 +1310,9 @@ must be equal in hot-path instructions (gate in the anatomy tool).
 - **Constructors.** `C(args)` with a proven or guarded class whose `__new__` is `object.__new__`
   lowers to inline allocation of the class layout and a native call of `C.__init__$n(ctx, self,
   args)` (CPython 3.13 `CALL_ALLOC_AND_ENTER_INIT`).
-- **Module attributes.** `struct.pack` with `struct` a proven module binding is a global slot read
-  of that module: no class MRO walk.
+- **Module attributes.** A closed-world proof binds `m.f` at compile time: a published intrinsic
+  called with its exact arity is one direct call, with no lookup and no guard (section 4.5a,
+  first consumer). Unproven reads keep the generic path, with a build diagnostic naming the blocker.
 - **Names.** Attribute and method names are interned name handles in the op format (typed keys,
   HF-202), never `(ptr, len)` bytes.
 
@@ -1266,14 +1325,182 @@ degrades the table for good. Compiled reads: `GlobalSlotBase` (one runtime call 
 activation, merged by GVN and hoisted by LICM; the frame's globals table when it uses the
 site's layout, else an all-unbound array) and `GlobalSlotGet`, whose meaning is the shared
 `molt_codegen_abi::global_slot` generator. Stores replace the dictionary row by slot
-index (`molt_global_slot_set`). Free-threaded runtimes take the by-name path. The base
+index (`molt_global_slot_set`). A cell-eligible module has no slot table: its globals are static
+cells (section 4.5a). Free-threaded runtimes take the by-name path. The base
 becomes inline loads once the frame record exposes the function's globals (stage 1).
+
+**Implementation (method sites, 2026-11-12).** Every `LoadMethod` and the `CallLoadedMethod`
+that consumes its whole pair share a site index (`method_sites` in the terminal phase, gated by
+the TargetInfo fact `method_sites`: Cranelift, LLVM and WASM). The index names the site's record,
+a writable data object the backend emits with the generated image
+(`molt_codegen_abi::method_site`): class word, header shape (aux kind and size class), class
+layout version, instance-dictionary offset, function, call plan (fixed-arity entry, arity, up to
+two trailing defaults) and the attribute name. The record owns its class, function, defaults and
+interned name. The meaning is two generators that every backend lowers through its frame builder:
+
+- Load: the receiver is an object; its header shape and masked class word equal the record's; the
+  class's layout version equals the record's; its dictionary word, when the class has one, holds
+  no dictionary. Hit: `[record.function, receiver]`, both retained. Miss:
+  `molt_method_site_load(record, receiver, self_out)`, which interns the name on the site's first
+  miss, resolves the method (`object_method_ic_resolve`), checks the instance tier, and fills the
+  record when the resolution can repeat (class-inline header, no inferred field of the name, the
+  primary GIL runtime, the type epoch stable across resolution). An instance dictionary that does
+  not hold the name still sends every load to the miss, which then re-checks only the dictionary.
+- Call: `self` is not NULL, the callable is `record.function`, the record has an entry, and the
+  call supplies `arity - k` words for some `k` within the record's defaults; the recursion limit
+  admits it. Hit: the callable goes into the thread record's invocation word, the entry runs with
+  `self`, the arguments and `k` retained defaults, the handoff and depth are restored, and the
+  callable is released. Miss: `molt_call_loaded_method<N>`, unchanged.
+
+Guard identities: the class layout version (bumped for the class and every subclass on any
+mutation, HF-812) covers rebinding and MRO changes; `__class__` assignment changes the header
+class word; an instance attribute creates the dictionary. A user write of a function's binding
+metadata or code clears every record's entry for that function (`forget_method_site_call_plans`),
+so its calls take the runtime, which reads the live defaults. A free-threaded runtime and an
+isolate never fill a record: the record words are plain memory without a lock that orders their
+writes with another runtime's reads. Runtime teardown empties every record and releases its edges.
+Deleted with the site: `molt_load_method`, the thread-local method cache (`MethodIcEntry`,
+`PinnedMethodIcEntry`, `method_ic_lookup`), and every by-bytes method name on the method path; the
+zero-argument `super()` load keeps its runtime cache (`SuperIcEntry`). One runtime cache remains
+on a site: a load the record cannot answer (a callable stored in an instance field, a descriptor)
+takes the generic lookup, whose field tier (`field_sites`) is keyed by the record's address. It
+goes when attribute sites land (stage 4, attributes).
 
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,
 module slot write, builtins version). Check: mutation tests per guard kind (rebind a global, add a
 data descriptor to a class, assign `__class__`) run on native, LLVM and WASM and must observe the
 new value at the next execution of the site.
+
+### 4.5a Closed world: prove the fact, then emit the operation (2026-11-13)
+
+Molt compiles the whole program, the standard library included. The verified subset excludes
+`eval`/`exec` and runtime monkeypatching (spec 0216). A fact that no code in the program can
+change at run time is therefore a compile-time constant. GraalVM Native Image, Codon and mypyc bind
+on such facts. HotSpot and V8 cannot, because new code can arrive at run time, so they guard and
+cache. Sections 4.5 and stage 4 borrowed the JIT answer. This section replaces it as the default.
+
+**Rule.** A proven site emits the operation itself: an instruction, a field load at a fixed offset,
+or a direct call of a compiled function. It makes no runtime call to find, check or bind the
+operation. The only runtime call left on a proven site is a direct call to an intrinsic that has
+no TIR primitive. A guard, a site record or an inline cache exists only where the program contains
+a possible writer. The build diagnostic for that site names the writer (`module:line`, construct)
+or the analysis limit (computed name, escaping `globals()`, import cycle). An unproven site keeps
+the generic path. A guarded middle tier needs a measured class of hot unproven sites first.
+
+The owner's correction that set this rule: the approved 2026-11-13 design for `math.sqrt` checked
+the receiver with a runtime slot base and compared the callee with a published object on every
+call. That was three cheaper runtime calls in place of one expensive path. The design was
+replaced before implementation.
+
+**One whole-program fact pass at integration.** Integration sees every module's lowered ops, the
+import graph and the namespace facts. Each fact below has one authority, and each consumer reads
+it:
+
+| fact | authority | consumers |
+|---|---|---|
+| Writers: module attributes, module globals, class attributes, `__class__` | HF-226 namespace writes (`python_namespace_writes`, `python_namespace_graph`, `verified_namespace_premises.md`); extend for classes | static module-attribute binding; module globals as static cells; devirtualized methods; fixed field offsets |
+| Class hierarchy: classes, subclasses, per-class mutation | new; preorder numbering of the class tree | `isinstance` and `except C` as a class-id range check; method devirtualization; inline construction |
+| Reachability: functions, intrinsics, stdlib modules | new; replaces the intrinsic registry's keep-alive roots | compile and link only reachable code |
+| Build-time initializability: pure module initializers | new | run the initializer at build time and serialize its heap into the binary (GraalVM image heap) |
+
+Measured stakes (release, macOS arm64; profiles and per-op counts from 2026-11-12 and 2026-11-13):
+
+| consumer | today | stake |
+|---|---|---|
+| `math.sqrt(x)` and other module functions | by-name attribute lookup, then the generic call | attribute access 27.2% and call dispatch 28.7% of `bench_math_numeric` samples; compiled code is 2.5% |
+| module globals (`total`, `index`) | static cells for cell-eligible modules (landed 2026-11-13); slot table inside the module dictionary, `molt_global_slot_set` per store, elsewhere | was 38% of LLVM self samples in `bench_method_defaults` after method sites |
+| methods with a proven receiver class | class-version guard and site record per call | the guard and record remain after the -56% to -81% method-site win |
+| `isinstance`, type dispatch | runtime MRO walk | 4,702 against 795 instructions (5.9x CPython); type dispatch 7,678 against 1,031 (7.4x) |
+| `except C` | runtime class match | `raise_user` 7.9x CPython |
+| construction | generic `__new__`/`__init__` | 4.7x to 11.3x CPython |
+| startup | runtime initialization of `sys`, builtins and stdlib modules | about 98 million instructions; C 12.0 million, Rust 15.4 million |
+| binary size, build time | every stdlib function and intrinsic stays alive | 804 stdlib functions compiled for a five-line program; 59 MB debug and 11.6 MB release binaries |
+
+**Measure against native code.** Report runtime calls per iteration in the emitted IR, the
+compiled-code share of profile samples, and instructions retired against C, Rust or Go versions of
+the program. CPython is the correctness oracle. It is not the performance bar.
+
+**First consumer (lane module-attr-call-sites, landed 2026-11-13).** `m.f(args)` binds
+statically when four facts hold. F1: no writer of `f` in `M`'s namespace in any module: `f` is in
+neither `M`'s own deferred writes (`PythonNamespaceSummary.own_names`, carried on the scan
+authority) nor the premise's foreign writes; an unknown set proves nothing. F2: `M`'s body stores
+`f` once, unconditionally (depth 0 of a body chunk that its init calls exactly once,
+unconditionally), from its intrinsic publication, and never deletes it. F3: the receiver is a global
+of `U` bound only by `import M`, stable in `U`, with a canonical import (no reached `sys.modules`,
+import-hook or `__import__` writer), and `U` is not reachable from `M`. F4: positional arguments
+match the intrinsic's arity, and the intrinsic is in `PUBLIC_DIRECT_CALL_BINDINGS` (generated by
+`tools/gen_intrinsics.py`; a runtime test fails if a member declares a call signature).
+Integration (`molt.cli.closed_world_bindings`) deletes the attribute read and makes the call a
+direct call of the intrinsic; the receiver's global read stays, so a read before the import still
+raises `NameError`. The frontend attaches its guess of `M` only to import-bound receivers;
+integration consumes it on every lane. A qualifying site that fails keeps its generic call, and the
+build diagnostics (`closed_world_binding_fallbacks`) name the failed fact and the attribute writers.
+To make F1 hold under `typing`, the namespace-write authority follows a foreign namespace mapping
+that escapes into a local or a call argument through per-function write summaries, to a fixed point:
+a name is written when it is item-written, has a non-read method called on it, is declared
+`global`/`nonlocal`, is captured by a nested scope that does not rebind it, or reaches a written
+parameter; a callee resolves only to an undecorated `def` the module binds once; a call of the
+builtin `eval`/`exec` does not write (spec 0216). Measured on `bench_math_numeric` at 20 times its
+size, interleaved against the base, output identical: LLVM 119.0 G → 12.46 G instructions retired
+(-89.5%), 3.8 s → 0.35 s user; Cranelift 124.3 G → 16.34 G (-86.9%), 4.0 s → 0.45 s. Compiled code
+rose from 2.5% to 20.5% of samples; the module-global stores (54%) are the next consumer, and the
+late-TIR float `sqrt` (about 15%) waits for the shared lowering (HF-843).
+
+**Second consumer: module globals as static cells (lane static-module-cells, 2026-11-13).** A
+module is cell-eligible when no code reaches its namespace mapping by identity and every writer is
+named (`molt.cli.static_module_cells`, facts C1-C6): its own code calls no `globals()`,
+module-scope `vars()`/`locals()` or `exec`/`eval`; no activated code reaches `M.__dict__`,
+`vars(M)`, a `sys.modules` entry's `__dict__`, a `__globals__` or an `f_globals` except by literal
+dunder keys (the HF-226 authority's `reflection` rows, `verified_namespace_premises.md`); no
+activated code reads a code object that `FunctionType` could run over another globals mapping
+(the premise's `code_rebinding`, added 2026-11-14 after static cells read the defining module's
+cells under foreign globals); its own
+deferred writes and its foreign writes are named sets; its body does not star-import; the program
+writes no `sys.modules`, import hook or `__import__`; and the program loads no extension module
+and spawns no isolate thread. The entry module also must not be imported by its own name. Each
+name of an eligible module's layout is then one word of a writable block in program data, defined
+once in the program object (`__molt_static_cells_<module>`; a WASM mutable data segment) and
+initially unbound. Compiled reads keep `GlobalSlotGet` over the block's base, a link-time
+constant (`StaticCellBase`): load, unbound test, retain, cold by-name read. A store is
+`StaticCellSet`, one `molt_codegen_abi::static_cell` generator every backend selects: retain the
+new value, swap it in (atomically in a free-threaded build), release the old word. No runtime
+call, no slot table, no dictionary mirror. The base travels shifted right by 3, so a block must
+stay 8-aligned: WASM relocatable output now declares every data segment's alignment in the
+linking section (`WASM_SEGMENT_INFO`); without it `wasm-ld` placed segments 1-aligned. The module's init binds the block to its new module
+object (`molt_static_cells_bind`, once per module), and the dictionary never holds a layout name:
+attribute reads (the generic instance-dictionary tier), `setattr`, `del`, global lookup by name,
+`dir`, star import and shutdown retirement consult the cells through the registry's sorted
+layout. Computed-name reads (`getattr(m, name)`, `hasattr`, pickle's `find_class`) therefore keep
+a module eligible. The bind also records the builtin binding guard bits (HF-79) of every layout
+name some code may store, since a cell store never reaches the dictionary's guard state. Every
+layout name whose body store is unconditional, once, at initialization, with no other writer,
+carries an `InitOnce` fact (function, class, module, intrinsic or other) in the build diagnostics
+(`static_module_cells`); its consumer is a later slice (HF-846). An ineligible module keeps its
+dictionary and slot tables unchanged, and the diagnostics name the failed fact.
+
+Measured at 20 times `bench_math_numeric`'s size and on `bench_method_defaults`, interleaved
+against the base (origin/main 1147b68524), release, macOS arm64, output identical:
+
+| benchmark | backend | instructions retired | user time |
+|---|---|---|---|
+| `bench_math_numeric` | LLVM | 12.48 G → 4.73 G (-62.1%) | 0.36 s → 0.14 s |
+| `bench_math_numeric` | Cranelift | 16.35 G → 9.12 G (-44.2%) | 0.55 s → 0.29 s |
+| `bench_method_defaults` | LLVM | 5.06 G → 2.51 G (-50.5%) | 0.14 s → 0.07 s |
+| `bench_method_defaults` | Cranelift | 6.99 G → 4.68 G (-33.0%) | 0.23 s → 0.16 s |
+
+The loop's stores of `total` and `index` make no runtime call: `molt_global_slot_set`,
+`dict_replace_value` and the dictionary reference drop are gone from the profile, and compiled code
+rose from 20.5% to 55% of non-startup samples on LLVM (65% on Cranelift; `sample`, 200 times the
+original size). The math intrinsic bodies hold most of the rest (HF-843). What remains on a read
+is the load, the unbound test (compare and branch against a materialized constant) and the retain:
+a float or inline-int read adds about 3 instructions of tag test, and a pointer read (the `math`
+receiver, which the closed-world binding keeps for its `NameError`) about 15 for the inline
+retain and 15 more for the release that follows, about 140 of the loop's 770 instructions per
+iteration. `InitOnce` with proven initialization dominance removes both (HF-846). Not yet compiled:
+foreign `M.x` reads and stores and `del` (one runtime call routed to the cell, HF-845), and the
+175 stdlib modules whose own `globals().pop("_require_intrinsic", None)` keeps them on dictionary
+namespaces (HF-844).
 
 ### 4.6 Reference counts
 
@@ -1381,6 +1608,10 @@ a static layout, such as big integers) remain.
 | `FieldSlot(ClassId, j)` for attribute sites | **missing** at compile time (runtime site caches exist) | new, from class layout facts |
 | Interprocedural may-raise summary | **missing** | new TIR analysis |
 | Location table per code object | data exists on ops (`source_line`, `col_offset`) | new generated table |
+| Whole-program writers per namespace entry | exists for module namespaces (HF-226); classes **missing** | section 4.5a |
+| Class-hierarchy numbering | **missing** | section 4.5a |
+| Reachable functions and intrinsics | **missing** | section 4.5a |
+| Build-time initializable modules | **missing** | section 4.5a |
 
 ### 4.11 What this design refuses
 
@@ -1391,6 +1622,8 @@ a static layout, such as big integers) remain.
 - Removing frame or traceback fidelity: every observation keeps CPython's answer (invariant I1).
 - A second cache or registry beside an existing one: site records replace runtime-side site caches
   in the same migration.
+- A runtime guard, cache or lookup on a fact the whole-program analysis proves (section 4.5a).
+  Guards exist only where the program contains a possible writer.
 
 ## 5. Staged plan
 
@@ -1504,7 +1737,8 @@ instructions per iteration; `fib` ≤ 300 per call. Closes HF-507, HF-200; close
 
 ### Stage 4: inline caches in compiled code
 
-Attribute, method, constructor and module-attribute sites (4.5) with typed name handles.
+Attribute, method, constructor and module-attribute sites (4.5) with typed name handles. A site
+the whole-program facts prove binds statically with no guard (4.5a); the cache serves the rest.
 Typed-layout deallocation: an instance of a fixed-layout class frees by its layout's field list,
 without the generic edge-visiting cascade (`DetachedEdgeSink`, `clear_cycle_edges_with_sink`;
 31% of the `struct` loop). Deletes runtime-side site caches that the site records replace
@@ -1512,6 +1746,17 @@ without the generic edge-visiting cascade (`DetachedEdgeSink`, `clear_cycle_edge
 attribute loop ≤ 150; method loop ≤ 350; `struct` (p5) ≤ 600; `struct.pack` ≤ 2,000 (the
 remaining cost is the format plan and the wrapper, both cacheable). Closes the HF-185 attribute and
 `struct` rows, HF-202; moves HF-206.
+
+Status (2026-11-12): method sites landed (section 4.5). Instructions retired, release, macOS
+arm64, minimum of two interleaved runs, output identical, against main fc28795e05:
+`bench_method_defaults` (5M calls, a default engaged on every call) LLVM 13.79 to 4.97 billion
+(-64%), Cranelift 15.57 to 6.92 billion (-56%); p4 LLVM 10.42 to 1.95 billion (-81%), Cranelift
+11.19 to 2.82 billion (-75%). The managed CPython 3.12.16 (-I) retires 8.36 and 4.25 billion; wall
+time `bench_method_defaults` 0.14 s (LLVM) against 0.30 s. The method loop is 352 instructions
+per call on LLVM, at the stage target before stages 1-3 finish. The recursion check is still two
+runtime calls per site call (stage 2), and the module-level store in the benchmark's loop is now
+its largest cost (`molt_global_slot_set`, 38% of LLVM self samples). Attribute and constructor
+sites remain.
 
 ### Stage 5: exceptions
 
@@ -1746,6 +1991,40 @@ refcount correctness; generator and coroutine semantics; C-API frame and excepti
   needed: Python has no tail-call elimination and tracebacks need every frame).
 - PEP 590 (vectorcall), PEP 683 (immortal objects), PEP 703 (biased reference counting), PEP 669
   (instrument only enabled events), PEP 667 (`f_locals` proxy).
+
+## 8a. Rust 1.100: what the toolchain now offers (2026-11-12)
+
+Molt pins Rust 1.100.0 (owner directive 2026-11-12). Three features change
+what later stages can do. Each line is a lead, not an implementation:
+
+- `-Cprofile-sample-use` is stable: sample PGO for the runtime from a `perf`/`sample`
+  profile of the benchmark corpus, without an instrumented build.
+- `extern "custom"` is stable: a function with no Rust calling convention, so the
+  runtime-entry trampolines of section 4.2 can be Rust items with naked bodies.
+- `wasm32-wasip3` is Tier 2: a component-model WASI target for the WASM backend.
+
+### Rust 1.100 Allocator API: candidate sites
+
+1.100 stabilizes `std::alloc::Allocator`, `Box::new_in` and `Vec::with_capacity_in`.
+The migration crosses the runtime and every backend, so the integrator designs it
+first. These sites hold a hand-written allocator today:
+
+- `runtime/molt-runtime/src/arena.rs:29-130`: `ArenaChunk`/`ScopeArena`, a chunked
+  bump arena over `alloc_zeroed`. An `Allocator` impl lets `Vec<T, &ScopeArena>`
+  and `Box<T, &ScopeArena>` live in it and drops the raw `alloc` pointer API.
+- `runtime/molt-runtime-resource/src/temp_arena.rs:7`: `TempArena`, chunked
+  `Vec<Vec<u8>>` storage with tracker charging. The same `Allocator` impl would
+  carry the resource-tracker charge that each call site now pairs by hand.
+- `runtime/molt-runtime/src/object/layout.rs:291` and `:554`: `ListIntStorage` and
+  `ListBoolStorage` allocate their owner with `std::alloc::alloc` and charge the
+  tracker separately. A tracking allocator makes `Box::new_in` charge and release
+  in one place.
+- `runtime/molt-runtime/src/object/aux_header.rs:409`: the aux sidecar's raw
+  `alloc`, same pattern.
+- `runtime/molt-ir/src/tir/blocks.rs:38` (`TirBlock::ops: Vec<TirOp>`) and
+  `runtime/molt-ir/src/tir/function.rs:42` (`TirFunction::blocks`): every TIR op and
+  block is a separate global-heap allocation. A per-function arena frees a
+  function's IR in one release and keeps its ops adjacent.
 
 ## 9. Programs and reproduction
 

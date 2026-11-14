@@ -675,15 +675,17 @@ def _discover_module_graph_from_paths(
         # Premises are computed only once the demand queue below exists.
         assert demands is not None
         opaque = demands.opaque_activation_sources(module_name)
-        if source_context.admission_policy.owns_source_closure_with_native_artifact_plan(
-            module_name, path
-        ):
+        policy = source_context.admission_policy
+        if policy.owns_source_closure_with_native_artifact_plan(module_name, path):
             opaque = None
+        # A native extension's C code can read any function's code object.
+        native_code = bool(policy.native_artifact_plan.artifacts)
         bounded = namespace_index.premise(
             path,
             frozenset(),
             noncanonical_imports=exclusions,
             opaque_activation_sources=opaque,
+            native_code=native_code,
         )
         if not package_paths or bounded.foreign_writes is None:
             return bounded
@@ -699,12 +701,14 @@ def _discover_module_graph_from_paths(
                     frozenset(),
                     noncanonical_imports=exclusions,
                     opaque_activation_sources=opaque,
+                    native_code=native_code,
                 )
         return namespace_index.premise(
             path,
             package_children[package_paths],
             noncanonical_imports=exclusions,
             opaque_activation_sources=opaque,
+            native_code=native_code,
         )
 
     def refresh_namespace_premises(affected):
@@ -840,6 +844,19 @@ def _discover_module_graph_from_paths(
             if summary is None:
                 merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
             else:
+                if (
+                    summary.own_names is not None
+                    and scan_sources[module_name].namespace_own_names is None
+                ):
+                    scan_sources[module_name] = replace(
+                        scan_sources[module_name],
+                        namespace_own_names=summary.own_names,
+                    )
+                if scan_sources[module_name].namespace_own_line is None:
+                    scan_sources[module_name] = replace(
+                        scan_sources[module_name],
+                        namespace_own_line=summary.own_namespace_line,
+                    )
                 known = state.namespace_writes.setdefault(module_name, set())
                 pending = pending_namespace_writes.setdefault(module_name, {})
                 for write in summary.foreign_writes:

@@ -820,7 +820,10 @@ fn struct_unpack_values<'py>(
                         }
                     };
                     out.push(unsafe {
-                        OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_float(val).bits())
+                        OwnedRuntimeValue::from_owned_bits(
+                            _py,
+                            molt_runtime_core::rt_float_result_bits(_py, val),
+                        )
                     });
                     offset = end;
                 }
