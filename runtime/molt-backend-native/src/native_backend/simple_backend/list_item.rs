@@ -1,0 +1,61 @@
+//! Cranelift's spelling of the shared list item generators
+//! (`molt_codegen_abi::list_item`): `xs[i]` and `xs[i] = v` on an exact list
+//! compile inline, over the frame builder's control and word primitives.
+
+use super::*;
+use molt_codegen_abi::list_item::{ListLocking, generate_list_item_get, generate_list_item_set};
+
+fn list_item_builder<'a, 'b>(
+    builder: &'a mut FunctionBuilder<'b>,
+    sites: NativeFrameSites,
+) -> NativeFrameBuilder<'a, 'b> {
+    NativeFrameBuilder {
+        words: NativeWords { builder },
+        sites,
+        slow_blocks: Vec::new(),
+        sealed: Vec::new(),
+    }
+}
+
+/// `list[index]` as an owned word: the shared read, whose miss calls `cold`.
+/// The generator's blocks join the caller's sealed set.
+pub(crate) fn emit_list_item_get(
+    builder: &mut FunctionBuilder<'_>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    sites: NativeFrameSites,
+    list: Value,
+    index: Value,
+    cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
+) -> Value {
+    let mut b = list_item_builder(builder, sites);
+    let item = generate_list_item_get(&mut b, list, index, ListLocking::BUILD, |b| {
+        cold(&mut *b.words.builder)
+    });
+    sealed_blocks.extend(b.sealed);
+    item
+}
+
+/// `list[index] = value`: the shared store, whose miss calls `cold`.
+pub(crate) fn emit_list_item_set(
+    builder: &mut FunctionBuilder<'_>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    sites: NativeFrameSites,
+    list: Value,
+    index: Value,
+    value: Value,
+    success: Value,
+    cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
+) -> Value {
+    let mut b = list_item_builder(builder, sites);
+    let stored = generate_list_item_set(
+        &mut b,
+        list,
+        index,
+        value,
+        ListLocking::BUILD,
+        success,
+        |b| cold(&mut *b.words.builder),
+    );
+    sealed_blocks.extend(b.sealed);
+    stored
+}

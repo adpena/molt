@@ -639,17 +639,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             RuntimeFn::GetitemMethod
         };
-        let get_fn = self.ensure_runtime_import(symbol);
-        let val = self.borrowed_runtime_call_value(
-            get_fn,
-            &[
-                RuntimeArg::Operand(op.operands[0]),
-                RuntimeArg::Operand(op.operands[1]),
-            ],
-            false,
-            "index",
-            symbol.symbol(),
-        );
+        // A container that may be a list takes the shared list read, which
+        // inlines an exact list at an inline int; its miss is the runtime
+        // entry (`molt_codegen_abi::list_item`).
+        let mut args = vec![
+            RuntimeArg::Operand(op.operands[0]),
+            RuntimeArg::Operand(op.operands[1]),
+        ];
+        let get_fn = if self.container_may_be_list(op.operands[0]) {
+            args.push(RuntimeArg::Word(self.list_item_admission().into()));
+            self.ensure_list_item_get_helper(symbol)
+        } else {
+            self.ensure_runtime_import(symbol)
+        };
+        let val = self.borrowed_runtime_call_value(get_fn, &args, false, "index", symbol.symbol());
         self.values.set_value(result_id, val.into());
         self.values.set_repr(
             result_id,
@@ -660,15 +663,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Item assignment and deletion borrow their operands; the container
     /// retains what it stores, and the runtime returns only None or a boolean.
     pub(super) fn emit_store_index(&mut self, op: &TirOp) {
-        let set_fn = self.ensure_runtime_import(RuntimeFn::SetitemMethod);
+        // A container that may be a list takes the shared list store; its
+        // miss is `molt_setitem_method`.
+        let mut args = vec![
+            RuntimeArg::Operand(op.operands[0]),
+            RuntimeArg::Operand(op.operands[1]),
+            RuntimeArg::Operand(op.operands[2]),
+        ];
+        let set_fn = if self.container_may_be_list(op.operands[0]) {
+            args.push(RuntimeArg::Word(self.list_item_admission().into()));
+            self.ensure_list_item_set_helper()
+        } else {
+            self.ensure_runtime_import(RuntimeFn::SetitemMethod)
+        };
         self.emit_borrowed_runtime_call(
             op,
             set_fn,
-            &[
-                RuntimeArg::Operand(op.operands[0]),
-                RuntimeArg::Operand(op.operands[1]),
-                RuntimeArg::Operand(op.operands[2]),
-            ],
+            &args,
             RuntimeResultCustody::Unowned,
             "store_index",
             "setitem",

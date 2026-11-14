@@ -26,7 +26,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a) | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -212,9 +212,9 @@ identical: `fannkuch_redux.py 9` LLVM 18.76 G to 3.63 G (-80.7%, 0.65 to 0.12 s)
 `bench_dict` within 0.3%. Profile (LLVM, 1,216 self samples against 9,165 on ee6d276030): list
 destroy 11.9%, allocation 16.4%, slicing and the in-place reverse 14.9%, index get/set 20.0%,
 iteration 1.5%, GC membership 3.4%, compiled code 9.8%. What remains is the call-threaded shape:
-every list index is a runtime call on LLVM and WASM (Cranelift keeps a backend-local fast path),
 `for r in rxrange` iterates a range object through the runtime, and `perm1[:]` allocates a list per
-permutation; these move to the codegen foundation as compiled list and range primitives.
+permutation; these move to the codegen foundation as compiled list and range primitives. List
+item reads and stores now compile inline on every backend (section 4.5a, "List items").
 
 P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
@@ -1555,6 +1555,40 @@ slice 1 took 1.381 G -> 1.278 G instructions retired, about 508 -> 470 per call;
 1.278 G -> 0.752 G (-41%), about 470 -> 275 per call. A C reference with one real call per call
 retires about 9.5 per call. `bench_class_hierarchy` (26.1 G) and
 `bench_method_default_binding` (2.196 G) do not change: their calls are method calls (slice 2b).
+
+#### List items (2026-11-14)
+
+`xs[i]` and `xs[i] = v` compile inline on Cranelift, LLVM and WASM from one generator,
+`molt_codegen_abi::list_item`, over the frame builder's primitives (the method site pattern).
+The fast path admits an exact list at an inline-int index in range after the negative-index
+adjustment: pointer and int tags, a list type id (`TYPE_ID_LIST` or `TYPE_ID_LIST_INT`), no C
+view, an aux kind of `NONE` or `CLASS_INLINE` with zero class bits, then a length load, one
+unsigned bounds compare and the element load. A generic element is retained; a compact int
+element is boxed inline. A store retains the new word, stores it and releases the old one; a
+compact int list stores an inline int's payload. Everything else (a subclass, a sidecar, a
+compact bool list, a bool, big-int or `__index__` index, out of range, another container, a
+free-threaded build) calls the runtime entry the site called before, which keeps IndexError,
+`__index__` and subclass dispatch.
+
+The storage layout made this possible: every list kind keeps one `#[repr(C)]` `MoltVec` whose
+data pointer and length sit at `LIST_STORAGE_DATA_OFFSET` and `LIST_STORAGE_LEN_OFFSET` (`Vec`'s
+field order is not an ABI). The storage kind is a heap fact, read from the type id at each
+access, because a store can promote a compact list to generic words; no type proof selects it.
+An exact list carries no class edge: the runtime allocates every list with a zero inline class
+word, and a subclass instance stores its class there.
+
+Measured (release, macOS arm64, instructions retired, three interleaved runs per binary, output
+identical), against the storage migration alone: the `isinstance(objs[i & 63], str)` loop
+-17.1% on LLVM and -6.2% on Cranelift; `fannkuch_redux.py 9` -17.2% and -10.4%; `bench_list`
+-2.5% and -1.0%; `bench_dict` within 0.4%. Before the change the LLVM loop called
+`molt_getitem_method` every iteration (`index_impl` and `pin_item` held about 20% of self
+samples); after it the read is inline and only `isinstance` remains a runtime call.
+
+Remaining: Cranelift's proven-list lanes (`list_index_fast_path.rs`: raw-int results, a
+loop-hoisted storage observation, BCE and the sum-reduction unroll) still duplicate the
+meaning for proven sites. They retire when the late TIR stage carries loop-invariant storage
+facts, so the shared generator can take a hoisted observation (HF-847); the generator already
+serves every unproven Cranelift site and the generic store.
 
 ### 4.6 Reference counts
 
