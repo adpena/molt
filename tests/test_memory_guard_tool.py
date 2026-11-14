@@ -61,6 +61,11 @@ pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 # reads os.getpid for the watched set, so one fake must reach all three.
 _GUARD_MODULES = (memory_guard, process_custody, process_model)
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow child is not a stuck one. A test whose
+# property is a duration measures it and keeps its own bound.
+_HANG_BOUND_S = 300.0
+
 
 def _fake_guard(monkeypatch, attribute: str, real: object, **fakes: Any) -> None:
     """Fake ``real`` in every memory-guard module, on this test's thread only.
@@ -318,7 +323,7 @@ def test_posix_custody_boundary_keeps_native_dispatch_for_other_consumers(
         )
     )
     worker.start()
-    worker.join(5)
+    worker.join(_HANG_BOUND_S)
 
     assert not worker.is_alive()
     assert not process_custody._process_model.is_windows_process_model()
@@ -2323,7 +2328,7 @@ def test_actual_darwin_sampler_omits_unreaped_child() -> None:
         child.stdin.close()
         # An exiting process fails libproc lookups while its kernel status is
         # still SRUN, so wait on the kernel row itself (HF-88).
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + _HANG_BOUND_S
         while True:
             row = model._darwin_proc_kernel_row(child.pid)
             if row is not None and row.status == model._DARWIN_SZOMB:
@@ -2336,7 +2341,7 @@ def test_actual_darwin_sampler_omits_unreaped_child() -> None:
     finally:
         if child.stdin is not None and not child.stdin.closed:
             child.stdin.close()
-        child.wait(timeout=5)
+        child.wait(timeout=_HANG_BOUND_S)
         if child.stdout is not None:
             child.stdout.close()
     assert model._darwin_proc_kernel_row(child.pid) is None
@@ -2409,7 +2414,7 @@ def test_actual_darwin_custody_poll_tracks_the_tree_the_host_table_does() -> Non
     finally:
         if not child.stdin.closed:
             child.stdin.close()
-        child.wait(timeout=5)
+        child.wait(timeout=_HANG_BOUND_S)
         if child.stdout is not None:
             child.stdout.close()
 
@@ -2473,7 +2478,7 @@ def test_actual_custody_poll_judges_a_live_tree_as_the_host_table_does() -> None
     finally:
         if not child.stdin.closed:
             child.stdin.close()
-        child.wait(timeout=5)
+        child.wait(timeout=_HANG_BOUND_S)
         if child.stdout is not None:
             child.stdout.close()
 
@@ -4696,7 +4701,7 @@ def _signal_guard_parent(tmp_path: Path, mode: str) -> tuple[int, float, Path, i
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + _HANG_BOUND_S
     while not ready.exists():
         assert guard.poll() is None and time.monotonic() < deadline
         time.sleep(0.02)
@@ -6596,8 +6601,8 @@ def test_process_group_probe_observes_an_exited_group_until_its_reap() -> None:
         )
         elapsed = time.monotonic() - started
     finally:
-        reaper.join(15.0)
-        proc.wait(timeout=15.0)
+        reaper.join(_HANG_BOUND_S)
+        proc.wait(timeout=_HANG_BOUND_S)
     assert closed
     assert elapsed >= 0.4
 
@@ -7331,7 +7336,7 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
     return result, calls, report
 
 
-def _wait_for_pid_file(path: Path, *, timeout_s: float = 10.0) -> int:
+def _wait_for_pid_file(path: Path, *, timeout_s: float = _HANG_BOUND_S) -> int:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         text = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -7648,7 +7653,7 @@ def test_root_group_absence_probe_preserves_a_live_owned_child() -> None:
     finally:
         if child.stdin is not None:
             child.stdin.close()
-        returncode = child.wait(timeout=5.0)
+        returncode = child.wait(timeout=_HANG_BOUND_S)
         if child.stdout is not None:
             child.stdout.close()
     assert returncode == 0, "the existence query must not signal its live target"

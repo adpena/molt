@@ -103,6 +103,34 @@ def test_a_failing_importer_test_leaves_no_receipt(repo, monkeypatch):
     assert consumer_gate.check(repo, paths) == 1
 
 
+def test_a_test_that_fails_under_load_and_passes_alone_is_rerun_and_recorded(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-11-13: three tests with wall-clock liveness deadlines failed beside
+    # the suite's load and passed alone; each cost a full gate rerun. The gate
+    # now reruns the failures alone once and records them, as the landing does.
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    marker = repo / "first-run-done"
+    (repo / "tests/test_lib.py").write_text(
+        "from pathlib import Path\n\n"
+        "class TestUnderLoad:\n"
+        "    def test_value(self):\n"
+        f"        marker = Path({str(marker)!r})\n"
+        "        if not marker.exists():\n"
+        "            marker.write_text('x')\n"
+        "            raise AssertionError('deadline missed under load')\n",
+        encoding="utf-8",
+    )
+    paths = ["tests/test_lib.py"]
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, paths)
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["flaky_reruns"] == ["tests/test_lib.py::TestUnderLoad::test_value"]
+
+
 def test_generator_outputs_alone_need_no_receipt(repo):
     (repo / "generated.txt").write_text("2\n", encoding="utf-8")
     assert consumer_gate.check(repo, ["generated.txt"]) == 0

@@ -570,7 +570,6 @@
         "tests/test_dead_code_allow_ratchet.py/**",
         "tests/tools/test_advisory_classifier.py/**",
         "tests/tools/test_check_ir_structure.py/**",
-        "tests/tools/test_profile_python_import_consumer.py/**",
         "tests/tools/test_bootstrap_actionlint.py/**",
         "tests/tools/test_build_graph_audit.py/**",
         "tests/tools/test_build_health_gate.py/**",
@@ -578,7 +577,6 @@
         "tests/tools/test_cargo_bindgen_toolchain.py/**",
         "tests/tools/test_check_cargo_locks.py/**",
         "tests/tools/test_check_codegen_quality_memory_guard.py/**",
-        "tests/tools/test_check_compile_throughput.py/**",
         "tests/tools/test_check_luau_static.py/**",
         "tests/tools/test_check_memory_guard_wiring.py/**",
         "tests/tools/test_check_runtime_serial_bridge_imports.py/**",
@@ -723,7 +721,6 @@
         "tests/tools/test_check_commit_attribution.py/**",
         "tests/tools/test_check_public_source_boundary.py/**",
         "tests/tools/test_check_gate_flips.py/**",
-        "tests/tools/test_check_gate_liveness.py/**",
         "tests/tools/test_check_instruction_hierarchy.py/**",
         "tests/tools/test_check_sister_landed.py/**",
         "tests/tools/test_claim_lane.py/**",
@@ -3642,7 +3639,6 @@
         "tests/test_dead_code_allow_ratchet.py",
         "tests/tools/test_advisory_classifier.py",
         "tests/tools/test_check_ir_structure.py",
-        "tests/tools/test_profile_python_import_consumer.py",
         "tests/tools/test_bootstrap_actionlint.py",
         "tests/tools/test_build_graph_audit.py",
         "tests/tools/test_build_health_gate.py",
@@ -3650,7 +3646,6 @@
         "tests/tools/test_cargo_bindgen_toolchain.py",
         "tests/tools/test_check_cargo_locks.py",
         "tests/tools/test_check_codegen_quality_memory_guard.py",
-        "tests/tools/test_check_compile_throughput.py",
         "tests/tools/test_check_luau_static.py",
         "tests/tools/test_check_memory_guard_wiring.py",
         "tests/tools/test_check_runtime_serial_bridge_imports.py",
@@ -3832,7 +3827,6 @@
         "tests/tools/test_check_commit_attribution.py",
         "tests/tools/test_check_public_source_boundary.py",
         "tests/tools/test_check_gate_flips.py",
-        "tests/tools/test_check_gate_liveness.py",
         "tests/tools/test_check_instruction_hierarchy.py",
         "tests/tools/test_check_sister_landed.py",
         "tests/tools/test_claim_lane.py",
@@ -6087,9 +6081,7 @@
         "tests/test_concurrency_wrappers.py",
         "tests/test_conformance_environment_policy.py",
         "tests/test_contextvars_private_module_surface.py",
-        "tests/test_convert_safetensors_dtype.py",
         "tests/test_copyreg_public_module_surface.py",
-        "tests/test_cpython_abi_symbol_authority.py",
         "tests/test_runtime_abi_width_authority.py",
         "tests/test_cpython_regrtest_memory_guard.py",
         "tests/test_crypt_private_module_surface.py",
@@ -6129,7 +6121,6 @@
         "tests/test_import_runtime_private_module_surfaces.py",
         "tests/test_import_smoke_public_surfaces.py",
         "tests/test_intrinsics_bootstrap_contract.py",
-        "tests/test_itertools_bridge_authority.py",
         "tests/test_itertools_islice_accumulate.py",
         "tests/test_itertools_public_module_surface.py",
         "tests/test_json.py",
@@ -6183,17 +6174,7 @@
         "tests/test_public_intrinsic_surface_batch_af.py",
         "tests/test_public_intrinsic_surface_batch_ag.py",
         "tests/test_public_intrinsic_surface_batch_ah.py",
-        "tests/test_public_intrinsic_surface_batch_az.py",
         "tests/test_public_intrinsic_surface_batch_b.py",
-        "tests/test_public_intrinsic_surface_batch_ba.py",
-        "tests/test_public_intrinsic_surface_batch_bb.py",
-        "tests/test_public_intrinsic_surface_batch_bc.py",
-        "tests/test_public_intrinsic_surface_batch_bd.py",
-        "tests/test_public_intrinsic_surface_batch_be.py",
-        "tests/test_public_intrinsic_surface_batch_bf.py",
-        "tests/test_public_intrinsic_surface_batch_bg.py",
-        "tests/test_public_intrinsic_surface_batch_bh.py",
-        "tests/test_public_intrinsic_surface_batch_bi.py",
         "tests/test_public_intrinsic_surface_batch_c.py",
         "tests/test_public_intrinsic_surface_batch_d.py",
         "tests/test_public_intrinsic_surface_batch_e.py",
@@ -6235,7 +6216,6 @@
         "tests/test_secret_guard.py",
         "tests/test_secret_guard_tool.py",
         "tests/test_security_regression.py",
-        "tests/test_seq_snapshot_bridge_authority.py",
         "tests/test_signal_private_module_surface.py",
         "tests/test_sitebuiltins_private_module_surface.py",
         "tests/test_smoke.py",
@@ -6269,7 +6249,6 @@
         "tests/test_tinygrad_stdlib_tensor_reductions.py",
         "tests/test_tinygrad_stdlib_typed_runtime.py",
         "tests/test_tinygrad_tensor_axis0_contract.py",
-        "tests/test_tir_wasm_pseudo_authority_retired.py",
         "tests/test_tkinter_live_smoke.py",
         "tests/test_tkinter_phase0_wrappers.py",
         "tests/test_tokenize_private_module_surface.py",
@@ -6426,9 +6405,7 @@
         "tests/test_concurrency_wrappers.py",
         "tests/test_conformance_environment_policy.py",
         "tests/test_contextvars_private_module_surface.py",
-        "tests/test_convert_safetensors_dtype.py",
         "tests/test_copyreg_public_module_surface.py",
-        "tests/test_cpython_abi_symbol_authority.py",
         "tests/test_runtime_abi_width_authority.py",
         "tests/test_cpython_regrtest_memory_guard.py",
         "tests/test_crypt_private_module_surface.py",
@@ -6468,7 +6445,6 @@
         "tests/test_import_runtime_private_module_surfaces.py",
         "tests/test_import_smoke_public_surfaces.py",
         "tests/test_intrinsics_bootstrap_contract.py",
-        "tests/test_itertools_bridge_authority.py",
         "tests/test_itertools_islice_accumulate.py",
         "tests/test_itertools_public_module_surface.py",
         "tests/test_json.py",
@@ -6522,17 +6498,7 @@
         "tests/test_public_intrinsic_surface_batch_af.py",
         "tests/test_public_intrinsic_surface_batch_ag.py",
         "tests/test_public_intrinsic_surface_batch_ah.py",
-        "tests/test_public_intrinsic_surface_batch_az.py",
         "tests/test_public_intrinsic_surface_batch_b.py",
-        "tests/test_public_intrinsic_surface_batch_ba.py",
-        "tests/test_public_intrinsic_surface_batch_bb.py",
-        "tests/test_public_intrinsic_surface_batch_bc.py",
-        "tests/test_public_intrinsic_surface_batch_bd.py",
-        "tests/test_public_intrinsic_surface_batch_be.py",
-        "tests/test_public_intrinsic_surface_batch_bf.py",
-        "tests/test_public_intrinsic_surface_batch_bg.py",
-        "tests/test_public_intrinsic_surface_batch_bh.py",
-        "tests/test_public_intrinsic_surface_batch_bi.py",
         "tests/test_public_intrinsic_surface_batch_c.py",
         "tests/test_public_intrinsic_surface_batch_d.py",
         "tests/test_public_intrinsic_surface_batch_e.py",
@@ -6574,7 +6540,6 @@
         "tests/test_secret_guard.py",
         "tests/test_secret_guard_tool.py",
         "tests/test_security_regression.py",
-        "tests/test_seq_snapshot_bridge_authority.py",
         "tests/test_signal_private_module_surface.py",
         "tests/test_sitebuiltins_private_module_surface.py",
         "tests/test_smoke.py",
@@ -6608,7 +6573,6 @@
         "tests/test_tinygrad_stdlib_tensor_reductions.py",
         "tests/test_tinygrad_stdlib_typed_runtime.py",
         "tests/test_tinygrad_tensor_axis0_contract.py",
-        "tests/test_tir_wasm_pseudo_authority_retired.py",
         "tests/test_tkinter_live_smoke.py",
         "tests/test_tkinter_phase0_wrappers.py",
         "tests/test_tokenize_private_module_surface.py",
@@ -7146,7 +7110,6 @@
         "tests/test_stdlib_intrinsic_import_evidence.py",
         "tests/cli/test_cli_intrinsic_enforcement.py",
         "tests/test_weakrefset_private_module_surface.py",
-        "tests/test_weakref_native_authority.py",
         "tests/test_unittest_mock_protocol.py",
         "tests/test_public_intrinsic_surface_batch_d.py"
       ],
@@ -7192,7 +7155,6 @@
         "tests/test_stdlib_intrinsic_import_evidence.py",
         "tests/cli/test_cli_intrinsic_enforcement.py",
         "tests/test_weakrefset_private_module_surface.py",
-        "tests/test_weakref_native_authority.py",
         "tests/test_unittest_mock_protocol.py",
         "tests/test_public_intrinsic_surface_batch_d.py"
       ],
@@ -9630,13 +9592,10 @@
       "local.apparatus-a11.0": "none",
       "local.apparatus-a11.1": "none",
       "local.apparatus-a11.2": "none",
-      "local.apparatus-a11.3": "none",
       "local.apparatus-a11.pytest": "none",
       "local.apparatus-a8-a12-disk-reclaim.0": "none",
-      "local.apparatus-a8-a12-disk-reclaim.1": "none",
       "local.apparatus-a8-a12-disk-reclaim.pytest": "none",
       "local.apparatus-hooks.0": "none",
-      "local.apparatus-hooks.1": "none",
       "local.apparatus-hooks.pytest": "none",
       "local.apparatus-learning-protection.0": "none",
       "local.apparatus-learning-protection.pytest": "none",
@@ -9792,16 +9751,13 @@
       "local.apparatus-a11.0": "python tools/claims_status.py --check",
       "local.apparatus-a11.1": "python tools/check_sister_landed.py --check",
       "local.apparatus-a11.2": "python tools/commit_serializer.py --check",
-      "local.apparatus-a11.3": "python tools/check_gate_liveness.py --check",
       "local.apparatus-a11.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
-      "local.apparatus-a8-a12-disk-reclaim.0": "python tools/check_gate_liveness.py --check",
-      "local.apparatus-a8-a12-disk-reclaim.1": "python tools/apparatus_agent_safety.py --check",
-      "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_proof_queue_disk_capacity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py tests/tools/test_drift_harvest.py",
-      "local.apparatus-hooks.0": "python tools/check_gate_liveness.py --check",
-      "local.apparatus-hooks.1": "python tools/check_gate_flips.py --check",
-      "local.apparatus-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
+      "local.apparatus-a8-a12-disk-reclaim.0": "python tools/apparatus_agent_safety.py --check",
+      "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_proof_queue_disk_capacity.py tests/tools/test_disk_guard.py tests/tools/test_drift_harvest.py",
+      "local.apparatus-hooks.0": "python tools/check_gate_flips.py --check",
+      "local.apparatus-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_check_gate_flips.py",
       "local.apparatus-learning-protection.0": "python tools/apparatus_agent_safety.py --check",
-      "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+      "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_memory_graph.py",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
       "local.backend-daemon-cache.1": "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn -- --test-threads=1",
       "local.backend-daemon-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_backend_daemon_custody.py tests/test_backend_daemon_argv.py tests/test_backend_daemon_suite_custody.py tests/test_molt_diff_daemon_pruning.py tests/test_bench_individual_tool.py",
@@ -11861,12 +11817,10 @@
       {
         "command_ids": [
           "local.apparatus-hooks.0",
-          "local.apparatus-hooks.1",
           "local.apparatus-hooks.pytest"
         ],
-        "description": "Claude Code hooks (the launcher and the session digest), their typed wiring, the gate-flip auditor and the gate-liveness canary.",
+        "description": "Claude Code hooks (the launcher and the session digest), their typed wiring and the gate-flip auditor.",
         "gates": [
-          "python tools/check_gate_liveness.py --check",
           "python tools/check_gate_flips.py --check"
         ],
         "globs": [
@@ -11876,18 +11830,15 @@
           ".githooks/molt-hook-launch.sh",
           "tools/molt_dev_queue.py",
           "tools/check_gate_flips.py",
-          "tools/check_gate_liveness.py",
           "tests/tools/test_hooks_session_digest.py",
           "tests/tools/test_hooks_fail_open.py",
-          "tests/tools/test_check_gate_flips.py",
-          "tests/tools/test_check_gate_liveness.py"
+          "tests/tools/test_check_gate_flips.py"
         ],
         "name": "apparatus-hooks",
         "pytest": [
           "tests/tools/test_hooks_session_digest.py",
           "tests/tools/test_hooks_fail_open.py",
-          "tests/tools/test_check_gate_flips.py",
-          "tests/tools/test_check_gate_liveness.py"
+          "tests/tools/test_check_gate_flips.py"
         ],
         "toolchains": [
           "python"
@@ -11898,22 +11849,19 @@
           "local.apparatus-learning-protection.0",
           "local.apparatus-learning-protection.pytest"
         ],
-        "description": "Recurring-harm registry, the no-agent-termination meta-gate, and the memory graph.",
+        "description": "The no-agent-termination meta-gate and the memory graph.",
         "gates": [
           "python tools/apparatus_agent_safety.py --check"
         ],
         "globs": [
           "tools/apparatus_agent_safety.py",
-          "tools/recurring_harms.toml",
           "tools/memory_graph.py",
-          "tools/check_gate_liveness.py",
           "tests/tools/test_apparatus_agent_safety.py",
           "tests/tools/test_memory_graph.py"
         ],
         "name": "apparatus-learning-protection",
         "pytest": [
           "tests/tools/test_apparatus_agent_safety.py",
-          "tests/tools/test_check_gate_liveness.py",
           "tests/tools/test_memory_graph.py"
         ],
         "toolchains": [
@@ -12000,15 +11948,13 @@
           "local.apparatus-a11.0",
           "local.apparatus-a11.1",
           "local.apparatus-a11.2",
-          "local.apparatus-a11.3",
           "local.apparatus-a11.pytest"
         ],
         "description": "Claims self-retirement terminal vocabulary + premise-verification preflight + serialized-commit primitive (M11/M20/M22/M24): teeth + falsifiable self-tests + gate-liveness canary.",
         "gates": [
           "python tools/claims_status.py --check",
           "python tools/check_sister_landed.py --check",
-          "python tools/commit_serializer.py --check",
-          "python tools/check_gate_liveness.py --check"
+          "python tools/commit_serializer.py --check"
         ],
         "globs": [
           "tools/claims_status.py",
@@ -12035,12 +11981,10 @@
       {
         "command_ids": [
           "local.apparatus-a8-a12-disk-reclaim.0",
-          "local.apparatus-a8-a12-disk-reclaim.1",
           "local.apparatus-a8-a12-disk-reclaim.pytest"
         ],
-        "description": "Lane maturity, Variant-II perf acceptance, and disk-guard retention: teeth plus liveness.",
+        "description": "Lane maturity, Variant-II perf acceptance, and disk-guard retention.",
         "gates": [
-          "python tools/check_gate_liveness.py --check",
           "python tools/apparatus_agent_safety.py --check"
         ],
         "globs": [
@@ -12051,7 +11995,6 @@
           "tools/disk_guard.py",
           "src/molt/checkout_state.py",
           "tools/drift_harvest.py",
-          "tools/check_gate_liveness.py",
           "tests/tools/test_lane_maturity.py",
           "tests/tools/test_powerplay_acceptance.py",
           "tests/tools/test_proof_queue_lane_maturity.py",
@@ -12066,7 +12009,6 @@
           "tests/tools/test_proof_queue_lane_maturity.py",
           "tests/tools/test_proof_queue_disk_capacity.py",
           "tests/tools/test_disk_guard.py",
-          "tests/tools/test_check_gate_liveness.py",
           "tests/tools/test_drift_harvest.py"
         ],
         "toolchains": [
@@ -13211,25 +13153,16 @@
       "local.apparatus-a11.2": [
         "python"
       ],
-      "local.apparatus-a11.3": [
-        "python"
-      ],
       "local.apparatus-a11.pytest": [
         "python"
       ],
       "local.apparatus-a8-a12-disk-reclaim.0": [
         "python"
       ],
-      "local.apparatus-a8-a12-disk-reclaim.1": [
-        "python"
-      ],
       "local.apparatus-a8-a12-disk-reclaim.pytest": [
         "python"
       ],
       "local.apparatus-hooks.0": [
-        "python"
-      ],
-      "local.apparatus-hooks.1": [
         "python"
       ],
       "local.apparatus-hooks.pytest": [

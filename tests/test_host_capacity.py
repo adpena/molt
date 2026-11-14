@@ -403,7 +403,7 @@ def test_a_heavy_job_waits_for_the_holder_and_names_it(
     import threading
 
     state = tmp_path / "host-work"
-    holder = _held_elsewhere(state, "heavy.lock")
+    holder = _held_elsewhere(state, "development.lock")
     said: list[str] = []
     admitted = threading.Event()
 
@@ -416,36 +416,34 @@ def test_a_heavy_job_waits_for_the_holder_and_names_it(
     worker = threading.Thread(target=job)
     worker.start()
     assert not admitted.wait(0.2)  # the slot is taken: the job waits
-    host_capacity._release(state / "heavy.lock", holder)
+    host_capacity._release(state / "development.lock", holder)
     worker.join(5)
     assert admitted.is_set()
     assert said and "waits for landing try run (abc123)" in said[0]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
-def test_a_queued_landing_goes_before_a_heavy_job_that_has_not_started(
+def test_landings_and_development_checks_never_wait_for_each_other(
     tmp_path: Path, fast_poll: None
 ) -> None:
-    import threading
-
+    # 2026-11-13: a lane's 96-file consumer gate held the one shared slot and
+    # stopped every landing for 19 minutes. Integration and development work
+    # now hold separate slots.
     state = tmp_path / "host-work"
-    # The heavy slot is free, but a landing holds the landing lock (it is
-    # queued or running), so an ordinary heavy job must not start.
     landing = _held_elsewhere(state, "landing.lock")
-    admitted = threading.Event()
-
-    def job() -> None:
-        with host_capacity.host_work_slot(
-            state, label="consumer gate", landing=False, say=lambda _: None
-        ):
-            admitted.set()
-
-    worker = threading.Thread(target=job)
-    worker.start()
-    assert not admitted.wait(0.2)
+    integration = _held_elsewhere(state, "heavy.lock")
+    with host_capacity.host_work_slot(
+        state, label="consumer gate", landing=False, say=lambda _: None
+    ) as admission:
+        assert admission.waited_seconds < 1
+    host_capacity._release(state / "heavy.lock", integration)
     host_capacity._release(state / "landing.lock", landing)
-    worker.join(5)
-    assert admitted.is_set()
+    development = _held_elsewhere(state, "development.lock")
+    with host_capacity.host_work_slot(
+        state, label="landing try run", landing=True, say=lambda _: None
+    ) as admission:
+        assert admission.waited_seconds < 1
+    host_capacity._release(state / "development.lock", development)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")

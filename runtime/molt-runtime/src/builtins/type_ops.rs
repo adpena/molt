@@ -481,17 +481,18 @@ fn runtime_classinfo_match(
         if exact != 0 && exact == classinfo {
             return Some(true);
         }
-        // An immediate (int, bool, float, None) cannot override `__class__`,
-        // and a class whose metaclass is exactly `type` keeps the default
-        // `__instancecheck__`. The answer is then the real-type subtype test
-        // (CPython object_isinstance), and no user code runs.
-        if exact != 0
-            && obj_from_bits(value).as_ptr().is_none()
-            && type_of_bits(py, classinfo) == builtin_classes(py).type_obj
-        {
-            return Some(unsafe {
-                crate::object::class_layout::is_real_subtype(py, exact, classinfo)
-            });
+        // A class whose metaclass is exactly `type` keeps the default
+        // `__instancecheck__`, which CPython runs as object_isinstance: the
+        // real-type subtype test first, and a `__class__` lookup (which may run
+        // user code) only when that test fails. So a subtype hit is the answer
+        // for any value; a miss is the answer only for an immediate (int, bool,
+        // float, None), whose `__class__` cannot be overridden.
+        if exact != 0 && type_of_bits(py, classinfo) == builtin_classes(py).type_obj {
+            let subtype =
+                unsafe { crate::object::class_layout::is_real_subtype(py, exact, classinfo) };
+            if subtype || obj_from_bits(value).as_ptr().is_none() {
+                return Some(subtype);
+            }
         }
     }
     let _value = crate::builtins::exceptions::ExceptionValue::pin(py, value);

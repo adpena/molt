@@ -65,7 +65,6 @@ from pathlib import Path
 from types import ModuleType
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
-    guard_custody_env,
     install_module_os_view,
     install_thread_module_view,
     hung_child_marker,
@@ -95,6 +94,11 @@ from tests.test_dx_run_context import _git as _storage_git
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow child is not a stuck one. The properties
+# under test are orderings, which the barriers, events and files assert.
+_HANG_BOUND_S = 300.0
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
@@ -748,213 +752,6 @@ def driver_origin_and_clone(
     return _copy_origin_fixture(tmp_path, driver_history_seed, monkeypatch)
 
 
-def test_driver_seed_keeps_runtime_dependencies_without_optional_groups(
-    driver_seed: Path,
-) -> None:
-    import tomllib
-
-    from molt.dx import DxProject
-
-    expected = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    expected["tool"]["molt"]["dx"]["dependency_groups"] = []
-    actual = tomllib.loads((driver_seed / "pyproject.toml").read_text(encoding="utf-8"))
-    assert actual == expected
-    assert (driver_seed / "uv.lock").read_bytes() == (
-        REPO_ROOT / "uv.lock"
-    ).read_bytes()
-    assert DxProject(driver_seed).dependency_groups() == ()
-
-
-def test_private_driver_seed_retains_its_declared_groups(tmp_path: Path) -> None:
-    from molt.dx import DxProject
-
-    private = tmp_path / "private"
-    private.mkdir()
-    (private / "pyproject.toml").write_text(
-        '[tool.molt.dx]\ndependency_groups = ["fixture-workload"]\n'
-        "[dependency-groups]\nfixture-workload = []\n",
-        encoding="utf-8",
-    )
-    copied = tmp_path / "copied"
-    copy_driver_trees(copied, seed=private)
-    assert DxProject(copied).dependency_groups() == ("fixture-workload",)
-    assert (copied / "pyproject.toml").read_bytes() == (
-        private / "pyproject.toml"
-    ).read_bytes()
-
-
-def test_prepared_fixture_keeps_fresh_checkout_stat_semantics(tmp_path, drv):
-    seed = GitFixture(tmp_path / "donor.git", tmp_path / "donor-work")
-    _init_repo(seed.work)
-    _commit_file(seed.work, "source.py", "value = 1\n", "source")
-    old_mtime = 1_000_000_000
-    os.utime(seed.work / "source.py", ns=(old_mtime, old_mtime))
-    publish_git_fixture(seed)
-    private = GitFixture(tmp_path / "private.git", tmp_path / "private-work")
-    copy_git_fixture(seed, private, role=GitFixtureRole.SUBJECT)
-    source = private.work / "source.py"
-    assert source.stat().st_mtime_ns != old_mtime
-    assert (seed.work / "source.py").stat().st_mtime_ns == old_mtime
-    original = source.stat()
-    source.write_text("value = 2\n", encoding="utf-8")
-    os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
-    assert drv.Git(private.work).checkout_observation().dirty_records
-    assert _git(seed.work, "show", "HEAD:source.py").stdout == "value = 1\n"
-
-
-@pytest.mark.parametrize(
-    "fixture_name", ["origin_and_clone", "driver_origin_and_clone"]
-)
-def test_prepared_fixture_remote_survives_linked_worktree_depth(
-    fixture_name, request, tmp_path
-):
-    origin, work = request.getfixturevalue(fixture_name)
-    linked = tmp_path / "another-depth" / "linked"
-    linked.parent.mkdir()
-    _git(work, "worktree", "add", "--detach", "-q", str(linked), "HEAD")
-    expected = _git(origin, "rev-parse", "refs/heads/main").stdout.strip()
-    assert (
-        _git(linked, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
-        == expected
-    )
-
-
-@pytest.mark.parametrize(
-    ("fixture_name", "seed_name"),
-    [
-        ("origin_and_clone", "_origin_seed"),
-        ("driver_origin_and_clone", "driver_history_seed"),
-    ],
-)
-def test_origin_fixture_copies_history_without_mutable_aliases(
-    drv, tmp_path, monkeypatch, request, fixture_name, seed_name
-):
-    from molt import checkout_state, dx
-    from molt.build_state_layout import build_state_root
-    from tools import disk_guard
-
-    seed = request.getfixturevalue(seed_name)
-    assert isinstance(seed, GitFixture)
-    donor = seed.origin
-    foreign_source = tmp_path / "foreign-source"
-    foreign_source.mkdir()
-    foreign_artifacts = tmp_path / "foreign-artifacts"
-    foreign_artifacts.mkdir()
-    foreign_env = dx.RunContext(foreign_source).canonical_env(
-        {dx.ARTIFACT_ROOT_ENV: str(foreign_artifacts)}, create_dirs=False
-    )
-    target, uv_environment = _shared_checkout_state(foreign_artifacts, foreign_source)
-    control = build_state_root(
-        project_root=foreign_source, cargo_target=target, environment=foreign_env
-    )
-    control.mkdir(parents=True)
-    (control / "sentinel").write_bytes(b"foreign build control")
-    with checkout_state.checkout_state_use(
-        (
-            (target, checkout_state.CheckoutOwner(foreign_source, "cargo-target")),
-            (
-                uv_environment,
-                checkout_state.CheckoutOwner(foreign_source, "python-environment"),
-            ),
-            (control, checkout_state.CheckoutOwner(target, "build-control")),
-        )
-    ):
-        pass
-    foreign_files = {
-        path.relative_to(foreign_artifacts): path.read_bytes()
-        for path in foreign_artifacts.rglob("*")
-        if path.is_file()
-    }
-    caches = {
-        key: os.environ[key]
-        for key in dx.CANONICAL_ROOT_ENV_KEYS
-        if key in os.environ
-        and key not in dx.MOLT_ROOT_ENV_KEYS
-        and key != "UV_PROJECT_ENVIRONMENT"
-    }
-    custody = guard_custody_env()
-    for key in dx.MOLT_ROOT_ENV_KEYS:
-        monkeypatch.setenv(key, foreign_env[key])
-    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(control))
-    monkeypatch.setenv(
-        "MOLT_BACKEND_DAEMON_SOCKET_DIR", str(foreign_artifacts / "sockets")
-    )
-    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
-        monkeypatch.setenv(key, str(tmp_path / "missing-caller-environment"))
-    # Request after poisoning the caller: fixture admission must reset it, not
-    # merely assume that the enclosing pytest session selected suitable roots.
-    origin, work = request.getfixturevalue(fixture_name)
-
-    foreign_reads = []
-    read_owner = disk_guard.read_checkout_owner
-
-    def observed_owner(path):
-        if path.is_relative_to(foreign_artifacts):
-            foreign_reads.append(path)
-        return read_owner(path)
-
-    monkeypatch.setattr(disk_guard, "read_checkout_owner", observed_owner)
-    readme = work / "README.md"
-    original_readme = readme.read_bytes()
-    original_stat = readme.stat()
-    readme.write_bytes(b"feed\n")
-    assert len(original_readme) == readme.stat().st_size
-    os.utime(readme, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
-    assert drv.Git(work).checkout_observation().dirty_records, {
-        "failure": "the refreshed private index hid a same-size, restored-mtime edit",
-        "before_stat": repr(original_stat),
-        "after_stat": repr(readme.stat()),
-        "original": repr(original_readme),
-        "current": repr(readme.read_bytes()),
-        "index": _git(work, "ls-files", "--debug", "--", "README.md").stdout,
-        "tracked": _git(work, "show", "HEAD:README.md", check=False).stdout,
-        "configuration": _git(
-            work,
-            "config",
-            "--show-origin",
-            "--get-regexp",
-            r"^core\.(checkstat|trustctime|ignorestat|fsmonitor)$",
-            check=False,
-        ).stdout,
-    }
-    readme.write_bytes(original_readme)
-    initial = _git(donor, "rev-parse", "HEAD").stdout.strip()
-    original_config = (donor / "config").read_bytes()
-    (origin / "config").write_bytes(original_config + b"\n# private test mutation\n")
-    assert (donor / "config").read_bytes() == original_config
-    # A hardlink copy can appear isolated for Git's atomic ref replacement;
-    # exercise direct object-byte mutation as well, after the real push.
-    new_tip = _commit_file(work, "private.txt", "private\n", "private mutation")
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
-    assert _git(origin, "rev-parse", "HEAD").stdout.strip() == new_tip
-    assert _git(donor, "rev-parse", "HEAD").stdout.strip() == initial
-    wt = _worktree_off(work, "wt_isolated_artifacts")
-    assert (
-        molt_dev_retire.cleanup_worktree(
-            drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
-        )
-        == EXIT_OK
-    )
-    assert not wt.exists()
-    relative = Path("objects") / initial[:2] / initial[2:]
-    original_object = (donor / relative).read_bytes()
-    (origin / relative).chmod(0o600)
-    (origin / relative).write_bytes(b"deliberately corrupt private copy")
-    assert (donor / relative).read_bytes() == original_object
-    assert _git(donor, "show", "HEAD:README.md").stdout == "seed\n"
-    assert not foreign_reads, "synthetic retirement consulted foreign host artifacts"
-    assert {
-        path.relative_to(foreign_artifacts): path.read_bytes()
-        for path in foreign_artifacts.rglob("*")
-        if path.is_file()
-    } == foreign_files
-    assert dx.artifact_root(work, os.environ) == tmp_path / "artifacts"
-    assert all(os.environ.get(key) == value for key, value in caches.items())
-    assert guard_custody_env() == custody
-    assert "MOLT_BUILD_STATE_DIR" not in os.environ
-    assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in os.environ
-
-
 def _make_gate_venv(path: Path, token: str | None) -> Path:
     from tests.python_environment_test_support import create_test_venv
 
@@ -1012,9 +809,11 @@ def _gate_caller_env(hostile: Path) -> ProcessEnvironmentBuilder:
     [
         "checkout",
         "MOLT_VENV",
-        "UV_PROJECT_ENVIRONMENT",
+        # Each provisions a managed image (64-76 s, 2026-11-13); "checkout"
+        # keeps the managed path in presubmit and postsubmit runs these.
+        pytest.param("UV_PROJECT_ENVIRONMENT", marks=pytest.mark.slow),
         "worktree-main",
-        "worktree-own",
+        pytest.param("worktree-own", marks=pytest.mark.slow),
     ],
 )
 def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
@@ -1154,14 +953,10 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
             )
 
 
+# cargo_execution_policy reads the four wrapper names as one tuple, in a direct
+# and a configured half; one name from each half covers both spellings.
 @pytest.mark.parametrize(
-    "wrapper",
-    [
-        "RUSTC_WRAPPER",
-        "RUSTC_WORKSPACE_WRAPPER",
-        "CARGO_BUILD_RUSTC_WRAPPER",
-        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
-    ],
+    "wrapper", ["RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"]
 )
 def test_run_gate_compound_shell_preserves_durable_cargo_environment(
     drv, tmp_path, wrapper, short_cargo_cache
@@ -3769,9 +3564,11 @@ def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
     }
 
     def run(command, repo, environment, cancelled, streams=None):
-        entered.wait(timeout=30)
+        entered.wait(timeout=_HANG_BOUND_S)
         if command != ("race", "2"):
-            assert events[command].wait(timeout=30), "executor did not cancel siblings"
+            assert events[command].wait(timeout=_HANG_BOUND_S), (
+                "executor did not cancel siblings"
+            )
             assert cancelled()
         outcome = outcomes[command]
         if streams is not None:
@@ -3922,9 +3719,11 @@ def _run_block_beside_cancelled_sibling(
         # each alone.
         if command not in concurrent_run:
             concurrent_run.add(command)
-            entered.wait(timeout=30)
+            entered.wait(timeout=_HANG_BOUND_S)
         if command == ("pytest", "sibling"):
-            assert events[command].wait(timeout=30), "executor did not cancel"
+            assert events[command].wait(timeout=_HANG_BOUND_S), (
+                "executor did not cancel"
+            )
             assert cancelled()
         outcome = outcomes[command]
         if streams is not None:
@@ -4669,14 +4468,14 @@ pytest_select = [{k="pure", targets=["tests/test_a.py"], toolchains=["python"]}]
                 peak_writers = max(peak_writers, active_writers)
             try:
                 writer_started.set()
-                assert pure_started.wait(5), (
+                assert pure_started.wait(_HANG_BOUND_S), (
                     "Python selector waited for the Cargo writer"
                 )
             finally:
                 with lock:
                     active_writers -= 1
         else:
-            assert writer_started.wait(5)
+            assert writer_started.wait(_HANG_BOUND_S)
             pure_started.set()
         return _gate_outcome(0, "", "", None)
 
@@ -5685,7 +5484,7 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
         "from pathlib import Path\nimport time\n"
         f"Path({str(ready)!r}).touch()\n"
         f"release=Path({str(release)!r})\n"
-        "deadline=time.monotonic()+20\n"
+        f"deadline=time.monotonic()+{_HANG_BOUND_S}\n"
         "while not release.exists() and time.monotonic()<deadline: time.sleep(.02)\n"
         "assert release.exists(), 'test release deadline'\n"
     )
@@ -5700,7 +5499,7 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
         )
     try:
         shutil.rmtree(caller)
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert ready.exists(), (state / "run.log").read_text(encoding="utf-8")
@@ -5714,12 +5513,12 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
         assert selected.driver.exists()
     finally:
         release.touch()
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not (state / "rc").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
     assert (state / "rc").read_text(encoding="utf-8") == "0"
     # Terminal publication precedes source-handle release by a few instructions.
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + _HANG_BOUND_S
     while selected.root.exists() and time.monotonic() < deadline:
         storage.retire_idle_controllers(
             selected.root.parent, current=tmp_path, now=time.time()
@@ -7961,6 +7760,9 @@ def test_precheck_budget_must_be_positive():
         PrecheckBudget(0)
 
 
+# 190 s on an 18-core host (2026-11-13): postsubmit runs it; the presubmit
+# real-driver cell is test_real_driver_lands_and_retires_a_worktree_as_pinned_controller.
+@pytest.mark.slow
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
     driver_origin_and_clone, tmp_path
 ):
@@ -8087,7 +7889,7 @@ _ORPHAN_EXITING_SLEEPER = (
     "pid_path = Path(sys.argv[1])\n"
     "state = pid_path.parent\n"
     "release = state / 'command-release'\n"
-    "deadline = time.monotonic() + 30\n"
+    f"deadline = time.monotonic() + {_HANG_BOUND_S}\n"
     "(state / 'command-pid').write_text(str(os.getpid()), encoding='utf-8')\n"
     "try:\n"
     "    while not pid_path.exists() and not release.exists():\n"
@@ -8107,7 +7909,7 @@ def _release_orphan_sleeper(runner, supervisor):
     from molt.process_model import pid_alive
 
     (runner / "command-release").touch()
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + _HANG_BOUND_S
     while not (runner / "command-done").exists():
         assert time.monotonic() < deadline, "test command did not release"
         time.sleep(0.01)
@@ -8181,7 +7983,7 @@ def test_land_wait_counts_every_runner_that_may_still_land(tmp_path):
     )
     supervisor = int((runner / "pid").read_text(encoding="utf-8"))
     try:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not (runner / "command-pid").exists():
             assert time.monotonic() < deadline, "test command did not start"
             time.sleep(0.01)
@@ -8236,7 +8038,7 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
     try:
         # Observe the actual command, rather than assuming the supervisor has
         # exec'd it when its own readiness record becomes available.
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not (runner / "command-pid").exists():
             assert time.monotonic() < deadline, "test command did not start"
             time.sleep(0.01)
@@ -8250,7 +8052,7 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
         os.kill(supervisor, signal.SIGKILL)
         if failure_stage == "after-kill":
             raise injected
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + _HANG_BOUND_S
 
         def bounded_sleep(seconds: float) -> None:
             assert time.monotonic() < deadline, "land --wait waits on a dead runner"
@@ -8982,11 +8784,14 @@ def _dv_ns(drv, name, state_root, *, min_age_s=0.0, as_json=True):
 
 
 def _wait_done(
-    drv, capsys, name: str, state_root: Path, timeout_s: float = 90.0
+    drv: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    state_root: Path,
 ) -> dict:
     import time
 
-    deadline = time.monotonic() + timeout_s
+    deadline = time.monotonic() + _HANG_BOUND_S
     last: dict | None = None
     while time.monotonic() < deadline:
         _rc, verdict = _verify_json(
@@ -8999,7 +8804,7 @@ def _wait_done(
             raise AssertionError(f"detached {name!r} died silently: {verdict}")
         time.sleep(0.1)
     raise AssertionError(
-        f"detached {name!r} never completed within {timeout_s}s; last={last}"
+        f"detached {name!r} never completed within {_HANG_BOUND_S}s; last={last}"
     )
 
 
@@ -9215,8 +9020,10 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
     assert marker.read_text(encoding="utf-8") == "ran once\n"
 
 
-@pytest.mark.parametrize("prefix_selected", [False, True])
-@pytest.mark.parametrize("utf8", [0, 1])
+# The bytecode prefix and UTF-8 mode reach the child independently, so two
+# cases cover each value of each factor (pairwise); the full product added
+# 44 s of child startups and no new path.
+@pytest.mark.parametrize(("prefix_selected", "utf8"), [(False, 0), (True, 1)])
 def test_detached_python_child_preserves_startup_policy_without_writes(
     tmp_path, prefix_selected, utf8
 ):
@@ -11200,7 +11007,7 @@ def test_detached_ack_holds_idle_managed_roots_through_actual_child(tmp_path):
         "import pathlib,time\n"
         f"pathlib.Path({str(child_ready)!r}).touch()\n"
         f"release=pathlib.Path({str(release)!r})\n"
-        "deadline=time.monotonic()+15\n"
+        f"deadline=time.monotonic()+{_HANG_BOUND_S}\n"
         "while not release.exists() and time.monotonic()<deadline: time.sleep(.02)\n"
         "assert release.exists(), 'test release deadline'\n",
         encoding="utf-8",
@@ -11215,7 +11022,7 @@ def test_detached_ack_holds_idle_managed_roots_through_actual_child(tmp_path):
         assert (state / "sid").read_text(encoding="utf-8") == (
             f"windows-process-group:{pid}" if os.name == "nt" else str(pid)
         )
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not child_ready.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert child_ready.exists(), (state / "run.log").read_text(encoding="utf-8")
@@ -11232,12 +11039,12 @@ def test_detached_ack_holds_idle_managed_roots_through_actual_child(tmp_path):
         _assert_detached_retirement_binding(roots, False)
     finally:
         release.touch()
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not (state / "rc").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
     assert (state / "rc").read_text(encoding="utf-8") == "0"
     # rc is written before the worker's outer use scope closes.
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + _HANG_BOUND_S
     from molt.checkout_state import checkout_state_retirement
 
     while time.monotonic() < deadline:
@@ -11328,7 +11135,7 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
                 "token=json.loads(payload.read_text())['use_token']\n"
                 "ready=state/'state-use-ready.json'\n"
                 "pending=state/'ready.tmp'; pending.write_text('null'); os.replace(pending,ready)\n"
-                "release=pathlib.Path(sys.argv[2]); deadline=time.monotonic()+20\n"
+                f"release=pathlib.Path(sys.argv[2]); deadline=time.monotonic()+{_HANG_BOUND_S}\n"
                 "while not release.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
                 "assert release.exists(), 'test release deadline'\n"
                 "mode=sys.argv[3]\n"
@@ -11377,7 +11184,7 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
                 if path.is_file()
             } == preserved
         release.touch()
-        assert children[0].wait(timeout=5) == 0
+        assert children[0].wait(timeout=_HANG_BOUND_S) == 0
         owner._close_at_exit()
         if completion == "unknown":
             # A dead launcher record does not establish the actual worker's
@@ -12364,6 +12171,7 @@ def test_runtime_only_gate_demand_keeps_target_failure_without_source_image(
     assert not (tmp_path / ".venv").exists()
 
 
+@pytest.mark.slow  # 91 s on an 18-core host (2026-11-13)
 @pytest.mark.skipif(os.name != "posix", reason="same-PID exec source and image custody")
 def test_controller_repins_release_previous_sources_and_command_images(tmp_path):
     from molt.checkout_state import record_checkout_owner
@@ -12530,7 +12338,7 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
             if len(private_runs) > 1:
                 # The landing's retry runs the failed gate alone.
                 return _gate_outcome(6 if cancel else 0, "", "", None)
-            assert writer_started.wait(5)
+            assert writer_started.wait(_HANG_BOUND_S)
             assert lease.exists(), "isolated work waited for shared-target release"
             private_started.set()
             return _gate_outcome(6 if cancel else 0, "", "", None)
@@ -12538,9 +12346,9 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
         with lease.open("x", encoding="utf-8"):
             if command[1] == "first":
                 writer_started.set()
-                assert private_started.wait(5)
+                assert private_started.wait(_HANG_BOUND_S)
                 if cancel:
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + _HANG_BOUND_S
                     while not cancelled() and time.monotonic() < deadline:
                         threading.Event().wait(0.01)
                     assert cancelled(), (

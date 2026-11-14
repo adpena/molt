@@ -15,6 +15,12 @@ from molt import file_locks as build_locks
 from molt.cli import build_locks as cli_build_locks
 from tests.process_guard_common import run_custody_subject_process
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow thread or child is not a stuck one. The
+# properties under test are orderings, which the events and joins assert;
+# the short negative waits (``assert not ...wait(0.05)``) stay as they are.
+_HANG_BOUND_S = 300.0
+
 
 @dataclass(frozen=True)
 class _HeldLocks:
@@ -321,7 +327,7 @@ def test_fork_guard_serializes_descriptor_birth_and_registration(tmp_path, monke
     def delayed_open(path, **kwargs):
         stream = original(path, **kwargs)
         opened.set()
-        assert proceed.wait(5)
+        assert proceed.wait(timeout=_HANG_BOUND_S)
         return stream
 
     monkeypatch.setattr(build_locks, "_open_file_lock_handle", delayed_open)
@@ -332,7 +338,7 @@ def test_fork_guard_serializes_descriptor_birth_and_registration(tmp_path, monke
         )
     )
     acquire.start()
-    assert opened.wait(5)
+    assert opened.wait(timeout=_HANG_BOUND_S)
 
     def fork_protocol():
         build_locks._before_file_lock_fork()
@@ -353,8 +359,8 @@ def test_fork_guard_serializes_descriptor_birth_and_registration(tmp_path, monke
         assert not fork_ready.wait(0.05)
     finally:
         proceed.set()
-        acquire.join(5)
-        waiter.join(5)
+        acquire.join(timeout=_HANG_BOUND_S)
+        waiter.join(timeout=_HANG_BOUND_S)
     assert not acquire.is_alive() and not waiter.is_alive()
     assert fork_ready.is_set()
     build_locks._release_file_lock(result[0])
@@ -399,13 +405,13 @@ def test_duplicate_release_returns_only_after_the_lock_is_free(tmp_path, monkeyp
 
     def held_unlock(file):
         unlocking.set()
-        assert finish_unlock.wait(5)
+        assert finish_unlock.wait(timeout=_HANG_BOUND_S)
         original(file)
 
     monkeypatch.setattr(build_locks, "_unlock_file_handle", held_unlock)
     first = threading.Thread(target=build_locks._release_file_lock, args=(handle,))
     first.start()
-    assert unlocking.wait(5)
+    assert unlocking.wait(timeout=_HANG_BOUND_S)
     second_returned = threading.Event()
 
     def second_release():
@@ -420,8 +426,8 @@ def test_duplicate_release_returns_only_after_the_lock_is_free(tmp_path, monkeyp
         assert not second_returned.wait(0.2)
     finally:
         finish_unlock.set()
-        first.join(5)
-        second.join(5)
+        first.join(timeout=_HANG_BOUND_S)
+        second.join(timeout=_HANG_BOUND_S)
     assert second_returned.is_set()
     contender = build_locks._try_acquire_file_lock(path)
     assert contender is not None
@@ -436,7 +442,7 @@ def test_concurrent_duplicate_release_drops_reservation_once(tmp_path, held_befo
 
     def release():
         try:
-            ready.wait(5)
+            ready.wait(timeout=_HANG_BOUND_S)
             build_locks._release_file_lock(handle)
         except BaseException as exc:
             errors.append(exc)
@@ -444,9 +450,9 @@ def test_concurrent_duplicate_release_drops_reservation_once(tmp_path, held_befo
     threads = [threading.Thread(target=release) for _ in range(4)]
     for thread in threads:
         thread.start()
-    ready.wait(5)
+    ready.wait(timeout=_HANG_BOUND_S)
     for thread in threads:
-        thread.join(5)
+        thread.join(timeout=_HANG_BOUND_S)
     assert all(not thread.is_alive() for thread in threads)
     assert not errors
     assert handle.entry.users == 0
@@ -471,17 +477,17 @@ def test_owned_operation_blocks_other_thread_release_without_global_mutex(tmp_pa
 
             thread = threading.Thread(target=revoke)
             thread.start()
-            assert attempted.wait(5)
+            assert attempted.wait(timeout=_HANG_BOUND_S)
             assert not released.wait(0.05)
             assert build_locks._file_lock_is_owned(handle)
             other = build_locks._try_acquire_file_lock(tmp_path / "independent.lock")
             assert other is not None
             build_locks._release_file_lock(other)
-        assert released.wait(5)
+        assert released.wait(timeout=_HANG_BOUND_S)
     finally:
         build_locks._release_file_lock(handle)
         if thread is not None:
-            thread.join(5)
+            thread.join(timeout=_HANG_BOUND_S)
     assert not thread.is_alive()
     assert not handle.operation_owners
 
@@ -523,7 +529,7 @@ def test_current_operation_can_nest_while_external_release_waits(tmp_path):
 
             thread = threading.Thread(target=release)
             thread.start()
-            assert attempted.wait(5)
+            assert attempted.wait(timeout=_HANG_BOUND_S)
             with build_locks._FILE_LOCK_LIFECYCLE_CONDITION:
                 assert build_locks._FILE_LOCK_LIFECYCLE_CONDITION.wait_for(
                     lambda: handle.release_requested, timeout=5
@@ -533,11 +539,11 @@ def test_current_operation_can_nest_while_external_release_waits(tmp_path):
             ):
                 assert sum(handle.operation_owners.values()) == 2
             assert not done.is_set()
-        assert done.wait(5)
+        assert done.wait(timeout=_HANG_BOUND_S)
     finally:
         build_locks._release_file_lock(handle)
         if thread is not None:
-            thread.join(5)
+            thread.join(timeout=_HANG_BOUND_S)
     assert not thread.is_alive()
 
 
@@ -647,7 +653,7 @@ def test_descriptor_io_does_not_hold_global_mutex_and_fork_waits(
             stream = original(candidate, **kwargs)
             if candidate == path:
                 entered.set()
-                assert proceed.wait(5)
+                assert proceed.wait(timeout=_HANG_BOUND_S)
             return stream
 
         monkeypatch.setattr(build_locks, "_open_file_lock_handle", delayed)
@@ -657,7 +663,7 @@ def test_descriptor_io_does_not_hold_global_mutex_and_fork_waits(
         def delayed(stream):
             if stream is handle.file:
                 entered.set()
-                assert proceed.wait(5)
+                assert proceed.wait(timeout=_HANG_BOUND_S)
             original(stream)
 
         monkeypatch.setattr(build_locks, "_unlock_file_handle", delayed)
@@ -682,7 +688,7 @@ def test_descriptor_io_does_not_hold_global_mutex_and_fork_waits(
     waiter = threading.Thread(target=fork_protocol)
     worker.start()
     try:
-        assert entered.wait(5)
+        assert entered.wait(timeout=_HANG_BOUND_S)
         other = build_locks._try_acquire_file_lock(tmp_path / "independent.lock")
         assert other is not None
         build_locks._release_file_lock(other)
@@ -690,9 +696,9 @@ def test_descriptor_io_does_not_hold_global_mutex_and_fork_waits(
         assert not fork_ready.wait(0.05)
     finally:
         proceed.set()
-        worker.join(5)
+        worker.join(timeout=_HANG_BOUND_S)
         if waiter.ident is not None:
-            waiter.join(5)
+            waiter.join(timeout=_HANG_BOUND_S)
         if result:
             build_locks._release_file_lock(result[0])
         if handle is not None:
@@ -907,7 +913,7 @@ def test_shared_readers_and_writer_contend_across_processes(tmp_path, held_befor
     assert _HeldLocks.now() == held_before
 
 
-_HOLD_SCRIPT = """
+_HOLD_SCRIPT = f"""
 import sys, time
 from pathlib import Path
 from molt.cli.build_locks import held_build_lock
@@ -915,7 +921,7 @@ from molt.cli.build_locks import held_build_lock
 path, release = Path(sys.argv[1]), Path(sys.argv[2])
 with held_build_lock(path, purpose="test"):
     print("held", flush=True)
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + {_HANG_BOUND_S}
     while not release.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
 """
@@ -960,7 +966,7 @@ def test_a_waiter_names_the_holding_process_and_waits_while_it_holds(
             # The waiter now holds the lock and names itself for the next one.
             assert cli_build_locks.read_lock_holder(lock_path).pid == os.getpid()
         timer.join()
-        assert holder.wait(timeout=30) == 0
+        assert holder.wait(timeout=_HANG_BOUND_S) == 0
     finally:
         release.touch()
         close_owned_test_process(holder)
@@ -1016,7 +1022,7 @@ def test_a_record_naming_an_exited_process_names_no_holder(
     )
 
     child = start_owned_test_process([sys.executable, "-c", "pass"])
-    child.wait(timeout=60)
+    child.wait(timeout=_HANG_BOUND_S)
     close_owned_test_process(child)
     lock_path = tmp_path / "build.lock"
     record = cli_build_locks.lock_holder_path(lock_path)
@@ -1144,11 +1150,11 @@ def test_a_shared_cache_lock_waiter_waits_while_its_holder_holds_it(
     def holder() -> None:
         with build_locks._shared_cache_lock("compile.test", cache_root=tmp_path):
             held.set()
-            release.wait(timeout=30)
+            release.wait(timeout=_HANG_BOUND_S)
 
     thread = threading.Thread(target=holder)
     thread.start()
-    assert held.wait(timeout=10)
+    assert held.wait(timeout=_HANG_BOUND_S)
     threading.Timer(0.5, release.set).start()
     started = time.monotonic()
     try:
@@ -1156,7 +1162,7 @@ def test_a_shared_cache_lock_waiter_waits_while_its_holder_holds_it(
             waited = time.monotonic() - started
     finally:
         release.set()
-        thread.join(timeout=30)
+        thread.join(timeout=_HANG_BOUND_S)
     assert waited >= 0.3
     assert "Blocking waiting for the shared cache lock" in capsys.readouterr().err
     monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.1")
@@ -1164,7 +1170,7 @@ def test_a_shared_cache_lock_waiter_waits_while_its_holder_holds_it(
     held.clear()
     thread = threading.Thread(target=holder)
     thread.start()
-    assert held.wait(timeout=10)
+    assert held.wait(timeout=_HANG_BOUND_S)
     try:
         with pytest.raises(
             build_locks.FileLockTimeout, match="MOLT_BUILD_LOCK_TIMEOUT"
@@ -1173,4 +1179,4 @@ def test_a_shared_cache_lock_waiter_waits_while_its_holder_holds_it(
                 pytest.fail("a held cache lock admitted a second holder")
     finally:
         release.set()
-        thread.join(timeout=30)
+        thread.join(timeout=_HANG_BOUND_S)

@@ -609,12 +609,18 @@ def darwin_available_bytes(page_size: int, pages: Mapping[str, int]) -> int | No
 
 # Each tool above sizes its own workers from the memory free when it starts,
 # so two suites started together each claim the whole machine and both slow
-# down past their budgets (HF-623). Heavy work therefore takes this host's one
-# slot first; a second heavy job waits for it instead of sharing the machine.
+# down past their budgets (HF-623). Heavy work therefore takes a slot first; a
+# second heavy job of the same class waits instead of sharing the machine.
+# Integration (try runs, batches) and development checks (consumer gates,
+# postsubmit) hold separate slots, so at most one of each runs: a lane's
+# pre-commit gate never stops the landing queue, and a landing never stops a
+# lane's pre-commit gate (2026-11-13: a 96-file consumer gate held every
+# landing for 19 minutes behind the one shared slot).
 HOST_WORK_DIRNAME = "host-work"
 _HEAVY_LOCK = "heavy.lock"
+_DEVELOPMENT_LOCK = "development.lock"
 # Held by a landing from the moment it queues for the slot until it releases
-# it, so a landing goes ahead of every heavy job that has not started yet.
+# it, so landings take the integration slot in arrival order.
 _LANDING_LOCK = "landing.lock"
 _POLL_SECONDS = 5.0
 _REPORT_SECONDS = 60.0
@@ -719,13 +725,12 @@ def host_work_slot(
     say: Callable[[str], None],
     clock: Callable[[], float] = time.monotonic,
 ) -> Generator[HostWorkAdmission]:
-    """Hold this host's one heavy-work slot for the body.
+    """Hold this host's heavy-work slot of the job's class for the body.
 
-    A landing first holds the landing lock, then waits for the slot. Any other
-    heavy job first waits until no landing holds or awaits the slot, then takes
-    it. The operating system releases both locks when a holder dies, so a
-    crashed job never leaves the slot taken. A job that took the slot just
-    before a landing queued finishes first; the landing waits for that one job.
+    A landing first holds the landing lock, then waits for the integration
+    slot. Any other heavy job waits only for the development slot, so the two
+    classes never wait for each other. The operating system releases the locks
+    when a holder dies, so a crashed job never leaves a slot taken.
 
     Work the holder starts is part of the holder's job: a nested request in
     this process is admitted at once, and a child started with
@@ -738,16 +743,13 @@ def host_work_slot(
     if slot in _HELD_SLOTS or os.environ.get(HOST_WORK_HELD_ENV) == slot:
         yield HostWorkAdmission(0.0)
         return
-    heavy = state_dir / _HEAVY_LOCK
+    heavy = state_dir / (_HEAVY_LOCK if landing else _DEVELOPMENT_LOCK)
     landing_lock = state_dir / _LANDING_LOCK
     started = clock()
     held: list[tuple[Path, BinaryIO]] = []
     try:
         if landing:
             held.append((landing_lock, _acquire(landing_lock, label, say, clock)))
-        else:
-            probe = _acquire(landing_lock, label, say, clock)
-            _release(landing_lock, probe)
         held.append((heavy, _acquire(heavy, label, say, clock)))
         _HELD_SLOTS.add(slot)
         yield HostWorkAdmission(clock() - started)

@@ -92,6 +92,38 @@ def _cargo_units(workspace: Path, target: Path) -> dict[str, bool]:
     }
 
 
+def test_cargo_clean_accepts_the_target_configure_created(tmp_path: Path) -> None:
+    """2026-11-13: CI's prune failed on every job with "cannot clean ...:
+    missing or invalid CACHEDIR.TAG". `configure` creates the target before
+    Cargo does, Cargo then never writes its tag, and Cargo 1.100's clean
+    refuses an untagged directory. Run the real clean on a configured target."""
+    workspace = tmp_path / "workspace"
+    for path, text in {
+        "Cargo.toml": '[workspace]\nmembers = ["app"]\nresolver = "2"\n',
+        "rust-toolchain.toml": (REPO_ROOT / "rust-toolchain.toml").read_text(
+            encoding="utf-8"
+        ),
+        "app/Cargo.toml": '[package]\nname = "app"\nversion = "0.1.0"\n'
+        'edition = "2024"\n',
+        "app/src/lib.rs": "pub fn app() -> u32 { 7 }\n",
+        "Cargo.lock": 'version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\n',
+    }.items():
+        (workspace / path).parent.mkdir(parents=True, exist_ok=True)
+        (workspace / path).write_text(text, encoding="utf-8")
+    target = tmp_path / "configured-target"
+    env = {
+        "GITHUB_WORKSPACE": str(workspace),
+        "GITHUB_ENV": str(tmp_path / "github-env"),
+        "GITHUB_OUTPUT": str(tmp_path / "github-output"),
+        "RUNNER_TEMP": str(tmp_path / "runner-temp"),
+        "CARGO_TARGET_DIR": str(target),
+    }
+    assert configure_cargo_cache(env) == target
+    assert prune_workspace_artifacts(workspace, target) > 0
+    tag = (target / "CACHEDIR.TAG").read_text(encoding="utf-8")
+    assert tag.startswith("Signature: 8a477f597d28d172789f06886806bc55")
+
+
 def test_prune_drops_workspace_units_and_keeps_dependency_units(tmp_path: Path) -> None:
     """Cargo itself decides what the prune removed: after it, the workspace
     member recompiles and its path dependency outside the workspace stays fresh."""

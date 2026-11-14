@@ -29,7 +29,7 @@ import os
 import sys
 import tempfile
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -239,6 +239,7 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
         print(f"# {label}: {len(tests)}")
         for test in tests:
             print(f"  {test}")
+    flaky_reruns: list[str] = []
     if run_now:
         if pytest_args is None:
             argv = presubmit_pytest_argv(root, run_now)
@@ -263,7 +264,16 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
             # The importer tests are the holder's job: a test that runs a
             # consumer gate in a child is admitted inside this slot.
             env = {**os.environ, **host_capacity.held_slot_environment()}
-            failed = _COMMANDS.run(argv, cwd=root, env=env).returncode != 0
+            report = Path(tempfile.mkdtemp(prefix="consumer-gate-")) / "junit.xml"
+            failed = (
+                _COMMANDS.run(
+                    [*argv, f"--junitxml={report}"], cwd=root, env=env
+                ).returncode
+                != 0
+            )
+            if failed:
+                flaky_reruns = _rerun_failures_alone(root, report, env)
+                failed = flaky_reruns is None
         if failed:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
@@ -282,10 +292,59 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
             test: list(deps) for test, deps in landing_built.items()
         },
         "data_readers": list(readers.data_readers),
+        # Tests that failed beside the suite's load and passed alone (Chromium's
+        # retry rule); tests/ owners replace their wall-clock waits.
+        "flaky_reruns": flaky_reruns,
     }
     path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
     print(f"consumer-gate: receipt {path}")
     return 0
+
+
+# More failures than this are a broken change, not load: no rerun.
+RERUN_LIMIT = 10
+
+
+def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
+    """The pytest node ids that failed or errored in a JUnit report, or None
+    when the report is missing or names a case no test file owns."""
+    import xml.etree.ElementTree as ElementTree
+
+    try:
+        cases = ElementTree.parse(report).getroot().iter("testcase")
+    except (OSError, ElementTree.ParseError):
+        return None
+    ids: list[str] = []
+    for case in cases:
+        if case.find("failure") is None and case.find("error") is None:
+            continue
+        parts = case.get("classname", "").split(".")
+        for split in range(len(parts), 0, -1):
+            path = "/".join(parts[:split]) + ".py"
+            if (root / path).is_file():
+                ids.append("::".join([path, *parts[split:], case.get("name", "")]))
+                break
+        else:
+            return None
+    return ids
+
+
+def _rerun_failures_alone(
+    root: Path, report: Path, env: Mapping[str, str]
+) -> list[str] | None:
+    """Rerun the failed tests once, alone and in order, as the landing reruns
+    a failed gate alone (Chromium's retry rule). Return the tests that passed
+    alone, or None when the failure is the change's."""
+    ids = _failed_node_ids(root, report)
+    if not ids or len(ids) > RERUN_LIMIT:
+        return None
+    print(f"consumer-gate: rerunning {len(ids)} failed test(s) alone once", flush=True)
+    rerun = [sys.executable, "-m", "pytest", "-q", *ids]
+    if _COMMANDS.run(rerun, cwd=root, env=env).returncode != 0:
+        return None
+    for test in ids:
+        print(f"consumer-gate: flaky under load, passed alone: {test}", flush=True)
+    return ids
 
 
 def check(root: Path, paths: list[str]) -> int:

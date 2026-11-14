@@ -4,6 +4,12 @@ import time
 from types import SimpleNamespace
 from tools.memory_guard_core import process_custody
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow thread or child is not a stuck one. The
+# properties under test are orderings, which the events assert; negative
+# waits (``assert not ...wait(...)``) keep their short windows.
+_HANG_BOUND_S = 300.0
+
 
 def _kqueue_api(queue_type):
     return SimpleNamespace(
@@ -40,7 +46,7 @@ def test_reserved_reap_cannot_signal_reused_pid_before_publication(monkeypatch):
 
     def wait4(pid, flags):
         reaped.set()
-        assert publish.wait(2)
+        assert publish.wait(timeout=_HANG_BOUND_S)
         return pid, 0, SimpleNamespace(ru_maxrss=123, ru_utime=0.0, ru_stime=0.0)
 
     os_api = SimpleNamespace(
@@ -63,7 +69,7 @@ def test_reserved_reap_cannot_signal_reused_pid_before_publication(monkeypatch):
         _waitpid_lock=threading.Lock(),
     )
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-    assert reaped.wait(2)
+    assert reaped.wait(timeout=_HANG_BOUND_S)
 
     def signal():
         attempted_signal.set()
@@ -71,11 +77,11 @@ def test_reserved_reap_cannot_signal_reused_pid_before_publication(monkeypatch):
 
     worker = threading.Thread(target=signal)
     worker.start()
-    assert attempted_signal.wait(2)
+    assert attempted_signal.wait(timeout=_HANG_BOUND_S)
     assert not kills and proc.poll() is None
     publish.set()
-    worker.join(2)
-    assert not worker.is_alive() and proc.wait(timeout=2) == 0
+    worker.join(timeout=_HANG_BOUND_S)
+    assert not worker.is_alive() and proc.wait(timeout=_HANG_BOUND_S) == 0
     assert not kills and clock.done.is_set()
 
 
@@ -86,7 +92,7 @@ def test_blocking_reserved_exit_wait_does_not_block_owned_signal(monkeypatch):
 
     def waitid(*args):
         awaiting.set()
-        assert killed.wait(2)
+        assert killed.wait(timeout=_HANG_BOUND_S)
 
     def kill(pid, sig):
         calls.append((pid, sig))
@@ -116,9 +122,9 @@ def test_blocking_reserved_exit_wait_does_not_block_owned_signal(monkeypatch):
         _waitpid_lock=threading.Lock(),
     )
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-    assert awaiting.wait(2)
+    assert awaiting.wait(timeout=_HANG_BOUND_S)
     proc.send_signal(15)
-    assert proc.wait(timeout=2) == 0 and calls == [(123, 15)]
+    assert proc.wait(timeout=_HANG_BOUND_S) == 0 and calls == [(123, 15)]
     proc.send_signal(9)
     assert calls == [(123, 15)] and clock.done.is_set()
 
@@ -161,7 +167,7 @@ def test_kqueue_registration_race_only_reaps_owned_reserved_child(monkeypatch):
     monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
     proc = _owned_handle()
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-    assert proc.wait(timeout=2) == 0 and clock.posix_kqueue
+    assert proc.wait(timeout=_HANG_BOUND_S) == 0 and clock.posix_kqueue
     proc.send_signal(15)
     assert waits == [0] and closed == [True] and not kills
 
@@ -211,11 +217,11 @@ def test_kqueue_unknown_registration_failure_disables_signaling(monkeypatch):
         _waitpid_lock=threading.Lock(),
     )
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-    assert clock.done.wait(2)
+    assert clock.done.wait(timeout=_HANG_BOUND_S)
     import pytest
 
     with pytest.raises(PermissionError):
-        proc.wait(timeout=1)
+        proc.wait(timeout=_HANG_BOUND_S)
     with pytest.raises(PermissionError):
         proc.send_signal(15)
     assert closed == [True] and not kills and clock.finished is None
@@ -229,7 +235,7 @@ def test_kqueue_blocking_exit_watch_does_not_hold_signal_lock(monkeypatch):
     class Queue:
         def control(self, *args):
             awaiting.set()
-            assert killed.wait(2)
+            assert killed.wait(timeout=_HANG_BOUND_S)
             return [_exit_event(123)]
 
         def close(self):
@@ -275,9 +281,9 @@ def test_kqueue_blocking_exit_watch_does_not_hold_signal_lock(monkeypatch):
         _waitpid_lock=threading.Lock(),
     )
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-    assert awaiting.wait(2)
+    assert awaiting.wait(timeout=_HANG_BOUND_S)
     proc.send_signal(15)
-    assert proc.wait(timeout=2) == 0 and clock.finished is not None
+    assert proc.wait(timeout=_HANG_BOUND_S) == 0 and clock.finished is not None
     assert waits == [0]
 
 
@@ -318,7 +324,7 @@ def test_kqueue_exit_notification_before_zombie_waits_for_reapable_child(
     monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
     proc = _owned_handle()
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-    assert proc.wait(timeout=2) == 0
+    assert proc.wait(timeout=_HANG_BOUND_S) == 0
     assert clock.error is None and clock.finished is not None
     assert clock.usage is not None and clock.usage.max_rss_kb > 0
     assert waits == [0]
@@ -362,15 +368,15 @@ def test_kqueue_error_event_is_registration_evidence_not_exit(monkeypatch):
         monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
         proc = _owned_handle()
         clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-        assert clock.done.wait(2)
+        assert clock.done.wait(timeout=_HANG_BOUND_S)
         if code == errno.ESRCH:
             # The unreaped child keeps its PID: ESRCH is exit evidence.
-            assert proc.wait(timeout=1) == 0 and waits == [0]
+            assert proc.wait(timeout=_HANG_BOUND_S) == 0 and waits == [0]
         else:
             # Unknown registration failure: never block on a possibly live
             # child, and never mistake the record for an exit.
             with pytest.raises(OSError) as caught:
-                proc.wait(timeout=1)
+                proc.wait(timeout=_HANG_BOUND_S)
             assert caught.value.errno == errno.EPERM
             assert waits == [1] and clock.finished is None
 
@@ -407,7 +413,7 @@ def test_reaper_failure_never_raises_from_popen_lifecycle(monkeypatch):
     monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
     proc = _owned_handle()
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
-    assert clock.done.wait(2)
+    assert clock.done.wait(timeout=_HANG_BOUND_S)
     # Popen.__del__ and subprocess._cleanup reach the reaper only here.
     assert proc._internal_poll(_deadstate=sys.maxsize) is None
     with pytest.raises(ChildProcessError, match="reaped outside its"):
@@ -433,13 +439,13 @@ def test_actual_posix_owned_signal_keeps_child_reserved_until_reap():
             "Missing native unreaped exit observation capability"
         )
         proc.terminate()
-        assert proc.wait(timeout=3) is not None
+        assert proc.wait(timeout=_HANG_BOUND_S) is not None
         assert clock.finished is not None and clock.usage is not None
         proc.send_signal(15)  # Closed owned capability must perform no PID signal.
     finally:
         if proc.returncode is None and clock.error is None:
             proc.terminate()
-            proc.wait(timeout=3)
+            proc.wait(timeout=_HANG_BOUND_S)
 
 
 def test_locked_reap_failure_published_before_unwind_sender(monkeypatch):
@@ -463,7 +469,7 @@ def test_locked_reap_failure_published_before_unwind_sender(monkeypatch):
                 actual_lock.release()
                 if exc is failure and threading.current_thread() is worker:
                     released.set()
-                    assert continue_unwind.wait(2)
+                    assert continue_unwind.wait(timeout=_HANG_BOUND_S)
 
         def wait4(*args):
             raise failure
@@ -507,7 +513,7 @@ def test_locked_reap_failure_published_before_unwind_sender(monkeypatch):
 
         worker = threading.Thread(target=reap)
         worker.start()
-        assert released.wait(2)
+        assert released.wait(timeout=_HANG_BOUND_S)
         try:
             with pytest.raises(ChildProcessError) as caught:
                 clock.send_signal(15)
@@ -515,7 +521,7 @@ def test_locked_reap_failure_published_before_unwind_sender(monkeypatch):
             assert clock.error is failure and not kills
         finally:
             continue_unwind.set()
-            worker.join(2)
+            worker.join(timeout=_HANG_BOUND_S)
         assert not worker.is_alive() and sender_errors == [failure]
         assert waiter_errors == ([] if path == "waitid" else [failure])
 
@@ -560,7 +566,7 @@ def test_waitid_exit_census_precedes_the_reap(monkeypatch):
 
     proc = _owned_handle()
     process_custody.ChildExecutionClock(proc, time.perf_counter(), exit_census=take)
-    assert proc.wait(timeout=2) == 0
+    assert proc.wait(timeout=_HANG_BOUND_S) == 0
     assert events == ["waitid", "census", "wait4:1"]
     assert process_custody.take_child_exit_census(proc) == (census, None)
     assert process_custody.take_child_exit_census(proc) == (None, None)
@@ -594,7 +600,7 @@ def test_kqueue_exit_census_precedes_the_reap(monkeypatch):
         clock = process_custody.ChildExecutionClock(
             proc, time.perf_counter(), exit_census=take
         )
-        assert proc.wait(timeout=2) == 0 and clock.posix_kqueue
+        assert proc.wait(timeout=_HANG_BOUND_S) == 0 and clock.posix_kqueue
         # No WNOHANG reap may precede the census, even for a child that had
         # already exited when the watch began.
         assert events == ["census", "wait4:0"], exit_evidence
@@ -618,7 +624,7 @@ def test_uncertain_exit_takes_no_census(monkeypatch):
     clock = process_custody.ChildExecutionClock(
         proc, time.perf_counter(), exit_census=lambda: events.append("census")
     )
-    assert clock.done.wait(2)
+    assert clock.done.wait(timeout=_HANG_BOUND_S)
     assert events == ["wait4:1"]
     assert process_custody.take_child_exit_census(proc) == (None, None)
 
@@ -634,7 +640,7 @@ def test_exit_census_failure_is_recorded_and_the_child_is_still_reaped(monkeypat
     clock = process_custody.ChildExecutionClock(
         proc, time.perf_counter(), exit_census=broken
     )
-    assert proc.wait(timeout=2) == 0 and clock.error is None
+    assert proc.wait(timeout=_HANG_BOUND_S) == 0 and clock.error is None
     assert events == ["waitid", "wait4:1"]
     assert process_custody.take_child_exit_census(proc) == (
         None,
@@ -667,7 +673,7 @@ def _reserved_session_leader(code: str, *args: str):
 def _end_reserved_child(proc, clock) -> None:
     if proc.returncode is None and clock.error is None:
         proc.kill()
-    assert clock.done.wait(120)
+    assert clock.done.wait(timeout=_HANG_BOUND_S)
 
 
 def test_root_group_signal_ends_with_the_childs_pid_reservation(monkeypatch):
@@ -728,7 +734,7 @@ def test_root_group_signal_kills_a_root_that_outlives_its_grace(tmp_path):
     )
     proc, clock, child = _reserved_session_leader(code, str(ready))
     try:
-        deadline = time.monotonic() + 120  # A hang guard for the handshake.
+        deadline = time.monotonic() + _HANG_BOUND_S  # A hang guard for the handshake.
         while not ready.exists():
             assert time.monotonic() < deadline
             time.sleep(0.01)
@@ -740,7 +746,7 @@ def test_root_group_signal_kills_a_root_that_outlives_its_grace(tmp_path):
             (action.target_id, action.signal_name, action.result)
             for action in report.actions
         ] == [(proc.pid, "SIGTERM", "sent"), (proc.pid, "SIGKILL", "sent")]
-        assert clock.done.wait(120)
+        assert clock.done.wait(timeout=_HANG_BOUND_S)
         assert proc.returncode == -signal.SIGKILL
     finally:
         _end_reserved_child(proc, clock)

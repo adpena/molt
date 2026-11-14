@@ -1886,7 +1886,7 @@ build-environment authority, resolving every knob from facts:
 - `molt dx check` — the pre-flight: validates `CARGO_TARGET_DIR` ==
   `MOLT_DIFF_CARGO_TARGET_DIR`, target dir is non-stale, sccache reachable,
   ≤3 daemons, no stale sockets, runs FACT-B collision check. Subsumes the
-  `molt doctor`/`tools/check_compile_throughput.py` build-env checks
+  `molt doctor` build-env checks
   (`cli/__init__.py:32690` sccache probe) into one authority. This is doc 08
   Phase-1c's "`molt dx check`" promise, generalized.
 - `molt dx clean` — thin alias to the canonical `molt clean --apply
