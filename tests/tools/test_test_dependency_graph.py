@@ -1605,11 +1605,13 @@ def test_presubmit_selects_tests_that_reach_the_changed_definition(
     )
     graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
     changed = ["src/pkg/helpers.py"]
-    # File level, the conftest's use selects every test below it.
-    assert set(graph.direct_readers(changed).importers) >= {
-        "tests/test_leaf.py",
-        "tests/test_other.py",
-    }
+    # Harness setup (an autouse fixture) runs for every test, but a change it
+    # alone reaches runs in postsubmit, not in presubmit (presubmit strategy,
+    # mechanism C, 2026-11-13: a three-file change selected 959 test files).
+    whole = graph.direct_readers(changed)
+    assert "tests/test_leaf.py" in whole.importers
+    assert "tests/test_other.py" not in whole.importers
+    assert "tests/test_other.py" in whole.data_readers
     # Node level, only the test that reaches `leaf` runs in presubmit.
     refined = graph.direct_readers(changed, before=git_blob_reader(root, "HEAD"))
     assert "tests/test_leaf.py" in refined.importers
@@ -1617,7 +1619,7 @@ def test_presubmit_selects_tests_that_reach_the_changed_definition(
     # Postsubmit still selects every dependent.
     assert "tests/test_other.py" in graph.select(changed)
     # A conftest that holds the whole module (an attribute call the graph
-    # cannot resolve) keeps every test below it: unresolved stays whole.
+    # cannot resolve) still reaches every test only through harness setup.
     conftest = root / "tests/conftest.py"
     conftest.write_text(
         "import pytest\nfrom pkg import helpers\n\n"
@@ -1643,4 +1645,38 @@ def test_presubmit_selects_tests_that_reach_the_changed_definition(
     )
     graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
     refined = graph.direct_readers(changed, before=git_blob_reader(root, "HEAD"))
-    assert "tests/test_other.py" in refined.importers
+    assert "tests/test_other.py" not in refined.importers
+    assert "tests/test_other.py" in refined.data_readers
+    assert "tests/test_other.py" in graph.select(changed)
+    # Editing the conftest itself still runs every test below it.
+    assert (
+        "tests/test_other.py" in graph.direct_readers(["tests/conftest.py"]).importers
+    )
+
+
+def test_an_apparatus_suite_runs_in_presubmit_only_when_a_path_it_owns_changes(
+    tmp_path: Path,
+) -> None:
+    # Presubmit strategy, mechanism C. 2026-11-13: tests/test_molt_dev.py (676-911 s)
+    # ran in nearly every landing because a change touched a module it imports.
+    # Here every test imports src/pkg/core.py through the harness.
+    root = _repository(
+        tmp_path / "repo",
+        {
+            **_FILES,
+            "tools/proof_plan.toml": (
+                "[[apparatus_suite]]\n"
+                'test = "tests/test_lazy.py"\n'
+                'owns = ["src/pkg/lazy.py"]\n'
+            ),
+        },
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    reached = graph.direct_readers(["src/pkg/core.py"])
+    assert "tests/test_lazy.py" not in reached.importers
+    assert "tests/test_lazy.py" in reached.data_readers
+    # A suite that is not apparatus keeps its presubmit run.
+    assert "tests/test_core.py" in reached.importers
+    # A path the suite owns, or the suite itself, keeps it in presubmit.
+    for changed in ("src/pkg/lazy.py", "tests/test_lazy.py"):
+        assert "tests/test_lazy.py" in graph.direct_readers([changed]).importers

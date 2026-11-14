@@ -822,6 +822,7 @@ PLAN_SECTIONS: Mapping[str, str | None] = MappingProxyType(
         "rule": "name",
         "named_lane": "id",
         "gate_flip": "name",
+        "apparatus_suite": "test",
     }
 )
 PLAN_PATH = "tools/proof_plan.toml"

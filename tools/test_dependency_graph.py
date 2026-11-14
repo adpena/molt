@@ -66,6 +66,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 ROOT = bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.dirty_tree_policy import is_ignored  # noqa: E402
 from tools.molt_dev_policy import LandingMode  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
@@ -76,6 +77,7 @@ SCANNER_VERSION = 5
 CACHE_SCHEMA = f"molt.test-dependency-facts.v{SCANNER_VERSION}"
 GENERATOR_MANIFEST = "tools/generator_manifest.toml"
 PYPROJECT = "pyproject.toml"
+PROOF_PLAN = "tools/proof_plan.toml"
 # pyproject's pytest ``pythonpath`` order: ``src`` first, then the root.
 _IMPORT_ROOTS = ("src", "")
 # Programs compiled by Molt, not modules any host process imports. Tests name
@@ -1440,6 +1442,10 @@ class TestInputs:
     roots: frozenset[str]
     files: frozenset[str]
     directories: frozenset[str]
+    # Roots only harness setup reaches (pytest plugins, autouse conftest
+    # fixtures): they run for every test, so a change to them selects their
+    # own importers in presubmit and the rest in postsubmit.
+    harness_roots: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -1456,6 +1462,18 @@ class DependencyGraph:
     stats: dict[str, float | int] = field(default_factory=dict)
     _reverse: dict[str, frozenset[str]] | None = None
     _by_path: dict[str, list[str]] | None = None
+    _apparatus: dict[str, tuple[str, ...]] | None = None
+
+    def apparatus_suites(self) -> dict[str, tuple[str, ...]]:
+        """Each apparatus suite and the globs of the paths it owns
+        (`[[apparatus_suite]]` in tools/proof_plan.toml; presubmit strategy,
+        mechanism C)."""
+        if self._apparatus is None:
+            present = [PROOF_PLAN] if PROOF_PLAN in self.tree.blobs else []
+            text = self.tree.read(present).get(PROOF_PLAN, b"")
+            rows = tomllib.loads(text.decode("utf-8")).get("apparatus_suite", ())
+            self._apparatus = {row["test"]: tuple(row["owns"]) for row in rows}
+        return self._apparatus
 
     def _reverse_execs(self) -> dict[str, frozenset[str]]:
         if self._reverse is None:
@@ -1602,10 +1620,19 @@ class DependencyGraph:
         }
         importers: list[str] = []
         data_readers: list[str] = []
+        apparatus = self.apparatus_suites()
         for test in self.tests:
             inputs = self.inputs[test]
             own = self.nodes.get(test, Dependencies()).execs
-            reached = inputs.roots | own
+            # Harness setup runs for every test: a change it alone reaches runs
+            # the harness's own importers now and this test in postsubmit.
+            reached = (inputs.roots - inputs.harness_roots) | own
+            harness = inputs.harness_roots - reached
+            harness_reader = bool(harness & touched_nodes) or any(
+                node_path(node) in whole
+                and not node_path(node).startswith("src/molt/stdlib/")
+                for node in harness
+            )
             sources = {node_path(node) for node in reached}
             if (
                 test in changed
@@ -1619,7 +1646,22 @@ class DependencyGraph:
                 or bool({node_path(node) for node in own} & import_time)
                 or any(conftest in changed for conftest in self.conftests[test])
             ):
-                importers.append(test)
+                owns = apparatus.get(test)
+                if (
+                    owns is None
+                    or test in changed
+                    or any(conftest in changed for conftest in self.conftests[test])
+                    or any(is_ignored(path, owns) for path in changed)
+                ):
+                    importers.append(test)
+                else:
+                    # An apparatus suite runs in presubmit only when a path it
+                    # owns changes; otherwise it is a reader postsubmit runs
+                    # (presubmit_test_strategy.md, mechanism C).
+                    data_readers.append(test)
+            elif harness_reader:
+                # Only harness setup reaches the change: postsubmit runs it.
+                data_readers.append(test)
             elif inputs.files & coarse or inputs.directories & coarse_directories:
                 # A data read the observations cannot refine keeps the whole file.
                 data_readers.append(test)
@@ -1794,6 +1836,7 @@ def _test_inputs(
     }
     setup, used = _conftest_scopes(requested, chain, facts)
     roots = {test}
+    setup_roots: set[str] = set()
     for conftest in chain:
         scopes = facts[conftest].get("scopes", {})
         harness = _scope_dependencies(
@@ -1803,7 +1846,7 @@ def _test_inputs(
         )
         # Setup code names isolation roots (scratch, caches, forbidden import
         # roots), not inputs; only its executed sources bind every test.
-        roots |= harness.execs
+        setup_roots |= harness.execs
         requested_inputs = _scope_dependencies(
             resolver,
             conftest,
@@ -1816,12 +1859,17 @@ def _test_inputs(
     # mode) for every test it runs.
     files |= configuration
     for plugin in plugins:
-        roots.update(resolver.module_targets(plugin))
+        setup_roots.update(resolver.module_targets(plugin))
     # The test module itself runs as a member of its packages.
     name = resolver.module_name(test)
     if name is not None:
         roots.update(resolver.module_targets(name))
-    return TestInputs(frozenset(roots), frozenset(files), frozenset(directories))
+    return TestInputs(
+        frozenset(roots | setup_roots),
+        frozenset(files),
+        frozenset(directories),
+        frozenset(setup_roots - roots),
+    )
 
 
 def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
@@ -1863,7 +1911,7 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
             )
     configuration = tree.read(
         path
-        for path in (PYPROJECT, GENERATOR_MANIFEST, "tools/proof_plan.toml")
+        for path in (PYPROJECT, GENERATOR_MANIFEST, PROOF_PLAN)
         if path in tree.blobs
     )
     sync_edges, output_edges = _generator_edges(
@@ -1876,9 +1924,7 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
         )
     plugins = _pytest_plugins(configuration.get(PYPROJECT))
     observed_targets = observed_test_targets(
-        tomllib.loads(configuration.get("tools/proof_plan.toml", b"").decode()).get(
-            "command", ()
-        )
+        tomllib.loads(configuration.get(PROOF_PLAN, b"").decode()).get("command", ())
     )
     pytest_configuration = frozenset(
         path for path in (PYPROJECT,) if path in configuration

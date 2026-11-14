@@ -63,6 +63,14 @@ C. **Apparatus tests narrow.** A suite whose subject is apparatus (proof queue, 
    stop selecting every suite that imports them by splitting the import (owners import the
    piece they use). Growth freezes: a new apparatus test needs a measured defect it would
    have caught. Tests of retired apparatus are deleted with it.
+   Implemented 2026-11-13 in `direct_readers` (tools/test_dependency_graph.py), two rules:
+   (1) a suite in `[[apparatus_suite]]` (tools/proof_plan.toml) is a presubmit importer only
+   when a path it `owns`, the suite or its conftest changes; (2) a test that reaches a change
+   only through harness setup (pytest plugins, autouse conftest fixtures) is a postsubmit
+   reader, while the harness module's own importers still run in presubmit. Measured on the
+   repository: a change to `src/molt/checkout_state.py` selected 988 importer test files and
+   now selects 48 (a 1 h 42 min presubmit on 2026-11-13); a compiler change no longer runs
+   `tests/test_molt_dev.py` (676-911 s in nearly every landing).
 D. **Scanners consolidate.** About 40 separate static scanners each re-read the tree. One
    shared pass parses each file once and feeds every check; checks that a type can enforce
    (op kinds, identities, attribute keys) become types and their scanners are deleted

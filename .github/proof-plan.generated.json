@@ -10957,7 +10957,8 @@
           "executor_max_workers",
           "resource_policy",
           "toolchain_policy",
-          "pinned_asset"
+          "pinned_asset",
+          "apparatus_suite"
         ],
         "pytest": [
           "tests/test_committed_gate_policy.py",
@@ -11800,7 +11801,8 @@
           "command",
           "rule",
           "named_lane",
-          "gate_flip"
+          "gate_flip",
+          "apparatus_suite"
         ],
         "pytest": [
           "tests/test_ci_workflow_topology.py",

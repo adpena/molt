@@ -542,6 +542,27 @@ executor_max_workers = 4
 # proof-command fanout; every pre/post scan still reads every admitted byte.
 inventory_hash_workers = 12
 
+# Apparatus suites (docs/design/presubmit_test_strategy.md, mechanism C): a
+# suite whose subject is apparatus runs in presubmit only when a path it owns
+# changes. When it is reached only through a module it imports, it is a reader
+# that postsubmit runs. Measured 2026-11-13: tests/test_molt_dev.py alone took
+# 676-911 s in nearly every landing, compiler changes included.
+[[apparatus_suite]]
+test = "tests/test_molt_dev.py"
+owns = ["tools/molt_dev*.py", "tools/driver_errors.py", "tools/proof_command_argv.py", "tools/proof_executor.py", "tools/proof_plan.py", "tools/proof_plan.toml", "tools/test_dependency_graph.py", "tools/consumer_gate.py", "src/molt/host_capacity.py"]
+
+[[apparatus_suite]]
+test = "tests/test_molt_dev_lanes.py"
+owns = ["tools/molt_dev*.py", "tools/driver_errors.py", "tools/proof_plan.py", "tools/proof_plan.toml"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_claim_lane.py"
+owns = ["tools/claim_lane.py", "tools/molt_dev_common.py"]
+
+[[apparatus_suite]]
+test = "tests/test_checkout_provisioning.py"
+owns = ["src/molt/checkout_provisioning.py", "src/molt/source_build_environment_selection.py", "tools/venv_exec.py", "pyproject.toml", "uv.lock", ".python-version"]
+
 [[pinned_asset]]
 name = "tinygrad-oracle"
 path = "bench/friends/repos/tinygrad_off_the_shelf"
@@ -5001,7 +5022,7 @@ pytest = [
 [[rule]]
 name = "committed-gate-policy"
 toolchains = ["python", "uv"]
-plan_entities = ["rule", "always", "always_toolchains", "repair", "repair_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy", "pinned_asset"]
+plan_entities = ["rule", "always", "always_toolchains", "repair", "repair_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy", "pinned_asset", "apparatus_suite"]
 description = "The committed proof plan's gate selection and the tests that read its toolchain policies."
 globs = [
   "tests/test_committed_gate_policy.py",
@@ -5594,7 +5615,7 @@ pytest_select = [
 [[rule]]
 name = "ci-wiring"
 toolchains = ["python"]
-plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "repair_toolchains", "repair", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "pinned_asset", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
+plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "repair_toolchains", "repair", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "pinned_asset", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip", "apparatus_suite"]
 description = "CI workflows or pyproject: the CI-topology contract test."
 globs = [
   ".github/actions/**",
