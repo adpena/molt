@@ -22,6 +22,7 @@ Design: ``docs/design/verified_namespace_premises.md``.
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Final, Literal, NamedTuple, TypeAlias, cast, get_args
 
@@ -49,7 +50,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 10
+SUMMARY_SCHEMA: Final = 12
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -73,6 +74,12 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # must hold every global, so the target keeps its dictionary namespace
     # (static module cells, call_anatomy.md 4.5a). ``name`` is always None.
     "reflection",
+    # A read of a code object (``__code__``, ``f_code``, ``gi_code``,
+    # ``cr_code``, ``ag_code``) used other than for ``co_*`` metadata.
+    # ``FunctionType`` can run that code over another globals mapping, so
+    # no function's global reads are its module's (call_anatomy.md 4.5a).
+    # ``module`` and ``name`` are always None.
+    "code",
 ]
 
 # Calls that only read their argument. A module or namespace passed to any other
@@ -211,6 +218,8 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         raise ValueError("invalid namespace cache write site")
     if construct == "reflection" and name is not None:
         raise ValueError("invalid namespace reflection")
+    if construct == "code" and (module is not None or name is not None):
+        raise ValueError("invalid code reflection")
     return PythonNamespaceWrite(
         module, name, construct, line, source_owner, source_site
     )
@@ -416,6 +425,14 @@ _CANDIDATE_CALLS: Final = frozenset(
 # Attributes whose value is some module's namespace mapping, whichever module
 # defined the function or runs the frame.
 _GLOBALS_ATTRIBUTES: Final = frozenset({"__globals__", "f_globals"})
+# Attributes whose value is a code object, which ``FunctionType`` can run over
+# another globals mapping.
+_CODE_ATTRIBUTES: Final = frozenset(
+    {"__code__", "f_code", "gi_code", "cr_code", "ag_code"}
+)
+# A code object's attributes that can yield a code object: nested code in its
+# constants and copies.
+_CODE_YIELDING_ATTRIBUTES: Final = frozenset({"co_consts", "replace", "__replace__"})
 
 
 class _Site(NamedTuple):
@@ -1027,6 +1044,80 @@ class _NamespaceWriteCollector:
         if not self._dunder_only_use(*self._consumer(site)):
             self._record(module, None, "reflection", site)
 
+    def _code_use(self, site: _Site) -> None:
+        """A code object read at ``site``: a code row unless every use reads
+        only its ``co_*`` metadata, which cannot run it."""
+        if not self._code_metadata_use(*self._consumer(site)):
+            self._record(None, None, "code", site)
+
+    def _code_metadata_use(
+        self,
+        value: ast.AST,
+        parent: ast.AST | None,
+        grandparent: ast.AST | None,
+        *,
+        alias: bool = True,
+    ) -> bool:
+        """Whether this use of a code object cannot hand it to ``FunctionType``:
+        a metadata attribute read (any ``co_*`` but ``co_consts``, or
+        ``__class__``), an identity test, a discarded value, a return from an
+        accessor named for a code attribute (its caller's read of that name is
+        classified at the caller), or (once) a function-local alias every use
+        of which is one of those."""
+        if isinstance(parent, ast.Expr):
+            return True
+        if isinstance(parent, ast.Attribute) and parent.value is value:
+            return isinstance(parent.ctx, ast.Load) and (
+                parent.attr == "__class__"
+                or parent.attr.startswith("co_")
+                and parent.attr not in _CODE_YIELDING_ATTRIBUTES
+            )
+        if isinstance(parent, ast.Return):
+            scope = self._tree_parents().get(parent)
+            while scope is not None and not isinstance(
+                scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+            ):
+                scope = self._tree_parents().get(scope)
+            return (
+                isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and scope.name in _CODE_ATTRIBUTES
+            )
+        if isinstance(parent, ast.Compare):
+            return all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops)
+        if isinstance(parent, (ast.If, ast.While, ast.IfExp)) and parent.test is value:
+            return True
+        if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not):
+            return True
+        if (
+            isinstance(parent, ast.Call)
+            and isinstance(parent.func, ast.Name)
+            and parent.func.id == "getattr"
+            and len(parent.args) >= 2
+            and parent.args[0] is value
+        ):
+            attribute = _literal_string(parent.args[1])
+            return (
+                attribute is not None
+                and attribute.startswith("co_")
+                and attribute not in _CODE_YIELDING_ATTRIBUTES
+            )
+        if (
+            alias
+            and isinstance(parent, ast.Assign)
+            and parent.value is value
+            and len(parent.targets) == 1
+            and isinstance(parent.targets[0], ast.Name)
+        ):
+            # Only the alias's reads can pass the object on, so a local that
+            # several code reads store is as safe as one stored once.
+            return self._alias_only_used_as(
+                parent,
+                parent.targets[0].id,
+                self._code_metadata_use,
+                single_store=False,
+            )
+        return False
+
     def _tree_parents(self) -> dict[ast.AST, ast.AST]:
         if self.parents is None:
             self.parents = {
@@ -1090,11 +1181,21 @@ class _NamespaceWriteCollector:
             and len(parent.targets) == 1
             and isinstance(parent.targets[0], ast.Name)
         ):
-            return self._dunder_only_alias(parent, parent.targets[0].id)
+            return self._alias_only_used_as(
+                parent, parent.targets[0].id, self._dunder_only_use
+            )
         return False
 
-    def _dunder_only_alias(self, assign: ast.Assign, name: str) -> bool:
-        """Whether a local bound once by ``assign`` is only read by dunder key."""
+    def _alias_only_used_as(
+        self,
+        assign: ast.Assign,
+        name: str,
+        use: Callable[..., bool],
+        *,
+        single_store: bool = True,
+    ) -> bool:
+        """Whether a local bound by ``assign`` (once, when ``single_store``) is
+        read only by ``use``."""
         parents = self._tree_parents()
         scope = parents.get(assign)
         while scope is not None and not isinstance(
@@ -1115,11 +1216,11 @@ class _NamespaceWriteCollector:
                 stores += 1
                 continue
             parent = parents.get(node)
-            if not self._dunder_only_use(
+            if not use(
                 node, parent, parents.get(parent) if parent else None, alias=False
             ):
                 return False
-        return stores == 1
+        return stores == 1 or not single_store and stores > 0
 
     def _reference(self, node: ast.AST) -> str | None:
         """The dotted spelling of a module reference expression, if any."""
@@ -1180,6 +1281,8 @@ class _NamespaceWriteCollector:
                 self._namespace_use(site, module)
         elif node.attr in _GLOBALS_ATTRIBUTES:
             self._reflection_use(site, None)
+        elif node.attr in _CODE_ATTRIBUTES:
+            self._code_use(site)
         elif node.attr in {"__setattr__", "__delattr__"}:
             if isinstance(parent, ast.Call) and parent.func is node:
                 is_module, module = self._module_receiver(node.value)
@@ -1201,6 +1304,8 @@ class _NamespaceWriteCollector:
             attribute = _literal_string(node.args[1])
             if attribute in _GLOBALS_ATTRIBUTES:
                 self._reflection_use(site, None)
+            elif attribute in _CODE_ATTRIBUTES:
+                self._code_use(site)
             elif attribute == "__dict__":
                 is_module, module = self._module_receiver(node.args[0])
                 if is_module:

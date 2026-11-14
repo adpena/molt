@@ -538,6 +538,12 @@ class ClosedWorldBinder:
         premise = self._facts(user).premise
         if premise is None:
             return f"{user} has no namespace premise"
+        if premise.code_rebinding:
+            return (
+                f"some code reads a code object or loads a native extension, so "
+                f"FunctionType may run {user}'s functions over another globals "
+                f"mapping where {binding} is not {module}"
+            )
         if module in premise.noncanonical_imports:
             return f"import {module} does not resolve to its canonical provider"
         if premise.member_writes & _IMPORT_REDIRECTS:
