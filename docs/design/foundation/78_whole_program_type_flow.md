@@ -272,4 +272,36 @@ slice's claim is its interleaved A/B in instructions retired against the C refer
 
 ## 9. Suite technique table
 
-Filled from the suite profile (`MIN_SAMPLES` derived from a +-2.5-point share precision).
+**Measurement (2026-11-14).** LLVM release, macOS arm64, `/usr/bin/sample` at 1 ms. Each
+benchmark runs from a driver (`import bench_x; for _ in range(R): bench_x.main()`), where R
+gives at least `MIN_SAMPLES` = ⌈(1.96 × 0.5 / 0.025)²⌉ = 1,537 self samples, so each share is
+known to ±2.5 points. 53 of 57 benchmarks reached that count. A share is the named symbols'
+self samples over the program's total. Symbol rows decide the attribution.
+`opt_explorer.classify_symbol` counts as compiled only the symbols of the module it is given;
+this run gave it the driver's module, so time in the benchmark's own compiled code is in
+`other runtime`. The allocation and reference-counting bucket shares are unaffected.
+
+The shares are VERIFIED. The slice that removes each share is INFERRED from the mechanism.
+Each slice proves its own claim with an interleaved A/B in instructions retired against the C
+reference (section 6).
+
+| Mechanism (symbols) | Benchmarks: measured share | Removed by |
+|---|---|---|
+| Generic `int` operations on values only ever `int` (`lshift_impl`, `strict_integer_from_obj`, `scalar_value_bits`) | loop_invariant_shift 49%; csv_parse 10%; builtin_dir_slice 10% | Slices 2–3: typed `int`, raw arithmetic with an overflow edge |
+| Generic reduction step over list elements (`step`, `exact_number`) | prod_list 82%; sum_list_hints 65%; sum_list 58%; min_list 56%; max_list 52% | Slice 3, together with typed list storage (list-storage lane) |
+| Range materialized as a list (`molt_list_from_range`) | sum_list_hints 22%; sum_list 21%; max_list 17%; min_list 17% | List-storage lane; slice 3 supplies the element type |
+| Generic indexing on a receiver of fixed type (`index_impl`) | tuple_index 49%; tuple_pack 30%; tuple_slice 19%; deeply_nested_loop 12%; class_hierarchy 11% | Slice 2: a known receiver type selects the inline index |
+| Shape and attribute lookup (`object_shape_id`, `object_has_class_shape`, `class_instance_shape_id`, `molt_get_attr_object_ic`) | attr_access 34%; descriptor_property ≥ 9% | Slice 4: closed-world layouts, fixed-offset loads |
+| Callee lookup and trampolines (`runtime_callable_target_ptr`, `invoke_function_trampoline`) | class_hierarchy 13% | Slices 3–4: direct calls to resolved methods |
+| Call binding (`bind_python_frame`, `builtin_call_binding`, `direct_call_function`) | itertools_tee 52%; ptr_registry 11%; heap_canonical_cache 10%; fib 8% | Slice 3 (direct dispatch) and slice 6 (unboxed convention) |
+| Time inside compiled bodies (boxed values, tag tests, frame records) | masked_shift_accumulator 100%; sum 100%; method_default_binding 90%; deeply_nested_loop 60%; fib 53%; tuple_index 46% | Slices 3 and 6 remove boxing; stages 1–2 own the frame and thread-record cost |
+| Result-list growth and join (`insert_with_projection`, `molt_list_append_with_projection`, `molt_string_join_attached_body`) | nine `str_*` benchmarks: 32–56% (top-8 symbols only, so a lower bound) | List-storage lane (not this program) |
+| Hash-table probing (`dict_probe_key_with_hash`, `set_insert_absent_with_hash`, `set_probe_with_hash`) | set_ops 55%; dict_comprehension 37%; counter_words 19% | No owner yet: runtime data structures |
+| Allocation, reference counting, cycle collection (`alloc_object_zeroed_with_aux_policy`, `dec_ref_ptr_terminal_body`, `clear_cycle_edges_with_sink`) | suite mean 13.5% (buckets); gc_pressure, matrix_math, struct, object_class_lifecycle, exception_heavy lead | E2 scalar replacement; slice 4 supplies allocation-site types |
+| Byte algorithms (`replace_bytes_impl`, `bytes_count_impl`, `_platform_memmove`) | bytearray_replace 91%; str_count_unicode_warm 61%; bytes_find 15% | Runtime algorithm work (not this program) |
+
+**Reading.** By each benchmark's leading symbol: slices 2–4 and 6 own 22 of 53; the
+list-storage lane owns 9; allocation, reference counting and cycle collection lead 7; byte
+algorithms 4; hash tables 3. Eight lead with a symbol the profile does not resolve (a
+truncated or deduplicated name, a closure, or an import-path lookup); they need a symbolized
+rerun before anyone claims them. Hash-table probing is the one leading cost with no owner.
