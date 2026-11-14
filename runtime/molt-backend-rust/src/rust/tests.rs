@@ -2074,6 +2074,7 @@ fn symbolic_module_slots_resolve_from_the_program_registry() {
                 .map(|name| molt_ir::ModuleRegistryRowIR {
                     name: name.into(),
                     init_symbol: None,
+                    static_cells: None,
                 })
                 .collect(),
             ..Default::default()

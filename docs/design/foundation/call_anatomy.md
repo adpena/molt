@@ -18,7 +18,7 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a) | guarded call promotion design (HF-773 slice D); module globals as static cells; the late-TIR float `sqrt` (HF-843) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a) | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -1283,7 +1283,8 @@ degrades the table for good. Compiled reads: `GlobalSlotBase` (one runtime call 
 activation, merged by GVN and hoisted by LICM; the frame's globals table when it uses the
 site's layout, else an all-unbound array) and `GlobalSlotGet`, whose meaning is the shared
 `molt_codegen_abi::global_slot` generator. Stores replace the dictionary row by slot
-index (`molt_global_slot_set`). Free-threaded runtimes take the by-name path. The base
+index (`molt_global_slot_set`). A cell-eligible module has no slot table: its globals are static
+cells (section 4.5a). Free-threaded runtimes take the by-name path. The base
 becomes inline loads once the frame record exposes the function's globals (stage 1).
 
 **Implementation (method sites, 2026-11-12).** Every `LoadMethod` and the `CallLoadedMethod`
@@ -1366,7 +1367,7 @@ Measured stakes (release, macOS arm64; profiles and per-op counts from 2026-11-1
 | consumer | today | stake |
 |---|---|---|
 | `math.sqrt(x)` and other module functions | by-name attribute lookup, then the generic call | attribute access 27.2% and call dispatch 28.7% of `bench_math_numeric` samples; compiled code is 2.5% |
-| module globals (`total`, `index`) | slot table inside the module dictionary, `molt_global_slot_set` per store | 38% of LLVM self samples in `bench_method_defaults` after method sites |
+| module globals (`total`, `index`) | static cells for cell-eligible modules (landed 2026-11-13); slot table inside the module dictionary, `molt_global_slot_set` per store, elsewhere | was 38% of LLVM self samples in `bench_method_defaults` after method sites |
 | methods with a proven receiver class | class-version guard and site record per call | the guard and record remain after the -56% to -81% method-site win |
 | `isinstance`, type dispatch | runtime MRO walk | 4,702 against 795 instructions (5.9x CPython); type dispatch 7,678 against 1,031 (7.4x) |
 | `except C` | runtime class match | `raise_user` 7.9x CPython |
@@ -1403,6 +1404,58 @@ size, interleaved against the base, output identical: LLVM 119.0 G → 12.46 G i
 (-89.5%), 3.8 s → 0.35 s user; Cranelift 124.3 G → 16.34 G (-86.9%), 4.0 s → 0.45 s. Compiled code
 rose from 2.5% to 20.5% of samples; the module-global stores (54%) are the next consumer, and the
 late-TIR float `sqrt` (about 15%) waits for the shared lowering (HF-843).
+
+**Second consumer: module globals as static cells (lane static-module-cells, 2026-11-13).** A
+module is cell-eligible when no code reaches its namespace mapping by identity and every writer is
+named (`molt.cli.static_module_cells`, facts C1-C6): its own code calls no `globals()`,
+module-scope `vars()`/`locals()` or `exec`/`eval`; no activated code reaches `M.__dict__`,
+`vars(M)`, a `sys.modules` entry's `__dict__`, a `__globals__` or an `f_globals` except by literal
+dunder keys (the HF-226 authority's `reflection` rows, `verified_namespace_premises.md`); its own
+deferred writes and its foreign writes are named sets; its body does not star-import; the program
+writes no `sys.modules`, import hook or `__import__`; and the program loads no extension module
+and spawns no isolate thread. The entry module also must not be imported by its own name. Each
+name of an eligible module's layout is then one word of a writable block in program data, defined
+once in the program object (`__molt_static_cells_<module>`; a WASM mutable data segment) and
+initially unbound. Compiled reads keep `GlobalSlotGet` over the block's base, a link-time
+constant (`StaticCellBase`): load, unbound test, retain, cold by-name read. A store is
+`StaticCellSet`, one `molt_codegen_abi::static_cell` generator every backend selects: retain the
+new value, swap it in (atomically in a free-threaded build), release the old word. No runtime
+call, no slot table, no dictionary mirror. The base travels shifted right by 3, so a block must
+stay 8-aligned: WASM relocatable output now declares every data segment's alignment in the
+linking section (`WASM_SEGMENT_INFO`); without it `wasm-ld` placed segments 1-aligned. The module's init binds the block to its new module
+object (`molt_static_cells_bind`, once per module), and the dictionary never holds a layout name:
+attribute reads (the generic instance-dictionary tier), `setattr`, `del`, global lookup by name,
+`dir`, star import and shutdown retirement consult the cells through the registry's sorted
+layout. Computed-name reads (`getattr(m, name)`, `hasattr`, pickle's `find_class`) therefore keep
+a module eligible. The bind also records the builtin binding guard bits (HF-79) of every layout
+name some code may store, since a cell store never reaches the dictionary's guard state. Every
+layout name whose body store is unconditional, once, at initialization, with no other writer,
+carries an `InitOnce` fact (function, class, module, intrinsic or other) in the build diagnostics
+(`static_module_cells`); its consumer is a later slice (HF-846). An ineligible module keeps its
+dictionary and slot tables unchanged, and the diagnostics name the failed fact.
+
+Measured at 20 times `bench_math_numeric`'s size and on `bench_method_defaults`, interleaved
+against the base (origin/main 1147b68524), release, macOS arm64, output identical:
+
+| benchmark | backend | instructions retired | user time |
+|---|---|---|---|
+| `bench_math_numeric` | LLVM | 12.48 G → 4.73 G (-62.1%) | 0.36 s → 0.14 s |
+| `bench_math_numeric` | Cranelift | 16.35 G → 9.12 G (-44.2%) | 0.55 s → 0.29 s |
+| `bench_method_defaults` | LLVM | 5.06 G → 2.51 G (-50.5%) | 0.14 s → 0.07 s |
+| `bench_method_defaults` | Cranelift | 6.99 G → 4.68 G (-33.0%) | 0.23 s → 0.16 s |
+
+The loop's stores of `total` and `index` make no runtime call: `molt_global_slot_set`,
+`dict_replace_value` and the dictionary reference drop are gone from the profile, and compiled code
+rose from 20.5% to 55% of non-startup samples on LLVM (65% on Cranelift; `sample`, 200 times the
+original size). The math intrinsic bodies hold most of the rest (HF-843). What remains on a read
+is the load, the unbound test (compare and branch against a materialized constant) and the retain:
+a float or inline-int read adds about 3 instructions of tag test, and a pointer read (the `math`
+receiver, which the closed-world binding keeps for its `NameError`) about 15 for the inline
+retain and 15 more for the release that follows, about 140 of the loop's 770 instructions per
+iteration. `InitOnce` with proven initialization dominance removes both (HF-846). Not yet compiled:
+foreign `M.x` reads and stores and `del` (one runtime call routed to the cell, HF-845), and the
+175 stdlib modules whose own `globals().pop("_require_intrinsic", None)` keeps them on dictionary
+namespaces (HF-844).
 
 ### 4.6 Reference counts
 

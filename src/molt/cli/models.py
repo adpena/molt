@@ -156,6 +156,10 @@ class _ModuleSourceScanAuthority:
     # premise's foreign writes it decides which globals no code can rebind
     # after initialization (closed-world bindings, call_anatomy.md 4.5).
     namespace_own_names: frozenset[str] | None = None
+    # The first line whose code reaches the module's own namespace mapping by
+    # identity (``PythonNamespaceSummary.own_namespace_line``): 0 for none,
+    # None when no module-level scan has run yet.
+    namespace_own_line: int | None = None
     source_sha256: str | None = None
     package_paths: tuple[Path, ...] = ()
 
@@ -280,6 +284,11 @@ class _ModuleGraphScanAuthority:
                     if prior.namespace_own_names is not None
                     else source.namespace_own_names
                 )
+                namespace_own_line = (
+                    prior.namespace_own_line
+                    if prior.namespace_own_line is not None
+                    else source.namespace_own_line
+                )
                 if ranks[prior.mode] >= ranks[source.mode]:
                     source = prior
                 if (
@@ -290,6 +299,7 @@ class _ModuleGraphScanAuthority:
                     != source.uses_runtime_import_protocol
                     or namespace_premise != source.namespace_premise
                     or namespace_own_names != source.namespace_own_names
+                    or namespace_own_line != source.namespace_own_line
                     or source_sha256 != source.source_sha256
                     or body_selection != source.body_selection
                 ):
@@ -300,6 +310,7 @@ class _ModuleGraphScanAuthority:
                         deferred_owners=deferred_owners,
                         namespace_premise=namespace_premise,
                         namespace_own_names=namespace_own_names,
+                        namespace_own_line=namespace_own_line,
                         source_sha256=source_sha256,
                         body_selection=body_selection,
                     )
@@ -361,6 +372,7 @@ class _ModuleGraphScanAuthority:
                     if source.namespace_own_names is None
                     else sorted(source.namespace_own_names)
                 ),
+                "namespace_own_line": source.namespace_own_line,
             }
             for source in sorted(self.sources, key=lambda source: source.module_name)
         ]

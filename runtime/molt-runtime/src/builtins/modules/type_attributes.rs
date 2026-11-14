@@ -215,7 +215,27 @@ pub(crate) fn molt_module_dir_attached_body(_py: &crate::PyToken<'_>, module: u6
         }) else {
             return MoltObject::none().bits();
         };
-        let list = alloc_list(py, &keys);
+        // A cell-eligible module's bound globals are its static cells
+        // (call_anatomy.md 4.5a), not dictionary keys.
+        let mut cell_names = Vec::new();
+        for (cell, _) in crate::builtins::namespace_slots::static_cell_items(dict) {
+            let Some(key) = crate::dynamic_attr_name_bits(py, cell) else {
+                for key in cell_names {
+                    dec_ref_bits(py, key);
+                }
+                return MoltObject::none().bits();
+            };
+            cell_names.push(key);
+        }
+        let all: Vec<u64> = keys
+            .iter()
+            .copied()
+            .chain(cell_names.iter().copied())
+            .collect();
+        let list = alloc_list(py, &all);
+        for key in cell_names {
+            dec_ref_bits(py, key);
+        }
         if list.is_null() {
             MoltObject::none().bits()
         } else {

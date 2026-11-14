@@ -106,6 +106,104 @@ pub(crate) fn emit_global_slot_read(
     })
 }
 
+/// A compiled store into static cell `index` (call_anatomy.md 4.5a): the
+/// shared generator decides; this file only selects instructions. `base` is
+/// the module's boxed block base; `value` is retained into the cell and the
+/// displaced word released.
+#[cfg(feature = "native-backend")]
+pub(crate) fn emit_static_cell_store(
+    builder: &mut FunctionBuilder,
+    base: Value,
+    index: u32,
+    value: Value,
+    retain: NativeRefcountSite,
+    release: NativeRefcountSite,
+) {
+    let mut emitter = NativeCellBuilder {
+        inner: NativeRefcountBuilder {
+            words: NativeWords { builder },
+            site: retain,
+            slow_block: None,
+        },
+        release,
+    };
+    molt_codegen_abi::static_cell::generate_static_cell_store(
+        &mut emitter,
+        base,
+        index,
+        value,
+        molt_codegen_abi::MOLT_REFCOUNT_ATOMIC,
+    );
+}
+
+/// The slot builder plus the release site a cell store needs.
+#[cfg(feature = "native-backend")]
+struct NativeCellBuilder<'a, 'b> {
+    inner: NativeRefcountBuilder<'a, 'b>,
+    release: NativeRefcountSite,
+}
+
+#[cfg(feature = "native-backend")]
+impl<'a, 'b> WordBuilder for NativeCellBuilder<'a, 'b> {
+    molt_codegen_abi::forward_word_builder!(inner: NativeRefcountBuilder<'a, 'b>);
+}
+
+#[cfg(feature = "native-backend")]
+impl BranchBuilder for NativeCellBuilder<'_, '_> {
+    fn choose(
+        &mut self,
+        condition: Value,
+        yes: impl FnOnce(&mut Self) -> Value,
+        no: impl FnOnce(&mut Self) -> Value,
+    ) -> Value {
+        cranelift_choose(self, condition, yes, no)
+    }
+}
+
+#[cfg(feature = "native-backend")]
+impl<'b> CraneliftWords<'b> for NativeCellBuilder<'_, 'b> {
+    fn cranelift(&mut self) -> &mut FunctionBuilder<'b> {
+        self.inner.words.builder
+    }
+}
+
+#[cfg(feature = "native-backend")]
+impl molt_codegen_abi::global_slot::SlotBuilder for NativeCellBuilder<'_, '_> {
+    fn load_word(&mut self, address: Value, offset: i32) -> Value {
+        self.inner.load_word(address, offset)
+    }
+    fn retain(&mut self, word: Value) {
+        self.inner.retain(word);
+    }
+}
+
+#[cfg(feature = "native-backend")]
+impl molt_codegen_abi::static_cell::CellBuilder for NativeCellBuilder<'_, '_> {
+    fn swap_word(&mut self, address: Value, offset: i32, value: Value, atomic: bool) -> Value {
+        let builder = &mut *self.inner.words.builder;
+        if atomic {
+            let at = builder.ins().iadd_imm_s(address, i64::from(offset));
+            return builder.ins().atomic_rmw(
+                types::I64,
+                MemFlagsData::new(),
+                cranelift_codegen::ir::AtomicRmwOp::Xchg,
+                at,
+                value,
+            );
+        }
+        let old = builder
+            .ins()
+            .load(types::I64, MemFlagsData::new(), address, offset);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), value, address, offset);
+        old
+    }
+    fn release(&mut self, word: Value) {
+        emit_refcount(&mut *self.inner.words.builder, word, self.release);
+    }
+}
+
 /// The Cranelift builder a native word builder spells into.
 trait CraneliftWords<'b> {
     fn cranelift(&mut self) -> &mut FunctionBuilder<'b>;

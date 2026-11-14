@@ -165,6 +165,12 @@ fn data_segment_align_mask(byte_len: u32) -> u32 {
     if byte_len <= 4 { 3 } else { 7 }
 }
 
+/// The alignment of a segment of `byte_len` bytes as a power of two, the form
+/// the linking section's segment info declares.
+pub(crate) fn data_segment_align_log2(byte_len: u32) -> u32 {
+    (data_segment_align_mask(byte_len) + 1).trailing_zeros()
+}
+
 fn align_data_offset(offset: u32, align_mask: u32) -> Option<u32> {
     offset
         .checked_add(align_mask)

@@ -120,8 +120,8 @@ _SLOTTED_SITE_OPS = frozenset({"module_get_global", "module_set_attr", "dict_set
 
 
 def _global_name_sites(
-    funcs: Sequence[dict[str, Any]],
-) -> Iterator[tuple[dict[str, Any], str]]:
+    funcs: Sequence[Mapping[str, Any]],
+) -> Iterator[tuple[Mapping[str, Any], str]]:
     """Every op of a module's own body that names one of its globals, with
     the name: the single scanner behind its layout and its slot stamps."""
     for func in funcs:
@@ -176,36 +176,72 @@ def stamp_global_slots(
     module_functions: Mapping[str, Sequence[dict[str, Any]]],
     global_layouts: Mapping[str, tuple[str, ...]],
     registered_modules: Collection[str],
+    static_modules: Collection[str] = (),
+    guard_masks: Mapping[str, int] | None = None,
 ) -> None:
     """Mark each read and store of a slotted global with its slot
     ``{"module": M, "index": k}``: slot k of M's layout. Only modules with a
     registry row (which binds the runtime table) are stamped; everything else
     keeps the by-name op unchanged. A stamped function is a copy-on-write
     replacement in ``functions``, so its admitted body digest is never stale.
+
+    A module in ``static_modules`` (``static_module_cells``) keeps its globals
+    in static cells instead: its stamps carry ``"cell": true`` (slot k is the
+    k-th word of its cell block), and its init binds the block to its module
+    object right after creating it, before any store
+    (``molt_static_cells_bind``).
     """
+    from molt.cli.static_module_cells import module_object_site
+
     position = {id(function): index for index, function in enumerate(functions)}
     for module_name, funcs in module_functions.items():
         if module_name not in registered_modules:
             continue
+        cells = module_name in static_modules
         index_of = {
             name: index
             for index, name in enumerate(global_layouts.get(module_name, ()))
         }
+        bind_site = module_object_site(module_name, funcs) if cells else None
         for func in funcs:
             stamps: dict[int, dict[str, Any]] = {}
             for op, name in _global_name_sites([func]):
                 index = index_of.get(name)
                 if index is not None and op.get("kind") in _SLOTTED_SITE_OPS:
-                    stamps[id(op)] = {"module": module_name, "index": index}
-            if not stamps or id(func) not in position:
+                    stamp: dict[str, Any] = {"module": module_name, "index": index}
+                    if cells:
+                        stamp["cell"] = True
+                    stamps[id(op)] = stamp
+            binds = bind_site is not None and bind_site[0] == func.get("name")
+            if (not stamps and not binds) or id(func) not in position:
                 continue
-            functions[position[id(func)]] = {
-                **func,
-                "ops": [
-                    {**op, "global_slot": stamps[id(op)]} if id(op) in stamps else op
-                    for op in func["ops"]
-                ],
-            }
+            ops = [
+                {**op, "global_slot": stamps[id(op)]} if id(op) in stamps else op
+                for op in func["ops"]
+            ]
+            if binds:
+                assert bind_site is not None
+                at = bind_site[1] + 1
+                if at < len(ops) and ops[at].get("kind") == "check_exception":
+                    at += 1
+                module_var = ops[bind_site[1]]["out"]
+                base = f"static_cells_base_{module_var}"
+                mask = f"static_cells_guards_{module_var}"
+                ops[at:at] = [
+                    {"kind": "static_cell_base", "s_value": module_name, "out": base},
+                    {
+                        "kind": "const",
+                        "value": (guard_masks or {}).get(module_name, 0),
+                        "out": mask,
+                    },
+                    {
+                        "kind": "call",
+                        "s_value": "molt_static_cells_bind",
+                        "args": [module_var, base, mask],
+                        "out": f"static_cells_bound_{module_var}",
+                    },
+                ]
+            functions[position[id(func)]] = {**func, "ops": ops}
 
 
 def _validate_class_definition_references_with_state(

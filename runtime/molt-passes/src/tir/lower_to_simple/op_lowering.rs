@@ -85,6 +85,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::new(molt_ir::OpKind::ModuleSlot)
         }),
+        OpCode::StaticCellBase => Some(OpIR {
+            kind: molt_ir::OpKind::StaticCellBase,
+            s_value: attr_str(&op.attrs, "s_value"),
+            out: out_var,
+            ..OpIR::new(molt_ir::OpKind::StaticCellBase)
+        }),
         OpCode::ConstInt => Some(OpIR {
             kind: molt_ir::OpKind::Const,
             value: attr_int(&op.attrs, "value"),
@@ -751,6 +757,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             args: Some(operand_args(op)),
             out: out_var,
             ..OpIR::new(molt_ir::OpKind::GlobalSlotGet)
+        }),
+        OpCode::StaticCellSet => Some(OpIR {
+            kind: molt_ir::OpKind::StaticCellSet,
+            args: Some(operand_args(op)),
+            out: Some("none".to_string()),
+            ..OpIR::new(molt_ir::OpKind::StaticCellSet)
         }),
         OpCode::ModuleGetName => Some(OpIR {
             kind: molt_ir::OpKind::ModuleGetName,

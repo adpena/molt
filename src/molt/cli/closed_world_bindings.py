@@ -67,6 +67,9 @@ class ModuleNamespaceFacts:
 
     own_names: frozenset[str] | None
     premise: PythonNamespacePremise | None
+    # The first line whose code reaches the module's own namespace mapping by
+    # identity; 0 for none, None when unknown (static module cells).
+    own_namespace_line: int | None = None
 
     def stable_reason(self, name: str) -> str | None:
         """Why code may rebind ``name`` after initialization, or None."""

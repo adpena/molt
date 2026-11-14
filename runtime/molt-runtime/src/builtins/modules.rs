@@ -742,6 +742,10 @@ pub(crate) fn lookup_namespace_item(
     if let Some(ptr) = obj_from_bits(namespace_bits).as_ptr()
         && unsafe { crate::object_is_exact_builtin_dict(_py, ptr) }
     {
+        if let Some(value) = crate::builtins::namespace_slots::static_cell_get(_py, ptr, name_bits)
+        {
+            return Ok(Some(value));
+        }
         let value = unsafe { dict_get_in_place(_py, ptr, name_bits) };
         let value = match value {
             Ok(value) => value,
@@ -3302,9 +3306,13 @@ fn module_del_global_impl(
                 Err(bits) => return bits,
             }
         };
-        match dict_del_in_place(_py, dict_ptr, name_bits) {
-            Ok(true) | Err(()) => return MoltObject::none().bits(),
-            Ok(false) => {}
+        match crate::builtins::namespace_slots::static_cell_delete(_py, dict_ptr, name_bits) {
+            Some(true) => return MoltObject::none().bits(),
+            Some(false) => {}
+            None => match dict_del_in_place(_py, dict_ptr, name_bits) {
+                Ok(true) | Err(()) => return MoltObject::none().bits(),
+                Ok(false) => {}
+            },
         }
         if missing_ok {
             return MoltObject::none().bits();
@@ -3403,6 +3411,9 @@ pub(crate) fn module_set_attr(
         };
         if let Some((module_name, attr_name)) = traced_module_attr(module_ptr, attr_bits) {
             eprintln!("molt module attr set module={module_name} attr={attr_name}");
+        }
+        if crate::builtins::namespace_slots::static_cell_set(_py, dict_ptr, attr_bits, val_bits) {
+            return Ok(());
         }
         let annotations_bits = crate::NameId::DunderAnnotations.bits(_py);
         if crate::object::ops_compare::string_storage_equal(attr_bits, annotations_bits) {

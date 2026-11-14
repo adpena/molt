@@ -840,6 +840,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Module global slot sites (call_anatomy.md 4.5) --
             OpCode::GlobalSlotBase => self.emit_global_slot_base(op),
             OpCode::GlobalSlotGet => self.emit_global_slot_get(op),
+            OpCode::StaticCellBase => self.emit_static_cell_base(op),
+            OpCode::StaticCellSet => self.emit_static_cell_set(op),
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]
