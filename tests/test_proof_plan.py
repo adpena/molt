@@ -1324,6 +1324,16 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "native_extern_linkage",
         "wasm_link_facts_cli",
         "host_diagnostics",
+        # molt-backend's wasm-backend and cbor targets and the cpython-abi
+        # loader target (HF-565), whose features this cell already enables.
+        "cbor_round_trip",
+        "jumpful_malformed_control",
+        "wasm_compilation",
+        "wasm_data_segments",
+        "wasm_fastcall_lowering",
+        "wasm_import_filtering",
+        "wasm_import_registry",
+        "cext_integration",
     }
     for command in (core, complement):
         assert command.argv[:2] == ("cargo", "test")
@@ -1766,9 +1776,13 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert "--no-default-features" in argv
     features = set(argv[argv.index("--features") + 1].split(","))
     assert {"molt-backend/native-backend", "molt-backend/wasm-backend"} <= features
-    # The combined compiler cell also builds the independent facts executable;
-    # daemon-only admission must not enable that unrelated product.
-    assert compiler_features == features | {"molt-wasm-facts/host-tool"}
+    # The combined compiler cell also builds the independent facts executable
+    # and runs the cpython-abi loader target; daemon-only admission must not
+    # enable either unrelated product.
+    assert compiler_features == features | {
+        "molt-wasm-facts/host-tool",
+        "molt-lang-cpython-abi/extension-loader",
+    }
     assert argv[argv.index("--bin") + 2 :] == [
         "--",
         "daemon",
