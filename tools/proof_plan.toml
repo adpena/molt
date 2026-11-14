@@ -559,6 +559,16 @@ owns = ["tools/molt_dev*.py", "tools/driver_errors.py", "tools/proof_plan.py", "
 test = "tests/tools/test_claim_lane.py"
 owns = ["tools/claim_lane.py", "tools/molt_dev_common.py"]
 
+# Yield rule, 2026-11-14 (30 days of landing receipts): selected 342 and 271
+# times, 0.52 and 0.90 gate-hours a week, no failure in a readable log.
+[[apparatus_suite]]
+test = "tests/tools/test_perf_profile_selection.py"
+owns = ["tools/perf_scoreboard*.py", "tests/tools/perf_scoreboard_fixtures.py"]
+
+[[apparatus_suite]]
+test = "tests/test_gen_wasm_abi.py"
+owns = ["tools/gen_wasm_abi.py", "tools/wasm_abi_gen/**", "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml", "tools/generator_manifest.toml"]
+
 [[apparatus_suite]]
 test = "tests/test_checkout_provisioning.py"
 owns = ["src/molt/checkout_provisioning.py", "src/molt/source_build_environment_selection.py", "tools/venv_exec.py", "pyproject.toml", "uv.lock", ".python-version"]
