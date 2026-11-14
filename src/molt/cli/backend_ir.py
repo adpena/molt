@@ -2280,6 +2280,7 @@ def _prepare_backend_ir(
             {row.name for row in module_registry.rows if row.kind == "extension"},
             entry_module=entry_module,
             dep_closures=integration_state.module_dep_closures,
+            program_functions=functions,
         )
         stamp_global_slots(
             functions,
@@ -2288,6 +2289,7 @@ def _prepare_backend_ir(
             {row.name for row in module_registry.rows},
             static_cells.modules,
             static_cells.guard_masks,
+            static_cells.init_dominated,
         )
         if module_table_lane:
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)

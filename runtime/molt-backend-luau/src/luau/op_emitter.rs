@@ -486,6 +486,7 @@ impl LuauBackend {
             | molt_ir::OpKind::ModuleGetGlobal
             | molt_ir::OpKind::GlobalSlotGet
             | molt_ir::OpKind::StaticCellBase
+            | molt_ir::OpKind::StaticCellLoad
             | molt_ir::OpKind::StaticCellSet
             | molt_ir::OpKind::ModuleGetName
             | molt_ir::OpKind::ModuleImport

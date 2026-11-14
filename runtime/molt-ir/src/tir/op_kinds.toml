@@ -589,7 +589,7 @@ simpleir_object_model_semantics_kinds = [
     "module_new", "module_cache_get", "module_load_cached", "module_cache_set",
     "module_cache_del", "module_import", "module_get_attr", "module_import_from",
     "module_get_name", "module_get_global", "global_slot_get", "module_set_attr",
-    "static_cell_base", "static_cell_set",
+    "static_cell_base", "static_cell_set", "static_cell_load",
     "object_new", "builtin_type", "bound_method_new",
     "func_new", "func_new_closure", "code_new", "code_slot_set", "code_slots_init",
     "set_new", "frozenset_new", "set_add", "set_add_probe", "frozenset_add",
@@ -4398,6 +4398,18 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "StaticCellLoad"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_types = ["dynbox"]
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "StaticCellSet"
 may_call_python = true
 operand_arity = 2
@@ -5093,6 +5105,11 @@ mapper_opcode = "StaticCellBase"
 canonical = "static_cell_set"
 aliases = []
 mapper_opcode = "StaticCellSet"
+
+[[kind]]
+canonical = "static_cell_load"
+aliases = []
+mapper_opcode = "StaticCellLoad"
 
 [[kind]]
 canonical = "module_get_name"

@@ -20,6 +20,17 @@
 //! `STORE_GLOBAL` (insert, then decref the old value) does. A free-threaded
 //! build swaps atomically; a racing reader keeps the try-retain debt the slot
 //! tables document (`molt-runtime/src/builtins/namespace_slots.rs`).
+//!
+//! A read whose cell's InitOnce store dominates it (HF-846) is one load:
+//!
+//! ```text
+//!   value = load [block + 8k]          ; block: the link-time address itself
+//! ```
+//!
+//! The store ran, so the word is bound; no code writes the cell again before
+//! module retirement, so the cell keeps its reference and the read takes none.
+//! Retirement stores `None`, never the unbound word, so a finalizer that runs
+//! module code during retirement still reads an object.
 
 use crate::boxed_word::generate_unbox_inline_int;
 use crate::global_slot::{GLOBAL_SLOT_BASE_SHIFT, SlotBuilder};
@@ -42,6 +53,15 @@ pub trait CellBuilder: SlotBuilder {
 /// The byte offset of cell `index` in its block.
 pub fn static_cell_offset(index: u32) -> i32 {
     i32::try_from(u64::from(index) * 8).expect("static cell offset fits i32")
+}
+
+/// The value of cell `index` of the block at raw `address`, for a read that
+/// its InitOnce store dominates: one load at the cell's offset, no unbound
+/// test and no retain. `load` spells the backend's 64-bit load at `address +
+/// offset`; the block's address is a link-time constant, so a backend folds
+/// the offset into it.
+pub fn generate_static_cell_load<W>(index: u32, load: impl FnOnce(i32) -> W) -> W {
+    load(static_cell_offset(index))
 }
 
 /// Store the owned-by-caller `value` into cell `index` of the block whose
@@ -190,6 +210,21 @@ mod tests {
         assert_eq!(b.atomic_swaps, 0);
         generate_static_cell_store(&mut b, base(), 0, first, true);
         assert_eq!(b.atomic_swaps, 1);
+    }
+
+    #[test]
+    fn an_init_dominated_read_after_the_store_is_one_load_and_no_retain() {
+        let value = 0x7ffc_0000_0000_3000_u64;
+        let mut b = Interp {
+            cells: vec![NAMESPACE_SLOT_UNBOUND; 4],
+            ..Default::default()
+        };
+        generate_static_cell_store(&mut b, base(), 3, value, false);
+        let events = b.events.len();
+        let read = generate_static_cell_load(3, |offset| b.load_word(BASE, offset));
+        assert_eq!(read, value);
+        assert_eq!(b.events.len(), events, "the cell keeps its reference");
+        assert_eq!(b.cells[3], value);
     }
 
     #[test]

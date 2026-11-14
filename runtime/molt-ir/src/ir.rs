@@ -674,7 +674,9 @@ pub struct OpIR {
 /// emission, as `module_slot` does, so reusable objects carry no dense id.
 /// `cell` names the storage: the k-th word of the module's static cell block
 /// (a cell-eligible module, call_anatomy.md 4.5a) or slot k of its namespace
-/// dictionary's slot table.
+/// dictionary's slot table. `init_once` marks a read of a cell whose one
+/// store, at initialization, dominates the read (HF-846): the cell is bound
+/// and never written again, so the read is one load (`StaticCellLoad`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalSlotRef {
@@ -682,6 +684,8 @@ pub struct GlobalSlotRef {
     pub index: u32,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cell: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub init_once: bool,
 }
 /// Parse only at transport admission, preserving actionable retirement hints.
 fn deserialize_wire_kind<'de, D: serde::Deserializer<'de>>(
@@ -2234,6 +2238,7 @@ mod json_parse_tests {
                 module: "demo".to_string(),
                 index: 4,
                 cell: false,
+                init_once: false,
             }),
             method_site: Some(6),
         };
@@ -3221,6 +3226,7 @@ mod json_parse_tests {
                 module: "demo".into(),
                 index: 3,
                 cell: false,
+                init_once: false,
             })
         );
         let mut tir = crate::tir::ops::TirOp {

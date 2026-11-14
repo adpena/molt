@@ -35,6 +35,17 @@ pub(super) fn emit_object_attr_op(
             );
             return true;
         }
+        molt_ir::OpKind::StaticCellLoad => {
+            crate::wasm::global_slot::emit_static_cell_load(
+                backend,
+                func,
+                op,
+                locals,
+                func_index,
+                reloc_enabled,
+            );
+            return true;
+        }
         molt_ir::OpKind::StaticCellSet => {
             crate::wasm::global_slot::emit_static_cell_set(
                 func,

@@ -1478,3 +1478,106 @@ fn physical_release_does_not_invent_or_erase_python_binding_provenance() {
             .contains(&deleted)
     );
 }
+
+/// An init-dominated static cell read (HF-846) is a view of an object its
+/// cell owns for the rest of the program. Nothing releases it, and each
+/// escape takes a retained reference: a `Return` publishes one, an adopting
+/// call receives one, and a frame home store keeps one. A borrowing call
+/// and a runtime store that retains on its own need none.
+#[test]
+fn static_cell_views_are_retained_at_each_escape() {
+    use crate::tir::passes::drop_insertion;
+
+    fn load(result: ValueId) -> TirOp {
+        let mut load = op(OpCode::StaticCellLoad, vec![], vec![result]);
+        load.set_global_slot(Some(&molt_ir::ir::GlobalSlotRef {
+            module: "demo".into(),
+            index: 0,
+            cell: true,
+            init_once: true,
+        }));
+        load
+    }
+
+    fn run(f: &mut TirFunction) -> (Vec<ValueId>, Vec<ValueId>) {
+        drop_insertion::run(f, &mut crate::tir::analysis::AnalysisManager::new());
+        let ops: Vec<&TirOp> = f.blocks.values().flat_map(|block| &block.ops).collect();
+        let of = |opcode: OpCode| -> Vec<ValueId> {
+            ops.iter()
+                .filter(|op| op.opcode == opcode)
+                .flat_map(|op| op.operands.iter().copied())
+                .collect()
+        };
+        (of(OpCode::IncRef), of(OpCode::DecRef))
+    }
+
+    // Returned.
+    let mut f = TirFunction::new(
+        "returned".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let view = f.fresh_value();
+    f.value_types.insert(view, TirType::DynBox);
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.ops.push(load(view));
+    entry.terminator = Terminator::Return { values: vec![view] };
+    let aliases = build_alias_union_find(&f);
+    let root_facts = OwnershipRootFacts::compute(&f, &aliases);
+    assert!(root_facts.is_static_cell_view_root(view));
+    assert!(!root_facts.is_drop_owned_root_candidate(view));
+    assert!(!OwnershipRootFacts::result_holds_own_reference(
+        &load(view),
+        view,
+        &aliases
+    ));
+    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    assert!(eligibility.return_requires_owned_publication(view));
+    assert_eq!(run(&mut f), (vec![view], vec![]), "a return publishes a +1");
+
+    // Passed to an adopting call, then to a borrowing one.
+    let mut f = func();
+    let view = f.fresh_value();
+    f.value_types.insert(view, TirType::DynBox);
+    let mut adopting = op(OpCode::Call, vec![view], vec![]);
+    adopting.set_argument_custody(&[ParameterCustody::Transferred]);
+    let borrowing = op(OpCode::Call, vec![view], vec![]);
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.ops.extend([load(view), adopting, borrowing]);
+    entry.terminator = Terminator::Return { values: vec![] };
+    assert_eq!(
+        run(&mut f),
+        (vec![view], vec![]),
+        "the adopting call takes a retained reference; the borrowing one none"
+    );
+
+    // Stored into a frame home, and into a module namespace by the runtime.
+    let mut f = func();
+    let (view, home, module, name) = (
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+    );
+    for value in [view, home, module, name] {
+        f.value_types.insert(value, TirType::DynBox);
+    }
+    let store = original_kind_copy(molt_ir::OpKind::FrameHomeStore, vec![view], vec![home]);
+    let namespace_store = op(OpCode::ModuleSetAttr, vec![module, name, view], vec![]);
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.ops.extend([
+        op(OpCode::ObjectNewBound, vec![], vec![module]),
+        op(OpCode::ObjectNewBound, vec![], vec![name]),
+        load(view),
+        store,
+        namespace_store,
+    ]);
+    entry.terminator = Terminator::Return { values: vec![] };
+    let (retained, released) = run(&mut f);
+    assert_eq!(retained, [view], "the home keeps a retained reference");
+    assert!(
+        !released.contains(&view),
+        "nothing releases the cell's object: {released:?}"
+    );
+}

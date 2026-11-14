@@ -497,20 +497,27 @@ pub(crate) fn static_cell_items(dict: *mut u8) -> Vec<(&'static [u8], u64)> {
         .collect()
 }
 
-/// Shutdown retirement clears a cell-bound namespace as it clears the
-/// dictionary: each bound cell becomes unbound and drops its reference, in
-/// layout order. A finalizer that stores a global again is cleared on the
-/// retirement's next pass.
+/// Shutdown retirement clears a cell-bound namespace as CPython clears a
+/// module's dictionary: each bound cell becomes `None` and drops its
+/// reference, in layout order; an unbound cell stays unbound. The cell never
+/// returns to the unbound word, because compiled code reads an init-dominated
+/// cell with no unbound test (HF-846): a finalizer that runs module code
+/// during retirement reads `None`, as it would under CPython. A finalizer that
+/// stores a global again is cleared on the retirement's next pass.
 pub(crate) fn retire_static_cells(py: &PyToken<'_>, dict: *mut u8) -> bool {
     let Some(cells) = (unsafe { dict_storage(dict).slots.cells() }) else {
         return false;
     };
+    let none = MoltObject::none().bits();
     let mut cleared = false;
     for k in 0..cells.names.len() {
-        let old = cells
-            .cell(k)
-            .swap(UNBOUND, std::sync::atomic::Ordering::AcqRel);
-        if old != UNBOUND {
+        let cell = cells.cell(k);
+        let word = cell.load(std::sync::atomic::Ordering::Acquire);
+        if word == UNBOUND || word == none {
+            continue;
+        }
+        let old = cell.swap(none, std::sync::atomic::Ordering::AcqRel);
+        if old != UNBOUND && old != none {
             dec_ref_bits(py, old);
             cleared = true;
         }

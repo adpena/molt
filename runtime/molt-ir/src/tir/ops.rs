@@ -389,6 +389,13 @@ pub enum OpCode {
     /// block). Retains `value`, swaps it into the cell and releases the old
     /// word (`molt_codegen_abi::static_cell`). No runtime call, no result.
     StaticCellSet,
+    /// A read of a static cell whose InitOnce store dominates it (HF-846,
+    /// call_anatomy.md 4.5a). No operands; the op carries its `global_slot`
+    /// (cell k of module M's block). The cell is bound and is never written
+    /// again before module retirement, so the read is one load: no unbound
+    /// test, no retain. The result holds no reference of its own; the cell
+    /// owns it, and an escape retains it (`OwnershipRootFacts`). Pure.
+    StaticCellLoad,
     /// Read a named module attribute through the `module_get_name` runtime
     /// entrypoint used by the current native/WASM import surface.
     ///
@@ -571,6 +578,9 @@ const GLOBAL_SLOT_INDEX_ATTR: &str = "global_slot_index";
 /// Present when the slot is a static cell of a cell-eligible module
 /// (call_anatomy.md 4.5a), absent for a namespace slot table.
 const GLOBAL_SLOT_CELL_ATTR: &str = "global_slot_cell";
+/// Present on a read of a static cell that its InitOnce store dominates
+/// (HF-846, `GlobalSlotRef::init_once`).
+const GLOBAL_SLOT_INIT_ONCE_ATTR: &str = "global_slot_init_once";
 /// The compiled method site of a method load or of the call that consumes its
 /// pair (`OpIR::method_site`); only its typed accessor pair spells it.
 const METHOD_SITE_ATTR: &str = "method_site";
@@ -881,10 +891,19 @@ impl TirOp {
             Some(&AttrValue::Bool(true)) => true,
             other => panic!("{:?}: malformed global slot cell {other:?}", self.opcode),
         };
+        let init_once = match self.attrs.get(GLOBAL_SLOT_INIT_ONCE_ATTR) {
+            None => false,
+            Some(&AttrValue::Bool(true)) => true,
+            other => panic!(
+                "{:?}: malformed global slot init_once {other:?}",
+                self.opcode
+            ),
+        };
         Some(crate::ir::GlobalSlotRef {
             module,
             index,
             cell,
+            init_once,
         })
     }
 
@@ -929,11 +948,18 @@ impl TirOp {
                 } else {
                     self.attrs.remove(GLOBAL_SLOT_CELL_ATTR);
                 }
+                if slot.init_once {
+                    self.attrs
+                        .insert(GLOBAL_SLOT_INIT_ONCE_ATTR.into(), AttrValue::Bool(true));
+                } else {
+                    self.attrs.remove(GLOBAL_SLOT_INIT_ONCE_ATTR);
+                }
             }
             None => {
                 self.attrs.remove(GLOBAL_SLOT_MODULE_ATTR);
                 self.attrs.remove(GLOBAL_SLOT_INDEX_ATTR);
                 self.attrs.remove(GLOBAL_SLOT_CELL_ATTR);
+                self.attrs.remove(GLOBAL_SLOT_INIT_ONCE_ATTR);
             }
         }
     }

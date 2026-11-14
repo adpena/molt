@@ -18,7 +18,7 @@ Summary: 2026-11-09, release native, macOS arm64, user time against the managed 
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a) | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a) | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -1431,7 +1431,7 @@ a module eligible. The bind also records the builtin binding guard bits (HF-79) 
 name some code may store, since a cell store never reaches the dictionary's guard state. Every
 layout name whose body store is unconditional, once, at initialization, with no other writer,
 carries an `InitOnce` fact (function, class, module, intrinsic or other) in the build diagnostics
-(`static_module_cells`); its consumer is a later slice (HF-846). An ineligible module keeps its
+(`static_module_cells`); the third consumer below reads it. An ineligible module keeps its
 dictionary and slot tables unchanged, and the diagnostics name the failed fact.
 
 Measured at 20 times `bench_math_numeric`'s size and on `bench_method_defaults`, interleaved
@@ -1463,8 +1463,43 @@ same statements through the same predicate (`own_namespace_literal_delete`); a m
 `globals` in any scope keeps the old reach. `os`, `_abc` and `typing` replaced computed-key loops and a `globals()`
 cache with literal pops and a `global` declaration. `bench_math_numeric`'s 27-module
 closure went from 8 to 17 cell-eligible modules (`math`, `abc`, `copyreg`, `typing`, `os`,
-`_collections_abc`, `importlib`, `zipimport` among them). `__future__` still writes its own
-namespace by a computed key.
+`_collections_abc`, `importlib`, `zipimport` among them; 18 with `_abc`). `__future__` still
+writes its own namespace by a computed key.
+
+**Third consumer: init-dominated cell reads (lane initonce, HF-846, 2026-11-14).** A read of an
+`InitOnce` cell `M.n` in `M`'s own code that runs only after `n`'s one store is one load:
+`StaticCellLoad`, no operands, no unbound test, no retain. Integration decides it
+(`static_module_cells.init_dominance`) over the init chain (`closed_world_bindings.InitChain`):
+the init function and each body chunk called from exactly one site off every cycle, one CFG per
+function (the frontend's `cfg_analysis`), a chunk's point counting as done after its call only
+when it dominates every normal return of the chunk (an exit that no `exception_source: unwind`
+landing dominates). In the chain the store must dominate the read. In one of `M`'s functions the
+store must dominate every point at which the function may start: each use of the object its
+`func_new` creates (after a store that publishes it, during any other use; the metadata call runs
+nothing) and each direct call by symbol; a reference from another function of `M` starts it no
+earlier than that function (a least fixed point, so recursion adds nothing); a reference from
+another module, an unordered chunk, or no reference at all lets it start at any time, so an
+import cycle never runs a dominated read early. The same chain now decides "unconditional" for
+the F2 and `InitOnce` facts, which the old depth count lost after the first forward jump (every
+class statement emits one). Each `InitOnce` read left checked gets a build diagnostic naming the
+failed fact (`checked_init_once_reads`). The integration stamp is `{cell, init_once}`; the global
+slot pass emits `StaticCellLoad`; `molt_codegen_abi::static_cell::generate_static_cell_load` holds
+the meaning (the cell's offset, one load), and LLVM, Cranelift and WASM each select one load at a
+constant address. Ownership has one more root fact, `static_cell_view_roots`: the cell owns the
+object for the rest of the program, so nothing releases a view, an adopting call or a frame home
+receives a retained reference, and a `Return` retains it. Module retirement now stores `None`,
+never the unbound word, into each bound cell, as CPython's module clearing does: a finalizer that
+runs module code during retirement reads an object. Measured at 20 times `bench_math_numeric`'s
+size, interleaved against origin/main 8e517ccb32 (five runs each), release, macOS arm64, output
+identical: LLVM 4.719 G → 3.806 G instructions retired (-19.3%; 786 → 634 per iteration), user
+0.17 → 0.15 s; Cranelift 9.110 G → 7.546 G (-17.2%), 0.31 → 0.26 s. The `math` receiver read that
+the closed-world binding keeps for its `NameError` is now a dead pure load, which DCE deletes. On
+LLVM the loop's runtime calls are the four direct intrinsic calls (`sqrt` twice, `log2`, `floor`)
+before and after, and compiled-chunk self samples fell from 332 to 226 of about 1,000 (`sample`,
+200 times the size, warm binaries). Cranelift still calls `molt_is_truthy` and
+`exception_pending` each iteration, before and after; that is the shared lowering's (HF-843).
+Remaining: a method's read of its own class (`class_def` may run hooks), direct calls (HF-846
+slice 2) and inline construction (slice 3).
 
 ### 4.6 Reference counts
 

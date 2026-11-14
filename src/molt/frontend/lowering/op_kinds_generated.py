@@ -470,6 +470,7 @@ FrontendOpKind = Literal[
     'STATE_YIELD',
     'STATICMETHOD_NEW',
     'STATIC_CELL_BASE',
+    'STATIC_CELL_LOAD',
     'STATIC_CELL_SET',
     'STORE',
     'STORE_ATTR',
@@ -1003,6 +1004,7 @@ WireOpKind = Literal[
     'state_yield',
     'stateful_locals_register',
     'static_cell_base',
+    'static_cell_load',
     'static_cell_set',
     'staticmethod_new',
     'store',
@@ -1543,6 +1545,7 @@ class FrontendKinds:
     STATE_YIELD: Final = 'STATE_YIELD'
     STATICMETHOD_NEW: Final = 'STATICMETHOD_NEW'
     STATIC_CELL_BASE: Final = 'STATIC_CELL_BASE'
+    STATIC_CELL_LOAD: Final = 'STATIC_CELL_LOAD'
     STATIC_CELL_SET: Final = 'STATIC_CELL_SET'
     STORE: Final = 'STORE'
     STORE_ATTR: Final = 'STORE_ATTR'
@@ -2076,6 +2079,7 @@ class WireKinds:
     STATE_YIELD: Final = 'state_yield'
     STATEFUL_LOCALS_REGISTER: Final = 'stateful_locals_register'
     STATIC_CELL_BASE: Final = 'static_cell_base'
+    STATIC_CELL_LOAD: Final = 'static_cell_load'
     STATIC_CELL_SET: Final = 'static_cell_set'
     STATICMETHOD_NEW: Final = 'staticmethod_new'
     STORE: Final = 'store'
@@ -2601,6 +2605,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'STATE_YIELD': 'state_yield',
     'STATICMETHOD_NEW': 'staticmethod_new',
     'STATIC_CELL_BASE': 'static_cell_base',
+    'STATIC_CELL_LOAD': 'static_cell_load',
     'STATIC_CELL_SET': 'static_cell_set',
     'STORE': 'store',
     'STORE_ATTR': 'store_attr',
@@ -3144,6 +3149,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "state_yield",
         "stateful_locals_register",
         "static_cell_base",
+        "static_cell_load",
         "static_cell_set",
         "staticmethod_new",
         "store",
@@ -3717,6 +3723,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "STATE_YIELD",
         "STATICMETHOD_NEW",
         "STATIC_CELL_BASE",
+        "STATIC_CELL_LOAD",
         "STATIC_CELL_SET",
         "STORE",
         "STORE_ATTR",
@@ -4012,6 +4019,7 @@ CANONICAL_KIND: dict[str, str] = {
     "global_slot_get": "global_slot_get",
     "static_cell_base": "static_cell_base",
     "static_cell_set": "static_cell_set",
+    "static_cell_load": "static_cell_load",
     "module_get_name": "module_get_name",
     "module_set_attr": "module_set_attr",
     "module_del_global": "module_del_global",
@@ -4133,6 +4141,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "global_slot_get",
         "static_cell_base",
         "static_cell_set",
+        "static_cell_load",
         "module_get_name",
         "module_set_attr",
         "module_del_global",
@@ -4549,6 +4558,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "STATE_TRANSITION": True,
     "STATE_YIELD": True,
     "STATIC_CELL_BASE": False,
+    "STATIC_CELL_LOAD": False,
     "STATIC_CELL_SET": True,
     "STORE": True,
     "STORE_ATTR": True,
@@ -5040,6 +5050,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "state_yield": 1024,
     "stateful_locals_register": 1024,
     "static_cell_base": 64,
+    "static_cell_load": 64,
     "static_cell_set": 64,
     "store": 64,
     "store_attr": 64,
@@ -5266,6 +5277,7 @@ FRONTEND_EFFECT_PURE_KINDS: frozenset[FrontendOpKind] = frozenset(
         "MODULE_SLOT",
         "PHI",
         "STATIC_CELL_BASE",
+        "STATIC_CELL_LOAD",
         "TYPE_GUARD",
         "UNBOX",
         "UNBOX_TO_RAW_INT",

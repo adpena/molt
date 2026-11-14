@@ -841,6 +841,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::GlobalSlotBase => self.emit_global_slot_base(op),
             OpCode::GlobalSlotGet => self.emit_global_slot_get(op),
             OpCode::StaticCellBase => self.emit_static_cell_base(op),
+            OpCode::StaticCellLoad => self.emit_static_cell_load(op),
             OpCode::StaticCellSet => self.emit_static_cell_set(op),
 
             // -- ModuleGetName: module name/attribute lookup helper --

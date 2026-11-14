@@ -10,6 +10,7 @@ fn slot(index: u32) -> GlobalSlotRef {
         module: "demo".into(),
         index,
         cell: false,
+        init_once: false,
     }
 }
 
@@ -273,4 +274,61 @@ fn a_cell_read_reads_the_static_block_and_a_cell_store_makes_no_call() {
         assert_eq!(store.global_slot(), Some(cell(index)));
         assert_eq!(store.origin, None);
     }
+}
+
+/// An init-dominated cell read (HF-846) is one load with no operands; a
+/// checked cell read beside it keeps its base, its unbound test and its
+/// by-name operands.
+#[test]
+fn an_init_dominated_cell_read_is_one_load_without_operands() {
+    let mut func = function();
+    let (dominated, checked) = (func.fresh_value(), func.fresh_value());
+    func.value_types.insert(dominated, TirType::DynBox);
+    func.value_types.insert(checked, TirType::DynBox);
+    let once = GlobalSlotRef {
+        init_once: true,
+        ..cell(5)
+    };
+    let mut first = TirOp::new(
+        OpCode::ModuleGetGlobal,
+        vec![ValueId(0), ValueId(1)],
+        vec![dominated],
+    );
+    first.set_global_slot(Some(&once));
+    let mut second = TirOp::new(
+        OpCode::ModuleGetGlobal,
+        vec![ValueId(0), ValueId(1)],
+        vec![checked],
+    );
+    second.set_global_slot(Some(&cell(5)));
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.extend([
+        first,
+        second,
+        TirOp::new(OpCode::WarnStderr, vec![checked], vec![]),
+    ]);
+    block.terminator = Terminator::Return {
+        values: vec![dominated],
+    };
+
+    super::run(&mut func);
+    verify(&func);
+    let ops = entry_ops(&func);
+    let kinds: Vec<_> = ops.iter().map(|op| op.opcode).collect();
+    assert_eq!(
+        kinds,
+        [
+            OpCode::StaticCellLoad,
+            OpCode::StaticCellBase,
+            OpCode::GlobalSlotGet,
+            OpCode::WarnStderr,
+        ]
+    );
+    assert!(ops[0].operands.is_empty(), "no base, no name, no module");
+    assert_eq!(ops[0].results, [dominated]);
+    assert_eq!(ops[0].global_slot(), Some(once));
+    assert_eq!(ops[0].origin, None);
+    assert_eq!(ops[2].operands, [ops[1].results[0], ValueId(0), ValueId(1)]);
+    assert_eq!(ops[2].results, [checked]);
 }

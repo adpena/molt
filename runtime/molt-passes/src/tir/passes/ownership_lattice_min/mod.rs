@@ -408,6 +408,18 @@ fn non_owning_copy_result_roots(func: &TirFunction, aliases: &AliasUnionFind) ->
         .collect()
 }
 
+/// The results of init-dominated static cell reads that are their own alias
+/// roots (`OwnershipRootFacts::is_static_cell_view_root`).
+fn static_cell_view_roots(func: &TirFunction, aliases: &AliasUnionFind) -> HashSet<ValueId> {
+    func.blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::StaticCellLoad)
+        .flat_map(|op| op.results.iter().copied())
+        .filter(|&result| aliases.root(result) == result)
+        .collect()
+}
+
 /// Binding views, and the block arguments that carry only them.
 ///
 /// A binding-view spelling returns a view of a frame binding: the object its
@@ -489,6 +501,8 @@ pub(crate) struct OwnershipRootFacts {
     non_owning_copy_result_roots: HashSet<ValueId>,
     /// Frame binding views and the block arguments that carry only them.
     binding_view_roots: HashSet<ValueId>,
+    /// Init-dominated static cell reads (`StaticCellLoad`, HF-846).
+    static_cell_view_roots: HashSet<ValueId>,
 }
 
 impl OwnershipRootFacts {
@@ -499,6 +513,7 @@ impl OwnershipRootFacts {
             conditionally_valid_regions: conditionally_valid_regions(func, aliases),
             non_owning_copy_result_roots: non_owning_copy_result_roots(func, aliases),
             binding_view_roots: binding_view_roots(func, aliases),
+            static_cell_view_roots: static_cell_view_roots(func, aliases),
         }
     }
 
@@ -546,10 +561,20 @@ impl OwnershipRootFacts {
         self.binding_view_roots.contains(&root)
     }
 
+    /// Init-dominated static cell reads (HF-846): a view of an object its
+    /// cell owns. The cell is bound before the read and no code writes it
+    /// until module retirement, so the view stays valid for the rest of the
+    /// program: nothing releases one, an operation that takes one receives a
+    /// retained reference, and a `Return` of one retains it.
+    pub(crate) fn is_static_cell_view_root(&self, root: ValueId) -> bool {
+        self.static_cell_view_roots.contains(&root)
+    }
+
     pub(crate) fn is_drop_owned_root_candidate(&self, root: ValueId) -> bool {
         !self.is_borrowed_parameter_root(root)
             && !self.is_non_owning_copy_result_root(root)
             && !self.is_binding_view_root(root)
+            && !self.is_static_cell_view_root(root)
     }
 
     /// Whether `result`, a result of `op`, holds a reference of its own: it is
@@ -565,7 +590,9 @@ impl OwnershipRootFacts {
         result: ValueId,
         aliases: &AliasUnionFind,
     ) -> bool {
-        aliases.root(result) == result && !copy_results_hold_no_reference(op)
+        aliases.root(result) == result
+            && !copy_results_hold_no_reference(op)
+            && op.opcode != OpCode::StaticCellLoad
     }
 }
 
@@ -630,7 +657,8 @@ impl<'a> DropEligibility<'a> {
             && !self.root_facts.is_conditionally_valid_result_root(root)
             && (self.root_facts.is_borrowed_parameter_root(root)
                 || self.root_facts.is_non_owning_copy_result_root(root)
-                || self.root_facts.is_binding_view_root(root))
+                || self.root_facts.is_binding_view_root(root)
+                || self.root_facts.is_static_cell_view_root(root))
     }
 
     pub(crate) fn is_droppable(&self, value: ValueId) -> bool {
