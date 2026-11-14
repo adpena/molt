@@ -52,7 +52,11 @@ from molt.cli.models import (
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
 from molt.cli.closed_world_bindings import bind_closed_world_calls
-from molt.cli.static_module_cells import StaticCellPlan, plan_static_module_cells
+from molt.cli.static_module_cells import (
+    StaticCellPlan,
+    plan_static_module_cells,
+    prove_init_once_calls,
+)
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
 from molt.cli.module_registry import (
     ModuleRegistry,
@@ -2317,6 +2321,13 @@ def _prepare_backend_ir(
                 "ops": import_ops,
             }
         )
+    # Proven direct calls of InitOnce functions (HF-846 slice 2); every lane
+    # consumes the frontend's func_new shape facts here.
+    binding_diagnostics.extend(
+        prove_init_once_calls(
+            functions, integration_state.module_functions, static_cells
+        )
+    )
     try:
         _finalize_gpu_descriptors(
             functions,

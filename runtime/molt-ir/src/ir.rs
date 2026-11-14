@@ -667,6 +667,19 @@ pub struct OpIR {
     /// generated `METHOD_SITE_KINDS` carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method_site: Option<u32>,
+    /// A `call_guarded` whose callee integration proved to be the function
+    /// object of its target's one `func_new` (HF-846 slice 2): the read of an
+    /// init-dominated InitOnce cell stored once from that `func_new`, with an
+    /// exact positional call of a positional-only signature and matching
+    /// entry custody. The late lowering enters the target directly, without
+    /// the admission call or the code guard.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub proven_target: bool,
+    /// A `func_new` of a synchronous def with positional parameters only:
+    /// an exact positional call of its object binds nothing. Integration
+    /// reads it to prove `proven_target` (HF-846 slice 2); backends ignore it.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub direct_shape: bool,
 }
 
 /// One module global slot: the owning module's registry name and the slot's
@@ -757,6 +770,8 @@ impl OpIR {
             bce_safe: Default::default(),
             global_slot: None,
             method_site: None,
+            proven_target: false,
+            direct_shape: false,
         }
     }
 }

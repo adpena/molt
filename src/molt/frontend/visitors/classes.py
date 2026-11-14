@@ -101,7 +101,13 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         binding_name = class_info["binding_name"]
         if binding_name not in self.stable_module_classes:
             return False
-        if self.module_globals_dict_escaped:
+        if self.module_globals_dict_escaped and (
+            self.namespace_premise is None
+            or self.namespace_premise.foreign_writes is None
+        ):
+            # Without a closed graph, an observed namespace may be rebound by
+            # unseen code; with one, the stable binding above names every
+            # writer (HF-226).
             return False
         if binding_name in self.module_global_mutations:
             return False
