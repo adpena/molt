@@ -18,6 +18,12 @@ from tools import checkout_maintenance as maintenance
 from tools import controller_source as controllers
 from tools import detached_execution as detached
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow child is not a stuck one (2026-11-13: 10 s
+# and 30 s deadlines failed under load and passed alone). The properties under
+# test are orderings, which the barriers and events assert.
+_HANG_BOUND_S = 300.0
+
 
 def _git(root, *args):
     return git_process(root, *args).stdout.strip()
@@ -282,7 +288,9 @@ def test_long_collection_completion_leaves_a_new_dispatchable_epoch(
                 # Model a collector surviving a day, such as host suspension.
                 os.utime(stamp, (1, 1))
                 entered.set()
-                assert release.wait(30), "fixture collector was never released"
+                assert release.wait(_HANG_BOUND_S), (
+                    "fixture collector was never released"
+                )
         except BaseException as error:
             errors.append(error)
             entered.set()
@@ -290,7 +298,9 @@ def test_long_collection_completion_leaves_a_new_dispatchable_epoch(
     worker = threading.Thread(target=long_collection)
     worker.start()
     try:
-        assert entered.wait(30), "fixture collector did not acquire admission"
+        assert entered.wait(_HANG_BOUND_S), (
+            "fixture collector did not acquire admission"
+        )
         if errors:
             raise errors[0]
         first = maintenance.schedule(root, {}, cwd=tmp_path)
@@ -515,7 +525,9 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
             try:
                 assert handle is not None
                 lock_entered.set()
-                assert lock_release.wait(60), "prune lock owner was never released"
+                assert lock_release.wait(_HANG_BOUND_S), (
+                    "prune lock owner was never released"
+                )
             except BaseException as error:
                 lock_errors.append(error)
                 lock_entered.set()
@@ -525,7 +537,7 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
 
         holder = threading.Thread(target=hold_prune_lock)
         holder.start()
-        assert lock_entered.wait(30)
+        assert lock_entered.wait(_HANG_BOUND_S)
         if lock_errors:
             raise lock_errors[0]
 
@@ -553,12 +565,12 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         else f"logs/cache_retention/automatic/prune-{epoch}"
     )
     try:
-        assert returned.wait(30), "dispatch waited for the blocked collector"
+        assert returned.wait(_HANG_BOUND_S), "dispatch waited for the blocked collector"
         if "error" in result:
             raise result["error"]
         assert result["state"] == state
         record_property("maintenance_dispatch_elapsed_s", result["dispatch_elapsed_s"])
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + _HANG_BOUND_S
         while not barrier.with_suffix(".entered").exists():
             assert time.monotonic() < deadline, "collector never reached its barrier"
             if (state / "rc").exists():
@@ -570,7 +582,7 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         assert not lane.exists()
         if operation == "cache":
             barrier.touch()
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + _HANG_BOUND_S
             while not barrier.with_suffix(".waiting").exists():
                 assert time.monotonic() < deadline, (
                     "worker did not retain its lock wait"
@@ -590,7 +602,7 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         thread.join(35)
         assert not thread.is_alive(), "fixture dispatcher did not close"
         if (state / "worker.json").exists():
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + _HANG_BOUND_S
             while not (state / "rc").exists():
                 assert time.monotonic() < deadline, "fixture worker did not close"
                 time.sleep(0.02)
@@ -624,7 +636,7 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
     warm_state = maintenance.schedule(warm_root, environment, cwd=snapshot)
     record_property("maintenance_cached_dispatch_elapsed_s", time.monotonic() - started)
     assert warm_state is not None
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + _HANG_BOUND_S
     while not (warm_state / "rc").exists():
         assert time.monotonic() < deadline, "cached-source fixture worker did not close"
         time.sleep(0.02)

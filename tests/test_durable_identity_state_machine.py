@@ -34,6 +34,12 @@ from tests.process_guard_common import install_module_view
 from tools.import_file import load_module_from_path
 from tools import molt_dev_storage as storage
 
+# A wait's bound detects a hang; it never asserts speed. Presubmit runs these
+# tests beside builds, where a slow child is not a stuck one (2026-11-13: 10 s
+# and 30 s deadlines failed under load and passed alone). The properties under
+# test are orderings, which the barriers and events assert.
+_HANG_BOUND_S = 300.0
+
 
 # The user-home keys molt.default_paths reads: POSIX HOME, Windows USERPROFILE or
 # HOMEDRIVE/HOMEPATH with USERNAME. A selected environment keeps the host's user
@@ -399,7 +405,7 @@ class DurableIdentityMachine(RuleBasedStateMachine):
                     lease.release()
             finally:
                 finish.set()
-            legacy_root = old_future.result(timeout=10)
+            legacy_root = old_future.result(timeout=_HANG_BOUND_S)
         # The actual v1 producer's final sweep ran after v2 became pending.
         assert _files(current_root) == before
         foreign = _files(legacy_root, exclude=current_root)
@@ -728,7 +734,7 @@ def test_native_directory_identity_survives_concurrent_entry_changes(
     capturing = Event()
 
     def change_entries():
-        assert capturing.wait(timeout=10)
+        assert capturing.wait(timeout=_HANG_BOUND_S)
         for index in range(16):
             child = target / f"child-{index}"
             child.write_bytes(b"directory entry activity")
@@ -742,7 +748,7 @@ def test_native_directory_identity_survives_concurrent_entry_changes(
             answer = native_leaf(fd, name)
             if not capturing.is_set():
                 capturing.set()
-                observed = changed.result(timeout=10)
+                observed = changed.result(timeout=_HANG_BOUND_S)
                 assert os.path.samestat(original_stat, observed)
                 assert (original_stat.st_mtime_ns, original_stat.st_ctime_ns) != (
                     observed.st_mtime_ns,
