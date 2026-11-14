@@ -88,8 +88,12 @@ def test_hf205_cell_is_compiler_authorities_dev_fast_with_its_config(
     assert "--include-ignored" in libtest and "--test-threads=1" in libtest
     assert "read::coff::coff_extended_relocations" in libtest
     assert "--bins" not in argv and "--timings" not in argv
-    # molt-wasm-facts is not selected, so its qualified feature narrows the cell.
-    assert cell.dropped == {"molt-wasm-facts/host-tool"}
+    # molt-wasm-facts and molt-lang-cpython-abi are not selected, so their
+    # qualified features narrow the cell.
+    assert cell.dropped == {
+        "molt-wasm-facts/host-tool",
+        "molt-lang-cpython-abi/extension-loader",
+    }
     profiles = {
         cell.key.build[cell.key.build.index("--profile") + 1]
         for cell in _cells_for(selection, "molt-backend-native")
