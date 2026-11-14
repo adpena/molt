@@ -679,7 +679,7 @@ pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> Option<String> {
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt bytearray object backed by `Vec<u8>`.
-pub unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut Vec<u8> {
+pub unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut molt_runtime_core::molt_vec::MoltVec<u8> {
     unsafe { &mut *(vt().bytearray_vec)(ptr) }
 }
 

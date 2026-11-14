@@ -12,7 +12,15 @@ change.
 
 ## Stage status
 
-Summary: 2026-11-09, release native, macOS arm64, user time against the managed CPython 3.12.16 (-I): Molt runs at 0.26x CPython (geomean of 27 benchmarks measurable on both sides); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+Summary: 2026-11-14, release native, macOS arm64, median user time against the managed CPython 3.12.16 (-I): Molt runs at 0.66x CPython over the 9 benchmarks of 100 ms or more (0.81x over all 58 measurable on both sides, where interpreter startup flatters Molt in the 47 under 50 ms); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+
+The bar is the native reference: instructions per iteration against C for the same loop. The
+CPython ratio is the correctness oracle's companion, not the target. The 2026-11-14 figures come
+from direct timing (each program built once with `molt build --release`, then one warm run and
+five alternating samples per side, outputs identical); the 2026-11-09 figure (0.26x over 27) used
+a different method, so the two are not a trend. Worst five, CPython time over Molt time:
+bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_generator_chain
+0.174, bench_descriptor_property 0.177.
 
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
@@ -2061,9 +2069,10 @@ first. These sites hold a hand-written allocator today:
 - `runtime/molt-runtime-resource/src/temp_arena.rs:7`: `TempArena`, chunked
   `Vec<Vec<u8>>` storage with tracker charging. The same `Allocator` impl would
   carry the resource-tracker charge that each call site now pairs by hand.
-- `runtime/molt-runtime/src/object/layout.rs:291` and `:554`: `ListIntStorage` and
-  `ListBoolStorage` allocate their owner with `std::alloc::alloc` and charge the
-  tracker separately. A tracking allocator makes `Box::new_in` charge and release
+- `runtime/molt-runtime/src/object/backing.rs` (`tracked_vec_box_with_buffer`):
+  every object-owned sequence storage (`MoltVec<T>`, one `#[repr(C)]` type for
+  generic, int and bool lists alike) charges the tracker for its owner and
+  buffer by hand. A tracking allocator makes `Box::new_in` charge and release
   in one place.
 - `runtime/molt-runtime/src/object/aux_header.rs:409`: the aux sidecar's raw
   `alloc`, same pattern.

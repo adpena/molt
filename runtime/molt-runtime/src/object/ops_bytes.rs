@@ -380,7 +380,12 @@ pub(crate) fn molt_bytearray_clear_attached_body(
                     "bytearray.clear expects bytearray",
                 );
             }
-            let _ = bytearray_mutate(_py, bytearray_ptr, 0, Vec::clear);
+            let _ = bytearray_mutate(
+                _py,
+                bytearray_ptr,
+                0,
+                crate::object::molt_vec::MoltVec::clear,
+            );
         }
         MoltObject::none().bits()
     })
@@ -1882,7 +1887,7 @@ pub(crate) fn bytearray_init_from_arguments(
             "descriptor '__init__' requires a 'bytearray' object",
         );
     };
-    if unsafe { bytearray_mutate(py, ptr, 0, Vec::clear) }.is_none() {
+    if unsafe { bytearray_mutate(py, ptr, 0, crate::object::molt_vec::MoltVec::clear) }.is_none() {
         return MoltObject::none().bits();
     }
     let Some(source) = bound[0] else {
@@ -2004,7 +2009,9 @@ pub(crate) fn bytearray_init_from_arguments(
         }
         // The optimization owns no source snapshot across Python callbacks.
         drop(items);
-        if unsafe { bytearray_mutate(py, ptr, 0, Vec::clear) }.is_none() {
+        if unsafe { bytearray_mutate(py, ptr, 0, crate::object::molt_vec::MoltVec::clear) }
+            .is_none()
+        {
             return MoltObject::none().bits();
         }
     }

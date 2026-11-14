@@ -69,6 +69,7 @@ pub(crate) mod list_mutation;
 mod list_representation_tests;
 pub(crate) mod list_storage;
 pub(crate) mod mapping_merge;
+pub(crate) use molt_runtime_core::molt_vec;
 pub(crate) mod memoryview;
 pub(crate) mod native_handle;
 pub(crate) mod native_instance;
@@ -1017,8 +1018,8 @@ pub(crate) struct MemoryView {
     pub(crate) kind: MemoryViewKind,
     pub(crate) _pad: [u8; 4],
     pub(crate) format_bits: u64,
-    pub(crate) shape_ptr: *mut Vec<isize>,
-    pub(crate) strides_ptr: *mut Vec<isize>,
+    pub(crate) shape_ptr: *mut crate::object::molt_vec::MoltVec<isize>,
+    pub(crate) strides_ptr: *mut crate::object::molt_vec::MoltVec<isize>,
     pub(crate) exports: buffer_exports::BufferExports,
     pub(crate) native_lease: Option<crate::object::foreign::RuntimeBufferLease>,
 }
@@ -2581,7 +2582,8 @@ pub(crate) fn alloc_object_with_aux(
         );
     }
     if debug_alloc_list_builder() && type_id == TYPE_ID_LIST_BUILDER {
-        let expected = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
+        let expected = std::mem::size_of::<MoltHeader>()
+            + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>();
         eprintln!(
             "molt debug alloc_list_builder: total_size={} expected={}",
             total_size, expected
@@ -3442,11 +3444,15 @@ pub(crate) unsafe fn memoryview_format_bits(ptr: *mut u8) -> u64 {
     unsafe { (*memoryview_ptr(ptr)).format_bits }
 }
 
-pub(crate) unsafe fn memoryview_shape_ptr(ptr: *mut u8) -> *mut Vec<isize> {
+pub(crate) unsafe fn memoryview_shape_ptr(
+    ptr: *mut u8,
+) -> *mut crate::object::molt_vec::MoltVec<isize> {
     unsafe { (*memoryview_ptr(ptr)).shape_ptr }
 }
 
-pub(crate) unsafe fn memoryview_strides_ptr(ptr: *mut u8) -> *mut Vec<isize> {
+pub(crate) unsafe fn memoryview_strides_ptr(
+    ptr: *mut u8,
+) -> *mut crate::object::molt_vec::MoltVec<isize> {
     unsafe { (*memoryview_ptr(ptr)).strides_ptr }
 }
 
@@ -3945,7 +3951,7 @@ pub(crate) unsafe fn maybe_run_object_finalizer_for_cycle(py: &PyToken<'_>, ptr:
     unsafe { run_object_finalizer_in_revival_window(py, ptr) };
 }
 
-unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut Vec<T>) {
+unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut crate::object::molt_vec::MoltVec<T>) {
     if !vec_ptr.is_null() {
         drop(unsafe { backing::tracked_vec_box_from_raw(vec_ptr) });
     }
@@ -3953,7 +3959,7 @@ unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut Vec<T>) {
 
 unsafe fn drop_detached_linear_builder_vec(ptr: *mut u8) {
     unsafe {
-        let slot = ptr as *mut *mut Vec<u64>;
+        let slot = ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>;
         let vec_ptr = slot.replace(std::ptr::null_mut());
         if vec_ptr.is_null() {
             return;
@@ -4722,13 +4728,13 @@ unsafe fn dec_ref_ptr_terminal_body(
                 Some(HeapDropPolicy::ListInt) => {
                     let storage = layout::list_int_storage_ptr(ptr);
                     if !storage.is_null() {
-                        drop((*Box::from_raw(storage)).into_vec());
+                        drop(backing::tracked_vec_box_from_raw(storage));
                     }
                 }
                 Some(HeapDropPolicy::ListBool) => {
                     let storage = layout::list_bool_storage_ptr(ptr);
                     if !storage.is_null() {
-                        drop((*Box::from_raw(storage)).into_vec());
+                        drop(backing::tracked_vec_box_from_raw(storage));
                     }
                 }
                 Some(HeapDropPolicy::List) => drop_detached_tracked_vec(seq_vec_ptr(ptr)),

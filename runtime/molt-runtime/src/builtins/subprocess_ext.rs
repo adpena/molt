@@ -627,7 +627,7 @@ fn extract_bytes(_py: &PyToken<'_>, bits: u64) -> Result<Vec<u8>, u64> {
         }
         if type_id == TYPE_ID_BYTEARRAY {
             let vec_ref = unsafe { bytearray_vec_ref(ptr) };
-            return Ok(vec_ref.clone());
+            return Ok(vec_ref.to_vec());
         }
     }
     Err(raise_exception::<u64>(

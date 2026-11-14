@@ -34,7 +34,7 @@ pub(super) unsafe fn memory_backend_ptr_from_bits(
 pub(super) unsafe fn memory_backend_vec_ref_from_bits(
     _py: &PyToken<'_>,
     mem_bits: u64,
-) -> Result<&'static Vec<u8>, u64> {
+) -> Result<&'static crate::object::molt_vec::MoltVec<u8>, u64> {
     unsafe {
         if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
             return Err(raise_exception::<_>(
@@ -64,7 +64,7 @@ pub(super) unsafe fn memory_backend_vec_ref_from_bits(
 pub(super) unsafe fn memory_backend_vec_ref(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,
-) -> Result<&'static Vec<u8>, u64> {
+) -> Result<&'static crate::object::molt_vec::MoltVec<u8>, u64> {
     unsafe { memory_backend_vec_ref_from_bits(_py, memory_backend_bits(handle)) }
 }
 
