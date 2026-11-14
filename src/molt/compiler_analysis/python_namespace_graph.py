@@ -57,23 +57,35 @@ class PythonNamespacePremise:
 
 
 def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
-    policy: P, premise: PythonNamespacePremise | None
+    policy: P, premise: PythonNamespacePremise | None, *, lowering: bool = False
 ) -> P:
     """Apply a closed graph's initial and future uncertainty together.
 
     A reached writer may already have run before the first acquisition. Its
     entry mask must travel with callback writes through every graph consumer.
     Standalone callers keep their explicit policy when no graph was proved.
+
+    Exposure lets unknown code activate a definition; only a code rebinder
+    (``code_rebinding``) can make that activation read another globals
+    mapping. Lowering therefore sees the exposed set only when the graph holds
+    a rebinder, so a method's global and builtin reads keep their proofs.
+    Graph discovery keeps the exposed set: its demand worklist activates the
+    bodies a value with a known origin can reach, and a precise origin for a
+    whole module's escape would activate every function of that module (the
+    runtime closure's escape of ``types`` pulls in 17 modules).
     """
     if premise is None:
         return policy
+    opaque = premise.opaque_activation_sources
+    if lowering and opaque is not None and not premise.code_rebinding:
+        opaque = ()
     return replace(
         policy,
         foreign_namespace_writes=premise.foreign_writes,
         callback_member_writes=premise.member_writes,
         entry_invalid_members=premise.entry_member_writes,
         noncanonical_imports=premise.noncanonical_imports,
-        opaque_activation_sources=premise.opaque_activation_sources,
+        opaque_activation_sources=opaque,
     )
 
 
