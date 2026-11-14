@@ -1121,6 +1121,8 @@ def cmd_land(args: argparse.Namespace) -> int:
         head = repair_landing(
             git, repo, head=head, upstream=upstream, session_id=session_id
         )
+        from tools.consumer_gate import proven_gates
+
         precheck = precheck_landing(
             git,
             repo,
@@ -1128,6 +1130,8 @@ def cmd_land(args: argparse.Namespace) -> int:
             upstream=upstream,
             session_id=session_id,
             static_only=args.static_only,
+            # The consumer gate ran these on this exact tree before commit.
+            proven=proven_gates(repo, git.rev_parse(f"{head}^{{tree}}")),
         )
     if args.static_only:
         _ok(

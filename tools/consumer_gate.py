@@ -29,8 +29,9 @@ import os
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -41,6 +42,9 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 ROOT = bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
+
+if TYPE_CHECKING:
+    from tools.molt_dev_policy import SelectedGate
 
 # Git probes and the importer-test child run under the developer-test guard.
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV_TEST")
@@ -99,6 +103,90 @@ def generator_outputs(root: Path) -> frozenset[str]:
 def receipt_path(root: Path, tree: str) -> Path:
     common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     return common / "molt" / "consumer-receipts" / f"{tree}.json"
+
+
+def proven_gates(
+    root: Path, tree: str, *, exact: bool = False
+) -> Callable[[SelectedGate], bool] | None:
+    """The landing gates the receipt for ``tree`` already ran, or None.
+
+    A static gate reads only the tree's files, so the receipt's run of the
+    same command proves it. A pytest gate is proven when it skips slow
+    tests, as the receipt's run did, and each of its targets is a file the
+    receipt ran as an importer; a ``-k`` or ``-m`` selection only narrows
+    those files. A test that needs landing-built artifacts is never a receipt
+    importer, so its cohort is never proven.
+
+    ``exact`` accepts only a receipt whose run saw exactly the tree's files
+    (no other tracked edit and no untracked file in the checkout): the
+    queue's batch, the landing's last run, asks for it. The lane precheck
+    does not, because the batch runs after it.
+    """
+    try:
+        payload = json.loads(receipt_path(root, tree).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if payload.get("schema") != SCHEMA or payload.get("tree") != tree:
+        return None
+    if exact and payload.get("exact") is not True:
+        return None
+    statics = frozenset(payload["static_gates"])
+    importers = frozenset(payload["importers"])
+    import shlex
+
+    from tools.molt_dev_gates import display
+    from molt.pytest_memory_guard_bootstrap import parse_pytest_arguments
+    from tools.proof_command_argv import pytest_arguments
+
+    def proven(gate: SelectedGate) -> bool:
+        if gate.static:
+            return display(gate.command) in statics
+        if not gate.pytest:
+            return False
+        argv = (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+        arguments = pytest_arguments(argv, root=root)
+        if arguments is None or "--skip-slow" not in arguments:
+            return False
+        # The cohort's targets as pytest's own parser reads them. An option
+        # that changes the configuration or conftests pytest loads makes the
+        # run differ from the receipt's, and a module target or a path the
+        # checkout lacks selects differently or fails: not proven.
+        try:
+            parsed = parse_pytest_arguments(arguments, plugin_options=True)
+        except ValueError:
+            return False
+        if (
+            parsed.pyargs
+            or parsed.inifile is not None
+            or parsed.override_ini
+            or parsed.rootdir is not None
+            or parsed.noconftest
+            or parsed.confcutdir is not None
+        ):
+            return False
+        targets = [Path(target.path) for target in parsed.targets]
+        return bool(targets) and all(
+            not target.is_absolute()
+            and (root / target).is_file()
+            and target.as_posix() in importers
+            for target in targets
+        )
+
+    return proven
+
+
+def checkout_matches(root: Path, tree: str) -> bool:
+    """Whether the checkout holds exactly ``tree``'s files: no file of the
+    tree differs on disk and no untracked, unignored file exists. A scratch
+    index holds the tree, so a new file of the change counts as tracked."""
+    with tempfile.TemporaryDirectory(prefix="molt-consumer-gate-") as scratch:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(scratch) / "index"))
+        _git(root, "read-tree", tree, env=env)
+        return not _git(root, "diff", "--name-only", env=env) and not _git(
+            root, "ls-files", "--others", "--exclude-standard", env=env
+        )
 
 
 def _needs_receipt(root: Path, changed: list[str]) -> bool:
@@ -234,6 +322,7 @@ def run(
 
     base = _git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     tree = commit_tree(root, paths)
+    exact = checkout_matches(root, tree)
     changed = changed_paths(root, tree, base=base)
     statics = static_gates(root, tree, base=base)
     print(f"consumer-gate: {len(statics)} static gate(s) the landing selects")
@@ -305,6 +394,7 @@ def run(
     if commit_tree(root, paths) != tree:
         print("consumer-gate: the change moved while its tests ran", file=sys.stderr)
         return 1
+    exact = exact and checkout_matches(root, tree)
     path = receipt_path(root, tree)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -321,6 +411,9 @@ def run(
         # Tests that failed beside the suite's load and passed alone (Chromium's
         # retry rule); tests/ owners replace their wall-clock waits.
         "flaky_reruns": flaky_reruns,
+        # The tests saw only the tree's files; the queue's batch reuses only
+        # such a receipt (proven_gates(exact=True)).
+        "exact": exact,
     }
     path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
     print(f"consumer-gate: receipt {path}")

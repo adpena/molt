@@ -347,6 +347,7 @@ def precheck_landing(
     budget: PrecheckBudget | None = None,
     static_only: bool = False,
     rerun: Callable[[SelectedGate], bool] | None = None,
+    proven: Callable[[SelectedGate], bool] | None = None,
 ) -> PrecheckResult:
     """Run ``head``'s static gates, then its try run within ``budget``.
 
@@ -354,7 +355,9 @@ def precheck_landing(
     ``FAST_LANDING_BUDGET`` and pushes only a complete result. ``rerun``, when
     given, keeps only the try-run gates it accepts; the others are ``carried``
     (an earlier run passed them and the caller proved the change since cannot
-    affect them). Static gates always run.
+    affect them). Static gates always run unless ``proven`` accepts them:
+    ``proven`` names the gates the consumer gate's receipt already ran on
+    this exact tree, static or try-run, and the precheck skips them.
 
     The gates, their toolchains and their environment come from the same
     authorities ``integrate`` uses (``select_landing_gates``, ``prepare``,
@@ -386,6 +389,15 @@ def precheck_landing(
     selected = [
         gate for gate in gates if gate.precheck and (gate.static or not static_only)
     ]
+    skipped: tuple[SelectedGate, ...] = ()
+    if proven is not None:
+        skipped = tuple(gate for gate in selected if proven(gate))
+        selected = [gate for gate in selected if gate not in skipped]
+        if skipped:
+            _step(
+                f"the consumer gate's receipt for this tree ran {len(skipped)} "
+                "selected gate(s); the precheck does not run them again"
+            )
     carried: tuple[SelectedGate, ...] = ()
     if rerun is not None:
         carried = tuple(
@@ -393,7 +405,9 @@ def precheck_landing(
         )
         selected = [gate for gate in selected if gate not in carried]
     waived = tuple(
-        gate for gate in gates if gate not in selected and gate not in carried
+        gate
+        for gate in gates
+        if gate not in selected and gate not in carried and gate not in skipped
     )
     tried = sum(1 for gate in selected if not gate.static)
     _step(
