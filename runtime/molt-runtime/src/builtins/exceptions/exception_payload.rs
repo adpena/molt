@@ -573,22 +573,6 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Result<Option<String>, u
         return Err(MoltObject::none().bits());
     }
     if !was_lazy {
-        // The eager traceback path historically records a precise raise-site
-        // span outside the traceback object. Apply it to the innermost frame
-        // before using the common source/caret renderer.
-        let saved_col = LAST_EXCEPTION_COL.with(|cell| {
-            let mut slot = cell.borrow_mut();
-            let saved = *slot;
-            *slot = (-1, -1);
-            saved
-        });
-        if saved_col.0 >= 0
-            && saved_col.1 > saved_col.0
-            && let Some(frame) = payload.last_mut()
-        {
-            frame.colno = saved_col.0;
-            frame.end_colno = saved_col.1;
-        }
         // The synthetic molt_main wrapper is not a Python traceback frame.
         payload.retain(|frame| !(frame.filename == b"<module>" && frame.name == b"<module>"));
     }

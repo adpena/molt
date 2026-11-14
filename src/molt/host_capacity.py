@@ -8,12 +8,14 @@ command sizes itself on an 8 GB laptop, a 128 GB workstation and a CI runner.
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
@@ -657,12 +659,24 @@ def darwin_available_bytes(page_size: int, pages: Mapping[str, int]) -> int | No
 # so two suites started together each claim the whole machine and both slow
 # down past their budgets (HF-623). Heavy work therefore takes a slot first; a
 # second heavy job of the same class waits instead of sharing the machine.
-# Integration (try runs, batches) and development checks (consumer gates,
-# postsubmit) hold separate slots, so at most one of each runs: a lane's
-# pre-commit gate never stops the landing queue, and a landing never stops a
-# lane's pre-commit gate (2026-11-13: a 96-file consumer gate held every
-# landing for 19 minutes behind the one shared slot).
+# Integration (landing batches) and development checks (consumer gates, lane
+# try runs, postsubmit) hold separate slots, so at most one of each runs: a
+# lane's checks never stop the landing queue, and a batch never stops a lane's
+# checks (2026-11-13: a 96-file consumer gate held every landing for 19
+# minutes behind the one shared slot; 2026-11-14: lane try runs waited 17 and
+# 39 minutes for batches and for each other).
 HOST_WORK_DIRNAME = "host-work"
+
+
+class HostWorkClass(StrEnum):
+    """The slot a heavy job takes."""
+
+    # A landing batch: it tests main plus queued lanes, then publishes.
+    INTEGRATION = "integration"
+    # Work on one lane or on landed main: consumer gates, try runs, postsubmit.
+    DEVELOPMENT = "development"
+
+
 _HEAVY_LOCK = "heavy.lock"
 _DEVELOPMENT_LOCK = "development.lock"
 # Held by a landing from the moment it queues for the slot until it releases
@@ -734,19 +748,93 @@ def _holder(lock: Path) -> str:
         return "an unrecorded holder"
 
 
+def _take_ticket(queue: Path) -> tuple[Path, BinaryIO]:
+    """Join the slot's queue: a ticket file this process holds locked.
+
+    The name orders tickets by arrival. The ticket appears under its final
+    name only once locked (POSIX rename), so no waiter reads a newborn ticket
+    as abandoned.
+    """
+    queue.mkdir(parents=True, exist_ok=True)
+    name = f"{time.time_ns():020d}-{os.getpid()}-{secrets.token_hex(4)}"
+    ticket = queue / f"{name}.ticket"
+    if os.name == "nt":
+        handle = open(ticket, "a+b")  # noqa: SIM115 - held while queued
+        while not _try_exclusive(handle):
+            time.sleep(0.01)
+        return ticket, handle
+    staging = queue / f"{name}.joining"
+    handle = open(staging, "a+b")  # noqa: SIM115 - held while queued
+    if not _try_exclusive(handle):
+        raise OSError(f"host-work ticket {staging} is locked by another process")
+    os.replace(staging, ticket)
+    return ticket, handle
+
+
+def _drop_ticket(ticket: Path, handle: BinaryIO) -> None:
+    handle.close()
+    ticket.unlink(missing_ok=True)
+
+
+def _first_in_line(queue: Path, ticket: Path) -> bool:
+    """Whether no live waiter queued before ``ticket``.
+
+    A waiter is live while it holds its ticket's lock, which the operating
+    system drops when the waiter dies, so an abandoned ticket never blocks
+    the queue: the first waiter to find one unlocked removes it.
+    """
+    for earlier in sorted(queue.glob("*.ticket")):
+        if earlier.name >= ticket.name:
+            return True
+        try:
+            probe = open(earlier, "a+b")  # noqa: SIM115 - closed below
+        except FileNotFoundError:
+            continue
+        try:
+            if not _try_exclusive(probe):
+                return False
+            if os.name != "nt":
+                earlier.unlink(missing_ok=True)
+        finally:
+            probe.close()
+        if os.name == "nt":
+            try:
+                earlier.unlink(missing_ok=True)
+            except PermissionError:
+                pass  # its owner reopened it; the next pass decides again
+    return True
+
+
 def _acquire(
     lock: Path, label: str, say: Callable[[str], None], clock: Callable[[], float]
 ) -> BinaryIO:
-    """Block until this process holds ``lock``; report the holder while waiting."""
+    """Block until this process holds ``lock``; report the holder while waiting.
+
+    Waiters are admitted in arrival order (a ticket queue beside the lock):
+    a polling flock alone admits whoever polls first, so a waiter could
+    starve; on 2026-11-14 a try run that had waited 21 minutes longer lost
+    the slot to a newer one.
+    """
     handle = open(lock, "a+b")  # noqa: SIM115 - the caller owns its lifetime
-    started = reported = clock()
-    first = True
-    while not _try_exclusive(handle):
-        now = clock()
-        if first or now - reported >= _REPORT_SECONDS:
-            say(f"host-work: {label} waits for {_holder(lock)} ({now - started:.0f} s)")
-            reported, first = now, False
-        time.sleep(_POLL_SECONDS)
+    queue = lock.with_suffix(".queue")
+    ticket, ticket_handle = _take_ticket(queue)
+    try:
+        started = reported = clock()
+        first = True
+        while not (_first_in_line(queue, ticket) and _try_exclusive(handle)):
+            now = clock()
+            if first or now - reported >= _REPORT_SECONDS:
+                say(
+                    f"host-work: {label} waits for {_holder(lock)} "
+                    f"({now - started:.0f} s)"
+                )
+                reported, first = now, False
+            time.sleep(_POLL_SECONDS)
+    except BaseException:
+        handle.close()
+        raise
+    finally:
+        _drop_ticket(ticket, ticket_handle)
     lock.with_suffix(".holder").write_text(
         f"{label} (pid {os.getpid()}, since {time.strftime('%H:%M:%S')})\n",
         encoding="utf-8",
@@ -767,16 +855,17 @@ def host_work_slot(
     state_dir: Path,
     *,
     label: str,
-    landing: bool,
+    work: HostWorkClass,
     say: Callable[[str], None],
     clock: Callable[[], float] = time.monotonic,
 ) -> Generator[HostWorkAdmission]:
     """Hold this host's heavy-work slot of the job's class for the body.
 
-    A landing first holds the landing lock, then waits for the integration
-    slot. Any other heavy job waits only for the development slot, so the two
-    classes never wait for each other. The operating system releases the locks
-    when a holder dies, so a crashed job never leaves a slot taken.
+    A landing batch first holds the landing lock, then waits for the
+    integration slot. Development work waits only for the development slot,
+    so the two classes never wait for each other. Each lock admits its
+    waiters in arrival order. The operating system releases the locks when a
+    holder dies, so a crashed job never leaves a slot taken.
 
     Work the holder starts is part of the holder's job: a nested request in
     this process is admitted at once, and a child started with
@@ -789,12 +878,13 @@ def host_work_slot(
     if slot in _HELD_SLOTS or os.environ.get(HOST_WORK_HELD_ENV) == slot:
         yield HostWorkAdmission(0.0)
         return
-    heavy = state_dir / (_HEAVY_LOCK if landing else _DEVELOPMENT_LOCK)
+    integration = work is HostWorkClass.INTEGRATION
+    heavy = state_dir / (_HEAVY_LOCK if integration else _DEVELOPMENT_LOCK)
     landing_lock = state_dir / _LANDING_LOCK
     started = clock()
     held: list[tuple[Path, BinaryIO]] = []
     try:
-        if landing:
+        if integration:
             held.append((landing_lock, _acquire(landing_lock, label, say, clock)))
         held.append((heavy, _acquire(heavy, label, say, clock)))
         _HELD_SLOTS.add(slot)

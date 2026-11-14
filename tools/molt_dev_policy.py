@@ -1273,11 +1273,17 @@ def select_landing_gates(
     extra: list[str],
     mode: LandingMode = LandingMode.PRESUBMIT,
     recent_failures: Collection[str] = (),
+    diff_base: str | None = None,
 ) -> tuple[str, GateConfig, list[str], list[SelectedGate], list[GateRule]]:
     """The policy, touched paths and bound gates of ``commit`` over ``upstream``.
 
     Policy comes from the same immutable commit whose clean source executes it.
     Without a known green base, postsubmit selects every tracked input.
+    ``{integration_upstream_commit}`` binds to ``diff_base`` when given, else
+    to ``upstream``: postsubmit selects over everything since the last green
+    main but measures its diff-relative gates (added lines, changed crates,
+    commit attribution) from the main it last observed, so a red streak does
+    not widen them to every commit since green.
     """
     if upstream is None and mode is not LandingMode.POSTSUBMIT:
         raise DriverError(
@@ -1330,11 +1336,12 @@ def select_landing_gates(
             replace(
                 gate,
                 command=bind_local_gate_command(
-                    gate.command, upstream_commit=upstream or commit
+                    gate.command, upstream_commit=diff_base or upstream or commit
                 ),
                 collection_command=(
                     bind_local_gate_command(
-                        gate.collection_command, upstream_commit=upstream or commit
+                        gate.collection_command,
+                        upstream_commit=diff_base or upstream or commit,
                     )
                     if gate.collection_command is not None
                     else None

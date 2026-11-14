@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import BinaryIO
 
@@ -446,7 +447,10 @@ def test_a_heavy_job_waits_for_the_holder_and_names_it(
 
     def job() -> None:
         with host_capacity.host_work_slot(
-            state, label="consumer gate", landing=False, say=said.append
+            state,
+            label="consumer gate",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=said.append,
         ):
             admitted.set()
 
@@ -470,14 +474,20 @@ def test_landings_and_development_checks_never_wait_for_each_other(
     landing = _held_elsewhere(state, "landing.lock")
     integration = _held_elsewhere(state, "heavy.lock")
     with host_capacity.host_work_slot(
-        state, label="consumer gate", landing=False, say=lambda _: None
+        state,
+        label="consumer gate",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=lambda _: None,
     ) as admission:
         assert admission.waited_seconds < 1
     host_capacity._release(state / "heavy.lock", integration)
     host_capacity._release(state / "landing.lock", landing)
     development = _held_elsewhere(state, "development.lock")
     with host_capacity.host_work_slot(
-        state, label="landing try run", landing=True, say=lambda _: None
+        state,
+        label="landing batch",
+        work=host_capacity.HostWorkClass.INTEGRATION,
+        say=lambda _: None,
     ) as admission:
         assert admission.waited_seconds < 1
     host_capacity._release(state / "development.lock", development)
@@ -497,17 +507,24 @@ def test_work_the_holder_starts_is_admitted_inside_the_holders_slot(
         "from pathlib import Path\n"
         "from molt import host_capacity\n"
         "with host_capacity.host_work_slot(Path(sys.argv[1]), label='gate',"
-        " landing=False, say=print, clock=time.monotonic) as a:\n"
+        " work=host_capacity.HostWorkClass.DEVELOPMENT, say=print,"
+        " clock=time.monotonic) as a:\n"
         "    print(f'admitted {a.waited_seconds}')\n"
     )
     with host_capacity.host_work_slot(
-        state, label="landing try run", landing=True, say=lambda _: None
+        state,
+        label="landing batch",
+        work=host_capacity.HostWorkClass.INTEGRATION,
+        say=lambda _: None,
     ):
         mark = host_capacity.held_slot_environment()
         assert mark == {host_capacity.HOST_WORK_HELD_ENV: str(state.resolve())}
         # A nested request in the holder's own process is admitted at once.
         with host_capacity.host_work_slot(
-            state, label="nested gate", landing=False, say=lambda _: None
+            state,
+            label="nested gate",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=lambda _: None,
         ) as inner:
             assert inner.waited_seconds == 0.0
         nested = run_guarded_test_process(
@@ -527,13 +544,16 @@ def test_a_landing_is_admitted_at_once_and_releases_both_locks(tmp_path: Path) -
     state = tmp_path / "host-work"
     with pytest.raises(RuntimeError, match="gate failed"):
         with host_capacity.host_work_slot(
-            state, label="landing try run", landing=True, say=lambda _: None
+            state,
+            label="landing batch",
+            work=host_capacity.HostWorkClass.INTEGRATION,
+            say=lambda _: None,
         ) as admission:
             assert admission.waited_seconds < 1
             assert (
                 (state / "heavy.holder")
                 .read_text(encoding="utf-8")
-                .startswith("landing try run")
+                .startswith("landing batch")
             )
             raise RuntimeError("gate failed")
     # Both locks are free again and no stale holder record remains.
@@ -543,3 +563,81 @@ def test_a_landing_is_admitted_at_once_and_releases_both_locks(tmp_path: Path) -
         host_capacity._release(state / name, handle)
     assert not (state / "heavy.holder").exists()
     assert not (state / "landing.holder").exists()
+
+
+_QUEUED_CHILD = (
+    "import sys, time\n"
+    "from pathlib import Path\n"
+    "from molt import host_capacity\n"
+    "host_capacity._POLL_SECONDS = 0.02\n"
+    "state, name, log = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])\n"
+    "with host_capacity.host_work_slot(state, label=name,"
+    " work=host_capacity.HostWorkClass.DEVELOPMENT, say=lambda _: None):\n"
+    "    with log.open('a', encoding='utf-8') as out:\n"
+    "        out.write(name + '\\n')\n"
+)
+
+
+def _queued_tickets(state: Path) -> list[Path]:
+    return sorted((state / "development.queue").glob("*.ticket"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_waiters_are_admitted_in_arrival_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-14: a try run that had waited 21 minutes longer lost the slot
+    to a newer one, because a polling flock admits whoever polls first."""
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    monkeypatch.delenv(host_capacity.HOST_WORK_HELD_ENV, raising=False)
+    state = tmp_path / "host-work"
+    log = tmp_path / "admitted.txt"
+    holder = _held_elsewhere(state, "development.lock")
+    children = []
+    try:
+        for name in ("first", "second", "third", "fourth", "fifth"):
+            children.append(
+                start_owned_test_process(
+                    [sys.executable, "-c", _QUEUED_CHILD, str(state), name, str(log)]
+                )
+            )
+            # Each child joins the queue before the next one starts.
+            deadline = time.monotonic() + 300
+            while len(_queued_tickets(state)) < len(children):
+                assert children[-1].poll() is None and time.monotonic() < deadline
+                time.sleep(0.02)
+    finally:
+        host_capacity._release(state / "development.lock", holder)
+        for child in children:
+            assert child.wait(timeout=300) == 0
+            close_owned_test_process(child)
+    assert log.read_text(encoding="utf-8").split() == [
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+    ]
+    assert _queued_tickets(state) == []
+
+
+def test_an_abandoned_ticket_never_blocks_the_queue(tmp_path: Path) -> None:
+    """A waiter that died left its ticket; nobody holds its lock, so the
+    next waiter removes it instead of waiting behind it."""
+    state = tmp_path / "host-work"
+    queue = state / "development.queue"
+    queue.mkdir(parents=True)
+    abandoned = queue / f"{0:020d}-1-deadbeef.ticket"
+    abandoned.write_bytes(b"")
+    with host_capacity.host_work_slot(
+        state,
+        label="consumer gate",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=lambda _: None,
+    ) as admission:
+        assert admission.waited_seconds < 1
+    assert not abandoned.exists()

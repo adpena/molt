@@ -124,13 +124,6 @@ thread_local! {
     static EXCEPTION_CLEAR_REASON: RefCell<Option<&'static str>> = const { RefCell::new(None) };
 }
 
-thread_local! {
-    /// Stashed col_offset/end_col_offset from the frame stack at the point
-    /// an exception was recorded.  The traceback formatter reads this to
-    /// produce correct caret annotations.  (-1, -1) = unknown.
-    pub(super) static LAST_EXCEPTION_COL: RefCell<(i64, i64)> = const { RefCell::new((-1, -1)) };
-}
-
 pub(crate) fn exception_clear_reason_set(reason: &'static str) {
     EXCEPTION_CLEAR_REASON.with(|cell| {
         *cell.borrow_mut() = Some(reason);

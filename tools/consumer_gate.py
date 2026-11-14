@@ -61,17 +61,29 @@ def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 def commit_tree(root: Path, paths: list[str]) -> str:
     """The tree ``git commit --only -- paths`` would record: HEAD plus the
-    working-tree bytes of ``paths`` (a deleted path is removed)."""
+    working-tree bytes of ``paths`` (a deleted path is removed).
+
+    A path absent from both the working tree and HEAD (a deletion already
+    committed) changes nothing; ``git add`` would refuse it as unmatched.
+    """
     with tempfile.TemporaryDirectory(prefix="molt-consumer-gate-") as scratch:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(scratch) / "index"))
         _git(root, "read-tree", "HEAD", env=env)
-        if paths:
-            _git(root, "add", "--all", "--", *paths, env=env)
+        tracked = set(
+            _git(root, "ls-files", "-z", "--", *paths, env=env).split("\0")
+            if paths
+            else ()
+        )
+        present = [
+            path for path in paths if os.path.lexists(root / path) or path in tracked
+        ]
+        if present:
+            _git(root, "add", "--all", "--", *present, env=env)
         return _git(root, "write-tree", env=env)
 
 
-def changed_paths(root: Path, tree: str) -> list[str]:
-    output = _git(root, "diff", "--name-only", "HEAD", tree)
+def changed_paths(root: Path, tree: str, *, base: str = "HEAD") -> list[str]:
+    output = _git(root, "diff", "--name-only", base, tree)
     return [line for line in output.splitlines() if line]
 
 
@@ -93,7 +105,7 @@ def _needs_receipt(root: Path, changed: list[str]) -> bool:
     return bool(changed) and not set(changed) <= generator_outputs(root)
 
 
-def static_gates(root: Path, tree: str) -> list[str]:
+def static_gates(root: Path, tree: str, *, base: str = "HEAD") -> list[str]:
     """The landing's static gates for this commit tree, as their commands.
 
     The selection is the landing's own (select_landing_gates over a dangling
@@ -107,7 +119,7 @@ def static_gates(root: Path, tree: str) -> list[str]:
     from tools.molt_dev_gates import display
     from tools.molt_dev_policy import select_landing_gates
 
-    head = _git(root, "rev-parse", "HEAD")
+    head = _git(root, "rev-parse", base)
     # A dangling, never-published probe: it names its own identity so a host
     # with no Git user configured (a farm checkout) can create it.
     identity = {
@@ -205,12 +217,25 @@ def presubmit_pytest_argv(root: Path, tests: Sequence[str]) -> list[str]:
     return [sys.executable, *command[1:]]
 
 
-def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
+def run(
+    root: Path,
+    paths: list[str],
+    *,
+    pytest_args: list[str] | None,
+    base: str = "HEAD",
+) -> int:
+    """Gate the tree a commit of ``paths`` would record, against ``base``.
+
+    ``base`` is HEAD for work about to be committed. A committed stack (a
+    rebase onto a new main, a bypass push) names the main it lands on, so
+    every commit since that main is the change.
+    """
     from tools.test_dependency_graph import git_blob_reader, load_graph
 
+    base = _git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     tree = commit_tree(root, paths)
-    changed = changed_paths(root, tree)
-    statics = static_gates(root, tree)
+    changed = changed_paths(root, tree, base=base)
+    statics = static_gates(root, tree, base=base)
     print(f"consumer-gate: {len(statics)} static gate(s) the landing selects")
     failed = run_static_gates(root, statics)
     if failed:
@@ -223,7 +248,7 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
     # A changed module selects the tests that reach the definitions it
     # changes, not every test below a conftest that uses one of its functions.
     readers = load_graph(root).direct_readers(
-        changed, before=git_blob_reader(root, "HEAD")
+        changed, before=git_blob_reader(root, base)
     )
     landing_built = landing_built_tests(root, readers.importers)
     run_now = [test for test in readers.importers if test not in landing_built]
@@ -252,7 +277,7 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
         with host_capacity.host_work_slot(
             host_capacity.host_work_dir(root),
             label=f"consumer gate ({root.name}, {len(run_now)} test files)",
-            landing=False,
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
             say=lambda message: print(message, flush=True),
         ) as admission:
             if admission.waited_seconds >= 1:
@@ -285,6 +310,7 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str] | None) -> int:
     payload = {
         "schema": SCHEMA,
         "tree": tree,
+        "base": base,
         "changed": changed,
         "static_gates": statics,
         "importers": run_now,
@@ -388,11 +414,19 @@ def main(argv: list[str] | None = None) -> int:
             "presubmit options (-n auto, declared worker memory, --skip-slow)"
         ),
     )
+    parser.add_argument(
+        "--base",
+        default="HEAD",
+        help=(
+            "run: the commit the change is measured from (default HEAD, the "
+            "work about to be committed); a committed stack names its main"
+        ),
+    )
     parser.add_argument("paths", nargs="*", help="the paths the commit names")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     if args.mode == "run":
-        return run(root, args.paths, pytest_args=args.pytest_arg)
+        return run(root, args.paths, pytest_args=args.pytest_arg, base=args.base)
     return check(root, args.paths)
 
 

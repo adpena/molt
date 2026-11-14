@@ -603,13 +603,21 @@ def _calls_text(calls: Counter[str]) -> str:
 
 
 def sample_run(binary: Path, seconds: float, args: list[str]) -> str:
-    """Run `binary` once under `/usr/bin/sample`; return the report text."""
+    """Run `binary` once unsampled, then once under `/usr/bin/sample`; return
+    the report text."""
     if sys.platform != "darwin" or not Path("/usr/bin/sample").is_file():
         raise SystemExit(
             "opt_explorer profile: needs macOS /usr/bin/sample; "
             "this host has no supported sampler"
         )
     report = Path(tempfile.mkdtemp(prefix="molt-opt-explorer-")) / "sample.txt"
+    # The first exec of a new binary pays macOS's executable scan (HF-780),
+    # which the sampler records as `_dyld_start`: 80% of bench_gc_pressure's
+    # samples on 2026-11-14. One discarded run first leaves the program.
+    warm = _COMMANDS.start_owned(
+        [str(binary), *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    _COMMANDS.wait_owned(warm, timeout=max(seconds, 1.0) + 600)
     program = _COMMANDS.start_owned(
         [str(binary), *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )

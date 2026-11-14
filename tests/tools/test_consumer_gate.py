@@ -160,10 +160,68 @@ def test_commit_tree_matches_what_a_pathspec_commit_records(repo):
     assert tree == recorded
 
 
+def _commit(repo: Path, message: str) -> None:
+    _git(
+        repo,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "-q",
+        "--no-verify",
+        "-am",
+        message,
+    )
+
+
+def test_a_committed_deletion_names_a_path_the_tree_already_lacks(repo: Path) -> None:
+    """2026-11-14: gating a rebased stack that deleted files raised in `git
+    add` (the path is in neither the worktree nor HEAD); it changes nothing."""
+    (repo / "lib.py").unlink()
+    _commit(repo, "delete lib")
+
+    tree = consumer_gate.commit_tree(repo, ["lib.py"])
+
+    assert tree == _git(repo, "rev-parse", "HEAD^{tree}").strip()
+
+
+def test_run_against_a_base_gates_a_committed_stack(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured from HEAD, committed work is no change and runs nothing; a
+    stack names the main it lands on and runs the tests its commits reach."""
+    seen = _graph(monkeypatch, ("tests/test_lib.py",))
+    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree, base: [])
+    main = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _commit(repo, "change lib")
+
+    assert (
+        consumer_gate.run(repo, ["lib.py"], pytest_args=["-p", "no:cacheprovider"]) == 0
+    )
+    assert seen == [[]]
+    assert (
+        consumer_gate.run(
+            repo, ["lib.py"], pytest_args=["-p", "no:cacheprovider"], base=main
+        )
+        == 0
+    )
+    assert seen[-1] == ["lib.py"]
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, ["lib.py"])
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["base"] == main and receipt["importers"] == ["tests/test_lib.py"]
+
+
 def test_a_failing_static_gate_blocks_the_receipt_before_any_test(repo, monkeypatch):
     seen = _graph(monkeypatch, ("tests/test_lib.py",))
     failing = 'python -c "import sys; sys.exit(3)"'
-    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree: [failing])
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": [failing]
+    )
     (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 1
@@ -174,7 +232,9 @@ def test_a_failing_static_gate_blocks_the_receipt_before_any_test(repo, monkeypa
 def test_a_passing_run_records_its_static_gates(repo, monkeypatch):
     _graph(monkeypatch, ())
     passing = 'python -c "pass"'
-    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree: [passing])
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": [passing]
+    )
     (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 0

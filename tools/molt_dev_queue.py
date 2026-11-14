@@ -210,6 +210,34 @@ def _postsubmit_failures(output: Path, repo: Path) -> tuple[str, ...]:
     return tuple(failures)
 
 
+def prior_main(git: Git, paths: QueuePaths, head: str, green: str | None) -> str | None:
+    """The main postsubmit last observed before ``head``: its diff base.
+
+    The newest postsubmit result whose commit is a proper ancestor of
+    ``head``, or the last green main when that is newer. Without either,
+    ``head``'s first parent. On 2026-11-14 a two-week red streak measured
+    check_typed_facts from the last green main 1,174 commits back and
+    reported 1,474 facts that predate the rule.
+    """
+
+    def ancestor(commit: str) -> bool:
+        return commit != head and git.is_ancestor(commit, head)
+
+    candidates = [
+        str(record["commit"])
+        for record in postsubmit_results(paths)
+        if ancestor(str(record["commit"]))
+    ]
+    observed = candidates[0] if candidates else None
+    if green is not None and ancestor(green):
+        if observed is None or git.is_ancestor(observed, green):
+            observed = green
+    if observed is not None:
+        return observed
+    parent = git._run(["rev-parse", "--verify", "--quiet", f"{head}^1"], check=False)
+    return parent.stdout.strip() or None
+
+
 def _postsubmit_reverts(
     git, head: str, green: str | None
 ) -> tuple[list[str], list[str]]:
@@ -246,7 +274,13 @@ def _run_postsubmit_gates(
     drv = _driver()
     repo = git.repo
     policy, config, _touched, gates, _rules = select_landing_gates(
-        git, repo, head, green, extra=[], mode=LandingMode.POSTSUBMIT
+        git,
+        repo,
+        head,
+        green,
+        extra=[],
+        mode=LandingMode.POSTSUBMIT,
+        diff_base=prior_main(git, queue_paths(repo), head, green),
     )
     drv._assert_integration_source(git, head)
     prepared = config.prepare(

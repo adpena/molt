@@ -530,13 +530,14 @@ def precheck_landing(
         return result
     from molt import host_capacity
 
-    # The try run is suite-sized: it takes the host's one heavy-work slot,
-    # ahead of every heavy job not yet started, and its budget starts only
-    # once it holds the slot, so waiting never spends the budget (HF-623).
+    # The try run is suite-sized: it takes the host's development slot (it
+    # tests the lane, not main, so it never waits out a batch), in arrival
+    # order, and its budget starts only once it holds the slot, so waiting
+    # never spends the budget (HF-623).
     with host_capacity.host_work_slot(
         host_capacity.host_work_dir(repo),
         label=f"landing try run ({git.short(head)})",
-        landing=True,
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
         say=_say,
     ) as admission:
         if admission.waited_seconds >= 1:

@@ -257,20 +257,64 @@ pub(crate) unsafe fn traceback_payload_code_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(TRACEBACK_PAYLOAD_CODE_OFFSET) as *const u64) }
 }
 
+/// A line or column a raise has not decoded. A raise records the code and the
+/// location id; the position is decoded only when an observer reads it, as
+/// CPython computes `tb_lineno` from `tb_lasti`. Decoding the varint location
+/// table on every raise was 24% of `bench_exception_heavy` (2026-11-14).
+const TRACEBACK_PAYLOAD_UNRESOLVED: i64 = i64::MIN;
+
+/// The recorded position as (line, column, end column): the payload's own
+/// values when a writer stored them, else decoded from its code and location.
+/// An absent location is the code's first line; a location the table cannot
+/// decode has line 0 (as `FrameEntry::source_line`) and no columns.
+unsafe fn traceback_payload_position(ptr: *mut u8) -> (i64, i64, i64) {
+    unsafe {
+        let stored = (
+            *(ptr.add(TRACEBACK_PAYLOAD_LINE_OFFSET) as *const i64),
+            *(ptr.add(TRACEBACK_PAYLOAD_COL_OFFSET) as *const i64),
+            *(ptr.add(TRACEBACK_PAYLOAD_END_COL_OFFSET) as *const i64),
+        );
+        if stored.0 != TRACEBACK_PAYLOAD_UNRESOLVED {
+            return stored;
+        }
+        let Some(code) = obj_from_bits(traceback_payload_code_bits(ptr)).as_ptr() else {
+            return (0, -1, -1);
+        };
+        if object_type_id(code) != TYPE_ID_CODE {
+            return (0, -1, -1);
+        }
+        let location =
+            LocationId::from_word(*(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OFFSET) as *const u64));
+        if location == LocationId::ABSENT {
+            return (code_firstlineno(code), -1, -1);
+        }
+        locations::code_location(code, location).map_or((0, -1, -1), |site| {
+            (site.line, site.column, site.end_column)
+        })
+    }
+}
+
 pub(crate) unsafe fn traceback_payload_line(ptr: *mut u8) -> i64 {
-    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_LINE_OFFSET) as *const i64) }
+    unsafe { traceback_payload_position(ptr).0 }
 }
 
 pub(crate) unsafe fn traceback_payload_col(ptr: *mut u8) -> i64 {
-    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_COL_OFFSET) as *const i64) }
+    unsafe { traceback_payload_position(ptr).1 }
 }
 
 pub(crate) unsafe fn traceback_payload_end_col(ptr: *mut u8) -> i64 {
-    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_END_COL_OFFSET) as *const i64) }
+    unsafe { traceback_payload_position(ptr).2 }
 }
 
 pub(crate) unsafe fn traceback_payload_next_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(TRACEBACK_PAYLOAD_NEXT_OFFSET) as *const u64) }
+}
+
+/// Whether a frame entry records a code object, the frames a traceback keeps.
+fn entry_has_code(entry: FrameEntry) -> bool {
+    obj_from_bits(entry.code_bits)
+        .as_ptr()
+        .is_some_and(|code| unsafe { object_type_id(code) } == TYPE_ID_CODE)
 }
 
 /// The frame a traceback payload recorded, its binding source split back into
@@ -1277,20 +1321,22 @@ unsafe fn alloc_traceback_payload_obj(
     next_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        if entry.code_bits == 0 {
+        if !entry_has_code(entry) {
             return None;
         }
-        let line = frame_line_from_entry(entry)?;
         let ptr = alloc_object(_py, TRACEBACK_PAYLOAD_SIZE, TYPE_ID_TRACEBACK_PAYLOAD);
         if ptr.is_null() {
             return None;
         }
         *(ptr.add(TRACEBACK_PAYLOAD_CODE_OFFSET) as *mut u64) = entry.code_bits;
-        *(ptr.add(TRACEBACK_PAYLOAD_LINE_OFFSET) as *mut i64) = line;
-        let site = entry.source_position();
-        *(ptr.add(TRACEBACK_PAYLOAD_COL_OFFSET) as *mut i64) = site.map_or(-1, |site| site.column);
-        *(ptr.add(TRACEBACK_PAYLOAD_END_COL_OFFSET) as *mut i64) =
-            site.map_or(-1, |site| site.end_column);
+        // The position is decoded when read (`traceback_payload_position`).
+        for offset in [
+            TRACEBACK_PAYLOAD_LINE_OFFSET,
+            TRACEBACK_PAYLOAD_COL_OFFSET,
+            TRACEBACK_PAYLOAD_END_COL_OFFSET,
+        ] {
+            *(ptr.add(offset) as *mut i64) = TRACEBACK_PAYLOAD_UNRESOLVED;
+        }
         *(ptr.add(TRACEBACK_PAYLOAD_NEXT_OFFSET) as *mut u64) = next_bits;
         *(ptr.add(TRACEBACK_PAYLOAD_GLOBALS_OFFSET) as *mut u64) = entry.globals_bits;
         *(ptr.add(TRACEBACK_PAYLOAD_SOURCE_OFFSET) as *mut u64) = frame_binding_source(&entry);
@@ -1430,7 +1476,7 @@ pub(crate) fn frame_stack_trace_payload_prepend_bits(
     inc_ref_bits(_py, next_bits);
     let mut built_any = false;
     for entry in active.iter().rev().copied() {
-        if unsafe { frame_line_from_entry(entry) }.is_none() {
+        if !entry_has_code(entry) {
             continue;
         }
         unsafe {

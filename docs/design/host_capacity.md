@@ -233,19 +233,26 @@ both ran past `land --fast`'s 90-minute try-run budget (5,490 s), which
 cancelled their crate-test gate, and no landing completed until the load was
 cut.
 
-Heavy work therefore takes the host's one slot first
-(`host_capacity.host_work_slot`): an exclusive lock in the install's shared
-control state (`host_work_dir`, `control_state_dir(..., "host-work")`), held
-for the consumer gate's importer run and for the heavy block of every gate run
-(`molt_dev_gates.run_selected_gates`: a `land --fast` try run, a batch-queue
-run, postsubmit, a receipt rerun); a presubmit run takes it as a landing. A
-landing's try run takes it before its budget clock starts. A second
-heavy job waits and names the holder instead of sharing the machine. A landing
-also holds a landing lock from the moment it queues, and a non-landing job
-waits while any landing holds or awaits the slot, so a queued landing goes
-before every heavy job that has not started. The landing's budget clock starts
-at admission, so waiting never spends it. The operating system releases both
-locks when a holder dies.
+Heavy work therefore takes a slot of its class first
+(`host_capacity.host_work_slot`, `HostWorkClass`): an exclusive lock in the
+install's shared control state (`host_work_dir`, `control_state_dir(...,
+"host-work")`). A landing batch takes the integration slot (`heavy.lock`),
+after a landing lock it holds from the moment it queues. Development work
+takes the development slot (`development.lock`): the consumer gate's importer
+run, a lane's try run (before its budget clock starts), postsubmit and a
+receipt rerun. The two classes never wait for each other: a lane's checks
+never stop the landing queue (2026-11-13: a consumer gate held every landing
+for 19 minutes), and a batch never stops a lane's try run (2026-11-14: try
+runs waited 17 and 39 minutes for batches). A second job of a class waits and
+names the holder instead of sharing the machine. Each lock admits its waiters
+in arrival order through a ticket queue beside it (`<lock>.queue/*.ticket`):
+a waiter tries the lock only when no live waiter queued earlier. A waiter is
+live while it holds its ticket's lock, which the operating system drops when
+it dies, so an abandoned ticket never blocks the queue; the first waiter to
+find one unlocked removes it. A polling lock alone admitted whoever polled
+first: on 2026-11-14 a try run that had waited 21 minutes longer lost the
+slot to a newer one. The operating system releases every lock when its
+holder dies.
 
 Work the holder starts belongs to the holder's job. The holder exports
 `MOLT_HOST_WORK_SLOT_HELD` (the resolved slot directory) for its body, and a
