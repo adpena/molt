@@ -30,6 +30,7 @@ const GLOBAL_SLOT_KINDS: &[crate::OpKind] = &[
     crate::OpKind::ModuleGetGlobal,
     crate::OpKind::GlobalSlotGet,
     crate::OpKind::StaticCellSet,
+    crate::OpKind::StaticCellLoad,
     crate::OpKind::ModuleSetAttr,
     crate::OpKind::DictSet,
 ];
@@ -623,6 +624,21 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     }
     if op.global_slot.is_some() && !GLOBAL_SLOT_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry global_slot", op.kind));
+    }
+    // An init-dominated read (HF-846) is a read of a static cell.
+    if let Some(slot) = &op.global_slot
+        && (slot.init_once || op.kind == crate::OpKind::StaticCellLoad)
+        && !(slot.cell
+            && slot.init_once
+            && matches!(
+                op.kind,
+                crate::OpKind::ModuleGetGlobal | crate::OpKind::StaticCellLoad
+            ))
+    {
+        return Err(format!(
+            "op `{}` cannot carry an init_once global_slot",
+            op.kind
+        ));
     }
     if op.method_site.is_some() && !METHOD_SITE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry method_site", op.kind));

@@ -909,6 +909,8 @@ pub enum OpKind {
     StatefulLocalsRegister,
     #[serde(rename = "static_cell_base")]
     StaticCellBase,
+    #[serde(rename = "static_cell_load")]
+    StaticCellLoad,
     #[serde(rename = "static_cell_set")]
     StaticCellSet,
     #[serde(rename = "staticmethod_new")]
@@ -1541,6 +1543,7 @@ impl OpKind {
         Self::StateYield,
         Self::StatefulLocalsRegister,
         Self::StaticCellBase,
+        Self::StaticCellLoad,
         Self::StaticCellSet,
         Self::StaticmethodNew,
         Self::Store,
@@ -2082,6 +2085,7 @@ impl OpKind {
             Self::StateYield => "state_yield",
             Self::StatefulLocalsRegister => "stateful_locals_register",
             Self::StaticCellBase => "static_cell_base",
+            Self::StaticCellLoad => "static_cell_load",
             Self::StaticCellSet => "static_cell_set",
             Self::StaticmethodNew => "staticmethod_new",
             Self::Store => "store",
@@ -2634,6 +2638,7 @@ impl std::str::FromStr for OpKind {
             "state_yield" => Ok(Self::StateYield),
             "stateful_locals_register" => Ok(Self::StatefulLocalsRegister),
             "static_cell_base" => Ok(Self::StaticCellBase),
+            "static_cell_load" => Ok(Self::StaticCellLoad),
             "static_cell_set" => Ok(Self::StaticCellSet),
             "staticmethod_new" => Ok(Self::StaticmethodNew),
             "store" => Ok(Self::Store),
@@ -3185,6 +3190,7 @@ pub const fn simpleir_backend_private_owner(kind: OpKind) -> Option<&'static str
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -3770,6 +3776,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -4389,6 +4396,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -4951,6 +4959,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -5501,6 +5510,7 @@ impl OpKind {
             | OpKind::StateSwitch
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -6047,6 +6057,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -6586,6 +6597,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -7135,6 +7147,7 @@ impl OpKind {
             | OpKind::StateSet
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -7681,6 +7694,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -8230,6 +8244,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -8776,6 +8791,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -9295,6 +9311,7 @@ impl OpKind {
             | OpKind::StateSet
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -9864,6 +9881,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -10393,6 +10411,7 @@ impl OpKind {
             | OpKind::StateSet
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -10958,6 +10977,7 @@ impl OpKind {
             | OpKind::StateSet
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -11503,6 +11523,7 @@ impl OpKind {
             | OpKind::StateSwitch
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -12048,6 +12069,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -12593,6 +12615,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -13135,6 +13158,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -13681,6 +13705,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -14231,6 +14256,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -14768,6 +14794,7 @@ impl OpKind {
             | OpKind::StateSwitch
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -15320,6 +15347,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -15870,6 +15898,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -16418,6 +16447,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -16942,6 +16972,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -17509,6 +17540,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -18052,6 +18084,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -18589,6 +18622,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::StoreFast
@@ -19153,6 +19187,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -19861,6 +19896,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::StateTransition
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -20408,6 +20444,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -21136,6 +21173,7 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Sorted
         | OpKind::StackAlloc
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::Store
         | OpKind::StoreAttr
@@ -21818,6 +21856,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -22372,6 +22411,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -22920,6 +22960,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -23467,6 +23508,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -24016,6 +24058,7 @@ impl OpKind {
             | OpKind::StateTransition
             | OpKind::StateYield
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -24641,6 +24684,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::StateTransition => Some(OpCode::StateTransition),
         OpKind::StateYield => Some(OpCode::StateYield),
         OpKind::StaticCellBase => Some(OpCode::StaticCellBase),
+        OpKind::StaticCellLoad => Some(OpCode::StaticCellLoad),
         OpKind::StaticCellSet => Some(OpCode::StaticCellSet),
         OpKind::Sub => Some(OpCode::Sub),
         OpKind::TaskWait => Some(OpCode::TaskWait),
@@ -24784,6 +24828,7 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::ModuleGetGlobal => Some(OpKind::ModuleGetGlobal),
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => Some(OpKind::StaticCellBase),
+        OpCode::StaticCellLoad => Some(OpKind::StaticCellLoad),
         OpCode::StaticCellSet => Some(OpKind::StaticCellSet),
         OpCode::GlobalSlotGet => Some(OpKind::GlobalSlotGet),
         OpCode::ModuleGetName => Some(OpKind::ModuleGetName),
@@ -24925,6 +24970,7 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -25359,6 +25405,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::StoreFast
@@ -25763,6 +25810,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::StateTransition
         | OpKind::StateYield
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::Store
         | OpKind::StoreAttr
@@ -26475,6 +26523,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -27014,6 +27063,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -27553,6 +27603,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -28095,6 +28146,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -28642,6 +28694,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -29187,6 +29240,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -29732,6 +29786,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -29952,6 +30007,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::ModuleGetGlobal,
     OpCode::GlobalSlotBase,
     OpCode::StaticCellBase,
+    OpCode::StaticCellLoad,
     OpCode::StaticCellSet,
     OpCode::GlobalSlotGet,
     OpCode::ModuleGetName,
@@ -30092,6 +30148,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => true,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => true,
         OpCode::ModuleGetName => true,
@@ -30232,6 +30289,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => true,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => true,
         OpCode::GlobalSlotGet => true,
         OpCode::ModuleGetName => true,
@@ -30372,6 +30430,7 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => true,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => true,
         OpCode::GlobalSlotGet => true,
         OpCode::ModuleGetName => true,
@@ -30553,6 +30612,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::ModuleGetGlobal => OPCODE_EFFECTS_IMPURE,
         OpCode::GlobalSlotBase => OPCODE_EFFECTS_PURE,
         OpCode::StaticCellBase => OPCODE_EFFECTS_PURE,
+        OpCode::StaticCellLoad => OPCODE_EFFECTS_PURE,
         OpCode::StaticCellSet => OPCODE_EFFECTS_IMPURE,
         OpCode::GlobalSlotGet => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleGetName => OPCODE_EFFECTS_IMPURE,
@@ -31006,6 +31066,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -31562,6 +31623,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -32104,6 +32166,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -32647,6 +32710,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -33182,6 +33246,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -33735,6 +33800,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -34280,6 +34346,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -34825,6 +34892,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -35370,6 +35438,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -35915,6 +35984,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -36459,6 +36529,7 @@ impl OpKind {
             | OpKind::StateYield
             | OpKind::StatefulLocalsRegister
             | OpKind::StaticCellBase
+            | OpKind::StaticCellLoad
             | OpKind::StaticCellSet
             | OpKind::StaticmethodNew
             | OpKind::Store
@@ -36683,6 +36754,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -36825,6 +36897,7 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::ModuleGetGlobal => Some(1),
         OpCode::GlobalSlotBase => Some(1),
         OpCode::StaticCellBase => Some(1),
+        OpCode::StaticCellLoad => Some(1),
         OpCode::StaticCellSet => Some(0),
         OpCode::GlobalSlotGet => Some(1),
         OpCode::ModuleGetName => Some(1),
@@ -37077,6 +37150,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -37217,6 +37291,7 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::ModuleGetGlobal => FuzzTirAttrPayloadRule::None,
         OpCode::GlobalSlotBase => FuzzTirAttrPayloadRule::None,
         OpCode::StaticCellBase => FuzzTirAttrPayloadRule::None,
+        OpCode::StaticCellLoad => FuzzTirAttrPayloadRule::None,
         OpCode::StaticCellSet => FuzzTirAttrPayloadRule::None,
         OpCode::GlobalSlotGet => FuzzTirAttrPayloadRule::None,
         OpCode::ModuleGetName => FuzzTirAttrPayloadRule::None,
@@ -37364,6 +37439,7 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -37718,6 +37794,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::ModuleGetGlobal => count == 2,
         OpCode::GlobalSlotBase => count == 1,
         OpCode::StaticCellBase => count == 0,
+        OpCode::StaticCellLoad => count == 0,
         OpCode::StaticCellSet => count == 2,
         OpCode::GlobalSlotGet => count == 3,
         OpCode::ModuleGetName => count == 2,
@@ -37927,6 +38004,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::ModuleGetGlobal => &[Some(OperandIndependentResultType::DynBox)],
         OpCode::GlobalSlotBase => &[Some(OperandIndependentResultType::I64)],
         OpCode::StaticCellBase => &[Some(OperandIndependentResultType::I64)],
+        OpCode::StaticCellLoad => &[Some(OperandIndependentResultType::DynBox)],
         OpCode::StaticCellSet => &[],
         OpCode::GlobalSlotGet => &[Some(OperandIndependentResultType::DynBox)],
         OpCode::ModuleGetName => &[Some(OperandIndependentResultType::DynBox)],
@@ -38091,6 +38169,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::ModuleGetGlobal => TypeRefineAttrResultTypeRule::None,
         OpCode::GlobalSlotBase => TypeRefineAttrResultTypeRule::None,
         OpCode::StaticCellBase => TypeRefineAttrResultTypeRule::None,
+        OpCode::StaticCellLoad => TypeRefineAttrResultTypeRule::None,
         OpCode::StaticCellSet => TypeRefineAttrResultTypeRule::None,
         OpCode::GlobalSlotGet => TypeRefineAttrResultTypeRule::None,
         OpCode::ModuleGetName => TypeRefineAttrResultTypeRule::None,
@@ -38256,6 +38335,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::ModuleGetGlobal => TypeRefineOperandTypeRule::None,
         OpCode::GlobalSlotBase => TypeRefineOperandTypeRule::None,
         OpCode::StaticCellBase => TypeRefineOperandTypeRule::None,
+        OpCode::StaticCellLoad => TypeRefineOperandTypeRule::None,
         OpCode::StaticCellSet => TypeRefineOperandTypeRule::None,
         OpCode::GlobalSlotGet => TypeRefineOperandTypeRule::None,
         OpCode::ModuleGetName => TypeRefineOperandTypeRule::None,
@@ -38409,6 +38489,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::ModuleGetGlobal => SccpConstantSeedRule::None,
         OpCode::GlobalSlotBase => SccpConstantSeedRule::None,
         OpCode::StaticCellBase => SccpConstantSeedRule::None,
+        OpCode::StaticCellLoad => SccpConstantSeedRule::None,
         OpCode::StaticCellSet => SccpConstantSeedRule::None,
         OpCode::GlobalSlotGet => SccpConstantSeedRule::None,
         OpCode::ModuleGetName => SccpConstantSeedRule::None,
@@ -38576,6 +38657,7 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::ModuleGetGlobal => SccpConstantEvalRule::None,
         OpCode::GlobalSlotBase => SccpConstantEvalRule::None,
         OpCode::StaticCellBase => SccpConstantEvalRule::None,
+        OpCode::StaticCellLoad => SccpConstantEvalRule::None,
         OpCode::StaticCellSet => SccpConstantEvalRule::None,
         OpCode::GlobalSlotGet => SccpConstantEvalRule::None,
         OpCode::ModuleGetName => SccpConstantEvalRule::None,
@@ -38717,6 +38799,7 @@ pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -38878,6 +38961,7 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::ModuleGetGlobal => ValueRangeTransferRule::None,
         OpCode::GlobalSlotBase => ValueRangeTransferRule::None,
         OpCode::StaticCellBase => ValueRangeTransferRule::None,
+        OpCode::StaticCellLoad => ValueRangeTransferRule::None,
         OpCode::StaticCellSet => ValueRangeTransferRule::None,
         OpCode::GlobalSlotGet => ValueRangeTransferRule::None,
         OpCode::ModuleGetName => ValueRangeTransferRule::None,
@@ -39030,6 +39114,7 @@ pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansio
         OpCode::ModuleGetGlobal => FastPathExpansionRule::None,
         OpCode::GlobalSlotBase => FastPathExpansionRule::None,
         OpCode::StaticCellBase => FastPathExpansionRule::None,
+        OpCode::StaticCellLoad => FastPathExpansionRule::None,
         OpCode::StaticCellSet => FastPathExpansionRule::None,
         OpCode::GlobalSlotGet => FastPathExpansionRule::None,
         OpCode::ModuleGetName => FastPathExpansionRule::None,
@@ -39186,6 +39271,7 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::ModuleGetGlobal => ValueRangeConstFoldRule::None,
         OpCode::GlobalSlotBase => ValueRangeConstFoldRule::None,
         OpCode::StaticCellBase => ValueRangeConstFoldRule::None,
+        OpCode::StaticCellLoad => ValueRangeConstFoldRule::None,
         OpCode::StaticCellSet => ValueRangeConstFoldRule::None,
         OpCode::GlobalSlotGet => ValueRangeConstFoldRule::None,
         OpCode::ModuleGetName => ValueRangeConstFoldRule::None,
@@ -39336,6 +39422,7 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::ModuleGetGlobal => ValueRangeCondNarrowRule::None,
         OpCode::GlobalSlotBase => ValueRangeCondNarrowRule::None,
         OpCode::StaticCellBase => ValueRangeCondNarrowRule::None,
+        OpCode::StaticCellLoad => ValueRangeCondNarrowRule::None,
         OpCode::StaticCellSet => ValueRangeCondNarrowRule::None,
         OpCode::GlobalSlotGet => ValueRangeCondNarrowRule::None,
         OpCode::ModuleGetName => ValueRangeCondNarrowRule::None,
@@ -39490,6 +39577,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::ModuleGetGlobal => ValueRangeContainerLengthRule::None,
         OpCode::GlobalSlotBase => ValueRangeContainerLengthRule::None,
         OpCode::StaticCellBase => ValueRangeContainerLengthRule::None,
+        OpCode::StaticCellLoad => ValueRangeContainerLengthRule::None,
         OpCode::StaticCellSet => ValueRangeContainerLengthRule::None,
         OpCode::GlobalSlotGet => ValueRangeContainerLengthRule::None,
         OpCode::ModuleGetName => ValueRangeContainerLengthRule::None,
@@ -39641,6 +39729,7 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::ModuleGetGlobal => RangeDevirtRole::None,
         OpCode::GlobalSlotBase => RangeDevirtRole::None,
         OpCode::StaticCellBase => RangeDevirtRole::None,
+        OpCode::StaticCellLoad => RangeDevirtRole::None,
         OpCode::StaticCellSet => RangeDevirtRole::None,
         OpCode::GlobalSlotGet => RangeDevirtRole::None,
         OpCode::ModuleGetName => RangeDevirtRole::None,
@@ -40300,6 +40389,11 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
+        OpCode::StaticCellLoad => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
         OpCode::StaticCellSet => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
@@ -40498,6 +40592,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::ModuleGetGlobal => ReprRawI64FullDeoptSeedRule::None,
         OpCode::GlobalSlotBase => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StaticCellBase => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::StaticCellLoad => ReprRawI64FullDeoptSeedRule::None,
         OpCode::StaticCellSet => ReprRawI64FullDeoptSeedRule::None,
         OpCode::GlobalSlotGet => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ModuleGetName => ReprRawI64FullDeoptSeedRule::None,
@@ -40655,6 +40750,7 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::ModuleGetGlobal => ReprProjectableBoolResultRule::None,
         OpCode::GlobalSlotBase => ReprProjectableBoolResultRule::None,
         OpCode::StaticCellBase => ReprProjectableBoolResultRule::None,
+        OpCode::StaticCellLoad => ReprProjectableBoolResultRule::None,
         OpCode::StaticCellSet => ReprProjectableBoolResultRule::None,
         OpCode::GlobalSlotGet => ReprProjectableBoolResultRule::None,
         OpCode::ModuleGetName => ReprProjectableBoolResultRule::None,
@@ -40810,6 +40906,7 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::ModuleGetGlobal => ReprProjectableFloatResultRule::None,
         OpCode::GlobalSlotBase => ReprProjectableFloatResultRule::None,
         OpCode::StaticCellBase => ReprProjectableFloatResultRule::None,
+        OpCode::StaticCellLoad => ReprProjectableFloatResultRule::None,
         OpCode::StaticCellSet => ReprProjectableFloatResultRule::None,
         OpCode::GlobalSlotGet => ReprProjectableFloatResultRule::None,
         OpCode::ModuleGetName => ReprProjectableFloatResultRule::None,
@@ -40988,6 +41085,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::ModuleGetGlobal => CountedLoopComparisonRole::None,
         OpCode::GlobalSlotBase => CountedLoopComparisonRole::None,
         OpCode::StaticCellBase => CountedLoopComparisonRole::None,
+        OpCode::StaticCellLoad => CountedLoopComparisonRole::None,
         OpCode::StaticCellSet => CountedLoopComparisonRole::None,
         OpCode::GlobalSlotGet => CountedLoopComparisonRole::None,
         OpCode::ModuleGetName => CountedLoopComparisonRole::None,
@@ -41128,6 +41226,7 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -41288,6 +41387,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::ModuleGetGlobal => GvnNumberingRole::Never,
         OpCode::GlobalSlotBase => GvnNumberingRole::Always,
         OpCode::StaticCellBase => GvnNumberingRole::Always,
+        OpCode::StaticCellLoad => GvnNumberingRole::Never,
         OpCode::StaticCellSet => GvnNumberingRole::Never,
         OpCode::GlobalSlotGet => GvnNumberingRole::Never,
         OpCode::ModuleGetName => GvnNumberingRole::Never,
@@ -41490,6 +41590,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
             kind: GvnValueKeyKind::StrAttr,
             attrs: GVN_VALUE_KEY_ATTRS_STATIC_CELL_BASE,
         }),
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -41632,6 +41733,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -41774,6 +41876,7 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -41914,6 +42017,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -42055,6 +42159,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -42196,6 +42301,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -42337,6 +42443,7 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -42512,6 +42619,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::ModuleGetGlobal => RefcountBalanceRole::NotRefcountBalance,
         OpCode::GlobalSlotBase => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StaticCellBase => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StaticCellLoad => RefcountBalanceRole::NotRefcountBalance,
         OpCode::StaticCellSet => RefcountBalanceRole::NotRefcountBalance,
         OpCode::GlobalSlotGet => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ModuleGetName => RefcountBalanceRole::NotRefcountBalance,
@@ -42654,6 +42762,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -42795,6 +42904,7 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -42958,6 +43068,7 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::ModuleGetGlobal => GeneratorFusionPollRole::Neutral,
         OpCode::GlobalSlotBase => GeneratorFusionPollRole::Neutral,
         OpCode::StaticCellBase => GeneratorFusionPollRole::Neutral,
+        OpCode::StaticCellLoad => GeneratorFusionPollRole::Neutral,
         OpCode::StaticCellSet => GeneratorFusionPollRole::Neutral,
         OpCode::GlobalSlotGet => GeneratorFusionPollRole::Neutral,
         OpCode::ModuleGetName => GeneratorFusionPollRole::Neutral,
@@ -43109,6 +43220,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::ModuleGetGlobal => GeneratorFusionIterUseRole::None,
         OpCode::GlobalSlotBase => GeneratorFusionIterUseRole::None,
         OpCode::StaticCellBase => GeneratorFusionIterUseRole::None,
+        OpCode::StaticCellLoad => GeneratorFusionIterUseRole::None,
         OpCode::StaticCellSet => GeneratorFusionIterUseRole::None,
         OpCode::GlobalSlotGet => GeneratorFusionIterUseRole::None,
         OpCode::ModuleGetName => GeneratorFusionIterUseRole::None,
@@ -43252,6 +43364,7 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -43393,6 +43506,7 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -43574,6 +43688,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::ModuleGetGlobal => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::GlobalSlotBase => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StaticCellBase => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::StaticCellLoad => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StaticCellSet => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::GlobalSlotGet => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ModuleGetName => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -43725,6 +43840,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::ModuleGetGlobal => ModuleSlotAccessRole::KeyedAttr,
         OpCode::GlobalSlotBase => ModuleSlotAccessRole::None,
         OpCode::StaticCellBase => ModuleSlotAccessRole::None,
+        OpCode::StaticCellLoad => ModuleSlotAccessRole::None,
         OpCode::StaticCellSet => ModuleSlotAccessRole::None,
         OpCode::GlobalSlotGet => ModuleSlotAccessRole::None,
         OpCode::ModuleGetName => ModuleSlotAccessRole::None,
@@ -43876,6 +43992,7 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::ModuleGetGlobal => BoxedAllocationLayoutRule::None,
         OpCode::GlobalSlotBase => BoxedAllocationLayoutRule::None,
         OpCode::StaticCellBase => BoxedAllocationLayoutRule::None,
+        OpCode::StaticCellLoad => BoxedAllocationLayoutRule::None,
         OpCode::StaticCellSet => BoxedAllocationLayoutRule::None,
         OpCode::GlobalSlotGet => BoxedAllocationLayoutRule::None,
         OpCode::ModuleGetName => BoxedAllocationLayoutRule::None,
@@ -44029,6 +44146,7 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::ModuleGetGlobal => TirVerifyAttrRule::None,
         OpCode::GlobalSlotBase => TirVerifyAttrRule::None,
         OpCode::StaticCellBase => TirVerifyAttrRule::None,
+        OpCode::StaticCellLoad => TirVerifyAttrRule::None,
         OpCode::StaticCellSet => TirVerifyAttrRule::None,
         OpCode::GlobalSlotGet => TirVerifyAttrRule::None,
         OpCode::ModuleGetName => TirVerifyAttrRule::None,
@@ -44182,6 +44300,7 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::ModuleGetGlobal => StrengthReductionRule::None,
         OpCode::GlobalSlotBase => StrengthReductionRule::None,
         OpCode::StaticCellBase => StrengthReductionRule::None,
+        OpCode::StaticCellLoad => StrengthReductionRule::None,
         OpCode::StaticCellSet => StrengthReductionRule::None,
         OpCode::GlobalSlotGet => StrengthReductionRule::None,
         OpCode::ModuleGetName => StrengthReductionRule::None,
@@ -44334,6 +44453,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::ModuleGetGlobal => ScevExprRule::None,
         OpCode::GlobalSlotBase => ScevExprRule::None,
         OpCode::StaticCellBase => ScevExprRule::None,
+        OpCode::StaticCellLoad => ScevExprRule::None,
         OpCode::StaticCellSet => ScevExprRule::None,
         OpCode::GlobalSlotGet => ScevExprRule::None,
         OpCode::ModuleGetName => ScevExprRule::None,
@@ -44478,6 +44598,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -44621,6 +44742,7 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -44765,6 +44887,7 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -44907,6 +45030,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -45048,6 +45172,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -45189,6 +45314,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -45333,6 +45459,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -45474,6 +45601,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -45615,6 +45743,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -45756,6 +45885,7 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -45904,6 +46034,7 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::ModuleGetGlobal => ExceptionRegionNestingRole::None,
         OpCode::GlobalSlotBase => ExceptionRegionNestingRole::None,
         OpCode::StaticCellBase => ExceptionRegionNestingRole::None,
+        OpCode::StaticCellLoad => ExceptionRegionNestingRole::None,
         OpCode::StaticCellSet => ExceptionRegionNestingRole::None,
         OpCode::GlobalSlotGet => ExceptionRegionNestingRole::None,
         OpCode::ModuleGetName => ExceptionRegionNestingRole::None,
@@ -46052,6 +46183,7 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::ModuleGetGlobal => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::GlobalSlotBase => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StaticCellBase => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::StaticCellLoad => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::StaticCellSet => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::GlobalSlotGet => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ModuleGetName => AliasTransparentAliasRole::NotTransparentAlias,
@@ -46205,6 +46337,7 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::ModuleGetGlobal => AliasMemoryRegionClass::ModuleDict,
         OpCode::GlobalSlotBase => AliasMemoryRegionClass::GenericHeap,
         OpCode::StaticCellBase => AliasMemoryRegionClass::GenericHeap,
+        OpCode::StaticCellLoad => AliasMemoryRegionClass::GenericHeap,
         OpCode::StaticCellSet => AliasMemoryRegionClass::GenericHeap,
         OpCode::GlobalSlotGet => AliasMemoryRegionClass::GenericHeap,
         OpCode::ModuleGetName => AliasMemoryRegionClass::ModuleDict,
@@ -46357,6 +46490,7 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::ModuleGetGlobal => AliasSlotObservation::ConservativeObserver,
         OpCode::GlobalSlotBase => AliasSlotObservation::ConservativeObserver,
         OpCode::StaticCellBase => AliasSlotObservation::ConservativeObserver,
+        OpCode::StaticCellLoad => AliasSlotObservation::ConservativeObserver,
         OpCode::StaticCellSet => AliasSlotObservation::ConservativeObserver,
         OpCode::GlobalSlotGet => AliasSlotObservation::ConservativeObserver,
         OpCode::ModuleGetName => AliasSlotObservation::ConservativeObserver,
@@ -46597,6 +46731,7 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::ModuleGetGlobal => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::GlobalSlotBase => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StaticCellBase => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::StaticCellLoad => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::StaticCellSet => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::GlobalSlotGet => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ModuleGetName => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -46756,6 +46891,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -46921,6 +47057,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -47061,6 +47198,7 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::ModuleGetGlobal => None,
         OpCode::GlobalSlotBase => None,
         OpCode::StaticCellBase => None,
+        OpCode::StaticCellLoad => None,
         OpCode::StaticCellSet => None,
         OpCode::GlobalSlotGet => None,
         OpCode::ModuleGetName => None,
@@ -47493,6 +47631,7 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::ModuleGetGlobal => &[],
         OpCode::GlobalSlotBase => &[],
         OpCode::StaticCellBase => &[],
+        OpCode::StaticCellLoad => &[],
         OpCode::StaticCellSet => &[],
         OpCode::GlobalSlotGet => &[],
         OpCode::ModuleGetName => &[],
@@ -47727,6 +47866,7 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::ModuleGetGlobal => OperandOwnership::Borrowed,
         OpCode::GlobalSlotBase => OperandOwnership::Borrowed,
         OpCode::StaticCellBase => OperandOwnership::Borrowed,
+        OpCode::StaticCellLoad => OperandOwnership::Borrowed,
         OpCode::StaticCellSet => OperandOwnership::Borrowed,
         OpCode::GlobalSlotGet => OperandOwnership::Borrowed,
         OpCode::ModuleGetName => OperandOwnership::Borrowed,
@@ -48202,6 +48342,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -48740,6 +48881,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -49285,6 +49427,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -49831,6 +49974,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -50056,6 +50200,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::ModuleGetGlobal => false,
         OpCode::GlobalSlotBase => false,
         OpCode::StaticCellBase => false,
+        OpCode::StaticCellLoad => false,
         OpCode::StaticCellSet => false,
         OpCode::GlobalSlotGet => false,
         OpCode::ModuleGetName => false,
@@ -50528,6 +50673,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -51069,6 +51215,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -51620,6 +51767,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::StateYield
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticCellBase
+        | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::Store
@@ -51854,6 +52002,7 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::ModuleGetGlobal => ResultValidity::AlwaysValid,
         OpCode::GlobalSlotBase => ResultValidity::AlwaysValid,
         OpCode::StaticCellBase => ResultValidity::AlwaysValid,
+        OpCode::StaticCellLoad => ResultValidity::AlwaysValid,
         OpCode::StaticCellSet => ResultValidity::AlwaysValid,
         OpCode::GlobalSlotGet => ResultValidity::AlwaysValid,
         OpCode::ModuleGetName => ResultValidity::AlwaysValid,
@@ -52019,6 +52168,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::ModuleGetGlobal => ExplicitReleaseOperands::None,
         OpCode::GlobalSlotBase => ExplicitReleaseOperands::None,
         OpCode::StaticCellBase => ExplicitReleaseOperands::None,
+        OpCode::StaticCellLoad => ExplicitReleaseOperands::None,
         OpCode::StaticCellSet => ExplicitReleaseOperands::None,
         OpCode::GlobalSlotGet => ExplicitReleaseOperands::None,
         OpCode::ModuleGetName => ExplicitReleaseOperands::None,

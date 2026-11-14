@@ -389,6 +389,8 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.stable_module_classes: set[str] = set()
         self.module_defined_funcs: set[str] = set()
         self.module_elided_deleted_funcs: set[str] = set()
+        # Whether any scope of the module binds ``globals`` (HF-844).
+        self.module_globals_rebound = True
         # Module-level class statements whose body has not finished lowering.
         self.class_definition_pending: set[ClassId] = set()
         self.module_global_mutations: set[str] = set()

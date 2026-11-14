@@ -1444,6 +1444,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "GlobalSlotGet": "dynbox",
         "ModuleSlot": "i64",
         "StaticCellBase": "i64",
+        "StaticCellLoad": "dynbox",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
         "ConstFloat": "f64",

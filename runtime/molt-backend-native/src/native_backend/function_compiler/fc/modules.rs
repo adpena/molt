@@ -17,6 +17,7 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::ModuleGetGlobal,
     OpKind::GlobalSlotGet,
     OpKind::StaticCellBase,
+    OpKind::StaticCellLoad,
     OpKind::StaticCellSet,
     OpKind::ModuleDelGlobal,
     OpKind::ModuleDelGlobalIfPresent,
@@ -392,6 +393,28 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 box_int_value(builder, shifted, nbc)
             };
             def_var_named(&mut *builder, vars, out, base);
+        }
+        OpKind::StaticCellLoad => {
+            // An init-dominated read (HF-846): one load from the module's
+            // block at the cell's offset; the cell keeps its reference.
+            let slot = op
+                .global_slot
+                .as_ref()
+                .expect("admitted static_cell_load carries its cell");
+            let symbol = molt_ir::code_slots::static_cell_block_symbol(&slot.module);
+            let data = module
+                .declare_data(&symbol, Linkage::Import, true, false)
+                .unwrap_or_else(|error| panic!("failed to import static cells {symbol}: {error}"));
+            let global = module.declare_data_in_func(data, builder.func);
+            let address = builder.ins().symbol_value(types::I64, global);
+            let value =
+                molt_codegen_abi::static_cell::generate_static_cell_load(slot.index, |offset| {
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::trusted(), address, offset)
+                });
+            let out = simple_ir_out_result(op).expect("admitted static_cell_load result");
+            def_var_named(&mut *builder, vars, out, value);
         }
         OpKind::StaticCellSet => {
             // Operands: [base, value]; the store's meaning is the shared

@@ -152,3 +152,47 @@ fn a_layout_name_matches_by_identity_or_bytes_and_other_names_miss() {
         dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
     })
 }
+
+/// Shutdown retirement sets each bound cell to `None`, as CPython clears a
+/// module's dictionary, and leaves an unbound cell unbound: compiled code
+/// reads an init-dominated cell with no unbound test (HF-846), so a finalizer
+/// that runs module code during retirement must find an object there.
+#[test]
+fn retirement_stores_none_into_bound_cells_and_keeps_unbound_ones() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let dict = crate::builtins::binding_guards::alloc_namespace_dict(py);
+        assert!(!dict.is_null());
+        let words: &'static mut [u64] = Box::leak(vec![UNBOUND; 3].into_boxed_slice());
+        let block = words.as_mut_ptr();
+        unsafe {
+            release(dict);
+            let cells = Box::new(StaticCells {
+                names: Box::new([&b"a"[..], &b"b"[..], &b"c"[..]]),
+                words: block,
+            });
+            dict_storage(dict).slots = NamespaceBinding(Box::into_raw(cells) as usize | CELLS_TAG);
+        }
+        let list = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
+        for bytes in [&b"a"[..], b"c"] {
+            let key = name(py, bytes);
+            assert!(static_cell_set(py, dict, key, list));
+            dec_ref_bits(py, key);
+        }
+        dec_ref_bits(py, list);
+        let none = MoltObject::none().bits();
+        let word = |k: usize| unsafe { *block.add(k) };
+        assert!(retire_static_cells(py, dict), "two bound cells released");
+        assert_eq!([word(0), word(1), word(2)], [none, UNBOUND, none]);
+        assert!(
+            !retire_static_cells(py, dict),
+            "a second pass finds nothing to release"
+        );
+        // A finalizer's store after retirement is released by the next pass.
+        let key = name(py, b"b");
+        assert!(static_cell_set(py, dict, key, int(5)));
+        dec_ref_bits(py, key);
+        assert!(retire_static_cells(py, dict));
+        assert_eq!(word(1), none);
+    })
+}
