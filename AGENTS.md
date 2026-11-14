@@ -121,7 +121,14 @@ over stale prose or precedent.
   lowered IR, no second optimizer for one fact family. A fact proven before a lowering is carried
   across it, not re-derived from shape. A lost fact must not fall to the generic runtime in
   silence: the pass that refuses says why in a build diagnostic. Compiled code carries the execution context,
-  inlines common fast paths and calls the runtime directly instead of re-entering it per operation.
+  inlines common fast paths, and leaves the runtime as a cold fallback, not the operation.
+- Closed world (`call_anatomy.md` 4.5a): Molt compiles the whole program, so a fact no code in it can
+  change is a compile-time constant. A proven site emits the operation itself (an instruction, a
+  fixed-offset load, a direct call of compiled code) and makes no runtime call to find, check or bind
+  it. A guard, cache or site record exists only where the program holds a possible writer, and its
+  diagnostic names that writer. A cheaper runtime call is still a runtime call: tuning a runtime entry
+  serves unproven sites and never fixes proven ones. Judge a design by the runtime calls it executes
+  per iteration in a sampled profile; static call-site counts include cold fallback paths.
 
 ## Work with the live repository
 
