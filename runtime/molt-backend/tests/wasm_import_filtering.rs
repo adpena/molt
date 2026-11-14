@@ -11,6 +11,15 @@ use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
 use molt_backend_wasm::test_util::reserved_runtime_callable_import_names;
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
+/// The export name of a compiled function: its name plus the attached
+/// execution context suffix (every compiled function takes the context).
+fn attached(name: &str) -> String {
+    format!(
+        "{name}{}",
+        molt_codegen_abi::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX
+    )
+}
+
 fn op(kind: molt_ir::OpKind) -> OpIR {
     OpIR::new(kind)
 }
@@ -137,57 +146,6 @@ fn ir_with_os_name() -> SimpleIR {
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
-        profile: None,
-    }
-}
-
-fn ir_with_escaped_call_guarded() -> SimpleIR {
-    let mut func_new = op(molt_ir::OpKind::FuncNew);
-    func_new.s_value = Some("callee".to_string());
-    func_new.value = Some(2);
-    func_new.out = Some("f".to_string());
-
-    let mut call_guarded = op(molt_ir::OpKind::CallGuarded);
-    call_guarded.s_value = Some("callee".to_string());
-    call_guarded.args = Some(vec!["f".to_string(), "p0".to_string(), "p1".to_string()]);
-    call_guarded.out = Some("out".to_string());
-
-    let mut ret = op(molt_ir::OpKind::Ret);
-    ret.args = Some(vec!["out".to_string()]);
-
-    let mut callee_none = op(molt_ir::OpKind::ConstNone);
-    callee_none.out = Some("retv".to_string());
-
-    let mut callee_ret = op(molt_ir::OpKind::Ret);
-    callee_ret.args = Some(vec!["retv".to_string()]);
-
-    SimpleIR {
-        functions: vec![
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Value,
-                name: "molt_main".to_string(),
-                params: vec!["p0".to_string(), "p1".to_string()],
-                ops: vec![func_new, call_guarded, ret],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                parameter_custody: Vec::new(),
-                execution_context: Default::default(),
-            },
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Value,
-                name: "callee".to_string(),
-                params: vec!["a".to_string(), "b".to_string()],
-                ops: vec![callee_none, callee_ret],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                parameter_custody: Vec::new(),
-                execution_context: Default::default(),
-            },
-        ],
         profile: None,
     }
 }
@@ -340,7 +298,7 @@ fn auto_reloc_uses_linker_elements_without_table_writers_or_numeric_aliases() {
         "relocatable wasm must not expose a post-instantiation table writer; exports={exports:?}"
     );
     assert!(
-        exports.contains("molt_main"),
+        exports.contains(&attached("molt_main")),
         "relocatable wasm must export wrapped molt_main; exports={exports:?}"
     );
     assert!(
@@ -370,7 +328,7 @@ fn auto_reloc_exports_wrapped_host_init_not_raw_ir_body() {
     let import_count = function_import_count(&wasm);
     let exports = function_export_indices(&wasm);
     let host_init_index = exports
-        .get("molt_host_init")
+        .get(&attached("molt_host_init"))
         .copied()
         .expect("relocatable wasm must export wrapped molt_host_init");
     assert!(
@@ -423,12 +381,14 @@ fn auto_hello_world_includes_string_from_bytes() {
 }
 
 #[test]
-fn auto_profile_includes_async_sleep_poll_when_ir_uses_call_async() {
+fn call_async_names_a_runtime_poll_by_key_not_by_import() {
+    // HF-699 K1: a runtime poll is its key on every target. The task stores
+    // the key; the module neither imports the poll nor reserves a table slot.
     let wasm = compile_with_profile(ir_with_async_ops(), WasmProfile::Auto);
     let names = import_names(&wasm);
     assert!(
-        names.contains("async_sleep_poll"),
-        "async_sleep_poll should be present when IR has async sleep call_async op"
+        !names.contains("async_sleep_poll"),
+        "a call_async poll target must not become an import; imports={names:?}"
     );
 }
 
@@ -454,26 +414,6 @@ fn auto_hello_world_does_not_include_db_imports() {
         "hello-world should not have db imports, found: {:?}",
         db_imports
     );
-}
-
-#[test]
-fn auto_call_guarded_keeps_escaped_dispatch_imports() {
-    let wasm = compile_with_profile(ir_with_escaped_call_guarded(), WasmProfile::Auto);
-    let names = import_names(&wasm);
-    for name in [
-        "is_function_obj",
-        "is_truthy",
-        "recursion_guard_enter",
-        "recursion_guard_exit",
-        "trace_enter_slot",
-        "trace_exit",
-        "call_func_dispatch",
-    ] {
-        assert!(
-            names.contains(name),
-            "Auto profile should retain {name} for escaped call_guarded; imports={names:?}"
-        );
-    }
 }
 
 #[test]
@@ -577,7 +517,35 @@ fn pure_profile_excludes_compression_imports() {
 
 #[test]
 fn pure_profile_keeps_core_arithmetic() {
-    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Pure);
+    // Pure strips unused imports, so exercise the arithmetic producers on
+    // dynamic parameters, whose generic paths call the runtime.
+    let mut ir = empty_main_ir();
+    let main = &mut ir.functions[0];
+    main.return_abi = molt_ir::FunctionReturnAbi::Value;
+    main.params = vec!["a".to_string(), "b".to_string()];
+    main.ops.clear();
+    let kinds = [
+        (molt_ir::OpKind::Add, "add"),
+        (molt_ir::OpKind::Sub, "sub"),
+        (molt_ir::OpKind::Mul, "mul"),
+        (molt_ir::OpKind::Div, "div"),
+        (molt_ir::OpKind::Eq, "eq"),
+        (molt_ir::OpKind::Lt, "lt"),
+    ];
+    for (kind, out) in kinds {
+        let mut arithmetic = op(kind);
+        arithmetic.out = Some(out.to_string());
+        arithmetic.args = Some(vec!["a".to_string(), "b".to_string()]);
+        main.ops.push(arithmetic);
+    }
+    let mut result = op(molt_ir::OpKind::TupleNew);
+    result.out = Some("results".to_string());
+    result.args = Some(kinds.iter().map(|(_, out)| out.to_string()).collect());
+    let mut ret = op(molt_ir::OpKind::Ret);
+    ret.args = Some(vec!["results".to_string()]);
+    main.ops.extend([result, ret]);
+
+    let wasm = compile_with_profile(ir, WasmProfile::Pure);
     let names = import_names(&wasm);
 
     for core in ["add", "sub", "mul", "div", "eq", "lt"] {

@@ -55,15 +55,21 @@ fn assert_function_compiled(bytes: &[u8], func_name: &str) {
     );
 }
 
-/// Compare an object-file symbol name against an unmangled function name.
+/// Compare an object-file symbol name against a function's attached symbol.
 ///
+/// A compiled function takes the attached execution context, so its symbol
+/// is its name plus `molt_codegen_abi::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX`.
 /// Mach-O (macOS) prefixes C-ABI symbols with a leading underscore in the
 /// object's symbol table (`_foo`), while ELF (Linux) does not (`foo`). The
 /// `object` crate surfaces the raw table name, so accept either form to keep
 /// the assertion target-portable.
 fn symbol_matches(symbol_name: Option<&str>, func_name: &str) -> bool {
+    let attached = format!(
+        "{func_name}{}",
+        molt_codegen_abi::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX
+    );
     match symbol_name {
-        Some(name) => name == func_name || name.strip_prefix('_') == Some(func_name),
+        Some(name) => name == attached || name.strip_prefix('_') == Some(attached.as_str()),
         None => false,
     }
 }
