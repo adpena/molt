@@ -209,9 +209,9 @@ pub(crate) use state::{
     THREAD_LAST_EXCEPTION, exception_clear_reason_set, exception_pending_flag,
 };
 use state::{
-    LAST_EXCEPTION_COL, debug_exception_clear, debug_exception_flow, debug_exception_pending,
-    debug_exception_raise, debug_exception_rc, debug_exceptions, debug_oom,
-    exception_clear_reason_take, exceptions_state, trace_exception_stack,
+    debug_exception_clear, debug_exception_flow, debug_exception_pending, debug_exception_raise,
+    debug_exception_rc, debug_exceptions, debug_oom, exception_clear_reason_take, exceptions_state,
+    trace_exception_stack,
 };
 
 crate::builtins::methods::native_method_table!(exception_method_bits, publish_exception_methods, _py, name, [], {
@@ -2981,11 +2981,6 @@ pub(crate) fn record_exception(py: &PyToken<'_>, ptr: *mut u8) {
         }
         RaisedSnapshot::None => None,
     };
-    let position = crate::builtins::frames::records::top()
-        .and_then(crate::builtins::frames::records::FrameRecord::source_position);
-    LAST_EXCEPTION_COL.with(|cell| {
-        *cell.borrow_mut() = position.map_or((-1, -1), |site| (site.column, site.end_column))
-    });
     // CPython errors.c::_PyErr_SetObject chains the handled exception. A
     // displaced raised indicator is not an implicit exception context.
     let context = exception_context_active_bits();
