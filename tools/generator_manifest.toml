@@ -558,7 +558,6 @@ outputs = [
   "runtime/molt-runtime/src/attached_exports_generated/call/bind/method_site.rs",
   "runtime/molt-runtime/src/attached_exports_generated/call/bind.rs",
   "runtime/molt-runtime/src/attached_exports_generated/call/dispatch.rs",
-  "runtime/molt-runtime/src/attached_exports_generated/concurrency/execution.rs",
   "runtime/molt-runtime/src/attached_exports_generated/concurrency/isolates.rs",
   "runtime/molt-runtime/src/attached_exports_generated/concurrency/locks/native/queue.rs",
   "runtime/molt-runtime/src/attached_exports_generated/concurrency/locks/native.rs",

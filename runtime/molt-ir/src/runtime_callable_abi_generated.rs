@@ -23720,10 +23720,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_profile_dump__molt_context_047a33b55bc1b76d",
         },
-        "molt_profile_enabled" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_profile_enabled__molt_context_047a33b55bc1b76d",
-        },
         "molt_profile_epoch_dump" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_profile_epoch_dump__molt_context_047a33b55bc1b76d",
@@ -24111,10 +24107,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_recursion_exit_fast" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_recursion_exit_fast__molt_context_047a33b55bc1b76d",
-        },
-        "molt_refcount_admission" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_refcount_admission__molt_context_047a33b55bc1b76d",
         },
         "molt_register_compiled_sources" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,

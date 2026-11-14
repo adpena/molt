@@ -29,6 +29,7 @@ pub mod inline_refcount;
 pub mod list_item;
 pub mod method_site;
 pub mod static_cell;
+pub mod thread_record;
 pub mod word;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,6 +198,14 @@ pub const THREAD_RECORD_FRAME_TOP_OFFSET: i32 = 24;
 pub const THREAD_RECORD_ARENA_TOP_OFFSET: i32 = 32;
 /// u64: the end of the thread's current frame-arena chunk.
 pub const THREAD_RECORD_ARENA_LIMIT_OFFSET: i32 = 40;
+/// u64: the `inline_refcount::CompiledRefcountAdmission` compiled code may use,
+/// kept current by the runtime at every change of its inputs (GIL, lifecycle
+/// lease, shutdown drain and C-extension depth). An invocation reads it once at
+/// entry, as it used to call the runtime for it.
+pub const THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET: i32 = 48;
+/// u64: 1 when the process collects runtime profile counters, else 0; published
+/// with the runtime execution binding.
+pub const THREAD_RECORD_PROFILE_ENABLED_OFFSET: i32 = 56;
 
 // A frame record: six header words, then the frame's homes. `base` is the
 // homes base; every header word sits at a negative offset from it, so home

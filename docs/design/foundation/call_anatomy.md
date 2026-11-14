@@ -64,6 +64,10 @@ push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top
 code (stage 1) and traceback location decoding (`LocationRows`) at the top of `exception_heavy`
 (stage 5).
 
+The P0 compiler program since 2026-11-14 is whole-program type flow and specialization (HF-847,
+`78_whole_program_type_flow.md`): facts cross calls, one body per argument-type context. Stages 6
+and 7 consume its facts; stages 1 and 2 remove the per-call costs that remain after it.
+
 ## Why Molt is slow: five causes and their owners (2026-11-09)
 
 1. Generated code is call-threaded: every operation enters the runtime. Stages 1-7 below.
@@ -1511,6 +1515,46 @@ before and after, and compiled-chunk self samples fell from 332 to 226 of about 
 `exception_pending` each iteration, before and after; that is the shared lowering's (HF-843).
 Remaining: a method's read of its own class (`class_def` may run hooks), direct calls (HF-846
 slice 2) and inline construction (slice 3).
+
+**Fourth consumer: proven direct calls of module functions (lane initonce, HF-846 slice 2a,
+2026-11-14).** A `call_guarded S [f, args]` whose callee `f` is an init-dominated read of an
+`InitOnce(function)` cell is proven when the cell's one store holds the object of `func_new S`
+(no closure), `S`'s def is synchronous with positional parameters only (the typed
+`OpIR::direct_shape` fact the frontend puts on that `func_new`), the call passes exactly `S`'s
+arity, and `S`'s entry adopts its arguments exactly when the call does (a zero-argument call
+adopts nothing). Integration (`static_module_cells.prove_init_once_calls`) marks it
+`proven_target`; any other such call gets a `closed_world_binding_fallbacks` diagnostic naming
+the failed fact. An exact positional call of a positional-only def binds nothing, so no writer
+fact for `__defaults__` or `__kwdefaults__` is needed; `__code__` cannot change, because a
+cell-eligible module's program reads no code object (`code_rebinding`), and `__code__` accepts
+only a code object. The late lowering enters `S` directly: no `FunctionDirectCallEligible` call,
+no `CodeIs`, no slow call. The recursion check stays (`RecursionEnterFast`/`RecursionExitFast`,
+runtime calls owned by the frames slice). Cranelift and WASM lower guarded calls in their own
+backends and ignore the fact until they consume the late lowering. Calls with defaults, keywords
+or `*args` keep the guarded path.
+
+DCE now removes a literal materialization nothing reads (`literal_materialization_opcodes`:
+`ConstStr`, `ConstBytes`, `ConstBigInt`): a source literal is a code constant, CPython never
+allocates one at run time, so its allocation failure is not observable. `fib` had rebuilt its
+own name literal on every call once `StaticCellLoad` stopped reading it (`string_from_bytes`,
+`const_data_literal_lookup` and `memcmp`, about 25% of its samples).
+
+Class facts, step 1. The binding flow made every class statement with a base non-plain, so each
+subclass body "executed arbitrary Python" and every subclass was `dynamic`. A base read whose
+binding is not invalidated and whose one source origin is a plain class statement (metaclass
+`type`, no `__init_subclass__` in its base chain) now keeps the class plain. Under a closed
+namespace premise, stable module classes and constructor folding use named writers (the HF-226
+authority's own deferred writes and foreign writes, plus a module-scope rebinding walk) instead
+of "the module namespace is observable", which any module-level call of a module function set.
+`bench_class_hierarchy`'s `Leaf()` now folds to `object_new_bound`; its method calls still take
+the method sites until closed-world dispatch (slice 2b) proves them.
+
+Measured `bench_fib` (`fib(30)`, 2,692,537 calls, LLVM, release, macOS arm64), interleaved
+against main, output identical, after subtracting the 11.7 M instructions of an empty program:
+slice 1 took 1.381 G -> 1.278 G instructions retired, about 508 -> 470 per call; slice 2a takes
+1.278 G -> 0.752 G (-41%), about 470 -> 275 per call. A C reference with one real call per call
+retires about 9.5 per call. `bench_class_hierarchy` (26.1 G) and
+`bench_method_default_binding` (2.196 G) do not change: their calls are method calls (slice 2b).
 
 #### List items (2026-11-14)
 

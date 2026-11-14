@@ -372,8 +372,7 @@ impl GilGuard {
     pub(crate) fn new_if_held_in(tls: &'static ExecutionTls) -> Option<Self> {
         let current = tls.gil_depth.get();
         if current != 0 {
-            tls.gil_depth
-                .set(current.checked_add(1).expect("GIL nesting depth overflow"));
+            tls.set_gil_depth(current.checked_add(1).expect("GIL nesting depth overflow"));
             return Some(Self {
                 lane: GilGuardLane::Main,
                 tls,
@@ -391,7 +390,7 @@ impl GilGuard {
 
         let guard = take_gil(tls);
         tls.native_gil.install(guard);
-        tls.gil_depth.set(1);
+        tls.set_gil_depth(1);
         Self {
             lane: GilGuardLane::Main,
             tls,
@@ -442,7 +441,7 @@ impl Drop for GilGuard {
         if let GilGuardLane::Main = self.lane {
             let current = self.tls.gil_depth.get();
             if current > 1 {
-                self.tls.gil_depth.set(current - 1);
+                self.tls.set_gil_depth(current - 1);
                 return;
             }
         }
@@ -460,7 +459,7 @@ impl GilGuard {
             GilGuardLane::Main => {
                 let current = self.tls.gil_depth.get();
                 assert!(current > 0, "live GIL guard lost its custody depth");
-                self.tls.gil_depth.set(current - 1);
+                self.tls.set_gil_depth(current - 1);
                 if current == 1 {
                     let guard = self.tls.native_gil.take();
                     MutexGuard::unlock_fair(guard);
@@ -495,7 +494,7 @@ impl GilReleaseGuard {
             runtime: tls.bound_state.get(),
         });
         drop(saved);
-        tls.gil_depth.set(0);
+        tls.set_gil_depth(0);
         let released = tls.native_gil.take();
         MutexGuard::unlock_fair(released);
         Self {
@@ -566,7 +565,7 @@ impl Drop for GilReleaseGuard {
         );
         let guard = take_gil(tls);
         tls.native_gil.install(guard);
-        tls.gil_depth.set(saved.depth);
+        tls.set_gil_depth(saved.depth);
         tls.native_gil.persistent.set(saved.persistent);
         let retired_storage = {
             let mut stack = tls.native_gil.saved.borrow_mut();

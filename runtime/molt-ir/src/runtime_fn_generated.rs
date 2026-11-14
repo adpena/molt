@@ -2078,7 +2078,6 @@ pub enum RuntimeFn {
     ProcessStdout,
     ProcessTerminate,
     ProcessWaitFuture,
-    ProfileEnabled,
     ProfileEpochDump,
     ProfileEpochReset,
     ProfileStructFieldStore,
@@ -2162,7 +2161,6 @@ pub enum RuntimeFn {
     ReSubjectView,
     RecursionEnterFast,
     RecursionExitFast,
-    RefcountAdmission,
     ReprBuiltin,
     ReprFromObj,
     RequireIntrinsicRuntime,
@@ -4923,7 +4921,6 @@ impl RuntimeFn {
         Self::ProcessStdout,
         Self::ProcessTerminate,
         Self::ProcessWaitFuture,
-        Self::ProfileEnabled,
         Self::ProfileEpochDump,
         Self::ProfileEpochReset,
         Self::ProfileStructFieldStore,
@@ -5007,7 +5004,6 @@ impl RuntimeFn {
         Self::ReSubjectView,
         Self::RecursionEnterFast,
         Self::RecursionExitFast,
-        Self::RefcountAdmission,
         Self::ReprBuiltin,
         Self::ReprFromObj,
         Self::RequireIntrinsicRuntime,
@@ -5797,7 +5793,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2841;
+    pub const COUNT: usize = 2839;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -29536,18 +29532,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
-        symbol: "molt_profile_enabled",
-        linker_symbol: "molt_profile_enabled__molt_context_047a33b55bc1b76d",
-        context: RuntimeExecutionContext::Attached,
-        params: 0,
-        param_types: PARAMS_NONE,
-        result_type: Some(RuntimeMachineType::Word),
-        callable_trampoline: None,
-        result: RuntimeReturnContract::RawBits,
-        form: RuntimeCallForm::Helper,
-        effects: RuntimeEffects::Impure,
-    },
-    RuntimeFnAbi {
         symbol: "molt_profile_epoch_dump",
         linker_symbol: "molt_profile_epoch_dump__molt_context_047a33b55bc1b76d",
         context: RuntimeExecutionContext::Attached,
@@ -30542,18 +30526,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result: RuntimeReturnContract::Void,
         form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::NothrowWrite,
-    },
-    RuntimeFnAbi {
-        symbol: "molt_refcount_admission",
-        linker_symbol: "molt_refcount_admission__molt_context_047a33b55bc1b76d",
-        context: RuntimeExecutionContext::Attached,
-        params: 0,
-        param_types: PARAMS_NONE,
-        result_type: Some(RuntimeMachineType::Word),
-        callable_trampoline: None,
-        result: RuntimeReturnContract::RawBits,
-        form: RuntimeCallForm::Helper,
-        effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
         symbol: "molt_repr_builtin",

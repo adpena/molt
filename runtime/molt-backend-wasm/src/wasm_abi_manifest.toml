@@ -1566,11 +1566,6 @@ return_contract = "owned_object"
 type = 4
 
 [[import]]
-name = "profile_enabled"
-return_contract = "raw_bits"
-type = 0
-
-[[import]]
 name = "guard_type"
 boxed_call = true
 return_contract = "borrowed_object"
@@ -1943,12 +1938,6 @@ type = 2
 # The attached context is captured once by a real host execution boundary.
 [[import]]
 name = "attached_context"
-type = 0
-return_contract = "raw_bits"
-
-# Full execution admission borrowed for one compiled invocation's RC sites.
-[[import]]
-name = "refcount_admission"
 type = 0
 return_contract = "raw_bits"
 
@@ -5859,13 +5848,13 @@ args = ["local:0"]
 kind = "guard_tag"
 import_name = "guard_type"
 args = ["local:0", "local:1"]
-required_imports = ["guard_type", "profile_enabled"]
+required_imports = ["guard_type"]
 
 [[op_loop_runtime_call]]
 kind = "guard_type"
 import_name = "guard_type"
 args = ["local:0", "local:1"]
-required_imports = ["guard_type", "profile_enabled"]
+required_imports = ["guard_type"]
 
 [[op_loop_runtime_call]]
 kind = "string_format"

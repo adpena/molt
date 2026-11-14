@@ -38,15 +38,21 @@ pub(crate) struct ExecutionTls {
     /// owns the chunk list (`builtins::frames::records`).
     pub(crate) arena_top: Cell<u64>,
     pub(crate) arena_limit: Cell<u64>,
+    /// The refcount admission compiled code reads at entry
+    /// (`THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET`), recomputed by every setter
+    /// of its inputs below.
+    pub(crate) refcount_admission: Cell<u64>,
+    /// Whether runtime profile counters are on (`THREAD_RECORD_PROFILE_ENABLED_OFFSET`).
+    pub(crate) profile_enabled: Cell<u64>,
     /// The Python recursion depth this thread's execution stack holds
     /// (`state::recursion`).
     pub(crate) recursion_depth: Cell<usize>,
     /// GIL custody depth held by this thread.
-    pub(crate) gil_depth: Cell<usize>,
+    pub(crate) gil_depth: AdmissionInput<usize>,
     /// Runtime execution lease depth, with the service-role bit.
-    pub(crate) lease_depth: Cell<usize>,
+    pub(crate) lease_depth: AdmissionInput<usize>,
     /// Shutdown-drain execution custody: 0 or 1.
-    pub(crate) shutdown_drain_depth: Cell<u8>,
+    pub(crate) shutdown_drain_depth: AdmissionInput<u8>,
     /// The worker origin a retained shutdown worker holds.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) retained_worker_origin:
@@ -63,7 +69,7 @@ pub(crate) struct ExecutionTls {
     /// A pointer Cell has no TLS destructor, including during runtime teardown.
     pub(crate) terminal_release: Cell<*const crate::object::bounded_release::TerminalReleaseState>,
     pub(crate) attached_context: molt_codegen_abi::AttachedExecutionContextStorage,
-    pub(crate) cext_execution_depth: Cell<u32>,
+    pub(crate) cext_execution_depth: AdmissionInput<u32>,
     pub(crate) compiled_depth: Cell<usize>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) wasm_execution_depth: Cell<usize>,
@@ -87,6 +93,7 @@ const _: () = {
         THREAD_RECORD_ARENA_LIMIT_OFFSET, THREAD_RECORD_ARENA_TOP_OFFSET,
         THREAD_RECORD_EXCEPTION_PENDING_OFFSET, THREAD_RECORD_FRAME_TOP_OFFSET,
         THREAD_RECORD_PENDING_INVOCATION_OFFSET, THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
+        THREAD_RECORD_PROFILE_ENABLED_OFFSET, THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET,
     };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
@@ -105,7 +112,74 @@ const _: () = {
     assert!(offset_of!(ExecutionTls, frame_top) as i32 == THREAD_RECORD_FRAME_TOP_OFFSET);
     assert!(offset_of!(ExecutionTls, arena_top) as i32 == THREAD_RECORD_ARENA_TOP_OFFSET);
     assert!(offset_of!(ExecutionTls, arena_limit) as i32 == THREAD_RECORD_ARENA_LIMIT_OFFSET);
+    assert!(
+        offset_of!(ExecutionTls, refcount_admission) as i32
+            == THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET
+    );
+    assert!(
+        offset_of!(ExecutionTls, profile_enabled) as i32 == THREAD_RECORD_PROFILE_ENABLED_OFFSET
+    );
 };
+
+/// An input of the refcount admission word. Any code reads it; only the
+/// `ExecutionTls` setters below write it, and each recomputes the word, so the
+/// word compiled code loads at entry is current by construction.
+pub(crate) struct AdmissionInput<T: Copy>(Cell<T>);
+
+impl<T: Copy> AdmissionInput<T> {
+    const fn new(value: T) -> Self {
+        Self(Cell::new(value))
+    }
+
+    #[inline]
+    pub(crate) fn get(&self) -> T {
+        self.0.get()
+    }
+}
+
+impl ExecutionTls {
+    #[inline]
+    pub(crate) fn set_gil_depth(&self, depth: usize) {
+        self.gil_depth.0.set(depth);
+        self.refresh_refcount_admission();
+    }
+
+    #[inline]
+    pub(crate) fn set_lease_depth(&self, depth: usize) {
+        self.lease_depth.0.set(depth);
+        self.refresh_refcount_admission();
+    }
+
+    #[inline]
+    pub(crate) fn set_shutdown_drain_depth(&self, depth: u8) {
+        self.shutdown_drain_depth.0.set(depth);
+        self.refresh_refcount_admission();
+    }
+
+    #[inline]
+    pub(crate) fn set_cext_execution_depth(&self, depth: u32) {
+        self.cext_execution_depth.0.set(depth);
+        self.refresh_refcount_admission();
+    }
+
+    /// Plain inline refcounts need the full execution attachment, lifecycle
+    /// lease and GIL with transition diagnostics off; atomic builds never use
+    /// them (`inline_refcount::CompiledRefcountAdmission`).
+    fn refresh_refcount_admission(&self) {
+        use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission;
+        let admission = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC
+            || self.gil_depth.get() == 0
+            || self.cext_execution_depth.get() == 0
+            || (self.lease_depth.get() == 0 && self.shutdown_drain_depth.get() == 0)
+            || crate::object::rc_transition_trace_enabled()
+        {
+            CompiledRefcountAdmission::Runtime
+        } else {
+            CompiledRefcountAdmission::AttachedPlain
+        };
+        self.refcount_admission.set(admission as u64);
+    }
+}
 
 thread_local! {
     static EXECUTION_TLS: ExecutionTls = const {
@@ -116,10 +190,12 @@ thread_local! {
             frame_top: Cell::new(0),
             arena_top: Cell::new(0),
             arena_limit: Cell::new(0),
+            refcount_admission: Cell::new(0),
+            profile_enabled: Cell::new(0),
             recursion_depth: Cell::new(0),
-            gil_depth: Cell::new(0),
-            lease_depth: Cell::new(0),
-            shutdown_drain_depth: Cell::new(0),
+            gil_depth: AdmissionInput::new(0),
+            lease_depth: AdmissionInput::new(0),
+            shutdown_drain_depth: AdmissionInput::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             retained_worker_origin: Cell::new(None),
             runtime_state: Cell::new(std::ptr::null_mut()),
@@ -129,7 +205,7 @@ thread_local! {
             #[cfg(not(target_arch = "wasm32"))]
             native_gil: crate::concurrency::gil::GilMutexCustody::new(),
             attached_context: molt_codegen_abi::AttachedExecutionContextStorage::new(),
-            cext_execution_depth: Cell::new(0),
+            cext_execution_depth: AdmissionInput::new(0),
             compiled_depth: Cell::new(0),
             #[cfg(target_arch = "wasm32")]
             wasm_execution_depth: Cell::new(0),

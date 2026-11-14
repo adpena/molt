@@ -590,6 +590,34 @@ def checkout_state_lock_paths(root: Path) -> tuple[Path, ...]:
     return tuple(locks.values())
 
 
+def is_checkout_state_control_file(path: Path) -> bool:
+    """A lifetime lock, last-use stamp or owner record of any checkout-state
+    root. Concurrent processes rewrite these names; no program reads them."""
+    return path.name in (LAST_USE_STAMP, OWNER_RECORD) or is_checkout_state_lock_file(
+        path
+    )
+
+
+def checkout_state_control_files(
+    source_root: Path, environment: Mapping[str, str]
+) -> tuple[Path, ...]:
+    """The external control files a use of this checkout's state writes.
+
+    Each managed root has a lifetime lock, a last-use stamp and an owner
+    record. They coordinate lifetimes across processes, so any process may
+    rewrite them during a build; no program reads them as an input.
+    """
+    files: dict[Path, None] = {}
+    for resource, _owner in checkout_state_environment_roots(source_root, environment):
+        locks = checkout_state_lock_paths(resource)
+        if not locks:
+            continue
+        metadata = _state_metadata_root(resource)
+        for path in (*locks, metadata / LAST_USE_STAMP, metadata / OWNER_RECORD):
+            files[path] = None
+    return tuple(files)
+
+
 @contextmanager
 def checkout_state_use(
     roots: Iterable[tuple[Path, CheckoutOwner | None]],

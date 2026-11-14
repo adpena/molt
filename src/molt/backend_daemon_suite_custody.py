@@ -42,6 +42,8 @@ from molt.process_model import CustodyInterest
 
 LEASE_ENV = "MOLT_BACKEND_DAEMON_SUITE_LEASE"
 SCHEMA = "molt.backend_daemon.suite-lease.v3"
+# The one byte the owner writes to the guardian's pipe after the lease record.
+LEASE_WRITTEN = b"L"
 
 
 class SuiteCustodyState(StrEnum):
@@ -1188,6 +1190,9 @@ class SuiteDaemonLease:
                     path.parent / "adoption-index.json", _new_adoption_index(record)
                 )
                 write_exact(path, record)
+                # The guardian blocks on this byte instead of polling for the
+                # record: a loaded host delays the write without bound.
+                os.write(write_fd, LEASE_WRITTEN)
                 deadline = time.perf_counter() + PROCESS_STATE_HANDOFF_TIMEOUT_S
                 expected_ready = {
                     "schema_version": 1,
@@ -1587,11 +1592,11 @@ def main():
     args = parser.parse_args()
     from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
 
-    deadline = time.perf_counter() + 2.0
+    # The owner writes one byte once the lease record is on disk; end of file
+    # first means the owner ended before admitting this guardian.
+    if os.read(args.read_fd, len(LEASE_WRITTEN)) != LEASE_WRITTEN:
+        raise RuntimeError("suite guardian's owner ended before writing its lease")
     lease = read_lease(args.watch)
-    while lease is None and time.perf_counter() < deadline:
-        time.sleep(0.01)
-        lease = read_lease(args.watch)
     if lease is None or lease["guardian_pid"] != os.getpid():
         raise RuntimeError("suite guardian has no admitted owner record")
     project_root = Path(lease["project_root"])

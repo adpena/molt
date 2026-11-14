@@ -6,7 +6,8 @@ use crate::tir::op_kinds_generated::{
 
 use super::super::PassStats;
 use super::super::effects::{
-    op_has_observable_effect_when_dead_with_types, op_may_throw_with_types,
+    op_failure_is_unobservable, op_has_observable_effect_when_dead_with_types,
+    op_may_throw_with_types,
 };
 use super::super::reachability::metadata_preserving_reachable_blocks;
 use super::uses::build_use_counts;
@@ -87,7 +88,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
                 // When inside a try region, conservatively keep ops that
                 // may throw: they represent implicit edges to the handler.
-                if has_eh && try_depth[i] > 0 && op_may_throw_with_types(op, &value_types) {
+                if has_eh
+                    && try_depth[i] > 0
+                    && op_may_throw_with_types(op, &value_types)
+                    && !op_failure_is_unobservable(op)
+                {
                     continue;
                 }
 

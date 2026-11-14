@@ -116,6 +116,11 @@ Existing callers pass `None` (backward-compatible, conservative-correct).
 
 ### 2.3 E5 — Representation Specialization
 
+> **Superseded 2026-11-14** by `78_whole_program_type_flow.md` (HF-847, the P0 program). This
+> section's bottom-up, caller-`Repr`-keyed specializer has no top-down type flow, excludes recursive
+> functions, names clones by string and caps growth with fixed budgets. No code implemented it. The
+> E3 summaries above remain this design's arc. The text below is kept as history only.
+
 **Design principle** (Julia dispatch, not template explosion):
 
 A *specialization* of function `f` for argument `Repr`-tuple `(r0, r1, …, rN)` is a clone of `f`'s body where:

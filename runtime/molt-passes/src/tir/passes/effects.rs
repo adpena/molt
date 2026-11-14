@@ -80,7 +80,14 @@ pub(super) fn op_has_observable_effect_when_dead_with_types(
     value_types: &HashMap<ValueId, TirType>,
 ) -> bool {
     let effects = op_effects_with_types(op, value_types);
-    !effects.effect_free || !effects.nothrow
+    !effects.effect_free || (!effects.nothrow && !op_failure_is_unobservable(op))
+}
+
+/// Whether an op's only failure is one Python cannot observe: materializing
+/// a source code constant (`literal_materialization_opcodes`), which CPython
+/// never allocates at run time. Such an op is dead when nothing reads it.
+pub(super) fn op_failure_is_unobservable(op: &TirOp) -> bool {
+    crate::tir::op_kinds_generated::opcode_is_literal_materialization_table(op.opcode)
 }
 
 pub(super) fn op_is_pure_movable_with_types(

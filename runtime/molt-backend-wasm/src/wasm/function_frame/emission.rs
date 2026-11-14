@@ -14,17 +14,11 @@ use std::fmt::Write as _;
 use wasm_encoder::{BlockType, Catch, Instruction, RefType, ValType};
 
 impl WasmFunctionFrame {
-    pub(in crate::wasm) fn emit_guard_profile_flag(
-        &self,
-        func: &mut Function,
-        reloc_enabled: bool,
-        import_ids: &TrackedImportIds,
-    ) {
+    pub(in crate::wasm) fn emit_guard_profile_flag(&self, func: &mut Function) {
         if let Some(local) = self.guard_profile_local {
-            emit_call(
+            crate::wasm::pending_work::emit_thread_record_word(
                 func,
-                reloc_enabled,
-                import_ids[WasmRuntimeImport::ProfileEnabled],
+                molt_codegen_abi::thread_record::ThreadRecordWord::ProfileEnabled,
             );
             func.instruction(&Instruction::LocalSet(local));
         }

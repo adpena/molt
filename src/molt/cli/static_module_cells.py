@@ -532,3 +532,127 @@ def init_dominance(
                 f"{module}:{op.get('source_line')} {global_name}: checked read: {reason}"
             )
     return InitDominance(frozenset(dominated), tuple(diagnostics))
+
+
+# Proven direct calls (HF-846 slice 2).
+
+# The frontend's fact on a ``func_new`` of a synchronous def with positional
+# parameters only (``OpIR::direct_shape``).
+DIRECT_SHAPE_FIELD = "direct_shape"
+
+
+def _proven_call_reason(
+    call: Mapping[str, Any],
+    producer: Mapping[str, Any] | None,
+    callee_entry: Mapping[str, Any] | None,
+) -> str | None:
+    """Why a guarded call whose callee is a dominated read of an
+    ``InitOnce(function)`` cell is not a proven call of its target, or None.
+
+    The cell holds the object its one ``func_new`` created; the program
+    reaches no code object (``code_rebinding``), so no code replaces that
+    object's code. An exact positional call of a positional-only, synchronous
+    def binds nothing, so ``__defaults__`` and ``__kwdefaults__`` cannot
+    change it either. The entry adopts its arguments exactly when the call
+    instruction does, which is the shape the admission call would check."""
+    target = call.get("s_value")
+    if producer is None or producer.get("kind") != "func_new":
+        return "the cell's store is not a func_new without a closure"
+    if producer.get("s_value") != target:
+        return f"the cell holds {producer.get('s_value')}, not {target}"
+    if producer.get(DIRECT_SHAPE_FIELD) is not True:
+        return f"{target} has a parameter shape that needs binding"
+    supplied = len(call.get("args") or ()) - 1
+    if producer.get("value") != supplied:
+        return f"the call passes {supplied} of {producer.get('value')} parameters"
+    if callee_entry is None:
+        return f"{target} has no function record"
+    entry_adopts = "transferred" in (callee_entry.get("parameter_custody") or ())
+    # The direct call borrows its callable, so only the arguments' custody
+    # meets the entry's: a zero-argument call adopts nothing.
+    call_adopts = "transferred" in (call.get("argument_custody") or ())[1:]
+    if entry_adopts != call_adopts:
+        return f"{target}'s entry custody differs from the call's"
+    return None
+
+
+def prove_init_once_calls(
+    functions: list[dict[str, Any]],
+    module_functions: Mapping[str, list[dict[str, Any]]],
+    plan: StaticCellPlan,
+) -> list[str]:
+    """Mark each ``call_guarded`` whose callee is a dominated read of an
+    ``InitOnce(function)`` cell holding its target's object
+    ``proven_target`` (copy-on-write, as the global slot stamps are).
+    Return a diagnostic for each such call that keeps its guards."""
+    from molt.cli.frontend_integration import _global_name_sites
+
+    # Earlier integration steps replace function dicts copy-on-write in
+    # ``functions`` only (the global slot stamps), so this step finds each
+    # body by name there and writes both views back.
+    position = {
+        function.get("name", ""): index for index, function in enumerate(functions)
+    }
+    diagnostics: list[str] = []
+    rewritten: dict[str, dict[str, Any]] = {}
+    for module, module_funcs in module_functions.items():
+        dominated = plan.init_dominated.get(module, frozenset())
+        facts = plan.init_once.get(module, {})
+        current = {
+            func.get("name", ""): functions[position[func.get("name", "")]]
+            if func.get("name", "") in position
+            else func
+            for func in module_funcs
+        }
+        for name, func in current.items():
+            ops = func.get("ops", ())
+            index_of = {id(op): index for index, op in enumerate(ops)}
+            reads: dict[str, str] = {}
+            if dominated:
+                for op, global_name in _global_name_sites([func]):
+                    out = op.get("out")
+                    if (name, index_of[id(op)]) in dominated and isinstance(out, str):
+                        reads[out] = global_name
+            changed: dict[int, dict[str, Any]] = {}
+            for index, op in enumerate(ops):
+                if op.get("kind") != "call_guarded":
+                    continue
+                args = op.get("args") or ()
+                global_name = reads.get(args[0]) if args else None
+                fact = facts.get(global_name) if global_name is not None else None
+                if fact is None or fact.value_kind != "function":
+                    continue
+                store_ops = current[fact.function].get("ops", ())
+                value = (store_ops[fact.index].get("args") or (None, None, None))[2]
+                producer = next(
+                    (
+                        candidate
+                        for candidate in store_ops
+                        if candidate.get("out") == value
+                    ),
+                    None,
+                )
+                target = str(op.get("s_value"))
+                callee = functions[position[target]] if target in position else None
+                reason = _proven_call_reason(op, producer, callee)
+                if reason is not None:
+                    diagnostics.append(
+                        f"{module}:{op.get('source_line')} {global_name}(): "
+                        f"guarded call: {reason}"
+                    )
+                    continue
+                changed[index] = {**changed.get(index, op), "proven_target": True}
+            if changed:
+                rewritten[name] = {
+                    **func,
+                    "ops": [changed.get(index, op) for index, op in enumerate(ops)],
+                }
+    for name, function in rewritten.items():
+        if name in position:
+            functions[position[name]] = function
+    for module_funcs in module_functions.values():
+        for index, func in enumerate(module_funcs):
+            name = func.get("name", "")
+            if name in position:
+                module_funcs[index] = functions[position[name]]
+    return diagnostics
