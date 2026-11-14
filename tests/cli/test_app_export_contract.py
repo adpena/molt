@@ -23,23 +23,28 @@ from molt.cli.app_export_contract import (
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend._types import _MOLT_CLOSURE_PARAM
 from molt.frontend.sema import collect_module_func_kinds
+from molt.frontend.sema.funcmeta import collect_module_func_defaults
 
 
 def _frontend_ir_and_contract(
     source: str,
 ) -> tuple[dict[str, object], dict[str, object]]:
     tree = ast.parse(source)
+    helpers = ast.parse("def imported(value):\n    return value\n")
     known_kinds = {
-        "probe": {
-            name: kind.value for name, kind in collect_module_func_kinds(tree).items()
-        },
-        "helpers": {"imported": "sync"},
+        module: {
+            name: kind.value
+            for name, kind in collect_module_func_kinds(module_tree).items()
+        }
+        for module, module_tree in (("probe", tree), ("helpers", helpers))
     }
     generator = SimpleTIRGenerator(
         module_name="probe",
         module_execution_kind="module",
         known_modules={"probe", "helpers"},
         known_func_kinds=known_kinds,
+        # The definer's facts, including the symbol it reserves for `imported`.
+        known_func_defaults={"helpers": collect_module_func_defaults(helpers)},
         # ``helpers`` is compiled into the same build, so its declared
         # functions have linkable code symbols.
         direct_call_modules={"helpers"},

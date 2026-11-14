@@ -6,6 +6,7 @@ import pytest
 
 from molt.compat import CompatibilityError
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+from molt.frontend.sema.funcmeta import collect_module_func_defaults
 
 
 IMPORT_BINDINGS = (
@@ -286,6 +287,13 @@ def _function_ir(
         known_func_kinds={
             "helper": {"compute": "sync"},
             "pkg.helper": {"compute": "sync"},
+        },
+        # Each definer's facts, including the symbol it reserves for `compute`.
+        known_func_defaults={
+            module: collect_module_func_defaults(
+                ast.parse("def compute(value):\n    return value\n")
+            )
+            for module in ("helper", "pkg.helper")
         },
     )
     gen.visit(ast.parse(source))

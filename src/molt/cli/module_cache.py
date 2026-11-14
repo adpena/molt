@@ -931,6 +931,10 @@ def _validate_module_func_default_payload(payload: dict[str, Any]) -> bool:
         return False
     if not isinstance(payload.get("has_decorators"), bool):
         return False
+    # Absent when the name has no unambiguous symbol (source_function_symbols).
+    symbol_base = payload.get("symbol_base")
+    if symbol_base is not None and not isinstance(symbol_base, str):
+        return False
     has_vararg = payload.get("has_vararg", False)
     if not isinstance(has_vararg, bool):
         return False
