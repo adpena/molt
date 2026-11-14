@@ -12,7 +12,15 @@ change.
 
 ## Stage status
 
-Summary: 2026-11-09, release native, macOS arm64, user time against the managed CPython 3.12.16 (-I): Molt runs at 0.26x CPython (geomean of 27 benchmarks measurable on both sides); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+Summary: 2026-11-14, release native, macOS arm64, median user time against the managed CPython 3.12.16 (-I): Molt runs at 0.66x CPython over the 9 benchmarks of 100 ms or more (0.81x over all 58 measurable on both sides, where interpreter startup flatters Molt in the 47 under 50 ms); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+
+The bar is the native reference: instructions per iteration against C for the same loop. The
+CPython ratio is the correctness oracle's companion, not the target. The 2026-11-14 figures come
+from direct timing (each program built once with `molt build --release`, then one warm run and
+five alternating samples per side, outputs identical); the 2026-11-09 figure (0.26x over 27) used
+a different method, so the two are not a trend. Worst five, CPython time over Molt time:
+bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_generator_chain
+0.174, bench_descriptor_property 0.177.
 
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
