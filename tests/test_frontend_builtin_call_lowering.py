@@ -5197,8 +5197,14 @@ def test_globals_pop_specializes_only_with_live_builtin_identity() -> None:
     main_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
     )
-    assert any(op.get("kind") == "dict_pop" for op in main_ops)
-    assert all(op.get("kind") != "call_indirect" for op in main_ops)
+    # At module scope the discarded literal pop is a tolerant global delete
+    # (HF-844): it reaches no namespace mapping.
+    constants = {op["out"]: op.get("s_value") for op in main_ops if "out" in op}
+    deletes = [
+        op for op in main_ops if op.get("kind") == "module_del_global_if_present"
+    ]
+    assert [constants[op["args"][1]] for op in deletes] == ["_require_intrinsic"]
+    assert all(op.get("kind") not in {"dict_pop", "call_indirect"} for op in main_ops)
     deferred_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )

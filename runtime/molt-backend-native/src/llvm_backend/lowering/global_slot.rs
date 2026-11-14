@@ -14,7 +14,9 @@ use molt_codegen_abi::global_slot::{
     GLOBAL_SLOT_BASE_SHIFT, SlotBuilder, generate_global_slot_read,
 };
 use molt_codegen_abi::inline_refcount::RefcountOperation;
-use molt_codegen_abi::static_cell::{CellBuilder, generate_static_cell_store};
+use molt_codegen_abi::static_cell::{
+    CellBuilder, generate_static_cell_load, generate_static_cell_store,
+};
 
 struct LlvmSlotBuilder<'a, 'ctx> {
     words: LlvmWords<'a, 'ctx>,
@@ -161,6 +163,42 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         // that takes it (the init's `molt_static_cells_bind`) passes it as is.
         let result = op.results[0];
         self.values.set_value(result, base.into());
+        self.values.set_repr(
+            result,
+            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+        );
+    }
+
+    /// `StaticCellLoad`: an init-dominated read (HF-846), one load from the
+    /// module's block at the cell's offset. The cell keeps its reference.
+    pub(super) fn emit_static_cell_load(&mut self, op: &TirOp) {
+        let Some(slot) = op.global_slot() else {
+            self.record_fatal("StaticCellLoad carries no slot".to_string());
+            return;
+        };
+        let block = self.backend.static_cell_block(&slot.module);
+        let context = self.backend.context;
+        let builder = &self.backend.builder;
+        let value = generate_static_cell_load(slot.index, |offset| {
+            // SAFETY: the block holds one word per layout name and the
+            // registry bounds the cell index (`validate_module_slots`).
+            let pointer = unsafe {
+                builder
+                    .build_in_bounds_gep(
+                        context.i8_type(),
+                        block.as_pointer_value(),
+                        &[context.i64_type().const_int(offset as u64, false)],
+                        "static_cell",
+                    )
+                    .unwrap()
+            };
+            builder
+                .build_load(context.i64_type(), pointer, "static_cell_word")
+                .unwrap()
+                .into_int_value()
+        });
+        let result = op.results[0];
+        self.values.set_value(result, value.into());
         self.values.set_repr(
             result,
             crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),

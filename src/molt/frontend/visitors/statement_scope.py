@@ -8,6 +8,7 @@ separate under-ceiling mixins.
 from __future__ import annotations
 
 from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
+from molt.compiler_analysis.python_namespace_writes import module_binds_name
 
 import ast
 from molt.python_private_names import (
@@ -287,12 +288,14 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         prev_globals_dict_escaped = self.module_globals_dict_escaped
         prev_module_chunk_globals = self.module_chunk_globals
         prev_elided_deleted_funcs = self.module_elided_deleted_funcs
+        prev_globals_rebound = self.module_globals_rebound
         prev_pending_classes = self.class_definition_pending
         prev_class_index = self._class_index
         prev_class_exports = self._class_exports
         self.module_elided_deleted_funcs = set(
             self._module_elidable_deleted_functions(node)
         )
+        self.module_globals_rebound = module_binds_name(node, "globals")
         # F2b (doc 44): the static class graph, const environment, and top-level
         # function metadata are now computed once, pre-walk, by frontend/sema/ and
         # the existing god-object dicts are populated FROM the immutable SemaResult.
@@ -499,6 +502,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         self.module_globals_dict_escaped = prev_globals_dict_escaped
         self.module_chunk_globals = prev_module_chunk_globals
         self.module_elided_deleted_funcs = prev_elided_deleted_funcs
+        self.module_globals_rebound = prev_globals_rebound
         self.python_binding_index = prev_python_binding_index
         self.module_import_flow = prev_module_import_flow
         return None

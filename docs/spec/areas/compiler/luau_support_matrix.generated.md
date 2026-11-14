@@ -10,11 +10,11 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 
 ## Summary
 
-- `compile-error`: `88`
+- `compile-error`: `89`
 - `implemented-exact`: `192`
 - `implemented-target-limited`: `19`
 - `not-admitted`: `238`
-- `total`: `537`
+- `total`: `538`
 
 ## Matrix
 
@@ -466,6 +466,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `state_yield` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `stateful_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `static_cell_base` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
+| `static_cell_load` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `static_cell_set` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `staticmethod_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `store` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |

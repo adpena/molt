@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Callable
 
 from molt.backend_environment import CodegenSelection
-from molt.backend_executable_names import DEFAULT_CODEGEN_BACKEND
 from molt import build_record as _build_record
 from molt import input_report as _input_report
 from molt.cli.build_request import BuildRequest, build_request_values
@@ -126,7 +125,6 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
         or request.cache_report
         or request.capture_link_inputs
         or request.audit_log is not None
-        or request.codegen_backend != DEFAULT_CODEGEN_BACKEND
         # Inputs named by path whose loaders do not yet report to the record.
         or request.type_facts_path is not None
         or request.pgo_profile is not None

@@ -3083,16 +3083,6 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "developer",
       "default": "",
-      "kind": "bool",
-      "name": "MOLT_DIFF_DYLD_PREFLIGHT",
-      "output_neutral": false,
-      "owner": "tests/molt_diff.py",
-      "summary": "Enables the otool -l preflight that checks a freshly built test binary for dyld unknown imports format or malformed load command corruption before it runs; 1/true/yes/on enables it, 0/false/no/off disables it, and when unset the check runs on macOS only. A detected defect fails the selected attempt without rerunning it.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_FAILURES",
       "output_neutral": false,
