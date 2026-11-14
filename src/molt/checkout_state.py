@@ -2369,27 +2369,64 @@ def read_checkout_owner(root: Path) -> CheckoutOwner | None:
     return CheckoutOwner(Path(owner), kind)
 
 
-def owner_is_absent(owner: CheckoutOwner) -> bool:
-    """True only when the owner path is gone and its parent is present.
+def owner_is_absent(owner: CheckoutOwner, artifact_root: Path) -> bool:
+    """True only when the owner path is gone from a volume that is present.
 
     A missing parent may be an unmounted volume or an offline share, which is
-    not proof that the owner was deleted. A pinned session's target goes with
-    the checkout target that holds it, so that target's absence proves the
-    session's.
+    not proof that the owner was deleted, so outside ``artifact_root`` the
+    owner is gone only when its parent is present. Inside it, the volume is
+    the one that holds the state root being judged, and Molt mounts nothing
+    there (``molt.dx``: memory scratch is ``/dev/shm`` or an operator's RAM
+    disk elsewhere). An owner there is gone however much of its tree went with
+    it, once its nearest existing ancestor is on the artifact root's device:
+    a test's checkout under a removed pytest basetemp, say (2026-11-12: 1,029
+    of 1,066 owner records). A pinned session's target goes with the checkout
+    target that holds it, so that target's absence proves the session's.
     """
-    if _path_is_absent(owner.path):
+    if _path_is_absent(owner.path, artifact_root):
         return True
     holder = checkout_target_of(owner)
-    return holder is not None and holder != owner.path and _path_is_absent(holder)
+    return (
+        holder is not None
+        and holder != owner.path
+        and _path_is_absent(holder, artifact_root)
+    )
 
 
-def _path_is_absent(path: Path) -> bool:
+def _path_is_absent(path: Path, artifact_root: Path) -> bool:
     try:
         path.lstat()
     except FileNotFoundError:
-        return path.parent.is_dir()
+        if path.parent.is_dir():
+            return True
+        return _within_present_artifact_volume(path, artifact_root)
     except OSError:
         return False
+    return False
+
+
+def _within_present_artifact_volume(path: Path, artifact_root: Path) -> bool:
+    """Whether ``path``'s nearest existing ancestor lies inside
+    ``artifact_root`` on the artifact root's own device."""
+    try:
+        artifact = artifact_root.resolve(strict=True)
+        device = artifact.stat().st_dev
+    except OSError:
+        return False
+    for ancestor in path.parents:
+        try:
+            ancestor.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+        try:
+            resolved = ancestor.resolve(strict=True)
+            return (
+                resolved.is_relative_to(artifact) and resolved.stat().st_dev == device
+            )
+        except OSError:
+            return False
     return False
 
 
@@ -2423,7 +2460,9 @@ def bound_checkout_owner(root: Path, artifact_root: Path) -> CheckoutOwner | Non
 def orphaned_checkout_state(root: Path, artifact_root: Path) -> CheckoutOwner | None:
     """``root``'s bound owner when that checkout or target is gone."""
     owner = bound_checkout_owner(root, artifact_root)
-    return owner if owner is not None and owner_is_absent(owner) else None
+    return (
+        owner if owner is not None and owner_is_absent(owner, artifact_root) else None
+    )
 
 
 def checkout_target_of(owner: CheckoutOwner) -> Path | None:
