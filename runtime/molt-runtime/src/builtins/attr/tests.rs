@@ -580,7 +580,7 @@ fn assert_cached_namespace_snapshot_ownership(access: molt_cpython_abi::hooks::A
             crate::runtime_state(_py)
                 .attributes
                 .class_lookup
-                .lookup(key)
+                .lookup(_py, key)
                 .unwrap()
                 .value,
             Some(first)
@@ -857,7 +857,7 @@ fn completed_native_absence_is_reusable_without_preparing_other_declarations() {
                 crate::runtime_state(py)
                     .attributes
                     .class_lookup
-                    .lookup(key)
+                    .lookup(py, key)
                     .unwrap()
                     .value,
                 None
