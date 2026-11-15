@@ -1645,6 +1645,88 @@ fn snapshot_members(
     true
 }
 
+/// Snapshot a collection's candidates into `scratch`: the selected
+/// generations' published members in membership order, then this runtime's
+/// tracked native nodes, and fill [`CandidateLookup`]'s position table and
+/// native map. Unlike [`snapshot_members`] it does not sort: deduction is
+/// order-free, and only the unreachable set it returns is put in allocation
+/// order. No callback runs while membership is borrowed.
+fn snapshot_collection(
+    py: &PyToken<'_>,
+    scratch: &mut GcScratch,
+    selection: MemberSelection,
+) -> bool {
+    let state = crate::runtime_state(py);
+    let owner = state.identity();
+    let GcScratch {
+        candidates,
+        positions,
+        natives,
+        ..
+    } = scratch;
+    candidates.clear();
+    natives.clear();
+    for table in positions.iter_mut() {
+        table.clear();
+    }
+    let nodes = lock_native_nodes();
+    let selected_native = |entry: &&NativeTrackedEntry| {
+        entry.runtime_owner == owner && entry.tracked && selection.contains(entry.generation)
+    };
+    let complete = state.gc.with_membership(py, |membership| {
+        let runtime = selection
+            .generations()
+            .map(|generation| membership.members(generation).len())
+            .sum::<usize>();
+        let native = nodes
+            .values()
+            .filter(|entry| selected_native(entry))
+            .count();
+        if runtime.saturating_add(native) >= NOT_CANDIDATE as usize
+            || !try_reserve_total(candidates, runtime + native)
+            || natives.try_reserve(native).is_err()
+        {
+            return false;
+        }
+        for generation in selection.generations() {
+            let members = membership.members(generation);
+            let table = &mut positions[generation.list()];
+            if !try_reserve_total(table, members.len()) {
+                return false;
+            }
+            table.extend(members.iter().map(|member| {
+                // Acquire pairs with constructor publication. Membership may
+                // precede publication, but a snapshot never traverses a
+                // partially initialized payload.
+                if !unsafe { (*header_from_obj_ptr(member.slot.0)).gc_is_published() } {
+                    return NOT_CANDIDATE;
+                }
+                let index = candidates.len() as u32;
+                candidates.push(GcCandidate {
+                    allocation_id: member.ordinal,
+                    node: GcNode::Runtime(member.slot),
+                });
+                index
+            }));
+        }
+        true
+    });
+    if !complete {
+        profile_hit_unchecked(&GC_SNAPSHOT_ALLOC_FAILURE_COUNT);
+        return false;
+    }
+    for (&address, entry) in nodes.iter() {
+        if selected_native(&entry) {
+            natives.insert(address, candidates.len());
+            candidates.push(GcCandidate {
+                allocation_id: entry.allocation_id,
+                node: GcNode::Native(address),
+            });
+        }
+    }
+    true
+}
+
 /// Move every ordinary tracked object to CPython's permanent generation.
 /// Allocation order and membership remain unchanged; normal collection
 /// snapshots exclude these entries until `unfreeze()` restores generation 2.
@@ -2106,7 +2188,11 @@ unsafe fn clear_node(
 #[derive(Default)]
 struct GcScratch {
     candidates: Vec<GcCandidate>,
-    index: HashMap<GcNode, usize, ScratchAddressHash>,
+    /// Per generation, member position to candidate index (`NOT_CANDIDATE`
+    /// for a member outside the snapshot). Read through [`CandidateLookup`].
+    positions: [Vec<u32>; membership::GENERATION_LISTS],
+    /// Native candidates by address; native nodes carry no Molt GC head.
+    natives: HashMap<usize, usize, ScratchAddressHash>,
     refs: Vec<i64>,
     marks: Vec<u8>,
     queue: Vec<usize>,
@@ -2173,7 +2259,6 @@ impl GcScratch {
 
     fn try_prepare_candidates(&mut self) -> bool {
         let len = self.candidates.len();
-        self.index.clear();
         self.refs.clear();
         self.marks.clear();
         self.queue.clear();
@@ -2184,8 +2269,7 @@ impl GcScratch {
         self.api_targets.clear();
         self.api_value_membership.clear();
         self.api_target_membership.clear();
-        if self.index.try_reserve(len).is_err()
-            || !try_reserve_total(&mut self.refs, len)
+        if !try_reserve_total(&mut self.refs, len)
             || !try_reserve_total(&mut self.marks, len)
             || !try_reserve_total(&mut self.queue, len)
             || !try_reserve_total(&mut self.first_unreachable, len)
@@ -2194,9 +2278,6 @@ impl GcScratch {
         {
             return false;
         }
-        for (candidate_index, candidate) in self.candidates.iter().enumerate() {
-            self.index.insert(candidate.node, candidate_index);
-        }
         self.refs.resize(len, 0);
         self.marks.resize(len, 0);
         true
@@ -2204,7 +2285,10 @@ impl GcScratch {
 
     fn clear_for_reuse(&mut self) {
         self.candidates.clear();
-        self.index.clear();
+        for table in &mut self.positions {
+            table.clear();
+        }
+        self.natives.clear();
         self.refs.clear();
         self.marks.clear();
         self.queue.clear();
@@ -2780,9 +2864,51 @@ fn scratch_push(storage: &mut Vec<usize>, value: usize) {
     storage.push(value);
 }
 
+/// A member position outside the collection snapshot.
+const NOT_CANDIDATE: u32 = u32::MAX;
+
+/// Find a traversed child among this collection's candidates, as CPython keeps
+/// a collection's scratch count in each object's `PyGC_Head` instead of an
+/// address map. A runtime child's own GC head names its generation and member
+/// position; a dense per-generation table maps that position to the candidate
+/// index. The candidate at that index is compared with the child, so a stale
+/// position (a member moved by a callback during traversal) can only miss,
+/// never name another object, and a miss leaves the child reachable for this
+/// collection: conservative, never unsound. Native nodes, which carry no Molt
+/// GC head, are found by address.
+#[derive(Clone, Copy)]
+struct CandidateLookup<'a> {
+    candidates: &'a [GcCandidate],
+    positions: &'a [Vec<u32>; membership::GENERATION_LISTS],
+    natives: &'a HashMap<usize, usize, ScratchAddressHash>,
+}
+
+impl CandidateLookup<'_> {
+    /// # Safety
+    /// `node` is a live node reached through an owned edge; the GIL is held.
+    #[inline]
+    unsafe fn index_of(&self, node: GcNode) -> Option<usize> {
+        let index = match node {
+            GcNode::Runtime(slot) => unsafe {
+                if !has_gc_head(slot.0) {
+                    return None;
+                }
+                let (generation, position) = Membership::place(slot)?;
+                let index = *self.positions[generation.list()].get(position)?;
+                if index == NOT_CANDIDATE {
+                    return None;
+                }
+                index as usize
+            },
+            GcNode::Native(address) => *self.natives.get(&address)?,
+        };
+        (self.candidates[index].node == node).then_some(index)
+    }
+}
+
 struct GcDeductionWorkspace<'a> {
     candidates: &'a [GcCandidate],
-    index: &'a HashMap<GcNode, usize, ScratchAddressHash>,
+    lookup: CandidateLookup<'a>,
     refs: &'a mut [i64],
     marks: &'a mut [u8],
     queue: &'a mut Vec<usize>,
@@ -2795,7 +2921,7 @@ unsafe fn deduce_subset(
     output: &mut Vec<usize>,
 ) -> bool {
     let candidates = workspace.candidates;
-    let index = workspace.index;
+    let lookup = workspace.lookup;
     let refs = &mut *workspace.refs;
     let marks = &mut *workspace.marks;
     let queue = &mut *workspace.queue;
@@ -2831,7 +2957,7 @@ unsafe fn deduce_subset(
 
     let mut subtract = |candidate_index: usize| unsafe {
         traverse_node(py, candidates[candidate_index].node, &mut |child| {
-            if let Some(&child_index) = index.get(&child)
+            if let Some(child_index) = lookup.index_of(child)
                 && marks[child_index] == 1
             {
                 let before = refs[child_index];
@@ -2893,7 +3019,7 @@ unsafe fn deduce_subset(
     while let Some(candidate_index) = queue.pop() {
         unsafe {
             if !traverse_node(py, candidates[candidate_index].node, &mut |child| {
-                if let Some(&child_index) = index.get(&child)
+                if let Some(child_index) = lookup.index_of(child)
                     && marks[child_index] == 1
                 {
                     if child.runtime_ptr().is_some_and(|ptr| {
@@ -2940,7 +3066,8 @@ unsafe fn deduce_subset(
 unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
     let GcScratch {
         candidates,
-        index,
+        positions,
+        natives,
         refs,
         marks,
         queue,
@@ -2950,7 +3077,11 @@ unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
     } = scratch;
     let mut workspace = GcDeductionWorkspace {
         candidates,
-        index,
+        lookup: CandidateLookup {
+            candidates,
+            positions,
+            natives,
+        },
         refs,
         marks,
         queue,
@@ -2958,6 +3089,11 @@ unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
     if !unsafe { deduce_subset(py, &mut workspace, None, first_unreachable) } {
         return false;
     }
+    // Candidates follow membership order, which swap-removal permutes; the
+    // unreachable set, the order of every finalizer, weakref and clear, follows
+    // allocation order.
+    first_unreachable
+        .sort_unstable_by_key(|&candidate_index| candidates[candidate_index].allocation_id);
     first_unreachable_runtime_ptrs.clear();
     for &candidate_index in first_unreachable.iter() {
         if let Some(ptr) = candidates[candidate_index].node.runtime_ptr() {
@@ -2973,7 +3109,8 @@ unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
 unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
     let GcScratch {
         candidates,
-        index,
+        positions,
+        natives,
         refs,
         marks,
         queue,
@@ -2982,9 +3119,33 @@ unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) -> 
         final_unreachable,
         ..
     } = scratch;
+    // Finalizers moved members: index the subset again at its current places.
+    for table in positions.iter_mut() {
+        table.clear();
+    }
+    for &candidate_index in first_unreachable.iter() {
+        let GcNode::Runtime(slot) = candidates[candidate_index].node else {
+            continue;
+        };
+        let Some((generation, position)) = (unsafe { Membership::place(slot) }) else {
+            continue;
+        };
+        let table = &mut positions[generation.list()];
+        if table.len() <= position {
+            if table.try_reserve(position + 1 - table.len()).is_err() {
+                return false;
+            }
+            table.resize(position + 1, NOT_CANDIDATE);
+        }
+        table[position] = candidate_index as u32;
+    }
     let mut workspace = GcDeductionWorkspace {
         candidates,
-        index,
+        lookup: CandidateLookup {
+            candidates,
+            positions,
+            natives,
+        },
         refs,
         marks,
         queue,
@@ -3209,11 +3370,8 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
             // Snapshot directly into the reusable collector workspace. The registry
             // mutex is released before traversal so re-entrant dec_ref during
             // finalize/clear can update it; allocation ordinals preserve order.
-            let snapshot_ok = snapshot_members(
-                py,
-                &mut scratch.candidates,
-                MemberSelection::Through(generation),
-            );
+            let snapshot_ok =
+                snapshot_collection(py, &mut scratch, MemberSelection::Through(generation));
             if !snapshot_ok {
                 return CollectStats::failure(
                     py,

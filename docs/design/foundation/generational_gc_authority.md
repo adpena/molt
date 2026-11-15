@@ -9,10 +9,11 @@ collector for the remainder. The collector has one scheduling authority in
 - New cycle-capable allocations enter generation 0 with a monotonic allocation
   ordinal. Exact dict/tuple dynamic untracking changes membership, not allocation
   accounting.
-- A generation-N collection snapshots only generations `0..=N`, sorts once by
-  allocation ordinal, and promotes reachable and resurrected survivors to
-  `min(N + 1, 2)`. This preserves deterministic finalizer, weakref, and clear
-  order while removing old objects from young-collection cost.
+- A generation-N collection snapshots only generations `0..=N` in membership
+  order, puts only the unreachable set in allocation-ordinal order, and promotes
+  reachable and resurrected survivors to `min(N + 1, 2)`. This preserves
+  deterministic finalizer, weakref, and clear order while removing old objects
+  from young-collection cost.
 - Counts and defaults match CPython 3.12: thresholds `(700, 10, 10)`, count 0 is
   GC allocations minus deallocations, and collection N resets counts `0..=N`
   while incrementing N+1. Automatic selection chooses the oldest due generation
@@ -71,9 +72,22 @@ follows the same layout rule with one word:
 - **Ownership.** An isolate's objects are members of its own state. Every
   removal asserts that the head's position names the object in the current
   runtime's list, so a cross-runtime free or a corrupt head fails loud.
-- **Order.** Members keep allocation ordinals, and snapshots sort by ordinal as
-  before; vector order, which swap-removal permutes, never reaches finalizer,
-  weakref or clear order.
+- **Order.** Members keep allocation ordinals. Introspection snapshots sort by
+  ordinal; a collection's snapshot keeps membership order and sorts only its
+  unreachable set, so vector order, which swap-removal permutes, never reaches
+  finalizer, weakref or clear order.
+- **Candidate lookup.** CPython keeps a collection's scratch count in each
+  object's `PyGC_Head`. A Molt collection finds a traversed child's candidate
+  index from the child's own head: its generation and member position index a
+  dense per-generation table (`u32` per member) the snapshot fills. The
+  candidate at that index is compared with the child, so a member moved by a
+  callback during traversal can only be missed, which keeps it reachable for
+  that collection: conservative, never unsound. The pass after finalizers
+  re-indexes its unreachable subset at the current positions. Native nodes,
+  which have no head, are found by address. This replaced an address-keyed
+  hash map over every candidate and the full candidate sort (2026-11-15:
+  bench_gc_pressure -20.5% instructions, user 2.77 s to 1.35 s, peak RSS
+  1,071 MB to 942 MB).
 - **Retirement count.** A collection's `retired` count needs to know which first
   unreachable candidates ended their tracking lifetime after the pins drop,
   without reading freed memory. While the pins still hold, each runtime
