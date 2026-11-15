@@ -1800,17 +1800,17 @@ unsafe fn invoke_function_trampoline(
             // executable address, an app table slot on wasm32. The runtime
             // calls either itself on every target, never through the app's
             // `molt_call_indirectN` (HF-699 K2).
-            let call_target = if let Some(target) = runtime_callable_target_ptr(tramp_ptr) {
-                target
+            // A named key resolves through the generated table. An address key
+            // is its own target: the registry stores each address key's own
+            // address, so a lookup would only lock a global map to return
+            // `function_ptr(tramp_ptr)`.
+            let target = if crate::builtins::functions::runtime_callable_key_is_named(tramp_ptr) {
+                runtime_callable_target_ptr(tramp_ptr)
             } else {
-                let Some(target) = crate::provenance::abi::function_ptr(tramp_ptr) else {
-                    return missing_function_call_target(
-                        _py,
-                        "variadic trampoline call",
-                        tramp_ptr,
-                    );
-                };
-                target
+                crate::provenance::abi::function_ptr(tramp_ptr)
+            };
+            let Some(call_target) = target else {
+                return missing_function_call_target(_py, "variadic trampoline call", tramp_ptr);
             };
             let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(call_target);
             func(
