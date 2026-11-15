@@ -3982,6 +3982,8 @@
         "internal-runtime-wasm-build",
         "--build-profile",
         "dev",
+        "--stdlib-profile",
+        "full",
         "--kind",
         "shared",
         "--json"
