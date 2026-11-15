@@ -40,6 +40,13 @@ pub fn generate_has_tag<B: WordBuilder>(b: &mut B, word: B::Word, tag: BoxTag) -
     b.compare(WordComparison::Equal, tag_field, expected)
 }
 
+/// The negation of [`generate_has_tag`]: `word` does not carry `tag`.
+pub fn generate_lacks_tag<B: WordBuilder>(b: &mut B, word: B::Word, tag: BoxTag) -> B::Predicate {
+    let tag_field = b.and(word, QNAN | TAG_MASK);
+    let expected = b.constant(QNAN | tag.bits());
+    b.compare(WordComparison::NotEqual, tag_field, expected)
+}
+
 /// The sign-extended 47-bit payload of an inline-int word. Total: on a word
 /// without the int tag the result is meaningless but defined, so it may be
 /// speculated above the tag test.
