@@ -338,6 +338,18 @@ def test_safe_run_real_child_cannot_forge_metrics_or_lose_stderr(tmp_path):
     assert outcome.guard_result.descendants_closed
 
 
+def test_safe_run_cli_forwards_child_bytes_unchanged(
+    capfdbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    # A guest's streams are bytes: invalid UTF-8 and bare CR/LF must reach the
+    # caller exactly, as the differential harness compares them byte for byte.
+    out, err = b"out \xff\r\nend", b"err \xfe\n"
+    code = f"import os; os.write(1, {out!r}); os.write(2, {err!r})"
+    assert safe_run.main(["--quiet", "--", sys.executable, "-c", code]) == 0
+    captured = capfdbinary.readouterr()
+    assert captured.out == out and captured.err == err
+
+
 def test_direct_run_tools_have_no_parallel_kill_authority() -> None:
     removed_compile_progress_helper = "_kill_run" + "_scoped_processes"
     for relative in ("tools/safe_run.py", "tools/compile_progress.py"):
