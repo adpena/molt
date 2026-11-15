@@ -14,6 +14,8 @@ pub(crate) enum Event {
     Retain(u64),
     Release(u64),
     Cold,
+    /// A header flag ORed in (`field_slot::FieldSlotBuilder`).
+    Flag(u32),
 }
 
 #[derive(Default)]
