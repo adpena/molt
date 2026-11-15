@@ -41,25 +41,6 @@ pub(crate) fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u3
     }
 }
 
-/// Emit a `return_call` instruction (WASM tail calls proposal).
-/// The callee's return value becomes the caller's return value without growing the stack.
-pub(crate) fn emit_return_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
-    if func_index == u32::MAX {
-        // Sentinel: this import was stripped in pure profile mode.
-        func.instruction(&Instruction::Unreachable);
-        return;
-    }
-    func.emit_call_context(func_index);
-    if reloc_enabled {
-        let mut bytes = Vec::with_capacity(6);
-        bytes.push(0x12); // return_call opcode
-        encode_u32_leb128_padded(func_index, &mut bytes);
-        func.raw(bytes);
-    } else {
-        func.instruction(&Instruction::ReturnCall(func_index));
-    }
-}
-
 pub(crate) fn emit_call_indirect(func: &mut Function, reloc_enabled: bool, ty: u32, table: u32) {
     if reloc_enabled {
         let mut bytes = Vec::with_capacity(11);

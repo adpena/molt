@@ -1,6 +1,6 @@
 // molt_calling_convention.qnt — Quint model for Molt's function calling convention.
 //
-// Models the Luau backend's function reference and call-site mechanics:
+// Models Molt's function reference and call-site mechanics:
 //   - Builtin, user-defined, and closure function references
 //   - The args-tuple calling convention used by call_func IR ops
 //   - The builtin_func IR op that creates function references
@@ -123,8 +123,8 @@ module molt_calling_convention {
   }
 
   // Register a user-defined function.
-  // In Molt, all user-defined functions compiled to Luau use the args-tuple
-  // convention: they accept (args_tuple, ...) and unpack internally.
+  // In the model, user-defined functions use the args-tuple convention:
+  // they accept (args_tuple, ...) and unpack internally.
   action registerUser = {
     nondet name = oneOf(USER_IDS)
     all {

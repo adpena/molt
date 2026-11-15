@@ -1,7 +1,7 @@
 """Cross-backend divergence sub-oracle tests (doc 66 FACT 2).
 
 The single-backend differential (native-only) makes a backend-specific
-divergence INVISIBLE: if wasm/llvm/luau produces a different answer than
+divergence INVISIBLE: if wasm/llvm produces a different answer than
 native/CPython, no gate goes red. doc 66's multi-backend oracle closes that by
 (a) comparing every requested backend against CPython under the ONE comparison
 law and (b) comparing the backends against EACH OTHER. A FAIL means any backend
@@ -293,7 +293,6 @@ sys.exit(int(sys.argv[3]))
     [
         (compat_backends.WasmAdapter, "output_linked.wasm"),
         (compat_backends.LlvmAdapter, "case_molt"),
-        (compat_backends.LuauAdapter, "case.luau"),
     ],
 )
 def test_adapter_child_receives_atomic_selected_capabilities(
@@ -593,8 +592,6 @@ _COMPAT_GUARD_PHASES = (
     "MOLT_COMPAT_WASM_RUN",
     "MOLT_COMPAT_LLVM_BUILD",
     "MOLT_COMPAT_LLVM_RUN",
-    "MOLT_COMPAT_LUAU_BUILD",
-    "MOLT_COMPAT_LUAU_RUN",
 )
 
 
@@ -728,7 +725,7 @@ def test_backend_execution_context_requires_canonical_target_authority() -> None
 
 
 @pytest.mark.parametrize("target_python", ("3.13", "3.14"))
-@pytest.mark.parametrize("backend", ("wasm", "llvm", "luau", "native"))
+@pytest.mark.parametrize("backend", ("wasm", "llvm", "native"))
 @pytest.mark.parametrize("stdlib_profile", (None, "micro", "full"))
 def test_cross_backend_build_command_binds_target_python(
     monkeypatch: pytest.MonkeyPatch,
@@ -790,9 +787,7 @@ def test_cross_backend_build_command_binds_target_python(
         assert command[command.index("--stdlib-profile") + 1] == stdlib_profile
 
 
-@pytest.mark.parametrize(
-    "adapter", ("WasmAdapter", "LlvmAdapter", "JitAdapter", "LuauAdapter")
-)
+@pytest.mark.parametrize("adapter", ("WasmAdapter", "LlvmAdapter", "JitAdapter"))
 def test_only_compiler_children_run_inside_the_frontend_image(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, adapter: str
 ) -> None:
@@ -912,7 +907,7 @@ def test_backend_budget_exhaustion_preserves_prior_infrastructure_and_all_rows(
     budget = compat_backends.ItemBudget(policy, 10.0)
     original = _infrastructure_outcome(build_failed=True)
     registry, _ = install_fake_registry(
-        {"native": original, "llvm": _outcome("42\n"), "luau": _outcome("42\n")}
+        {"native": original, "llvm": _outcome("42\n"), "wasm": _outcome("42\n")}
     )
     calls = []
 
@@ -937,12 +932,12 @@ def test_backend_budget_exhaustion_preserves_prior_infrastructure_and_all_rows(
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
     actual = molt_diff.diff_test(
-        str(fake_test_file), targets=("native", "llvm", "luau"), item_budget=budget
+        str(fake_test_file), targets=("native", "llvm", "wasm"), item_budget=budget
     )
     assert actual["resolved_status"] == "uncalibrated"
     assert actual["reason_tag"] == "infrastructure_error"
     rows = records[0]["backend_rows"]
-    assert [row["backend"] for row in rows] == ["native", "llvm", "luau"]
+    assert [row["backend"] for row in rows] == ["native", "llvm", "wasm"]
     assert rows[0]["infrastructure_failure"] is not None
     assert rows[0]["raw_status"] == "uncalibrated"
     assert all(row["timed_out"] and row["build_failed"] for row in rows[1:])
@@ -1328,7 +1323,7 @@ def test_all_backends_receive_one_stdlib_profile(
         fake_test_file.write_text(
             "# MOLT_META: stdlib_profile=full\nprint(42)\n", encoding="utf-8"
         )
-    targets = ("native", "wasm", "llvm", "luau")
+    targets = ("native", "wasm", "llvm")
     registry, native_contexts = install_fake_registry(
         {target: compat_backends.BackendResult("42\n", "", 0) for target in targets}
     )
@@ -1387,7 +1382,7 @@ def test_all_backends_receive_one_explicit_untrusted_test_context(
         else:
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PYTHONOPTIMIZE", "2")
-    targets = ("native", "wasm", "llvm", "luau")
+    targets = ("native", "wasm", "llvm")
     registry, native_contexts = install_fake_registry(
         {target: compat_backends.BackendResult("42\n", "", 0) for target in targets}
     )
@@ -1473,7 +1468,7 @@ def test_diff_report_separates_compared_stderr_from_retained_diagnostics(
     )
     guest_stderr = guest_bytes.decode("utf-8", errors="surrogateescape")
     diagnostics = "guard preface\n" + guest_stderr + "\nExperimentalWarning: host\n"
-    targets = ("native", "wasm", "llvm", "luau")
+    targets = ("native", "wasm", "llvm")
     result = compat_backends.BackendResult(
         "WRONG\n", diagnostics, 0, child_stderr=guest_stderr
     )
@@ -1608,19 +1603,19 @@ def test_uncalibrated_when_no_backend_available(fake_test_file, monkeypatch) -> 
     # silent pass. With only an unavailable backend requested, the test resolves
     # to "uncalibrated".
     class _Unavailable:
-        name = "luau"
+        name = "wasm"
 
         def availability(self, budget=None):
             return compat_backends.BackendAvailability(
-                available=False, reason="lune not on PATH"
+                available=False, reason="wasmtime not on PATH"
             )
 
         def build_and_run(self, *a, **k):  # pragma: no cover - never called
             raise AssertionError("unavailable backend must not run")
 
-    monkeypatch.setattr(molt_diff, "_COMPAT_BACKEND_REGISTRY", {"luau": _Unavailable()})
+    monkeypatch.setattr(molt_diff, "_COMPAT_BACKEND_REGISTRY", {"wasm": _Unavailable()})
     monkeypatch.setattr(molt_diff, "run_cpython", lambda *a, **k: _outcome("42\n"))
-    status = molt_diff.diff_test(str(fake_test_file), targets=("luau",))[
+    status = molt_diff.diff_test(str(fake_test_file), targets=("wasm",))[
         "resolved_status"
     ]
     assert status == "uncalibrated"
@@ -1670,7 +1665,7 @@ def test_timeout_preserves_diagnostic_and_is_never_oom(prefix, monkeypatch) -> N
     assert replace(result, child_stderr="MemoryError").resource_failure is None
 
 
-@pytest.mark.parametrize("backend", ("wasm", "llvm", "luau"))
+@pytest.mark.parametrize("backend", ("wasm", "llvm"))
 @pytest.mark.parametrize("phase", ("build", "run"))
 @pytest.mark.parametrize("failure_kind", ("timeout", "infrastructure"))
 def test_all_adapters_preserve_phase_failure(
@@ -1700,7 +1695,6 @@ def test_all_adapters_preserve_phase_failure(
             output = {
                 "wasm": "output_linked.wasm",
                 "llvm": "case_molt",
-                "luau": "case.luau",
             }[backend]
             (tmp_path / output).touch()
             if backend == "wasm":
@@ -1718,7 +1712,6 @@ def test_all_adapters_preserve_phase_failure(
     adapters = {
         "wasm": compat_backends.WasmAdapter,
         "llvm": compat_backends.LlvmAdapter,
-        "luau": compat_backends.LuauAdapter,
     }
     result = adapters[backend]().build_and_run("case.py", context=context)
     if failure_kind == "timeout":
@@ -1775,7 +1768,7 @@ def test_native_build_timeout_keeps_partial_compiler_diagnostics():
     assert "phase detail" in result.stderr and "error detail" in result.stderr
 
 
-@pytest.mark.parametrize("backend", ("native", "wasm", "llvm", "luau"))
+@pytest.mark.parametrize("backend", ("native", "wasm", "llvm"))
 def test_timeout_cannot_be_xfailed_even_with_other_backend_divergence(
     backend, fake_test_file, install_fake_registry, monkeypatch
 ):
@@ -1783,7 +1776,7 @@ def test_timeout_cannot_be_xfailed_even_with_other_backend_divergence(
         "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
         encoding="utf-8",
     )
-    targets = ("native", "wasm", "llvm", "luau")
+    targets = ("native", "wasm", "llvm")
     outcomes = {name: _outcome(name) for name in targets}
     outcomes[backend] = compat_backends.BackendResult(
         None, "killed after timeout", 124, build_failed=True, timed_out=True
@@ -1798,7 +1791,7 @@ def test_timeout_cannot_be_xfailed_even_with_other_backend_divergence(
     assert records[0]["expect_molt_fail"] is True
     assert records[0]["reason_tag"] == "timeout"
     rows = records[0]["backend_rows"]
-    assert len(rows) == 4
+    assert len(rows) == len(targets)
     row = next(row for row in rows if row["backend"] == backend)
     assert row["timed_out"] and row["build_failed"]
     assert row["raw_status"] == "fail"
@@ -1842,10 +1835,10 @@ def test_missing_target_is_not_pass_or_expected_semantic_failure(
         encoding="utf-8",
     )
     registry, _ = install_fake_registry(
-        {"native": _outcome(native_output), "luau": _outcome("")}
+        {"native": _outcome(native_output), "wasm": _outcome("")}
     )
     monkeypatch.setattr(
-        registry["luau"],
+        registry["wasm"],
         "availability",
         lambda budget=None: compat_backends.BackendAvailability(
             False, "runner missing"
@@ -1854,7 +1847,7 @@ def test_missing_target_is_not_pass_or_expected_semantic_failure(
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
     assert (
-        molt_diff.diff_test(str(fake_test_file), targets=("native", "luau"))[
+        molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))[
             "resolved_status"
         ]
         == "uncalibrated"
@@ -1896,7 +1889,7 @@ def test_intentional_exit_124_is_not_a_timeout(fake_test_file, install_fake_regi
     )
 
 
-@pytest.mark.parametrize("backend", ("native", "wasm", "llvm", "luau"))
+@pytest.mark.parametrize("backend", ("native", "wasm", "llvm"))
 @pytest.mark.parametrize("build_failed", (False, True))
 def test_infrastructure_failure_is_not_semantic_or_oom_evidence(
     backend, build_failed, fake_test_file, install_fake_registry, monkeypatch, capsys
@@ -1905,7 +1898,7 @@ def test_infrastructure_failure_is_not_semantic_or_oom_evidence(
         "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
         encoding="utf-8",
     )
-    targets = ("native", "wasm", "llvm", "luau")
+    targets = ("native", "wasm", "llvm")
     outcomes = {name: _outcome(name) for name in targets}
     failure = _infrastructure_outcome(child_returncode=137, build_failed=build_failed)
     outcomes[backend] = failure
@@ -1936,7 +1929,7 @@ def test_infrastructure_failure_is_not_semantic_or_oom_evidence(
     )
 
 
-@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm", "luau"])
+@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm"])
 def test_guest_cleanup_failure_cannot_be_hidden_by_xfail(
     backend, fake_test_file, install_fake_registry, monkeypatch, tmp_path
 ):
@@ -1952,7 +1945,7 @@ def test_guest_cleanup_failure_cannot_be_hidden_by_xfail(
     )
     assert (failure.stdout, failure.stderr, failure.returncode) == ("42\n", "", 0)
     assert failure.infrastructure_failure is not None
-    targets = ("native", "wasm", "llvm", "luau")
+    targets = ("native", "wasm", "llvm")
     outcomes = {name: _outcome("42\n") for name in targets}
     if backend == "cpython":
         install_fake_registry(outcomes, cpython=failure)
@@ -2163,7 +2156,7 @@ def test_guard_resource_facts_survive_adapter_and_build_conversion(
         )
 
 
-@pytest.mark.parametrize("backend", ["native", "wasm", "llvm", "luau"])
+@pytest.mark.parametrize("backend", ["native", "wasm", "llvm"])
 def test_runtime_abort_with_oom_repro_stays_failure(
     backend, fake_test_file, install_fake_registry, monkeypatch
 ):
@@ -2233,7 +2226,7 @@ def _suite_victim_record(pid, born):
     }
 
 
-@pytest.mark.parametrize("adapter", ["cpython", "native", "wasm", "llvm", "luau"])
+@pytest.mark.parametrize("adapter", ["cpython", "native", "wasm", "llvm"])
 @pytest.mark.parametrize(
     "case",
     [
@@ -2366,7 +2359,7 @@ def test_guest_retirement_preserves_existing_trip_infrastructure_phase(tmp_path)
     assert result.resource_failure is None
 
 
-@pytest.mark.parametrize("backend", ("cpython", "native", "wasm", "llvm", "luau"))
+@pytest.mark.parametrize("backend", ("cpython", "native", "wasm", "llvm"))
 @pytest.mark.parametrize("build_failed", (False, True))
 def test_operator_signal_stops_case_before_semantic_overlay_or_next_backend(
     backend, build_failed, fake_test_file, install_fake_registry, monkeypatch
@@ -2382,7 +2375,7 @@ def test_operator_signal_stops_case_before_semantic_overlay_or_next_backend(
         guard_signal=15,
         child_returncode=-9,
     )
-    targets = ("native", "wasm", "llvm", "luau")
+    targets = ("native", "wasm", "llvm")
     outcomes = {name: _outcome("42\n") for name in targets}
     if backend != "cpython":
         outcomes[backend] = interrupted

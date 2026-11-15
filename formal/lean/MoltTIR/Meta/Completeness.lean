@@ -197,7 +197,7 @@ theorem compose_assoc (p₁ p₂ p₃ : MoltTIR.Expr → MoltTIR.Expr) :
 inductive CompilationPhase where
   | lowering   -- Python AST → TIR
   | midend     -- TIR → optimized TIR (8 passes)
-  | backend    -- Optimized TIR → backend code (Luau/Cranelift)
+  | backend    -- Optimized TIR → backend code (Cranelift/LLVM/WASM)
   | execution  -- Backend → target execution (native/WASM)
   deriving DecidableEq, Repr
 
@@ -224,7 +224,7 @@ theorem midend_most_verified :
        across the lowering function.
     2. **Midend correctness**: All 8 midend passes preserve behavioral equivalence
        (runFunc produces the same outcome for all fuel values).
-    3. **Backend correctness**: Emitting backend code (Luau/Cranelift/WASM) from
+    3. **Backend correctness**: Emitting backend code (Cranelift/LLVM/WASM) from
        optimized TIR preserves evaluation semantics.
     4. **Target agreement**: Native and WASM targets produce identical results
        for the same TIR input.

@@ -256,12 +256,25 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
             definition(&clif, address)
                 .is_some_and(|def| clif.dfg.insts[def].opcode() == Opcode::SymbolValue)
         };
+        // Entry reads of the thread record (the attached context's record,
+        // then its admission and profile words) are execution state, not
+        // field reads.
+        let context = clif.dfg.block_params(clif.layout.entry_block().unwrap())[0];
+        let reads_thread_record = |inst| {
+            let address = clif.dfg.inst_args(inst)[0];
+            address == context
+                || definition(&clif, address).is_some_and(|def| {
+                    clif.dfg.insts[def].opcode() == Opcode::Load
+                        && clif.dfg.inst_args(def)[0] == context
+                })
+        };
         let i64_loads: Vec<_> = instructions
             .iter()
             .copied()
             .filter(|&inst| {
                 clif.dfg.insts[inst].opcode() == Opcode::Load
                     && clif.dfg.value_type(clif.dfg.first_result(inst)) == types::I64
+                    && !reads_thread_record(inst)
             })
             .collect();
         assert_eq!(

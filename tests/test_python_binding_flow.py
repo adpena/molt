@@ -287,8 +287,11 @@ def test_frame_callback_store_cannot_hide_displaced_finalizer_reentry(target) ->
 def test_import_metadata_projection_is_independent_of_unrelated_deferred_return(
     target: str,
 ) -> None:
+    # A keyword reaches `__init_subclass__`, which can run any Python while
+    # the class is created; a plain class base alone runs none (HF-846).
     source = (
-        f"class A:\n    pass\nclass B(A):\n    pass\n{target}\nfrom . import child\n"
+        "class A:\n    pass\nclass B(A, flag=True):\n    pass\n"
+        f"{target}\nfrom . import child\n"
     )
     for suffix in ("", "def unrelated():\n    return 1\n"):
         current = source + suffix
@@ -6368,3 +6371,35 @@ def test_parameter_literal_classes_align_with_positional_parameters():
     (parameters,) = index.source_parameters
     assert len(parameters.literal_classes) == len(parameters.positional) == 2
     assert parameters.literal_classes == (frozenset({"a", "b"}), None)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "plain"),
+    [
+        ("class A:\n    pass\n", True),
+        ("class A:\n    pass\nclass M(A):\n    pass\n", True),
+        ("class Meta(type):\n    pass\nclass A(metaclass=Meta):\n    pass\n", False),
+        (
+            "class A:\n    def __init_subclass__(cls):\n        pass\n",
+            False,
+        ),
+        ("class A:\n    pass\nA = make()\n", False),
+        ("from foreign import A\n", False),
+        # An earlier class creation that runs Python may rebind A.
+        ("class A:\n    pass\nclass M(A, flag=1):\n    pass\n", False),
+    ],
+)
+def test_a_plain_class_base_keeps_a_plain_class_namespace(
+    prefix: str, plain: bool
+) -> None:
+    """A class statement whose bases are each a plain class statement's class
+    keeps metaclass ``type``: its body stores into a plain dict and run no
+    Python (HF-846 class facts). Any other base can run ``__prepare__``,
+    ``__mro_entries__`` or ``__init_subclass__``."""
+    source = prefix + "class B(A):\n    def m(self):\n        return 1\n"
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    body = tree.body[-1].body[0]
+    fact = index.statement_fact(body)
+    assert fact is not None
+    assert (not fact.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON) is plain

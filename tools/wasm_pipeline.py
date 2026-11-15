@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Full WASM optimization pipeline for Molt (MOL-211).
 
-Orchestrates the complete compile -> link -> optimize pipeline:
+Orchestrates the complete compile -> optimize pipeline:
 
-1. Compile Python source to unlinked WASM via ``molt build --emit wasm``
-2. Link with ``wasm-ld --gc-sections`` to strip dead code (via wasm_link.py)
-3. Optimize with ``wasm-opt -O2`` to shrink binary (via wasm_optimize.py)
-4. Optionally run with ``wasmtime`` (for WASI-compatible modules)
-5. Report size at each stage
+1. Compile Python source to WASM via ``molt build --emit wasm``; with
+   ``--linked`` molt build also links it against its runtime pair
+2. Optimize with ``wasm-opt -O2`` to shrink binary (via wasm_optimize.py)
+3. Optionally run with ``wasmtime`` (for WASI-compatible modules)
+4. Report size at each stage
 
 Usage::
 
@@ -48,14 +48,8 @@ TOOLS_DIR = MOLT_ROOT / "tools"
 SRC_DIR = MOLT_ROOT / "src"
 
 
-from molt.cli.build_output_layout import _wasm_runtime_root  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.wasm_optimize import optimize as optimize_wasm  # noqa: E402
-
-
-RUNTIME_DIR = _wasm_runtime_root(MOLT_ROOT)
-RUNTIME_WASM = RUNTIME_DIR / "molt_runtime.wasm"
-RUNTIME_RELOC = RUNTIME_DIR / "molt_runtime_reloc.wasm"
 
 
 def _ensure_repo_pythonpath() -> None:
@@ -216,7 +210,6 @@ def stage_compile(
     if linked:
         cmd.append("--linked")
     else:
-        # Produce unlinked output so we can link separately
         cmd.append("--no-linked")
         env["MOLT_WASM_LINKED"] = "0"
 
@@ -268,101 +261,13 @@ def stage_compile(
     )
 
 
-def stage_link(
-    input_wasm: Path,
-    output_wasm: Path,
-    *,
-    runtime: Path | None = None,
-) -> StageResult:
-    """Stage 2: Link with wasm-ld via tools/wasm_link.py.
-
-    If the output module is already a final (non-relocatable) module,
-    wasm-ld cannot link it further. In that case, this stage is skipped
-    gracefully.
-    """
-    if runtime is None:
-        runtime = RUNTIME_RELOC if RUNTIME_RELOC.exists() else RUNTIME_WASM
-
-    if not runtime.exists():
-        return StageResult(
-            name="link",
-            ok=False,
-            error=f"Runtime WASM not found: {runtime}",
-        )
-
-    link_tool = TOOLS_DIR / "wasm_link.py"
-    if not link_tool.exists():
-        return StageResult(
-            name="link",
-            ok=False,
-            error="tools/wasm_link.py not found",
-        )
-
-    t0 = time.monotonic()
-    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
-    proc = harness_memory_guard.guarded_completed_process(
-        [
-            sys.executable,
-            str(link_tool),
-            "--runtime",
-            str(runtime),
-            "--input",
-            str(input_wasm),
-            "--output",
-            str(output_wasm),
-        ],
-        prefix="MOLT_BENCH",
-        capture_output=True,
-        text=True,
-        timeout=300,
-        cwd=MOLT_ROOT,
-        limits=limits,
-    )
-    elapsed = proc.elapsed_s if proc.elapsed_s is not None else time.monotonic() - t0
-
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip()
-        # Non-relocatable files cannot be linked — this is expected for
-        # modules compiled without MOLT_WASM_RELOCATABLE=1.
-        if "not a relocatable wasm file" in err:
-            return StageResult(
-                name="link",
-                ok=False,
-                elapsed_s=elapsed,
-                error="Input is not relocatable (skipped — compile with --linked for wasm-ld linking)",
-            )
-        return StageResult(
-            name="link",
-            ok=False,
-            elapsed_s=elapsed,
-            error=err[:500],
-        )
-
-    if not output_wasm.exists():
-        return StageResult(
-            name="link",
-            ok=False,
-            elapsed_s=elapsed,
-            error="wasm-ld produced no output",
-        )
-
-    size = output_wasm.stat().st_size
-    return StageResult(
-        name="link",
-        ok=True,
-        size_bytes=size,
-        elapsed_s=elapsed,
-        output_path=str(output_wasm),
-    )
-
-
 def stage_optimize(
     input_wasm: Path,
     output_wasm: Path,
     *,
     level: str = "O2",
 ) -> StageResult:
-    """Stage 3: Optimize with wasm-opt."""
+    """Stage 2: Optimize with wasm-opt."""
     result = optimize_wasm(
         input_wasm,
         output_path=output_wasm,
@@ -396,7 +301,7 @@ def stage_optimize(
 
 
 def stage_run(wasm_path: Path, *, timeout: int = 30) -> tuple[bool, str]:
-    """Stage 4 (optional): Run with wasmtime."""
+    """Stage 3 (optional): Run with wasmtime."""
     wasmtime = _find_tool("wasmtime")
     if not wasmtime:
         return False, "wasmtime not found (brew install wasmtime)"
@@ -433,7 +338,7 @@ def run_pipeline(
     linked: bool = False,
     verbose: bool = False,
 ) -> PipelineResult:
-    """Run the full compile -> link -> optimize pipeline."""
+    """Run the full compile -> optimize pipeline."""
     from molt.temporary_artifacts import OwnedTemporaryDirectory
 
     result = PipelineResult(source=str(source))
@@ -453,30 +358,14 @@ def run_pipeline(
 
         current_wasm = Path(compile_result.output_path)
 
-        # Stage 2: Link (only if compiled as relocatable with --linked)
-        if linked:
-            linked_wasm = work / "output_linked.wasm"
-            link_result = stage_link(current_wasm, linked_wasm)
-            result.stages.append(link_result)
-            if link_result.ok:
-                current_wasm = Path(link_result.output_path)
-            # If link fails due to non-relocatable, continue with compile output
-        else:
-            # Try linking anyway — it will gracefully report skip if non-relocatable
-            linked_wasm = work / "output_linked.wasm"
-            link_result = stage_link(current_wasm, linked_wasm)
-            result.stages.append(link_result)
-            if link_result.ok:
-                current_wasm = Path(link_result.output_path)
-
-        # Stage 3: Optimize
+        # Stage 2: Optimize (molt build links with --linked; never relink here)
         optimized_wasm = work / "output_optimized.wasm"
         opt_result = stage_optimize(current_wasm, optimized_wasm, level=opt_level)
         result.stages.append(opt_result)
         if opt_result.ok:
             current_wasm = Path(opt_result.output_path)
 
-        # Stage 4: Optionally run
+        # Stage 3: Optionally run
         if do_run:
             run_ok, run_output = stage_run(current_wasm)
             result.run_ok = run_ok

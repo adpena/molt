@@ -250,27 +250,6 @@ fn wasm_lowers_call_guarded_with_known_target() {
 }
 
 #[test]
-fn wasm_native_eh_elides_exception_pending_probe() {
-    let mut dict_new = op(molt_ir::OpKind::DictNew);
-    dict_new.out = Some("v0".to_string());
-    dict_new.args = Some(vec![]);
-
-    let wasm = compile_ops(
-        vec![
-            op(molt_ir::OpKind::TryStart),
-            dict_new,
-            op(molt_ir::OpKind::CheckException),
-            op(molt_ir::OpKind::TryEnd),
-            op(molt_ir::OpKind::RetVoid),
-        ],
-        &[],
-    );
-    let calls = import_call_counts(&wasm);
-
-    assert_eq!(count(&calls, "exception_pending"), 0);
-}
-
-#[test]
 fn wasm_native_eh_keeps_check_exception_as_noop_after_non_raising_op() {
     let mut dict_new = op(molt_ir::OpKind::DictNew);
     dict_new.out = Some("v0".to_string());
@@ -280,19 +259,29 @@ fn wasm_native_eh_keeps_check_exception_as_noop_after_non_raising_op() {
     const_one.value = Some(1);
     const_one.out = Some("v1".to_string());
 
+    // An authored handler observes its pending exception on every native-EH
+    // setting (molt-backend-wasm exception_eh::path_local owns that), so the
+    // check after dict_new stays; the check after the non-raising const has
+    // nothing new to observe and emits no probe.
+    let labelled = |kind: molt_ir::OpKind| OpIR {
+        value: Some(1),
+        ..op(kind)
+    };
     let wasm = compile_ops(
         vec![
-            op(molt_ir::OpKind::TryStart),
+            labelled(molt_ir::OpKind::TryStart),
             dict_new,
-            op(molt_ir::OpKind::CheckException),
+            labelled(molt_ir::OpKind::CheckException),
             const_one,
-            op(molt_ir::OpKind::CheckException),
-            op(molt_ir::OpKind::TryEnd),
+            labelled(molt_ir::OpKind::CheckException),
+            labelled(molt_ir::OpKind::TryEnd),
+            op(molt_ir::OpKind::RetVoid),
+            labelled(molt_ir::OpKind::Label),
             op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );
     let calls = import_call_counts(&wasm);
 
-    assert_eq!(count(&calls, "exception_pending"), 0);
+    assert_eq!(count(&calls, "exception_pending"), 1);
 }

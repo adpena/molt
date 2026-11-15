@@ -280,9 +280,10 @@ fn import_count_is_nonzero_for_all_profiles() {
 }
 
 #[test]
-fn core_imports_always_present_in_all_profiles() {
-    // All core structural imports must be present in Full and Pure profiles
-    // (which do not undergo post-compilation stripping).
+fn core_imports_survive_each_profiles_strip() {
+    // Full registers every import. Pure and Auto strip each import emitted
+    // code does not call (module_abi/finalize.rs), so an empty module keeps
+    // only the init path's imports there.
     let core_imports = [
         "runtime_init",
         "runtime_shutdown",
@@ -292,33 +293,27 @@ fn core_imports_always_present_in_all_profiles() {
         "print_newline",
         "alloc",
     ];
-    for profile in [WasmProfile::Full, WasmProfile::Pure] {
-        let wasm = compile_with_profile(empty_ir(), profile);
-        let import_names: BTreeSet<String> = extract_func_imports(&wasm)
+    let full: BTreeSet<String> =
+        extract_func_imports(&compile_with_profile(empty_ir(), WasmProfile::Full))
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        for core in &core_imports {
-            assert!(
-                import_names.contains(*core),
-                "core import {core} missing in profile {:?}",
-                profile
-            );
-        }
+    for core in &core_imports {
+        assert!(full.contains(*core), "core import {core} missing in Full");
     }
 
-    // In Auto profile, dead-import elimination strips imports not referenced
-    // by codegen.  Only verify imports that the init code actually uses.
-    let auto_wasm = compile_with_profile(empty_ir(), WasmProfile::Auto);
-    let auto_names: BTreeSet<String> = extract_func_imports(&auto_wasm)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    for core in ["runtime_init", "runtime_shutdown"] {
-        assert!(
-            auto_names.contains(core),
-            "core import {core} missing in Auto profile after stripping",
-        );
+    for profile in [WasmProfile::Auto, WasmProfile::Pure] {
+        let names: BTreeSet<String> =
+            extract_func_imports(&compile_with_profile(empty_ir(), profile))
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+        for core in ["runtime_init", "runtime_shutdown"] {
+            assert!(
+                names.contains(core),
+                "core import {core} missing in profile {profile:?} after stripping",
+            );
+        }
     }
 }
 
@@ -349,7 +344,8 @@ fn full_profile_has_more_imports_than_auto_for_empty_ir() {
 #[test]
 fn auto_profile_registers_direct_runtime_call_targets_as_imports() {
     let wasm = compile_with_profile(
-        ir_with_direct_runtime_call("molt_gpu_rope_apply_contiguous", 8),
+        // One i64 operand per manifest parameter: eleven.
+        ir_with_direct_runtime_call("molt_gpu_rope_apply_contiguous", 11),
         WasmProfile::Auto,
     );
     let import_names: BTreeSet<String> = extract_func_imports(&wasm)
@@ -376,7 +372,8 @@ fn auto_profile_registers_manifest_runtime_call_targets_without_molt_prefix() {
     let sigs = extract_func_type_signatures(&wasm);
     assert_eq!(
         sigs[code_new_import.3 as usize],
-        (vec![ValType::I64; 9], vec![ValType::I64]),
+        // The attached execution context, then the nine operands.
+        (vec![ValType::I64; 1 + 9], vec![ValType::I64]),
         "manifest-known direct runtime call must use its observed arity"
     );
     assert!(
@@ -402,8 +399,8 @@ fn code_new_import_uses_arity_9_signature_and_is_called() {
     let sigs = extract_func_type_signatures(&wasm);
     assert_eq!(
         sigs[code_new_type_index as usize],
-        (vec![ValType::I64; 9], vec![ValType::I64]),
-        "code_new import must use the canonical (i64 x9) -> i64 ABI"
+        (vec![ValType::I64; 1 + 9], vec![ValType::I64]),
+        "code_new import must use the canonical (context, i64 x9) -> i64 ABI"
     );
     assert!(
         direct_call_targets(&wasm).contains(&code_new_func_index),

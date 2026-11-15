@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
+if TYPE_CHECKING:
+    from molt.cli.runtime_wasm_generation import SourceRuntimeWasmGeneration
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -362,106 +364,66 @@ def _parse_wasm_export_signatures(
     return signatures
 
 
-def _checkout_expected_runtime_pair(project_root: Path, runtime_artifact: Path):
-    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
-    from molt.cli.runtime_wasm_build_spec import (
-        _compute_runtime_wasm_build_spec,
-        _resolve_runtime_wasm_cargo_specs,
-    )
-    from molt.cli.runtime_wasm_generation import (
-        RuntimeWasmExpectedPair,
-        RuntimeWasmReceiptRole,
-    )
-    from molt.cli.runtime_wasm_pair_build import resolve_runtime_wasm_pair_identity
+def _runtime_signature_generation(project_root: Path) -> SourceRuntimeWasmGeneration:
+    """This checkout's dev/full runtime pair, admitted from the product store.
 
-    # The proof plan's wasm.build.shared-runtime and local prebuild use this
-    # same explicit dev/full coordinate, including resolved Cargo overrides.
+    The proof plan's wasm.build.shared-runtime builds exactly this pair first,
+    so a missing or damaged pair fails by name; another checkout's entry has
+    another family digest and can never satisfy it.
+    """
+    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
+    from molt.cli.product_store import LAYOUT_VERSION, ProductStore, ProductStoreError
+    from molt.cli.runtime_wasm_generation import stored_runtime_wasm_generation
+    from molt.dx import product_store_dir
+    from molt.cli.runtime_wasm_pair_build import (
+        resolve_runtime_wasm_pair_identity,
+        resolve_runtime_wasm_pair_specs,
+    )
+
     cargo_profile, error = _resolve_cargo_profile_name("dev", wasm=True)
     if error is not None:
         pytest.fail(error)
-
-    def spec(*, reloc: bool):
-        return _compute_runtime_wasm_build_spec(
-            project_root,
-            runtime_artifact.with_name("molt_runtime_reloc.wasm")
-            if reloc
-            else runtime_artifact,
-            reloc=reloc,
-            build_profile="dev",
-            cargo_profile=cargo_profile,
-            simd_enabled=True,
-            freestanding=False,
-            stdlib_profile="full",
-            resolved_modules=None,
-            required_link_features=frozenset(),
-            required_exports=None,
-        )
-
-    shared_spec, reloc_spec = _resolve_runtime_wasm_cargo_specs(
+    shared_spec, reloc_spec = resolve_runtime_wasm_pair_specs(
         project_root,
-        spec(reloc=False),
-        spec(reloc=True),
+        build_profile="dev",
+        cargo_profile=cargo_profile,
         simd_enabled=True,
         freestanding=False,
+        stdlib_profile="full",
+        resolved_modules=None,
+        required_link_features=frozenset(),
+        required_exports=None,
     )
-    identity = resolve_runtime_wasm_pair_identity(project_root, shared_spec, reloc_spec)
     if shared_spec.cargo_plan is None:
         pytest.fail("the dev/full runtime WASM spec resolved no Cargo plan")
-    # Admission verifies the build's own resolved Cargo environment, as the
-    # pair builder does, not the developer environment of this process.
-    return (
-        RuntimeWasmExpectedPair(
-            identity.shared, identity.reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
-        ),
-        shared_spec.cargo_plan.environment,
+    identity = resolve_runtime_wasm_pair_identity(project_root, shared_spec, reloc_spec)
+    # The proof cell's build published into the host store; the suite's
+    # per-test store isolation must not hide it from this read-only gate.
+    store = ProductStore(
+        product_store_dir(project_root, os.environ) / LAYOUT_VERSION / "wasm-runtime"
     )
-
-
-def _runtime_signature_generation(project_root: Path):
-    from molt.cli.artifact_state import _build_state_root
-    from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
-    from molt.cli.runtime_wasm_cache import admit_runtime_wasm_pair_from_shared_cache
-    from molt.cli.runtime_wasm_generation import RuntimeWasmExpectedPair
-    from molt.dx import development_artifact_env
-
-    runtime_env = development_artifact_env(
-        project_root,
-        os.environ,
-        session_prefix="wasm-signature",
-        create_dirs=False,
-    )
-    runtime_artifact = _runtime_wasm_artifact_path_from_env(
-        project_root,
-        "molt_runtime.wasm",
-        runtime_env,
-    )
-    expected, cargo_environment = _checkout_expected_runtime_pair(
-        project_root, runtime_artifact
-    )
-    expected_path = expected.path(_build_state_root(project_root))
     reason = (
         "candidate-runtime-wasm-pair-unavailable: build this checkout's dev/full "
         "WASM runtime pair before the compiled export-signature gate "
-        f"(expected {expected_path})"
+        f"(expected {store.entry(identity.shared.family_digest)})"
     )
     try:
-        recorded = RuntimeWasmExpectedPair.read(expected_path)
-    except ValueError as exc:
-        pytest.fail(f"{reason}: {exc}")
-    if recorded != expected:
-        pytest.fail(f"{reason}: expected-pair receipt differs from checkout inputs")
-    # Admit this checkout's input-keyed family, as codegen does. The host
-    # selection beside the runtime artifact is shared by every checkout of the
-    # artifact root, so another checkout's build can replace it (HF-658).
-    generation = admit_runtime_wasm_pair_from_shared_cache(
-        shared_identity=expected.shared,
-        reloc_identity=expected.reloc,
-        environment=cargo_environment,
-    )
-    if generation is None:
-        pytest.fail(
-            f"{reason}: no admitted generation for family {expected.shared.family_digest}"
+        # Admission verifies the build's own resolved Cargo environment, as the
+        # pair builder does, not the developer environment of this process.
+        generation = (
+            stored_runtime_wasm_generation(
+                store,
+                shared_identity=identity.shared,
+                reloc_identity=identity.reloc,
+                environment=shared_spec.cargo_plan.environment,
+            )
+            if store.record_use(identity.shared.family_digest)
+            else None
         )
+    except (ProductStoreError, OSError) as exc:
+        pytest.fail(f"{reason}: {exc}")
+    if generation is None:
+        pytest.fail(f"{reason}: no admitted variant")
     return generation
 
 

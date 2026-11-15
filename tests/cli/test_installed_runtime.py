@@ -43,9 +43,10 @@ from molt.cli.runtime_wasm_build_support import (
     _wasm_runtime_codegen_flags,
     wasm_runtime_simd_enabled,
 )
+from molt.cli.product_store import ProductStore
 from molt.cli.runtime_wasm_generation import (
     bind_runtime_wasm_codegen,
-    publish_runtime_wasm_generation,
+    publish_stored_runtime_wasm_generation,
     publish_runtime_wasm_product,
 )
 from molt.verified_subset import current_host_coordinate
@@ -176,7 +177,6 @@ def _installed_bundle(
 ) -> Path:
     monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("MOLT_INSTALLED_RUNTIME_STORE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("MOLT_BUNDLE_ROOT", raising=False)
     root = tmp_path / "bundle"
     source = root / "source"
@@ -428,7 +428,6 @@ def test_installed_native_runtime_rejects_the_native_cpu_policy(tmp_path, monkey
 
     def initialize(rust_cpu: RustCpuPolicy):
         return runtime_build._initialize_runtime_artifact_state(
-            is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
             molt_root=tmp_path,
@@ -448,7 +447,6 @@ def test_installed_state_has_no_ambient_wasm_coordinates(bundle, tmp_path, monke
     monkeypatch.chdir(tmp_path)
     (tmp_path / "wasm").mkdir()
     state = runtime_build._initialize_runtime_artifact_state(
-        is_rust_transpile=False,
         is_wasm=True,
         emit_mode="wasm",
         molt_root=bundle / "source",
@@ -457,7 +455,7 @@ def test_installed_state_has_no_ambient_wasm_coordinates(bundle, tmp_path, monke
         stdlib_profile="micro",
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    assert state.runtime_wasm is None and state.runtime_reloc_wasm is None
+    assert state.runtime_wasm_pair is None
 
 
 def test_internal_runtime_wasm_build_requires_a_source_checkout(bundle, monkeypatch):
@@ -472,12 +470,6 @@ def test_internal_runtime_wasm_build_requires_a_source_checkout(bundle, monkeypa
         )
         == 1
     )
-
-
-def test_source_runtime_selector_is_rejected_for_installed_molt(bundle, monkeypatch):
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(bundle))
-    with pytest.raises(InstalledRuntimeError, match="source"):
-        installed_runtime.installed_runtime_active(bundle / "source")
 
 
 def test_retention_store_inside_the_installation_is_rejected(bundle, monkeypatch):
@@ -1255,7 +1247,7 @@ def _bound_installed_wasm(bundle: Path, tmp_path: Path, monkeypatch):
     binding = bind_runtime_wasm_codegen(generation, None)
     state = _RuntimeArtifactState(
         runtime_wasm_codegen_binding=binding,
-        runtime_wasm_generation=binding.generation.manifest,
+        runtime_wasm_pair=binding.generation,
     )
     return cell, state, binding
 
@@ -1304,11 +1296,7 @@ def test_installed_wasm_link_reuses_the_bound_generation(bundle, tmp_path, monke
     # Emitted imports are admitted against the exact pair codegen consumed.
     assert admitted == [(binding.generation, frozenset({"molt_len"}))]
     assert state.runtime_wasm_codegen_binding is binding
-    assert state.runtime_wasm_generation == binding.generation.manifest
-    assert state.runtime_wasm_selected == binding.generation.shared
-    assert state.runtime_reloc_wasm_selected == binding.generation.reloc
-    assert state.runtime_wasm_expected_identity is not None
-    assert state.runtime_wasm_expected_identity.is_file()
+    assert state.runtime_wasm_pair is binding.generation
 
 
 @pytest.mark.parametrize("mutation", ["rewrite", "replace"])
@@ -2244,9 +2232,8 @@ def test_wasm_release_producer_uses_declared_physical_profile(
             )
             == profile
         )
-        generation = publish_runtime_wasm_generation(
-            tmp_path / "source-pair" / "molt_runtime.wasm",
-            tmp_path / "source-pair" / "molt_runtime_reloc.wasm",
+        generation = publish_stored_runtime_wasm_generation(
+            ProductStore(tmp_path / "store" / "wasm-runtime"),
             shared_identity=runtime_build_identity("shared"),
             reloc_identity=runtime_build_identity("reloc"),
             source_shared=members["shared"],

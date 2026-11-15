@@ -239,7 +239,7 @@ impl<'a> FloatComparisonOperands<'a> {
 /// being lowered.
 ///
 /// This makes the LLVM backend consume the identical typed facts the
-/// native/WASM/Luau backends consume, rather than treating `TirType::I64` as an
+/// native/WASM backends consume, rather than treating `TirType::I64` as an
 /// exact-i64 carrier (which it is not — `type_refine` assigns `add(I64, I64) ->
 /// I64` with no overflow proof, so unbounded integer arithmetic must stay
 /// boxed/runtime-backed until a range proof exists).
@@ -1083,14 +1083,6 @@ impl ScalarRepresentationPlan {
         self.facts_by_name
             .get(name)
             .and_then(ScalarRepresentationFact::container_kind)
-    }
-
-    /// True when producer authority proves the value is reference-like rather
-    /// than one of the scalar carriers. Backends whose physical numeric carrier
-    /// erases Python source-kind provenance use this to admit identity only when
-    /// raw target equality remains exact.
-    pub fn name_is_known_non_scalar(&self, name: &str) -> bool {
-        self.non_scalar_names.contains(name)
     }
 
     pub fn op_container_kind(&self, op: &OpIR) -> Option<ContainerKind> {

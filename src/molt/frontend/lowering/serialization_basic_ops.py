@@ -725,6 +725,8 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             if op.kind == FrontendKinds.FUNC_NEW_CLOSURE:
                 entry["args"] = [op.args[2].name]
             metadata = op.metadata or {}
+            if metadata.get("direct_shape") is True:
+                entry["direct_shape"] = True
             if "task_kind" in metadata or "task_closure_size" in metadata:
                 task_kind = metadata.get("task_kind")
                 task_closure_size = metadata.get("task_closure_size")

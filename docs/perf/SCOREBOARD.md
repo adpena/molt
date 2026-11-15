@@ -1014,8 +1014,6 @@ never scored.
   Host diagnostics are retained separately. Fresh Node process timings include
   engine startup, compilation and instantiation; they do not measure persistent
   JIT state. Source support does not establish release-matrix acceptance.
-- **Luau** — has its own harness (`tools/benchmark_luau_vs_cpython.py`); fold
-  into the board as a 4th backend lane in a follow-up.
 - **release-output / dev-fast profiles** — release-fast first per the
   constitution; add as additional `--profile` columns (the tool already accepts
   them) in the incremental next fill.
@@ -1067,9 +1065,9 @@ the shared typed measurement API as the CPython path.
 ### Remaining toolchain arc
 
 - **Backend × Profile boards** (constitution scoreboards 4 + 5): the per-cell
-  data already supports slicing native/LLVM/WASM/Luau and
+  data already supports slicing native/LLVM/WASM and
   dev/release-fast/release-output into their own tables — add the report views
-  once the LLVM + WASM + Luau lanes and the second profile are all populated.
+  once the LLVM + WASM lanes and the second profile are all populated.
 - **Widen `CODON_EQUIVALENT_BENCHMARKS`** as more numeric/loop kernels are
   verified semantically drop-in (conservative by design — a false "equivalent"
   is worse than a missing comparison).

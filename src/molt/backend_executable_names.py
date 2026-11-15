@@ -19,8 +19,6 @@ DEFAULT_CODEGEN_BACKEND: CodegenBackend = "cranelift"
 _TARGET_FEATURES = {
     "native": ("native-backend",),
     "wasm": ("wasm-backend",),
-    "luau": ("luau-backend",),
-    "rust": ("rust-backend",),
 }
 DEFAULT_BACKEND_FEATURES = _TARGET_FEATURES["native"]
 
@@ -28,8 +26,6 @@ DEFAULT_BACKEND_FEATURES = _TARGET_FEATURES["native"]
 def backend_features_for_target(
     *,
     is_wasm: bool,
-    is_luau_transpile: bool,
-    is_rust_transpile: bool,
     codegen_backend: CodegenBackend,
 ) -> tuple[str, ...]:
     """Resolve the same feature identity for builds, names and cache keys.
@@ -39,15 +35,7 @@ def backend_features_for_target(
     """
     if codegen_backend not in CODEGEN_BACKENDS:
         raise ValueError(f"unknown codegen backend: {codegen_backend!r}")
-    if is_luau_transpile:
-        target = "luau"
-    elif is_rust_transpile:
-        target = "rust"
-    elif is_wasm:
-        target = "wasm"
-    else:
-        target = "native"
-    features = _TARGET_FEATURES[target]
+    features = _TARGET_FEATURES["wasm" if is_wasm else "native"]
     return (*features, "llvm") if codegen_backend == "llvm" else features
 
 

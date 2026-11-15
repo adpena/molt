@@ -41,21 +41,6 @@ def _literal_job_needs(job: dict[str, object]) -> tuple[str, ...]:
     return tuple(raw)
 
 
-def _named_step_blocks(workflow_text: str) -> list[str]:
-    blocks: list[list[str]] = []
-    current: list[str] = []
-    for line in workflow_text.splitlines():
-        if line.startswith("      - name: "):
-            if current:
-                blocks.append(current)
-            current = [line]
-        elif current:
-            current.append(line)
-    if current:
-        blocks.append(current)
-    return ["\n".join(block) for block in blocks]
-
-
 def _default_python_version() -> str:
     """The exact tooling CPython; generator oracles differ between patches."""
     version = _read(".python-version").strip()
@@ -2662,19 +2647,6 @@ def test_portability_image_donor_resolves_groups_after_verified_python() -> None
     assert "python3 -I -S -B" in sync["run"]
 
 
-@pytest.mark.parametrize(
-    ("workflow", "job"),
-    [("ci.yml", "rust-build-unit-smoke"), ("molt-wasm-ci.yml", "wasm-build")],
-)
-def test_ci_provisions_no_luau_runner(workflow: str, job: str) -> None:
-    # Luau runs in no presubmit or postsubmit cell (owner decision 2026-11-05,
-    # HF-620), so no CI job provisions its runner.
-    text = _read(f".github/workflows/{workflow}")
-    steps = yaml.safe_load(text)["jobs"][job]["steps"]
-    assert not any("lune" in str(step.get("run", "")) for step in steps)
-    assert "lune" not in text
-
-
 def test_ci_push_path_is_cheap_only() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
@@ -4726,7 +4698,6 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "MOLT_CACHE: /tmp/molt-ext/molt_cache" in wasm_text
     assert "MOLT_DIFF_ROOT: /tmp/molt-ext/diff" in wasm_text
     assert "MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp" in wasm_text
-    assert "MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm" in wasm_text
     assert "concurrency:" in wasm_text
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in (
         wasm_text

@@ -1,4 +1,6 @@
-use super::super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_local_prefix_call};
+use super::super::call_emit::{
+    OpLoopRuntimeCallContext, emit_op_loop_local_prefix_body_call, emit_op_loop_local_prefix_call,
+};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::container_runtime_select::selected_container_runtime_import;
@@ -28,22 +30,54 @@ pub(super) fn emit_sequence_runtime_op(
 
     match op.kind {
         molt_ir::OpKind::Index => {
-            // Dispatch: list_int / dict / tuple -> generic.
-            let import_key =
-                selected_container_runtime_import(scalar_plan, op_idx, molt_ir::OpKind::Index, op)
-                    .unwrap_or(WasmRuntimeImport::Index);
-            emit_op_loop_local_prefix_call(&call_context, func, op, import_key, 2, &func_ir.name);
+            // Dispatch: list_int / dict / tuple -> their entries; the generic
+            // read is the shared list body, whose miss is `molt_index`.
+            match selected_container_runtime_import(scalar_plan, op_idx, molt_ir::OpKind::Index, op)
+            {
+                Some(import_key) => emit_op_loop_local_prefix_call(
+                    &call_context,
+                    func,
+                    op,
+                    import_key,
+                    2,
+                    &func_ir.name,
+                ),
+                None => emit_op_loop_local_prefix_body_call(
+                    &call_context,
+                    func,
+                    op,
+                    import_ids.list_item_bodies().get(),
+                    WasmRuntimeImport::Index,
+                    2,
+                ),
+            }
         }
         molt_ir::OpKind::StoreIndex => {
-            // Dispatch: list_int / dict -> generic.
-            let import_key = selected_container_runtime_import(
+            // Dispatch: list_int / dict -> their entries; the generic store is
+            // the shared list body, whose miss is `molt_store_index`.
+            match selected_container_runtime_import(
                 scalar_plan,
                 op_idx,
                 molt_ir::OpKind::StoreIndex,
                 op,
-            )
-            .unwrap_or(WasmRuntimeImport::StoreIndex);
-            emit_op_loop_local_prefix_call(&call_context, func, op, import_key, 3, &func_ir.name);
+            ) {
+                Some(import_key) => emit_op_loop_local_prefix_call(
+                    &call_context,
+                    func,
+                    op,
+                    import_key,
+                    3,
+                    &func_ir.name,
+                ),
+                None => emit_op_loop_local_prefix_body_call(
+                    &call_context,
+                    func,
+                    op,
+                    import_ids.list_item_bodies().set(),
+                    WasmRuntimeImport::StoreIndex,
+                    3,
+                ),
+            }
         }
         _ => return false,
     }

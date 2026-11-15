@@ -71,9 +71,6 @@ def terminal_build(
         perf_counter=lambda: clock.now,
     )
     monkeypatch.setattr(
-        build_diagnostics, "_runtime_wasm_cache_diagnostics_snapshot", lambda: None
-    )
-    monkeypatch.setattr(
         build_diagnostics, "_runtime_wasm_build_timings_snapshot", lambda: None
     )
     phases = {"resolve_entry": 0.0, "runtime_setup": 8.0}
@@ -207,8 +204,6 @@ def terminal_build(
     candidate_output.write_bytes(b"backend output")
     layout = _BuildOutputLayout(
         is_mlir_emit=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         is_wasm_freestanding=False,
         emit_mode="bin",
@@ -414,7 +409,7 @@ def test_compiler_identity_enrichment_is_outside_terminal_work_cutoff(
     assert case.clock.now == 34.0
 
 
-@pytest.mark.parametrize("kind", ["rust", "luau", "wasm"])
+@pytest.mark.parametrize("kind", ["wasm"])
 @pytest.mark.parametrize("mutation", ["rewrite", "delete"])
 def test_raw_backend_publication_requires_current_source_generation(
     terminal_build, tmp_path, monkeypatch, kind, mutation
@@ -426,8 +421,6 @@ def test_raw_backend_publication_requires_current_source_generation(
     case.args["validate_inputs"] = catalog.validate
     case.args["output_layout"] = replace(
         case.args["output_layout"],
-        is_rust_transpile=kind == "rust",
-        is_luau_transpile=kind == "luau",
         is_wasm=kind == "wasm",
     )
     destination = case.args["backend_output_destination"]

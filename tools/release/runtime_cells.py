@@ -63,7 +63,6 @@ POLICY_OVERRIDE_ENV = (
     "MOLT_RUNTIME_GPU_CUDA",
     "MOLT_RUNTIME_GPU_HIP",
     "MOLT_SKIP_RUNTIME_REBUILD",
-    "MOLT_WASM_RUNTIME_DIR",
     "MOLT_SOURCE_ROOT",
     "MOLT_BUNDLE_ROOT",
 )
@@ -438,7 +437,6 @@ def _produce_wasm(
 
     cargo_profile = request.runtime_profile
     state = _initialize_runtime_artifact_state(
-        is_rust_transpile=False,
         is_wasm=True,
         emit_mode="wasm",
         molt_root=source_root,

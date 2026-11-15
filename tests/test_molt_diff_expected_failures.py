@@ -1360,7 +1360,6 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
 
     context = module.compat_backends.BackendExecutionContext(
@@ -1468,7 +1467,6 @@ def test_run_molt_preserves_explicit_runtime_environment(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
 
     result = module.run_molt(
@@ -1523,7 +1521,6 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
 
     result = module.run_molt_build_only(
@@ -1569,7 +1566,6 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(
         module.test_policy,
@@ -1667,7 +1663,6 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
 
     result = module.run_molt_build_only(
@@ -1719,7 +1714,6 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
 
     result = module.run_molt_build_only(
@@ -1889,7 +1883,7 @@ def test_guest_replaced_leaf_is_never_retired(admitted_guest_environment):
     assert (root / "original").is_dir()
 
 
-@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm", "luau"])
+@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm"])
 @pytest.mark.parametrize("outcome", ["success", "failure", "exception"])
 def test_guest_backends_preserve_primary_and_cleanup_failure(
     admitted_guest_environment, monkeypatch, backend, outcome
@@ -1966,7 +1960,6 @@ def test_guest_backends_preserve_primary_and_cleanup_failure(
         adapter = {
             "wasm": backends.WasmAdapter,
             "llvm": backends.LlvmAdapter,
-            "luau": backends.LuauAdapter,
         }[backend]()
         monkeypatch.setattr(adapter, "_build_and_run_owned", owned)
 
@@ -2321,7 +2314,6 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_diff_log_passes", lambda: False)
 
     @contextmanager

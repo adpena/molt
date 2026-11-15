@@ -758,6 +758,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::new(molt_ir::OpKind::GlobalSlotGet)
         }),
+        OpCode::StaticCellLoad => Some(OpIR {
+            kind: molt_ir::OpKind::StaticCellLoad,
+            out: out_var,
+            ..OpIR::new(molt_ir::OpKind::StaticCellLoad)
+        }),
         OpCode::StaticCellSet => Some(OpIR {
             kind: molt_ir::OpKind::StaticCellSet,
             args: Some(operand_args(op)),

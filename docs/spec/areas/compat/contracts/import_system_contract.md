@@ -41,9 +41,7 @@ The joined module/import implementation is not yet execution-qualified. Native
 and WASM public imports, initialization/rollback, C-API publication, and
 provenance-bound startup, import-cost and memory qualification remain required
 on the final joined source and generated consumers. Earlier donor source or
-static controls do not establish those results. Luau import capability remains
-an explicit gap; the catalog and shared source lowering do not imply target
-support. The release ledger retains these open obligations.
+static controls do not establish those results. The release ledger retains these open obligations.
 
 On catalog targets, namespace discovery returns a loader-less spec with origin
 `None` and the existing `_NamespacePath`; module-from-spec binds
@@ -737,11 +735,11 @@ separate from host graph and binding-fact validation.
   registry rows and source-backend dispatch retain the same finite roots.
   Source admission is not runtime capability admission. Backends still reject
   operations whose generated semantic requirements they cannot implement,
-  before source/artifact publication; catalog custody does not grant Rust/Luau
+  before source/artifact publication; catalog custody does not grant a target
   a relative-import transaction, object model, or exception protocol.
   `IMPORT_PROTOCOL` in `op_kinds.toml` owns import opcode spellings, execution
   intrinsics and first-class callable acquisition requirements. Object/cache
-  support does not imply this capability. Rust/Luau/MLIR do not advertise it;
+  support does not imply this capability. MLIR does not advertise it;
   their retained import operations fail target admission, not a late unknown-
   module error or a synthetic `sys` dictionary. Native/WASM/LLVM use the shared
   runtime protocol. Source-backend admission currently examines all retained IR
@@ -945,8 +943,7 @@ separate from host graph and binding-fact validation.
   earlier import side effects and prevents all statement bindings. The stage
   avoids recursive public `__import__` entry but can enter ordered child
   finders. User source and functions inside bootstrap modules retain the public
-  transaction. Native/WASM execution qualification is pending; Luau support for
-  the surrounding import operations remains a separate open capability.
+  transaction. Native/WASM execution qualification is pending.
 - The shared import transaction evaluates `fromlist` truth once. A falsey
   fromlist selects the ordinary top-level return without inspecting package
   attributes. For a truthy fromlist, only observable `__path__` presence admits

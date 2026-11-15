@@ -100,7 +100,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -148,6 +147,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_func_defaults: dict[str, dict[str, Any]]
     module_global_mutations: set[str]
     module_globals_dict_escaped: Any
+    module_globals_rebound: bool
     module_import_flow: ModuleImportFlow | None
     module_import_state: Any
     module_is_package: Any
@@ -2007,6 +2007,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, live: list[ast.stmt]
     ) -> frozenset[str]: ...
 
+    def _module_function_symbol(self, module_name: str, func_id: str) -> str | None: ...
+
     def _module_globals_dict_escapes(self, node: ast.Module) -> bool: ...
 
     def _module_has_future_annotations(self, node: ast.Module) -> bool: ...
@@ -2018,6 +2020,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _module_live_statements_for_target(
         self, statements: list[ast.stmt]
     ) -> list[ast.stmt]: ...
+
+    @staticmethod
+    def _module_scope_nodes(stmt: ast.stmt) -> list[ast.AST]: ...
 
     def _name_has_source_binding(self, node: ast.Name) -> bool: ...
 
@@ -2673,6 +2678,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def visit_Dict(self, node: ast.Dict) -> Any: ...
 
     def visit_DictComp(self, node: ast.DictComp) -> Any: ...
+
+    def visit_Expr(self, node: ast.Expr) -> None: ...
 
     def visit_For(self, node: ast.For) -> None: ...
 

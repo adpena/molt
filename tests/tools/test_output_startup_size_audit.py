@@ -239,7 +239,7 @@ def test_matrix_cases_expand_native_backends_only() -> None:
     audit = output_startup_size_audit
 
     cases = audit._iter_matrix_cases(
-        targets=("native", "wasm", "luau", "mlir"),
+        targets=("native", "wasm", "mlir"),
         build_profiles=("dev", "release"),
         backends=("all",),
         stdlib_profile="micro",
@@ -250,7 +250,6 @@ def test_matrix_cases_expand_native_backends_only() -> None:
     assert "native-dev-auto-stdlib-micro" in ids
     assert "native-dev-llvm-stdlib-micro" in ids
     assert "wasm-dev-wasm-Oz-stdlib-micro" in ids
-    assert "luau-release-luau-stdlib-micro" in ids
     assert "mlir-release-mlir-stdlib-micro" in ids
     assert not any("wasm-dev-llvm" in case_id for case_id in ids)
 
@@ -410,7 +409,7 @@ def test_build_molt_artifact_emits_progress_on_stderr(
     script = tmp_path / "probe.py"
     script.write_text("print(1)\n", encoding="utf-8")
     out_dir = tmp_path / "out"
-    artifact = out_dir / "probe.luau"
+    artifact = out_dir / "probe.mlir"
 
     def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
         del command, kwargs
@@ -418,7 +417,7 @@ def test_build_molt_artifact_emits_progress_on_stderr(
         artifact.write_text("print(1)\n", encoding="utf-8")
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"data": {"artifacts": {"luau": str(artifact)}}}),
+            stdout=json.dumps({"data": {"artifacts": {"mlir": str(artifact)}}}),
             stderr="",
             elapsed_s=2.5,
             child_elapsed_s=2.5,
@@ -428,7 +427,7 @@ def test_build_molt_artifact_emits_progress_on_stderr(
     monkeypatch.setattr(audit, "_run_guarded", fake_run)
 
     result = audit._build_molt_artifact(
-        case=audit.MatrixCase(target="luau", build_profile="dev", backend="luau"),
+        case=audit.MatrixCase(target="mlir", build_profile="dev", backend="mlir"),
         script=script,
         out_dir=out_dir,
         env=ProcessEnvironment({}),
@@ -446,7 +445,7 @@ def test_build_molt_artifact_emits_progress_on_stderr(
         "output_startup_size_audit.build_start",
         "output_startup_size_audit.build_done",
     ]
-    assert progress_events[0]["case"] == "luau-dev-luau-stdlib-micro"
+    assert progress_events[0]["case"] == "mlir-dev-mlir-stdlib-micro"
     assert progress_events[1]["returncode"] == 0
     assert progress_events[1]["elapsed_s"] == 2.5
 

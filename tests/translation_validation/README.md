@@ -23,8 +23,9 @@ Nightly runs it over the policy-selected `tests/differential` corpus in shards;
 `nightly.differential.aggregate` in `tools/proof_plan.toml` writes the combined
 evidence. To run a subset, pass the files to `tests/molt_diff.py`.
 
-`tools/molt_dev.py difftest` and `tools/parity_gate.py` are still separate
-runners with rules of their own; HF-801 consolidates them.
+`tools/molt_dev.py difftest` delegates to `tests/molt_diff.py`.
+`tools/parity_gate.py` is still a separate runner with rules of its own;
+HF-801 consolidates it.
 
 Differential execution is evidence for the programs it runs. It does not prove
 that a compiler pass preserves meaning for other programs.

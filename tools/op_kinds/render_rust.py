@@ -613,6 +613,18 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, i64_shift_count_guards))
     out.append("    }\n}\n\n")
 
+    literal_materializations = list(data.get("literal_materialization_opcodes", []))
+    out.append(
+        "/// Whether an opcode materializes a source code constant whose only\n"
+        "/// failure, allocation, is not Python-observable: DCE removes it when\n"
+        "/// nothing reads its result. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_literal_materialization_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, literal_materializations))
+    out.append("    }\n}\n\n")
+
     exception_label_attrs = list(data.get("exception_label_attr_opcodes", []))
     out.append(
         "/// Whether an opcode's `value` attr is a SimpleIR exception label id.\n"
@@ -1390,10 +1402,6 @@ def _render_observation_kind_predicates(data: dict) -> str:
             (
                 "simpleir_kind_may_carry_async_work_poll_marker",
                 "async_work_poll_marker_kinds",
-            ),
-            (
-                "simpleir_kind_requires_luau_ordered_mapping",
-                "simpleir_luau_ordered_mapping_kinds",
             ),
         )
     )

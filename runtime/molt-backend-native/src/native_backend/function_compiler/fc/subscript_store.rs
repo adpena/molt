@@ -38,8 +38,11 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_store_op(
     // Runtime dispatch is the live representation authority: compact int/bool
     // lists store directly only while their physical type remains specialized;
     // ABI publication promotes them to the generic transactional list.
+    // The generic entry is the miss of the shared list store
+    // (`molt_codegen_abi::list_item`), which returns the container as
+    // `molt_store_index` does.
     let symbol = store_index_fallback_runtime_fn(representation_plan, op);
-    emit_operand_transaction_call(
+    emit_operand_transaction_with(
         op,
         args,
         symbol,
@@ -53,5 +56,34 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_store_op(
         nbc,
         block_tracked_obj,
         block_tracked_ptr,
+        |call| {
+            let &[list, index, value] = call.words else {
+                unreachable!("store_index takes a container, key and value")
+            };
+            if symbol != RuntimeFn::StoreIndex {
+                let site = call.builder.ins().call(call.callee, call.words);
+                return call.builder.inst_results(site)[0];
+            }
+            let sites = super::calls::native_frame_sites(
+                &mut *call.module,
+                &mut *call.import_ids,
+                &mut *call.builder,
+                &mut *call.import_refs,
+            );
+            let callee = call.callee;
+            crate::native_backend::simple_backend::emit_list_item_set(
+                call.builder,
+                call.sealed_blocks,
+                sites,
+                list,
+                index,
+                value,
+                list,
+                |builder| {
+                    let site = builder.ins().call(callee, &[list, index, value]);
+                    builder.inst_results(site)[0]
+                },
+            )
+        },
     );
 }

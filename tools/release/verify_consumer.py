@@ -253,7 +253,6 @@ def _consumer_environment(root: Path) -> ProcessEnvironment:
         "MOLT_DEV_CARGO_PROFILE",
         "MOLT_RELEASE_CARGO_PROFILE",
         "MOLT_SKIP_RUNTIME_REBUILD",
-        "MOLT_WASM_RUNTIME_DIR",
         "MOLT_WASM_CARGO_PROFILE",
         "MOLT_RUNTIME_BUILD_PROFILE",
     ):

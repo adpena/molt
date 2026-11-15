@@ -137,7 +137,6 @@ import os
 import shlex
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -175,8 +174,6 @@ from tools.molt_dev_common import (  # noqa: E402
     _run_fast_captured_command,
     _ok,
     _run_captured_gate,
-    _run_driver_command,
-    _run_driver_command_bytes,
     _run_live_gate,
     _say,
     _step,
@@ -636,10 +633,9 @@ def prepare_gate_environment(
     venv = _resolve_repo_venv(repo, env) if requires_python or explicit else None
     if venv is None:
         if requires_python:
-            raise DriverError(
-                "development image not selected; run "
-                "`python -m molt.checkout_provisioning ensure uv-environment`"
-            )
+            from molt.checkout_provisioning import PROVISION_HINT
+
+            raise DriverError(f"development image not selected; {PROVISION_HINT}")
         return GateEnvironment(env, None, False)
     managed = not bool(env.get("MOLT_VENV"))
     try:
@@ -797,10 +793,9 @@ def _gate_environment(
     venv = context.python_root
     if venv is None:
         if python_gate or shell_python:
-            raise DriverError(
-                "development image not selected; run "
-                "`python -m molt.checkout_provisioning ensure uv-environment`"
-            )
+            from molt.checkout_provisioning import PROVISION_HINT
+
+            raise DriverError(f"development image not selected; {PROVISION_HINT}")
         return cmd, env
     managed = context.managed
     try:
@@ -1069,6 +1064,41 @@ def _carry_prior_gates(
         return run, carried
 
     return split
+
+
+def _consumer_proven_gates(
+    repo: Path, git: Git, commit: str, gates: list[SelectedGate]
+) -> tuple[list[SelectedGate], list[dict]]:
+    """The gates to run, and records for those the consumer gate already ran.
+
+    The consumer gate ran the static gates and the importer tests of this
+    exact tree in a checkout that held only the tree's files
+    (``consumer_gate.proven_gates(exact=True)``); a test result is a function
+    of the tree, so the batch does not run them a second time. Every other
+    gate (landing-built tests, Cargo, slow tests) runs here.
+    """
+    from tools import landing_receipt
+    from tools.consumer_gate import proven_gates
+    from tools.molt_dev_gates import display
+
+    tree = git.rev_parse(f"{commit}^{{tree}}")
+    proven = proven_gates(repo, tree, exact=True)
+    if proven is None:
+        return gates, []
+    run = [gate for gate in gates if not proven(gate)]
+    records = [
+        landing_receipt.gate_record(
+            phase="consumer", command=display(gate.command), seconds=None, log=None
+        )
+        for gate in gates
+        if gate not in run
+    ]
+    if records:
+        _say(
+            f"    the consumer gate ran {len(records)} of {len(gates)} gate(s) on "
+            f"tree {tree[:12]}; they are not run again"
+        )
+    return run, records
 
 
 def _write_queue_receipt(
@@ -1474,6 +1504,10 @@ def _integrate_exclusive(
         gate_cmds, carried_records = carried(gate_cmds)
     else:
         carried_records = []
+    gate_cmds, proven_records = _consumer_proven_gates(
+        repo, git, selected_commit, gate_cmds
+    )
+    carried_records += proven_records
     graph_selection = config.graph_selection(touched, recent_failures=recent_failures)
     if graph_selection is not None:
         _say(
@@ -1905,58 +1939,17 @@ def _difftest_toolchain_env(
     return ProcessEnvironment(env) if selected is None else selected
 
 
-def _difftest_capture(
-    cmd: list[str], *, env: ProcessEnvironment, cwd: Path, timeout: int
-) -> tuple[int, bytes, bytes]:
-    """Run `cmd` capturing raw BYTES (not text) so stdout compares are exact.
-
-    Returns (returncode, stdout, stderr). A timeout is a LOUD failure, not a
-    swallowed hang — it raises DriverError so a wedged build/run never reads as
-    a passing diff.
-    """
-    proc = _run_driver_command_bytes(
-        cmd,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        prefix="MOLT_DIFF",
-    )
-    if getattr(proc, "timed_out", False):
-        raise DriverError(
-            f"difftest: command timed out after {timeout}s: {' '.join(cmd)}"
-        )
-    return proc.returncode, proc.stdout or b"", proc.stderr or b""
-
-
-def _difftest_streams_match(expected: bytes, actual: bytes) -> bool:
-    """Compare captured program output with host-stdio newline parity.
-
-    CPython on Windows translates ``print(..., "\\n")`` to CRLF when stdout is a
-    pipe; Molt's native runtime writes LF. ``difftest`` keeps this Windows rule of
-    its own. The canonical runner, ``tests/molt_diff.py``, compares raw bytes
-    decoded losslessly through ``compat_comparison``; HF-801 consolidates the two.
-    """
-    if os.name == "nt":
-        expected = expected.replace(b"\r\n", b"\n")
-        actual = actual.replace(b"\r\n", b"\n")
-    return expected == actual
-
-
 def cmd_difftest(args: argparse.Namespace) -> int:
-    """Build a program through a CONSISTENTLY-ROOTED toolchain and differential-
-    test its native/LLVM/WASM output against pinned CPython.
+    """Differential-test one program through the canonical oracle, rooted at one tree.
 
-    Hazard 12 (split-root toolchain): ``PYTHONPATH=<root>/src`` redirects ONLY
-    the Python frontend. The Rust runtime+backend build is anchored to
-    ``MOLT_PROJECT_ROOT`` (and the runtime-staticlib fingerprint is computed
-    against THAT tree). Setting PYTHONPATH without MOLT_PROJECT_ROOT silently
-    builds the frontend from <root> but the runtime/backend from the canonical
-    checkout — so a runtime/backend edit in <root> is NEVER compiled in (its
-    fingerprint never changes → no rebuild → stale behavior credited to a fix
-    that never shipped, the exact stale-binary misattribution of hazard 6 but
-    on the SOURCE-TREE axis). difftest derives BOTH from a single --root so the
-    frontend, runtime, and backend are one coherent tree, and forces a fresh
-    --output per target so a stale artifact can't be re-run.
+    ``tests/molt_diff.py`` is the one CPython-versus-Molt runner (HF-801): it
+    owns the pinned CPython oracle, the comparison law and each backend's
+    build-and-run adapter (WASM: a linked build run by the Node host). This
+    verb adds only hazard 12, a split-root toolchain: ``PYTHONPATH=<root>/src``
+    alone redirects the frontend while the Rust runtime and backend still build
+    from the canonical checkout, so a runtime edit in ``<root>`` would never be
+    compiled in. Here the frontend, the runtime and the oracle itself all come
+    from one ``--root``.
     """
     root = Path(args.root).resolve()
     if not (root / "src" / "molt" / "cli" / "__init__.py").exists():
@@ -1967,177 +1960,26 @@ def cmd_difftest(args: argparse.Namespace) -> int:
     program = Path(args.program).resolve()
     if not program.exists():
         raise DriverError(f"difftest: program {program} not found", code=EXIT_USAGE)
-    safe_run = root / "tools" / "safe_run.py"
-    if not safe_run.exists():
-        raise DriverError(f"difftest: missing {safe_run}")
-
-    if not args.target:
-        args.target = ["native"]
-    # The interpreter must BOTH run the molt frontend (needs molt's install
-    # deps: packaging, etc.) AND be the CPython oracle. The interpreter running
-    # THIS driver is by construction the dev python that carries those deps, so
-    # difftest uses it for both build and oracle — after VERIFYING it reports
-    # the requested version (hazard 7) and can actually import molt from --root
-    # (a loud refusal, never a mid-build ImportError credited as a test fail).
-    # --oracle-python overrides the interpreter explicitly.
-    cpython_command = python_interpreter.explicit_python_command(
-        args.oracle_python or sys.executable
-    )
-    try:
-        target_python = python_interpreter.parse_target_python_version(
-            args.python_version
-        )
-        from molt.python_environment_identity import PythonIdentityVerifier
-
-        with PythonIdentityVerifier() as verifier:
-            cpython_identity = python_interpreter.probe_python_command(
-                cpython_command,
-                verifier=verifier,
-                cwd=root,
-                timeout=30.0,
-            )
-    except (ValueError, python_interpreter.PythonInterpreterError) as exc:
-        raise DriverError(f"difftest: {exc}", code=EXIT_USAGE) from exc
-    if cpython_identity.major_minor != target_python.short:
-        raise DriverError(
-            f"difftest: interpreter {python_interpreter.format_python_command(cpython_command)} "
-            f"reports {cpython_identity.version!r}, not "
-            f"{args.python_version}. Run molt_dev.py under python "
-            f"{args.python_version} (it doubles as the byte-exact CPython "
-            f"oracle), or pass --oracle-python.",
-            code=EXIT_USAGE,
-        )
-    cpython = cpython_identity.executable
-    prog_args = list(args.prog_args or [])
-
-    # One coherent toolchain root: frontend (PYTHONPATH) AND runtime/backend
-    # (MOLT_PROJECT_ROOT) both resolve to --root. This is the hazard-12 fix.
-    base_env = _difftest_toolchain_env(root, args.session, args.env)
-
-    _step(f"difftest {program.name} root={root} targets={args.target}")
-    _ok(f"toolchain rooted: MOLT_PROJECT_ROOT + PYTHONPATH -> {root}")
-
-    # Loud refusal if the frontend isn't importable (deps gap), so a missing
-    # dependency is never mistaken for a compiler bug in the diff.
-    probe = _run_driver_command(
-        [cpython, "-c", "import molt.cli"],
-        env=base_env,
-        cwd=root,
-        timeout=30.0,
-        prefix="MOLT_DIFF",
-    )
-    if probe.returncode != 0:
-        last = (probe.stderr.strip().splitlines() or ["<no stderr>"])[-1]
-        raise DriverError(
-            f"difftest: {cpython} cannot import molt from {root} "
-            f"(frontend deps missing?): {last}"
-        )
-    _ok(f"interpreter {cpython} ({cpython_identity.version}) imports molt from {root}")
-
-    # CPython oracle (the same verified interpreter; programs need no molt deps).
-    cpy_rc, cpy_out, _ = _difftest_capture(
-        [cpython, str(program), *prog_args],
-        env=base_env,
-        cwd=root,
-        timeout=args.timeout,
-    )
-    _ok(
-        f"CPython {args.python_version} oracle: exit={cpy_rc} ({len(cpy_out)} bytes stdout)"
-    )
-
-    failures: list[str] = []
-    out_dir = (
-        Path(tempfile.gettempdir()) / "molt_difftest"
-        if args.out_dir is None
-        else Path(args.out_dir)
-    )
-    if not out_dir.is_absolute():
-        out_dir = root / out_dir
-    for target in args.target:
-        _step(f"target {target}")
-        out_bin = out_dir / f"difftest_{program.stem}_{target}"
-        out_bin.parent.mkdir(parents=True, exist_ok=True)
-        if out_bin.exists():
-            out_bin.unlink()  # never re-run a stale artifact (hazard 6)
-        build_cmd = [
-            cpython,
-            "-m",
-            "molt",
-            "build",
-            "--target",
-            target,
-            "--output",
-            str(out_bin),
-            str(program),
-        ]
-        brc, _bo, be = _difftest_capture(
-            build_cmd, env=base_env, cwd=root, timeout=args.build_timeout
-        )
-        if brc != 0 or not out_bin.exists():
-            tail = be.decode("utf-8", "replace").strip().splitlines()[-6:]
-            _fail(f"{target}: BUILD FAILED (exit {brc})")
-            for line in tail:
-                _say(f"        {line}")
-            failures.append(f"{target}: build")
-            continue
-        run_cmd = [
-            cpython,
-            str(safe_run),
-            "--rss-mb",
-            str(args.rss_mb),
-            "--timeout",
-            str(args.run_timeout),
-            "--",
-            str(out_bin),
-            *prog_args,
-        ]
-        mrc, mout, _me = _difftest_capture(
-            run_cmd, env=base_env, cwd=root, timeout=args.run_timeout + 30
-        )
-        out_match = _difftest_streams_match(cpy_out, mout)
-        rc_match = mrc == cpy_rc
-        if out_match and rc_match:
-            _ok(f"{target}: PASS (exit={mrc}, stdout byte-identical to CPython)")
-        else:
-            _fail(
-                f"{target}: MISMATCH molt(exit={mrc}) vs CPython(exit={cpy_rc}); "
-                f"stdout_match={out_match} exit_match={rc_match}"
-            )
-            if not out_match:
-                import difflib
-
-                diff = difflib.unified_diff(
-                    cpy_out.decode("utf-8", "replace").splitlines(),
-                    mout.decode("utf-8", "replace").splitlines(),
-                    fromfile="cpython",
-                    tofile=f"molt:{target}",
-                    lineterm="",
-                )
-                for line in list(diff)[:40]:
-                    _say(f"        {line}")
-            failures.append(f"{target}: output")
-
+    oracle = root / "tests" / "molt_diff.py"
+    if not oracle.exists():
+        raise DriverError(f"difftest: missing {oracle}", code=EXIT_USAGE)
+    targets = args.target or ["native"]
+    env = _difftest_toolchain_env(root, args.session, args.env)
+    command = [sys.executable, str(oracle), "--python-version", args.python_version]
+    for target in targets:
+        command.extend(["--target", target])
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "program": str(program),
-                    "root": str(root),
-                    "targets": args.target,
-                    "cpython_exit": cpy_rc,
-                    "failures": failures,
-                    "passed": not failures,
-                }
-            ),
-            flush=True,
-        )
-    if failures:
+        command.append("--json")
+    command.append(str(program))
+    _step(f"difftest {program.name} root={root} targets={targets}")
+    returncode = _run_live_gate(tuple(command), repo=root, env=env)
+    if returncode != 0:
         raise DriverError(
-            f"difftest: {len(failures)} target(s) failed: {failures}",
-            maintenance_selection=(root, base_env),
+            f"difftest: tests/molt_diff.py exited {returncode} for {targets}",
+            maintenance_selection=(root, env),
         )
-    _ok(f"difftest PASS on all targets: {args.target}")
-    _collect_driver_maintenance(root, base_env)
+    _ok(f"difftest PASS on all targets: {targets}")
+    _collect_driver_maintenance(root, env)
     return EXIT_OK
 
 
@@ -2456,20 +2298,19 @@ def build_parser() -> argparse.ArgumentParser:
     _add_repo_arg(p_fx)
     p_fx.set_defaults(func=cmd_fix)
 
-    # difftest (hazard 12: split-root toolchain + differential vs pinned CPython)
+    # difftest (hazard 12: one toolchain root, through the canonical oracle)
     p_df = sub.add_parser(
         "difftest",
         help=(
-            "build a program through a CONSISTENTLY-rooted toolchain "
-            "(MOLT_PROJECT_ROOT+PYTHONPATH from one --root) and diff native/LLVM/"
-            "WASM output vs pinned CPython (hazard 12)"
+            "differential-test a program with tests/molt_diff.py, building the "
+            "frontend AND runtime/backend from one --root (hazard 12)"
         ),
     )
-    p_df.add_argument("program", help="Python program to build + differential-test")
+    p_df.add_argument("program", help="Python program to differential-test")
     p_df.add_argument(
         "--root",
         default=str(DEFAULT_REPO),
-        help="toolchain root: frontend AND runtime/backend build from here "
+        help="toolchain root: frontend, runtime/backend and oracle come from here "
         "(sets MOLT_PROJECT_ROOT + PYTHONPATH). Default: this driver's repo.",
     )
     p_df.add_argument(
@@ -2486,47 +2327,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_df.add_argument(
         "--python-version",
         default="3.14",
-        help="CPython oracle version, pinned+verified (default 3.14)",
-    )
-    p_df.add_argument(
-        "--oracle-python",
-        help="interpreter for build+oracle (default: the python running this "
-        "driver, which carries the molt frontend deps); version-verified",
-    )
-    p_df.add_argument(
-        "--out-dir",
-        default=None,
-        help="where to write the built binaries",
+        help="CPython oracle version, resolved and verified by tests/molt_diff.py "
+        "(default 3.14)",
     )
     p_df.add_argument(
         "--env",
         action="append",
-        help="extra KEY=VALUE env passed to BOTH build and run (e.g. a trace "
-        "flag); repeatable",
+        help="extra KEY=VALUE env for the oracle run (e.g. a trace flag); repeatable",
     )
     p_df.add_argument(
-        "--rss-mb", type=int, default=1024, help="safe_run RSS cap MiB (default 1024)"
-    )
-    p_df.add_argument(
-        "--run-timeout", type=int, default=15, help="safe_run wall-time s (default 15)"
-    )
-    p_df.add_argument(
-        "--build-timeout",
-        type=int,
-        default=900,
-        help="per-target build timeout s (default 900 — covers a runtime rebuild)",
-    )
-    p_df.add_argument(
-        "--timeout", type=int, default=60, help="CPython oracle timeout s (default 60)"
-    )
-    p_df.add_argument("--json", action="store_true", help="emit JSON verdict to stdout")
-    p_df.add_argument(
-        "--arg",
-        action="append",
-        dest="prog_args",
-        help="argument passed to BOTH the molt binary and CPython (repeatable). "
-        "Explicit (not a trailing REMAINDER) so difftest's own options work in "
-        "any position.",
+        "--json", action="store_true", help="emit tests/molt_diff.py's JSON summary"
     )
     p_df.set_defaults(func=cmd_difftest)
 

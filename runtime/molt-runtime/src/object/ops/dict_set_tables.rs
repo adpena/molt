@@ -79,7 +79,7 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
             None,
         );
         let live_entries = dict_entries_ptr(live);
-        let live_table = dict_table(live) as *mut Vec<usize>;
+        let live_table = dict_table(live) as *mut crate::object::molt_vec::MoltVec<usize>;
         let _order_lock = crate::object::backing::tracked_vec_mutation_lock(live_entries);
         let _table_lock = crate::object::backing::tracked_vec_mutation_lock(live_table);
         let tracked =
@@ -526,25 +526,38 @@ fn inline_increment_sum(current: u64, delta: u64) -> Option<u64> {
     MoltObject::try_from_int(sum).map(|sum| sum.bits())
 }
 
-/// The arithmetic boundary owns the mapping, key, delta and selected value.
-/// No dictionary view or index survives Python arithmetic; the assignment is a
-/// fresh lookup, just as d[key] = d.get(key, 0) + delta evaluates read then write.
-pub(crate) unsafe fn dict_inc_in_place(
+/// The one statement authority for `d[key] = d.get(key, 0) + delta` on a dict
+/// whose `get` and item assignment are the builtins, given `key`'s hash.
+///
+/// An exact `str` key is probed without Python; if its row holds an inline
+/// count whose sum is inline, nothing runs between probe and commit, so the row
+/// takes the sum with one probe. Every other case reads, adds and assigns as
+/// the statement does: a known-hash read, arithmetic that may run Python, and a
+/// fresh known-hash assignment, because no dictionary view or index survives
+/// Python code. The arithmetic boundary owns the mapping, key, delta and value.
+pub(crate) unsafe fn dict_inc_with_hash_in_place(
     py: &PyToken<'_>,
     dict: *mut u8,
     key: u64,
+    hash: u64,
     delta: u64,
 ) -> bool {
     unsafe {
         if !dict_require_writable(py, dict) {
             return false;
         }
+        if let Some(bytes) = exact_string_bytes(py, key)
+            && let ExactStringLookup::Found(entry) = dict_exact_string_lookup(py, dict, bytes, hash)
+            && dict_increment_scalar_entry(py, dict, entry, delta)
+        {
+            return true;
+        }
         let dictionary = MoltObject::from_ptr(dict).bits();
         for bits in [dictionary, key, delta] {
             inc_ref_bits(py, bits);
         }
         let result = (|| {
-            let current = match dict_get_in_place(py, dict, key) {
+            let current = match dict_get_with_hash_in_place(py, dict, key, hash) {
                 Ok(value) => value.unwrap_or(MoltObject::from_int(0).bits()),
                 Err(()) => return false,
             };
@@ -556,7 +569,7 @@ pub(crate) unsafe fn dict_inc_in_place(
                     (sum, !exception_pending(py))
                 }
             };
-            let completed = arithmetic_ok && dict_set_in_place(py, dict, key, sum);
+            let completed = arithmetic_ok && dict_set_with_hash_in_place(py, dict, key, sum, hash);
             // __add__ returning None is a valid value, not a failure sentinel.
             dec_ref_bits(py, sum);
             dec_ref_bits(py, current);
@@ -628,7 +641,7 @@ pub(crate) unsafe fn dict_increment_exact_statement(
             ExactStringLookup::Undecided => return Ok(false),
         }
         profile_hit_unchecked(&DICT_STR_INT_PREHASH_MISS_COUNT);
-        if dict_inc_in_place(py, dict, key_bits, delta_bits) {
+        if dict_inc_with_hash_in_place(py, dict, key_bits, hash, delta_bits) {
             Ok(true)
         } else {
             Err(())
@@ -744,7 +757,7 @@ unsafe fn dict_increment_validated_word(
             }
             let key = dict_entries(dict)[entry].key;
             inc_ref_bits(py, key);
-            let done = dict_inc_in_place(py, dict, key, delta);
+            let done = dict_inc_with_hash_in_place(py, dict, key, hash, delta);
             dec_ref_bits(py, key);
             return done.then_some(None);
         }
@@ -753,7 +766,8 @@ unsafe fn dict_increment_validated_word(
             return None;
         }
         let key = MoltObject::from_ptr(key_ptr).bits();
-        if !dict_inc_in_place(py, dict, key, delta) {
+        // The exact str's hash is its bytes' hash.
+        if !dict_inc_with_hash_in_place(py, dict, key, hash, delta) {
             dec_ref_bits(py, key);
             return None;
         }
@@ -1043,8 +1057,8 @@ fn checked_dict_growth_capacity(live: usize) -> Option<usize> {
 /// physical movement, retained hashes and bounded index remapping have one owner.
 unsafe fn reserve_hash_rows<E: HashRow>(
     py: &PyToken<'_>,
-    entries: *mut Vec<E>,
-    table: *mut Vec<usize>,
+    entries: *mut crate::object::molt_vec::MoltVec<E>,
+    table: *mut crate::object::molt_vec::MoltVec<usize>,
     live: usize,
     (capacity, required): (usize, usize),
     compact: bool,

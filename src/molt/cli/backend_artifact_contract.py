@@ -61,8 +61,6 @@ class BackendArtifactKind(str, Enum):
     NATIVE_OBJECT = "native-object"
     NATIVE_ARCHIVE = "native-archive"
     WASM = "wasm"
-    RUST = "rust"
-    LUAU = "luau"
     MLIR = "mlir"
 
 
@@ -124,8 +122,6 @@ class BackendArtifactContract:
     @property
     def is_text(self) -> bool:
         return self.kind in {
-            BackendArtifactKind.RUST,
-            BackendArtifactKind.LUAU,
             BackendArtifactKind.MLIR,
         }
 
@@ -149,8 +145,6 @@ class BackendArtifactContract:
             return native_kind.suffix(self.native_target)
         return {
             BackendArtifactKind.WASM: ".wasm",
-            BackendArtifactKind.RUST: ".rs",
-            BackendArtifactKind.LUAU: ".luau",
             BackendArtifactKind.MLIR: ".mlir",
         }[self.kind]
 
@@ -276,10 +270,6 @@ def resolve_backend_artifact_contract(
 ) -> BackendArtifactContract:
     """Project admitted compilation intent into the emitted-byte contract."""
     match target:
-        case TargetKind.RUST:
-            text_kind = BackendArtifactKind.RUST
-        case TargetKind.LUAU:
-            text_kind = BackendArtifactKind.LUAU
         case TargetKind.MLIR:
             text_kind = BackendArtifactKind.MLIR
         case _:

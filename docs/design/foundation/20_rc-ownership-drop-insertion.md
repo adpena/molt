@@ -231,8 +231,13 @@ Fallible construction is part of that contract: every valid outparam has a defin
 
 The generated opcode authority classifies heap literals as `pure_may_throw`:
 their immutable values do not mutate user-visible state, but construction can
-raise. Frontend emission supplies the current exception edge; DCE cannot erase
-an unused fallible constructor. GVN may reuse a dominated equal heap code
+raise. Frontend emission supplies the current exception edge. A used literal
+keeps its constructor and edge. An unused one is dead: a source literal is a
+code constant, CPython never allocates one at run time, so its allocation
+failure is not Python-observable, and DCE removes it whichever pass left it
+unused (`literal_materialization_opcodes`, HF-846; a source name that a
+`StaticCellLoad` no longer reads was the case that made it visible, 25% of
+`fib`'s samples). GVN may reuse a dominated equal heap code
 literal through its generated payload key and existing ownership replacements;
 the first constructor and its exception edge remain. Independent Python
 bindings keep their own references. This does not authorize DCE of arbitrary

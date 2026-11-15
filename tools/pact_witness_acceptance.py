@@ -307,8 +307,8 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
 
     Diagnostics-only: turns the ~480-540 s unattributed frontend-lowering +
     runtime-wasm-rebuild wall into a machine-checkable per-run line
-    (phase_sec breakdown + frontend lowering-cache hit_rate + runtime_wasm_cache
-    admit/publish status). No effect on the build itself.
+    (phase_sec breakdown + frontend lowering-cache hit_rate + runtime WASM
+    product store hit/miss and Cargo compile count). No effect on the build itself.
     """
     diag = _load_json_object(diagnostics_path)
     if diag is None:
@@ -353,15 +353,23 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
         parts.append("frontend_lowering_cache[" + " ".join(detail) + "]")
     else:
         parts.append("frontend_lowering_cache[absent]")
-    rt_cache = diag.get("runtime_wasm_cache")
-    if isinstance(rt_cache, Mapping):
-        h_hits = rt_cache.get("admit_hits")
-        h_attempts = rt_cache.get("admit_attempts")
-        p_ok = rt_cache.get("publish_successes")
-        p_attempts = rt_cache.get("publish_attempts")
+    runtime_build = diag.get("runtime_wasm_build")
+    if isinstance(runtime_build, Mapping):
+        phases = runtime_build.get("phases")
+        modes = (
+            sorted(
+                str(record.get("mode"))
+                for record in phases
+                if isinstance(record, Mapping)
+                and record.get("phase") == "product_store"
+            )
+            if isinstance(phases, list)
+            else []
+        )
         parts.append(
-            "runtime_wasm_cache["
-            f"admit={h_hits}/{h_attempts} publish={p_ok}/{p_attempts}]"
+            "runtime_wasm_store["
+            f"{','.join(modes) or 'absent'} "
+            f"cargo_compiles={runtime_build.get('cargo_compile_builds')}]"
         )
     print("build diagnostics: " + " ".join(parts), flush=True)
 

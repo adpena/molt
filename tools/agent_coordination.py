@@ -348,25 +348,6 @@ PROOF_LANE_RULES = (
         reason="TIR type facts require direct solver regressions before broader differential proof",
     ),
     ProofLaneRule(
-        lane="luau_backend",
-        proof_role="implementer",
-        shared_target_root="target",
-        priority="P1",
-        path_prefixes=(
-            "runtime/molt-backend-luau/src/luau.rs",
-            "runtime/molt-backend-luau/src/luau/",
-            "runtime/molt-backend-luau/src/luau_backend/",
-            "tools/gen_luau_support_matrix.py",
-            "tests/tools/test_gen_luau_support_matrix.py",
-            "docs/spec/areas/compiler/luau_support_matrix.generated.md",
-        ),
-        commands=(
-            "uv run python -m pytest -q tests/tools/test_gen_luau_support_matrix.py",
-            "cargo test -p molt-backend-luau --features luau-backend test_compile_checked_lowers_call_async_poll_target_directly -- --nocapture",
-        ),
-        reason="Luau support claims need generated matrix coverage plus feature-enabled backend tests",
-    ),
-    ProofLaneRule(
         lane="molt_backend_targeted",
         proof_role="implementer",
         shared_target_root="target",

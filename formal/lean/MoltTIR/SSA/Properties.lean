@@ -6,7 +6,7 @@
   2. Variable interference (live range overlap)
   3. SSA destruction: parallel copy insertion for register allocation
 
-  These properties are used by the backend (Cranelift/Luau codegen)
+  These properties are used by the backend (Cranelift/LLVM/WASM codegen)
   to correctly translate SSA form into non-SSA target representations.
 
   References:
@@ -372,7 +372,7 @@ theorem ssaDestruct_wellFormed {f : Func} (_hssa : SSAWellFormed f)
     for SSA destruction.
 
     We state this as a specification; the sequentialization algorithm
-    itself is in the backend (Cranelift/Luau emit).
+    itself is in the backend (Cranelift/LLVM/WASM emit).
     When all destinations are distinct, the copies can always be
     sequentialized (possibly with temporary variables for swap cycles). -/
 theorem parallelCopy_sequentializable (pc : ParallelCopy)

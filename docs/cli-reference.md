@@ -1,6 +1,6 @@
 # Molt CLI Reference
 
-Molt is a Python compiler that produces native binaries, WebAssembly modules, and Luau scripts.
+Molt is a Python compiler that produces native binaries and WebAssembly modules.
 It follows the same design principles as `cargo`, `go`, and `uv`: fast, predictable, and minimal configuration.
 
 ## Quick Start
@@ -24,13 +24,12 @@ molt deploy cloudflare app.py
 
 #### `molt build`
 
-Compile a Python file to a native binary, WASM module, or Luau script.
+Compile a Python file to a native binary, WASM module, or MLIR text.
 
 ```bash
 molt build app.py                        # Build with default settings
 molt build app.py --release              # Optimized release build
 molt build app.py --target wasm          # Build for WebAssembly
-molt build app.py --target luau          # Build for Luau/Roblox
 molt build app.py --target mlir          # Emit MLIR text (requires LLVM 22)
 molt build app.py --python-version 3.14  # Compile with explicit target semantics
 molt build --module mypackage            # Build a package by module name
@@ -44,7 +43,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 
 | Flag | Description |
 |------|-------------|
-| `--target TARGET` | Build target: `native` (default), `wasm`, `luau`, `mlir`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
+| `--target TARGET` | Build target: `native` (default), `wasm`, `mlir`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
 | `--release` | Optimized release build (alias for `--build-profile release`). |
 | `--module MODULE` | Entry module name. Uses `pkg.__main__` when present. |
 | `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, or `3.14`. Defaults from `[tool.molt.build] python-version`, then `project.requires-python`, then `3.12`. |
@@ -136,7 +135,7 @@ molt factgraph app.py hot_loop --output tmp/facts/hot_loop.json --target llvm
 |------|-------------|
 | `--module MODULE` | Entry module name. Uses `pkg.__main__` when present. |
 | `--output PATH` | Required fact graph JSON artifact path. Relative paths resolve from the project root. |
-| `--target {native,wasm,luau,llvm}` | Target semantics used by the TIR pipeline. |
+| `--target {native,wasm,llvm}` | Target semantics used by the TIR pipeline. |
 | `--backend {auto,cranelift,llvm}` | Native backend fact selection; `--target llvm` selects the LLVM backend. |
 | `--profile {dev,release}` | Build profile for TIR optimization. |
 | `--type-hints {ignore,trust,check}` | Apply type annotations to guide lowering and specialization. |
@@ -152,7 +151,7 @@ target, `backend` as the effective native backend fact lane, and
 
 #### `molt run`
 
-Build and execute a Python program. Supports native, WASM (via the canonical Node host shim), Luau (via lune), and MLIR targets.
+Build and execute a Python program. Supports native, WASM (via the canonical Node host shim), and MLIR targets.
 
 `molt run` defaults to the fast `dev` profile while `molt build` defaults to the optimized `release` profile — the same convention as `cargo run` / `cargo build --release`. The verb does not lock the profile: pass `--profile dev|release` (or `--release`) to either command to override.
 
@@ -160,7 +159,6 @@ Build and execute a Python program. Supports native, WASM (via the canonical Nod
 molt run app.py                          # Build and run natively
 molt run app.py --release                # Optimized build and run
 molt run app.py --target wasm            # Build and run with the Node host shim
-molt run app.py --target luau            # Build and run with lune
 molt run app.py --target mlir            # Build and emit MLIR text
 molt run app.py --tier jit               # Compile into memory and run (no link)
 molt run app.py -- --arg1 val            # Pass args to your script
@@ -177,7 +175,7 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 
 | Flag | Description |
 |------|-------------|
-| `--target TARGET` | Build target: `native`, `wasm`, `luau`, `mlir`, or a target triple. |
+| `--target TARGET` | Build target: `native`, `wasm`, `mlir`, or a target triple. |
 | `--release` | Optimized release build. |
 | `--tier {aot,jit}` | How to run a native program. `aot` (default) builds an executable and runs it. `jit` builds a JIT image and runs it in the `molt-jit` runner, which compiles the whole program into its own memory on every run: no object, link or executable. The JIT tier runs only in a source checkout on aarch64 macOS (the verified cell), with the Cranelift code generator and no external native package artifacts; any other request fails before the frontend runs and never falls back to `aot`. `[tool.molt.run] tier` sets the default. |
 | `--module MODULE` | Entry module name. |
@@ -282,10 +280,8 @@ Build and deploy to a target platform. Automatically sets the correct build targ
 
 ```bash
 molt deploy cloudflare app.py            # Deploy to Cloudflare Workers
-molt deploy roblox app.py                # Deploy to Roblox Studio
 molt deploy cloudflare app.py --release  # Optimized production deploy
 molt deploy cloudflare app.py --dry-run  # Build only, skip wrangler
-molt deploy roblox app.py --roblox-project ./my-game
 ```
 
 | Flag | Description |
@@ -294,9 +290,8 @@ molt deploy roblox app.py --roblox-project ./my-game
 | `--build-profile {dev,release}` | Build profile (default: `release`). |
 | `--output PATH` | Output path for the build artifact. |
 | `--out-dir DIR` | Output directory for build artifacts. |
-| `--roblox-project DIR` | Roblox project directory to copy Luau output into. |
 | `--wrangler-args ARGS` | Extra arguments passed to `wrangler deploy`. |
-| `--dry-run` | Build only; do not run wrangler or copy to project. |
+| `--dry-run` | Build only; do not run wrangler. |
 | `--build-arg ARG` | Extra args passed to `molt build` (repeatable). |
 
 **Platforms:**
@@ -304,7 +299,6 @@ molt deploy roblox app.py --roblox-project ./my-game
 | Platform | Description |
 |----------|-------------|
 | `cloudflare` | Build as WASM with `--split-runtime`, deploy via wrangler. |
-| `roblox` | Build as Luau, optionally copy to a Roblox project directory. |
 
 ---
 
@@ -706,21 +700,6 @@ molt build app.py --target wasm --linked --precompile  # Host-produced precompil
   under `MOLT_TARGET_ROOT/toolchains/` (the same managed root as the WASI
   sysroot).
 
-### Luau
-
-Produces a Luau script for the Roblox platform.
-
-```bash
-molt build app.py --target luau          # Luau script
-molt validate --suite smoke --backend luau  # Guarded Luau validation lane
-molt deploy roblox app.py                # Build + deploy to Roblox
-```
-
-The Luau validation lane checks generated OpIR support-matrix freshness, checked
-Luau emission, Luau runner availability, backend/lowering Rust regressions, and
-targeted CPython-vs-Luau smoke parity under the shared memory guard. Running the
-emitted Luau parity smoke requires `luau` or `lune` on `PATH`.
-
 ---
 
 ## Deployment Guide
@@ -747,25 +726,6 @@ The `cloudflare` deploy target automatically:
 1. Builds with `--target wasm --split-runtime`.
 2. Generates `worker.js`, `browser_embed.js`, `loader_bridge.js`, `app.wasm`, `molt_runtime.wasm`, and `manifest.json`.
 3. Runs `wrangler deploy` (requires `wrangler` in PATH and a Wrangler config file, typically the generated `wrangler.jsonc`).
-
-### Roblox
-
-Deploy Python as Luau for Roblox experiences.
-
-```bash
-# Quick deploy
-molt deploy roblox game.py
-
-# Deploy and copy to project directory
-molt deploy roblox game.py --roblox-project ./my-game
-
-# Build only (inspect Luau output)
-molt deploy roblox game.py --dry-run
-```
-
-The `roblox` deploy target automatically:
-1. Builds with `--target luau`.
-2. Optionally copies the Luau output to a Roblox project directory.
 
 ---
 

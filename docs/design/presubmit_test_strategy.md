@@ -34,6 +34,12 @@ linked module that a 30-line program pulls in.
 ## Target presubmit (budget: 10 minutes p90 per lane, owner decision 2026-11-05)
 
 1. **Static gates first** (fail fast; already run by `consumer_gate run` before commit).
+   **Each result runs once per tree:** a gate that the consumer gate's receipt ran on the
+   exact tree (its static commands and its importer cohorts under `--skip-slow`;
+   `consumer_gate.proven_gates`) is skipped by the `land` precheck. The queue's batch skips
+   it too when the receipt is `exact`: the consumer gate's checkout held only that tree's
+   files. Landing-built, Cargo and slow tests still run in the batch. A rebase onto a moved
+   main is a new tree, so every gate runs again.
 2. **Differential smoke per touched backend**: a fixed, coverage-chosen subset of the corpus
    (start: 150 basic + 100 stdlib programs) on native, plus WASM and LLVM when their crates
    or the shared frontend/midend change. Programs run against a cached runtime build

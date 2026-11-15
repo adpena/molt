@@ -1,7 +1,7 @@
 #![cfg(feature = "wasm-backend")]
 
 //! Tests for WASM data segment layout: string constants go into data segments,
-//! data offsets are 8-byte aligned, the manifest segment exists, and duplicate
+//! data offsets are aligned to their payload, the manifest segment exists, and duplicate
 //! strings are deduplicated.
 
 use molt_backend::{FunctionIR, OpIR, SimpleIR, WasmBackend, WasmCompileOptions};
@@ -210,48 +210,6 @@ fn duplicate_const_strs_are_deduplicated() {
 // -----------------------------------------------------------------------
 // Data segment alignment tests
 // -----------------------------------------------------------------------
-
-#[test]
-fn data_segments_are_8_byte_aligned() {
-    let mut c1 = op(molt_ir::OpKind::ConstStr);
-    c1.s_value = Some("short".to_string()); // 5 bytes
-    c1.out = Some("v0".to_string());
-
-    let mut c2 = op(molt_ir::OpKind::ConstStr);
-    c2.s_value = Some("longer_string_here".to_string()); // 18 bytes
-    c2.out = Some("v1".to_string());
-
-    let mut c3 = op(molt_ir::OpKind::ConstStr);
-    c3.s_value = Some("x".to_string()); // 1 byte
-    c3.out = Some("v2".to_string());
-
-    let wasm = compile_ir(SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![c1, c2, c3, op(molt_ir::OpKind::RetVoid)],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    });
-
-    let segments = extract_data_segments(&wasm);
-    for seg in &segments {
-        assert_eq!(
-            seg.offset % 8,
-            0,
-            "data segment at offset {} is not 8-byte aligned (data len={})",
-            seg.offset,
-            seg.data.len()
-        );
-    }
-}
 
 #[test]
 fn data_segment_starts_align_current_payload_from_unaligned_base() {

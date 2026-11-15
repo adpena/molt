@@ -259,7 +259,7 @@ def test_serialized_bootstrap_matches_native_signature_fixture() -> None:
         assert not any(op["kind"] == "ret" for op in wrapper)
 
 
-@pytest.mark.parametrize("target", ["native", "wasm", "llvm", "rust", "luau", "mlir"])
+@pytest.mark.parametrize("target", ["native", "wasm", "llvm", "mlir"])
 @pytest.mark.parametrize("target_python", ["3.12", "3.13", "3.14"])
 @pytest.mark.parametrize(
     "entry_module,chunked,stdlib_profile",

@@ -31,18 +31,39 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         if nanbox::MOLT_REFCOUNT_ATOMIC {
             return self.backend.context.i64_type().const_zero();
         }
-        builder
-            .build_execution_call(
-                self.ensure_runtime_import(
-                    molt_ir::runtime_fn_generated::RuntimeFn::RefcountAdmission,
-                ),
-                &[],
-                "rc_admission",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value()
+        self.load_thread_record_word(
+            builder,
+            molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission,
+            "rc_admission",
+        )
+    }
+
+    /// `word` of the thread record, read through the attached context of the
+    /// function `builder` is positioned in (a task trampoline builds its own
+    /// function); LLVM merges repeated context and record loads.
+    pub(super) fn load_thread_record_word(
+        &self,
+        builder: &Builder<'ctx>,
+        word: molt_codegen_abi::thread_record::ThreadRecordWord,
+        name: &str,
+    ) -> IntValue<'ctx> {
+        let context = builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .expect("thread-record word builder is positioned in a function")
+            .get_first_param()
+            .expect("compiled functions receive the attached context first")
+            .into_int_value();
+        let value = molt_codegen_abi::thread_record::generate_thread_record_word(
+            &mut LlvmThreadRecord {
+                builder,
+                llvm: self.backend.context,
+                context,
+            },
+            word,
+        );
+        value.set_name(name);
+        value
     }
 
     pub(super) fn ensure_refcount_site(
@@ -263,5 +284,49 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
                 .unwrap();
         }
         self.words.builder.position_at_end(continuation);
+    }
+}
+
+/// LLVM spelling of `molt_codegen_abi::thread_record`: words are i64 values,
+/// and a trusted load addresses `base + offset` through the one cast the
+/// attached-context chain needs.
+struct LlvmThreadRecord<'a, 'ctx> {
+    builder: &'a Builder<'ctx>,
+    llvm: &'ctx inkwell::context::Context,
+    context: IntValue<'ctx>,
+}
+
+impl<'ctx> molt_codegen_abi::thread_record::ThreadRecordBuilder for LlvmThreadRecord<'_, 'ctx> {
+    type Word = IntValue<'ctx>;
+
+    fn attached_context(&mut self) -> IntValue<'ctx> {
+        self.context
+    }
+
+    fn load_trusted_word(&mut self, address: IntValue<'ctx>, offset: i32) -> IntValue<'ctx> {
+        let i64_ty = self.llvm.i64_type();
+        let base = self
+            .builder
+            .build_int_to_ptr(
+                address,
+                self.llvm.ptr_type(inkwell::AddressSpace::default()),
+                "thread_record_ptr",
+            )
+            .unwrap();
+        // SAFETY: every offset the generator passes addresses a field inside
+        // the attached context or the thread record.
+        let field = unsafe {
+            self.builder.build_gep(
+                self.llvm.i8_type(),
+                base,
+                &[i64_ty.const_int(offset as i64 as u64, true)],
+                "thread_record_field",
+            )
+        }
+        .unwrap();
+        self.builder
+            .build_load(i64_ty, field, "thread_record_word")
+            .unwrap()
+            .into_int_value()
     }
 }

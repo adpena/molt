@@ -26,7 +26,6 @@ jobs:
       MOLT_DIFF_ROOT: /tmp/molt-ext/diff
       MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp
       MOLT_HOME: /tmp/molt-ext
-      MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
       MOLT_PREFER_EXTERNAL_ARTIFACTS: "1"
       MOLT_GUARD_PROFILE: all
@@ -78,7 +77,7 @@ jobs:
           profile: full
           wasi: "true"
 
-      - name: Execute WASM, Luau, and parity partitions
+      - name: Execute WASM and parity partitions
         env:
           MOLT_WASM_OPT: ${{ steps.binaryen.outputs.wasm_opt }}
         run: python3 tools/proof_plan.py --run-family wasm --receipt proof-receipts/wasm.json

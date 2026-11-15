@@ -719,7 +719,7 @@ regressions are visible in `runtime_stats` without a special flag.
 **Cold start and binary size** come from the dedicated matrix tool
 `tools/output_startup_size_audit.py`, never from the throughput table (mixing a
 cold molt launch against a warm CPython launch would be unfair). Per matrix case
-(`native`/`wasm`/`luau` × profile × backend) it records:
+(`native`/`wasm`/`mlir` × profile × backend) it records:
 
 - `same_path`: warm steady-state startup (provenance + page cache warm).
 - `page_cache_cold`: a fresh-copy load. NOTE: `shutil.copy2` preserves the bytes

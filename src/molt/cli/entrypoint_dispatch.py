@@ -489,7 +489,6 @@ def _dispatch_entrypoint_command(
         if run_target in {
             TargetKind.WASM_FREESTANDING,
             TargetKind.WASM_UNKNOWN,
-            TargetKind.RUST,
         }:
             return _fail(
                 f"molt run cannot execute target {target_name(run_target)!r}; "
@@ -497,7 +496,7 @@ def _dispatch_entrypoint_command(
                 args.json,
                 command="run",
             )
-        if run_target in {TargetKind.WASM, TargetKind.WASI, TargetKind.LUAU}:
+        if run_target in {TargetKind.WASM, TargetKind.WASI}:
             # Inject --target into build_args so run_script_cross handles it
             if not any(a.startswith("--target") for a in build_args):
                 build_args.extend(["--target", target_name(run_target)])
@@ -765,7 +764,7 @@ def _dispatch_entrypoint_command(
                 args.suite,
             ),
             backend=cast(
-                Literal["all", "native", "llvm", "wasm", "luau"],
+                Literal["all", "native", "llvm", "wasm"],
                 args.backend,
             ),
             profile=cast(Literal["all", "dev", "release"], args.profile),
@@ -1027,7 +1026,6 @@ def _dispatch_entrypoint_command(
             build_profile=deploy_build_profile,
             output=args.output,
             out_dir=args.out_dir,
-            roblox_project=getattr(args, "roblox_project", None),
             wrangler_args=getattr(args, "wrangler_args", ""),
             dry_run=args.dry_run,
             build_args=_strip_leading_double_dash(args.build_arg),

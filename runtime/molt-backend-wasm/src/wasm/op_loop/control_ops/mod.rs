@@ -75,7 +75,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::AsyncgenNew
         | molt_ir::OpKind::Band
         | molt_ir::OpKind::BindingAlias
-        | molt_ir::OpKind::Binop
         | molt_ir::OpKind::BinopAdd
         | molt_ir::OpKind::BinopFloorDiv
         | molt_ir::OpKind::BinopMod
@@ -87,14 +86,12 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::BitOr
         | molt_ir::OpKind::BitXor
         | molt_ir::OpKind::Bool
-        | molt_ir::OpKind::BoolConst
         | molt_ir::OpKind::Bor
         | molt_ir::OpKind::Borrow
         | molt_ir::OpKind::BoundMethodNew
         | molt_ir::OpKind::Box
         | molt_ir::OpKind::BoxFromRawInt
         | molt_ir::OpKind::BrIf
-        | molt_ir::OpKind::Branch
         | molt_ir::OpKind::BranchFalse
         | molt_ir::OpKind::BranchTrue
         | molt_ir::OpKind::BuildDict
@@ -187,7 +184,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::CodeNew
         | molt_ir::OpKind::CodeSlotSet
         | molt_ir::OpKind::CodeSlotsInit
-        | molt_ir::OpKind::Compare
         | molt_ir::OpKind::ComplexFromObj
         | molt_ir::OpKind::Const
         | molt_ir::OpKind::ConstBigint
@@ -211,7 +207,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::DelAttrName
         | molt_ir::OpKind::DelBoundary
         | molt_ir::OpKind::DelIndex
-        | molt_ir::OpKind::DelItem
         | molt_ir::OpKind::DeleteVar
         | molt_ir::OpKind::DictClear
         | molt_ir::OpKind::DictCopy
@@ -234,7 +229,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::Div
         | molt_ir::OpKind::DropInserted
         | molt_ir::OpKind::Else
-        | molt_ir::OpKind::EndFor
         | molt_ir::OpKind::EndIf
         | molt_ir::OpKind::Enumerate
         | molt_ir::OpKind::Eq
@@ -395,7 +389,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::Load
         | molt_ir::OpKind::LoadAttr
         | molt_ir::OpKind::LoadConst
-        | molt_ir::OpKind::LoadLocal
         | molt_ir::OpKind::LoadMethod
         | molt_ir::OpKind::LoadSuperMethod
         | molt_ir::OpKind::LoadVar
@@ -403,8 +396,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::LoopBreakIfException
         | molt_ir::OpKind::LoopBreakIfFalse
         | molt_ir::OpKind::LoopBreakIfTrue
-        | molt_ir::OpKind::LoopCarryInit
-        | molt_ir::OpKind::LoopCarryUpdate
         | molt_ir::OpKind::LoopContinue
         | molt_ir::OpKind::LoopEnd
         | molt_ir::OpKind::LoopIndexEnd
@@ -434,12 +425,12 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::ModuleSlot
         | molt_ir::OpKind::GlobalSlotGet
         | molt_ir::OpKind::StaticCellBase
+        | molt_ir::OpKind::StaticCellLoad
         | molt_ir::OpKind::StaticCellSet
         | molt_ir::OpKind::Modulo
         | molt_ir::OpKind::Mul
         | molt_ir::OpKind::Ne
         | molt_ir::OpKind::Neg
-        | molt_ir::OpKind::NoneConst
         | molt_ir::OpKind::Nop
         | molt_ir::OpKind::Not
         | molt_ir::OpKind::NotIn
@@ -449,8 +440,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::Or
         | molt_ir::OpKind::Ord
         | molt_ir::OpKind::OrdAt
-        | molt_ir::OpKind::PcallWrapBegin
-        | molt_ir::OpKind::PcallWrapEnd
         | molt_ir::OpKind::Phi
         | molt_ir::OpKind::Pos
         | molt_ir::OpKind::Pow
@@ -505,14 +494,11 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::StoreAttr
         | molt_ir::OpKind::StoreFast
         | molt_ir::OpKind::StoreIndex
-        | molt_ir::OpKind::StoreLocal
         | molt_ir::OpKind::StoreSubscript
         | molt_ir::OpKind::StoreVar
         | molt_ir::OpKind::Str
         | molt_ir::OpKind::StrFromObj
         | molt_ir::OpKind::StringCapitalize
-        | molt_ir::OpKind::StringConcat
-        | molt_ir::OpKind::StringConst
         | molt_ir::OpKind::StringCount
         | molt_ir::OpKind::StringCountSlice
         | molt_ir::OpKind::StringEndswith
@@ -521,19 +507,10 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::StringFind
         | molt_ir::OpKind::StringFindSlice
         | molt_ir::OpKind::StringFormat
-        | molt_ir::OpKind::StringIndex
-        | molt_ir::OpKind::StringIndexSlice
         | molt_ir::OpKind::StringJoin
         | molt_ir::OpKind::StringLower
         | molt_ir::OpKind::StringLstrip
-        | molt_ir::OpKind::StringPartition
-        | molt_ir::OpKind::StringRepeat
         | molt_ir::OpKind::StringReplace
-        | molt_ir::OpKind::StringRfind
-        | molt_ir::OpKind::StringRfindSlice
-        | molt_ir::OpKind::StringRindex
-        | molt_ir::OpKind::StringRindexSlice
-        | molt_ir::OpKind::StringRpartition
         | molt_ir::OpKind::StringRstrip
         | molt_ir::OpKind::StringSplit
         | molt_ir::OpKind::StringSplitField
@@ -549,7 +526,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::StringSplitSepDictInc
         | molt_ir::OpKind::StringSplitValidate
         | molt_ir::OpKind::StringSplitWsDictInc
-        | molt_ir::OpKind::StringSplitlines
         | molt_ir::OpKind::StringStartswith
         | molt_ir::OpKind::StringStartswithSlice
         | molt_ir::OpKind::StringStrip
@@ -573,7 +549,6 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::UnaryInvert
         | molt_ir::OpKind::UnaryNeg
         | molt_ir::OpKind::UnaryNot
-        | molt_ir::OpKind::UnaryOp
         | molt_ir::OpKind::UnaryPos
         | molt_ir::OpKind::Unbox
         | molt_ir::OpKind::UnboxToRawInt

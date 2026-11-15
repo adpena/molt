@@ -140,7 +140,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
         match raw_idx_lookup {
             Some(raw_idx) if flat_list_int => {
                 // Inline list[int] getitem — direct memory access using
-                // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
+                // MoltVec<i64> (#[repr(C)], molt_codegen_abi::LIST_STORAGE_*).
                 // Inside loops, use Variable-only shadows (phi-correct).
                 let obj = proven_list_container(builder, vars, representation_plan, &args[0]);
                 // Extract storage_ptr, data_ptr, len (cached across loop iterations).
@@ -159,7 +159,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             types::I64,
                             MemFlagsData::trusted(),
                             storage_ptr,
-                            LIST_INT_STORAGE_DATA_OFFSET,
+                            LIST_STORAGE_DATA_OFFSET,
                         );
                         let var = builder.declare_var(types::I64);
                         builder.def_var(var, dp);
@@ -174,7 +174,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             types::I64,
                             MemFlagsData::trusted(),
                             storage_ptr,
-                            LIST_INT_STORAGE_LEN_OFFSET,
+                            LIST_STORAGE_LEN_OFFSET,
                         );
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
@@ -201,7 +201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             types::I64,
                             MemFlagsData::trusted(),
                             storage_ptr,
-                            LIST_INT_STORAGE_LEN_OFFSET,
+                            LIST_STORAGE_LEN_OFFSET,
                         );
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
@@ -484,8 +484,29 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 };
                 let callee =
                     import_runtime_func_ref(module, import_ids, builder, import_refs, fn_name);
-                let call = builder.ins().call(callee, &[obj, idx]);
-                let res = builder.inst_results(call)[0];
+                // Every list entry is the miss of the shared list read
+                // (`molt_codegen_abi::list_item`); dict and tuple keep theirs.
+                let res = if matches!(
+                    fn_name,
+                    RuntimeFn::Index | RuntimeFn::ListGetitemIntFast | RuntimeFn::ListIntGetitem
+                ) {
+                    let sites =
+                        super::calls::native_frame_sites(module, import_ids, builder, import_refs);
+                    crate::native_backend::simple_backend::emit_list_item_get(
+                        builder,
+                        sealed_blocks,
+                        sites,
+                        obj,
+                        idx,
+                        |builder| {
+                            let call = builder.ins().call(callee, &[obj, idx]);
+                            builder.inst_results(call)[0]
+                        },
+                    )
+                } else {
+                    let call = builder.ins().call(callee, &[obj, idx]);
+                    builder.inst_results(call)[0]
+                };
                 let res = operands.finish(
                     res,
                     None,

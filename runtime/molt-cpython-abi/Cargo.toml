@@ -70,6 +70,11 @@ windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_Syst
 cc = "1"
 
 [[test]]
+name = "cext_integration"
+path = "tests/cext_integration.rs"
+required-features = ["extension-loader"]
+
+[[test]]
 name = "l7_numeric_perf_attestation"
 path = "tests/l7_numeric_perf_attestation.rs"
 required-features = ["l7-test-probe"]

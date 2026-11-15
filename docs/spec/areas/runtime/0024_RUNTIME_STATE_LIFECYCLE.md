@@ -581,11 +581,6 @@ follows CPython's [module execution preparation](https://github.com/python/cpyth
 and [builtins capture](https://github.com/python/cpython/blob/v3.15.0/Python/ceval.c).
 Preparation uses the existing module-entry call; it adds no check to global
 reads or ordinary function entries.
-Luau's admitted ordinary module frames use their prelude-owned builtins
-namespace. Its source-builtin initialization, loader/reload transactions and
-inherited `None` in plain module tables remain unqualified coordinates; a
-mutable cache entry does not grant bootstrap ownership. The Rust source
-backend's cloned namespace model is also a separate unqualified coordinate.
 Builtin callable metadata (including defining module and binding policy) comes
 from `BuiltinFuncSpec` for both frontend materialization and generated runtime
 publication. The Python facade must not reacquire optional providers merely to

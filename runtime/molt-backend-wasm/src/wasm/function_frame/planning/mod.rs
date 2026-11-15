@@ -165,8 +165,6 @@ impl WasmFunctionFramePlan {
         let stateful = requirements.stateful();
         let jumpful = requirements.jumpful();
         let owns_frame = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
-        // Python frames remain observable during callees, including finalizers.
-        let tail_call_eligible = requirements.tail_call_eligible() && !owns_frame;
         let owned_frame_attempt = owns_frame.then(|| {
             let slot = local_count;
             local_types.push(ValType::I32);
@@ -258,7 +256,6 @@ impl WasmFunctionFramePlan {
                 guard_profile_local,
                 control_mode,
                 control_plan,
-                tail_call_eligible: tail_call_eligible && const_anchors.is_empty(),
                 owned_frame_attempt,
                 frame_shape: func_ir
                     .ops

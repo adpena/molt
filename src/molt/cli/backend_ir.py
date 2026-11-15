@@ -52,7 +52,11 @@ from molt.cli.models import (
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
 from molt.cli.closed_world_bindings import bind_closed_world_calls
-from molt.cli.static_module_cells import StaticCellPlan, plan_static_module_cells
+from molt.cli.static_module_cells import (
+    StaticCellPlan,
+    plan_static_module_cells,
+    prove_init_once_calls,
+)
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
 from molt.cli.module_registry import (
     ModuleRegistry,
@@ -469,7 +473,7 @@ def _module_registry_target_enabled(target: Target) -> bool:
     runtime/catalog ABI and retain their textual dispatch shape. This is not
     source-scan custody or admission of runtime import semantics.
     """
-    if target in {TargetKind.LUAU, TargetKind.RUST, TargetKind.MLIR}:
+    if target is TargetKind.MLIR:
         return False
     return True
 
@@ -2280,6 +2284,7 @@ def _prepare_backend_ir(
             {row.name for row in module_registry.rows if row.kind == "extension"},
             entry_module=entry_module,
             dep_closures=integration_state.module_dep_closures,
+            program_functions=functions,
         )
         stamp_global_slots(
             functions,
@@ -2288,6 +2293,7 @@ def _prepare_backend_ir(
             {row.name for row in module_registry.rows},
             static_cells.modules,
             static_cells.guard_masks,
+            static_cells.init_dominated,
         )
         if module_table_lane:
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
@@ -2315,6 +2321,13 @@ def _prepare_backend_ir(
                 "ops": import_ops,
             }
         )
+    # Proven direct calls of InitOnce functions (HF-846 slice 2); every lane
+    # consumes the frontend's func_new shape facts here.
+    binding_diagnostics.extend(
+        prove_init_once_calls(
+            functions, integration_state.module_functions, static_cells
+        )
+    )
     try:
         _finalize_gpu_descriptors(
             functions,

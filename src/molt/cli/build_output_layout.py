@@ -25,7 +25,7 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Generator, Mapping
+from collections.abc import Generator
 from pathlib import Path
 import re
 
@@ -37,7 +37,6 @@ from molt.default_paths import (
     _default_molt_cache,
     _default_molt_home,
 )
-from molt.dx import configured_artifact_root, project_cargo_target_dir
 from molt.process_environment import ProcessEnvironment
 
 
@@ -45,8 +44,6 @@ from molt.process_environment import ProcessEnvironment
 class _BuildOutputLayout:
     is_wasm: bool
     is_wasm_freestanding: bool
-    is_rust_transpile: bool
-    is_luau_transpile: bool
     is_mlir_emit: bool
     split_runtime: bool
     linked: bool
@@ -61,8 +58,6 @@ class _BuildOutputLayout:
 
 
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
-# The default runtime WASM directory inside a project's Cargo target.
-WASM_RUNTIME_TARGET_DIR = "molt-runtime-wasm"
 
 _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
     "cloudflare": {
@@ -104,28 +99,6 @@ _BUILD_OR_DEPLOY_PROFILE_CHOICES = (*_BUILD_PROFILE_CHOICES, *_DEPLOY_PROFILE_CH
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
-
-
-def _wasm_runtime_root(project_root: Path) -> Path:
-    return _wasm_runtime_root_from_env(project_root, os.environ)
-
-
-def _wasm_runtime_root_from_env(project_root: Path, env: Mapping[str, str]) -> Path:
-    """The one root of runtime WASM artifacts: build, link and tools agree on it.
-
-    An explicit ``MOLT_WASM_RUNTIME_DIR`` wins. An artifact root
-    (``MOLT_EXT_ROOT``) holds one content-addressed runtime directory that its
-    checkouts share. Otherwise the runtime sits in the project's Cargo target
-    beside the native runtime libraries, so a build never writes into the
-    source tree or the working directory.
-    """
-    explicit = env.get("MOLT_WASM_RUNTIME_DIR", "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    external = configured_artifact_root(env, relative_to=project_root)
-    if external is not None:
-        return external / "wasm"
-    return project_cargo_target_dir(project_root, env) / WASM_RUNTIME_TARGET_DIR
 
 
 @typed_cache(maxsize=8)
@@ -457,8 +430,6 @@ def resolve_build_output_options(
     before executing any of them. This reads only the linked-output default.
     """
     is_wasm = is_wasm_target(target)
-    is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
-    is_luau_transpile = target is TargetKind.LUAU
     is_mlir_emit = target is TargetKind.MLIR
     if trusted and is_wasm:
         raise ValueError("Trusted mode is not supported for wasm targets")
@@ -468,7 +439,7 @@ def resolve_build_output_options(
         linked = True
     if linked_output and not linked and not require_linked:
         raise ValueError("--linked-output requires --linked")
-    if linked and not is_wasm and not is_rust_transpile:
+    if linked and not is_wasm:
         raise ValueError("Linked output is only supported for wasm targets")
     if require_linked and not linked:
         linked = True
@@ -478,23 +449,14 @@ def resolve_build_output_options(
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
-    is_transpile = is_rust_transpile or is_luau_transpile
-    emit_mode = (
-        "bin"
-        if is_transpile or is_mlir_emit
-        else (emit or ("wasm" if is_wasm else "bin"))
-    )
-    if (
-        not is_transpile
-        and not is_mlir_emit
-        and emit_mode not in {"bin", "obj", "wasm", "jit"}
-    ):
+    emit_mode = "bin" if is_mlir_emit else (emit or ("wasm" if is_wasm else "bin"))
+    if not is_mlir_emit and emit_mode not in {"bin", "obj", "wasm", "jit"}:
         raise ValueError(f"Invalid emit mode: {emit_mode}")
     if is_wasm and emit_mode != "wasm":
         raise ValueError(f"Invalid emit mode for wasm target: {emit_mode}")
-    if not is_wasm and not is_transpile and not is_mlir_emit and emit_mode == "wasm":
+    if not is_wasm and not is_mlir_emit and emit_mode == "wasm":
         raise ValueError("emit=wasm requires --target wasm")
-    if emit == "jit" and (is_wasm or is_transpile or is_mlir_emit):
+    if emit == "jit" and (is_wasm or is_mlir_emit):
         raise ValueError("emit=jit requires the native target")
     if emit_mode == "jit" and (linked or split_runtime):
         raise ValueError("emit=jit publishes no linked or split artifact")
@@ -505,11 +467,11 @@ def resolve_build_output_options(
 def _runtime_facts_target(target: Target) -> ArtifactTarget:
     """The artifact target whose runtime facts a build reads: its one host lookup.
 
-    Rust and Luau transpiles and MLIR emission link no Molt runtime; they read
-    the host's facts, as they did while the triple was None.
+    MLIR emission links no Molt runtime; it reads the host's facts, as it did
+    while the triple was None.
     """
     match target:
-        case TargetKind.RUST | TargetKind.LUAU | TargetKind.MLIR:
+        case TargetKind.MLIR:
             return resolve_artifact_target(TargetKind.NATIVE)
         case _:
             return resolve_artifact_target(target)
@@ -547,8 +509,6 @@ def _resolve_build_output_layout(
         TargetKind.WASM_FREESTANDING,
         TargetKind.WASM_UNKNOWN,
     }
-    is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
-    is_luau_transpile = target is TargetKind.LUAU
     is_mlir_emit = target is TargetKind.MLIR
     facts_target = _runtime_facts_target(target)
     target_triple = (
@@ -568,20 +528,6 @@ def _resolve_build_output_layout(
     output_binary: Path | None = None
     linked_output_path: Path | None = None
     if is_mlir_emit:
-        output_artifact = _resolve_output_path(
-            output,
-            output_root / f"{output_base}{artifact_suffix}",
-            out_dir=out_dir_path,
-            project_root=project_root,
-        )
-    elif is_luau_transpile:
-        output_artifact = _resolve_output_path(
-            output,
-            output_root / f"{output_base}{artifact_suffix}",
-            out_dir=out_dir_path,
-            project_root=project_root,
-        )
-    elif is_rust_transpile:
         output_artifact = _resolve_output_path(
             output,
             output_root / f"{output_base}{artifact_suffix}",
@@ -651,8 +597,6 @@ def _resolve_build_output_layout(
     return _BuildOutputLayout(
         is_wasm=is_wasm,
         is_wasm_freestanding=is_wasm_freestanding,
-        is_rust_transpile=is_rust_transpile,
-        is_luau_transpile=is_luau_transpile,
         is_mlir_emit=is_mlir_emit,
         split_runtime=split_runtime,
         linked=linked,

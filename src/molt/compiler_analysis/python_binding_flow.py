@@ -3234,6 +3234,47 @@ class _Analyzer:
             & UNBOUND_IDENTITY
         )
 
+    def _plain_class_base(self, base: ast.expr) -> bool:
+        """Whether a class statement's base is, on every execution, the class
+        one plain class statement created: its metaclass is `type`, and no
+        class in its base chain defines `__init_subclass__`, so building a
+        subclass runs no Python before or after its body.
+
+        The read is a class statement's value when its binding is not
+        invalidated and its one source origin is that statement, as a source
+        callable's read is its own origin (`exact_builtin_name`)."""
+        fact = self.expressions.get(self._node_key(base))
+        if (
+            fact is None
+            or fact.binding_invalidated
+            or fact.star_export_lookup
+            or fact.name_lookup not in {"global", "lexical"}
+        ):
+            return False
+        result = fact.result
+        if result.identities & ~(
+            possible_identity(PythonIdentity.USER_CLASS) | UNBOUND_IDENTITY
+        ) or not result.identities & int(PythonIdentity.USER_CLASS):
+            return False
+        if len(result.source_origins) != 1:
+            return False
+        pending = list(result.source_origins)
+        seen: set[PythonSourceKey] = set()
+        while pending:
+            owner = pending.pop()
+            if owner in seen:
+                continue
+            seen.add(owner)
+            source_class = self.source_classes.get(owner)
+            if (
+                source_class is None
+                or not source_class.plain_metaclass
+                or "__init_subclass__" in self.source_namespaces.get(owner, {})
+            ):
+                return False
+            pending.extend(self.source_bases.get(owner, frozenset()))
+        return True
+
     def _read_name_resolution(
         self,
         state_id: int,
@@ -7565,7 +7606,7 @@ class _Analyzer:
             ) = self._eval_call_arguments(node, state_id, definition_scope)
             effects |= argument_effects
             owner_key = python_node_source_key(node)
-            base_results = (
+            base_results = tuple(
                 self._source_element_result(
                     python_node_source_key(base),
                     self._known_expression_result(base.value),
@@ -7596,9 +7637,15 @@ class _Analyzer:
                 and not node.bases
                 and not node.keywords
             )
+            # Bases that are each a plain class statement's class keep the
+            # metaclass `type`: its `__prepare__` returns a dict, and no
+            # `__mro_entries__` runs for a class base (HF-846 class facts).
             plain_preparation = native_preparation or (
-                not node.bases
-                and not node.keywords
+                not node.keywords
+                and all(
+                    not isinstance(base, ast.Starred) and self._plain_class_base(base)
+                    for base in node.bases
+                )
                 and self._canonical_imports_available(state_id)
                 and self.states.get(state_id).taint_epoch == 0
             )

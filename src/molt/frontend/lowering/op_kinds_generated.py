@@ -470,6 +470,7 @@ FrontendOpKind = Literal[
     'STATE_YIELD',
     'STATICMETHOD_NEW',
     'STATIC_CELL_BASE',
+    'STATIC_CELL_LOAD',
     'STATIC_CELL_SET',
     'STORE',
     'STORE_ATTR',
@@ -579,7 +580,6 @@ WireOpKind = Literal[
     'asyncgen_new',
     'band',
     'binding_alias',
-    'binop',
     'binop_add',
     'binop_floor_div',
     'binop_mod',
@@ -591,14 +591,12 @@ WireOpKind = Literal[
     'bit_or',
     'bit_xor',
     'bool',
-    'bool_const',
     'bor',
     'borrow',
     'bound_method_new',
     'box',
     'box_from_raw_int',
     'br_if',
-    'branch',
     'branch_false',
     'branch_true',
     'build_dict',
@@ -691,7 +689,6 @@ WireOpKind = Literal[
     'code_new',
     'code_slot_set',
     'code_slots_init',
-    'compare',
     'complex_from_obj',
     'const',
     'const_bigint',
@@ -715,7 +712,6 @@ WireOpKind = Literal[
     'del_attr_name',
     'del_boundary',
     'del_index',
-    'del_item',
     'delete_var',
     'dict_clear',
     'dict_copy',
@@ -738,7 +734,6 @@ WireOpKind = Literal[
     'div',
     'drop_inserted',
     'else',
-    'end_for',
     'end_if',
     'enumerate',
     'eq',
@@ -900,7 +895,6 @@ WireOpKind = Literal[
     'load',
     'load_attr',
     'load_const',
-    'load_local',
     'load_method',
     'load_super_method',
     'load_var',
@@ -908,8 +902,6 @@ WireOpKind = Literal[
     'loop_break_if_exception',
     'loop_break_if_false',
     'loop_break_if_true',
-    'loop_carry_init',
-    'loop_carry_update',
     'loop_continue',
     'loop_end',
     'loop_index_end',
@@ -941,7 +933,6 @@ WireOpKind = Literal[
     'mul',
     'ne',
     'neg',
-    'none_const',
     'nop',
     'not',
     'not_in',
@@ -951,8 +942,6 @@ WireOpKind = Literal[
     'or',
     'ord',
     'ord_at',
-    'pcall_wrap_begin',
-    'pcall_wrap_end',
     'phi',
     'pos',
     'pow',
@@ -1003,20 +992,18 @@ WireOpKind = Literal[
     'state_yield',
     'stateful_locals_register',
     'static_cell_base',
+    'static_cell_load',
     'static_cell_set',
     'staticmethod_new',
     'store',
     'store_attr',
     'store_fast',
     'store_index',
-    'store_local',
     'store_subscript',
     'store_var',
     'str',
     'str_from_obj',
     'string_capitalize',
-    'string_concat',
-    'string_const',
     'string_count',
     'string_count_slice',
     'string_endswith',
@@ -1025,19 +1012,10 @@ WireOpKind = Literal[
     'string_find',
     'string_find_slice',
     'string_format',
-    'string_index',
-    'string_index_slice',
     'string_join',
     'string_lower',
     'string_lstrip',
-    'string_partition',
-    'string_repeat',
     'string_replace',
-    'string_rfind',
-    'string_rfind_slice',
-    'string_rindex',
-    'string_rindex_slice',
-    'string_rpartition',
     'string_rstrip',
     'string_split',
     'string_split_field',
@@ -1053,7 +1031,6 @@ WireOpKind = Literal[
     'string_split_sep_dict_inc',
     'string_split_validate',
     'string_split_ws_dict_inc',
-    'string_splitlines',
     'string_startswith',
     'string_startswith_slice',
     'string_strip',
@@ -1077,7 +1054,6 @@ WireOpKind = Literal[
     'unary_invert',
     'unary_neg',
     'unary_not',
-    'unary_op',
     'unary_pos',
     'unbox',
     'unbox_to_raw_int',
@@ -1543,6 +1519,7 @@ class FrontendKinds:
     STATE_YIELD: Final = 'STATE_YIELD'
     STATICMETHOD_NEW: Final = 'STATICMETHOD_NEW'
     STATIC_CELL_BASE: Final = 'STATIC_CELL_BASE'
+    STATIC_CELL_LOAD: Final = 'STATIC_CELL_LOAD'
     STATIC_CELL_SET: Final = 'STATIC_CELL_SET'
     STORE: Final = 'STORE'
     STORE_ATTR: Final = 'STORE_ATTR'
@@ -1652,7 +1629,6 @@ class WireKinds:
     ASYNCGEN_NEW: Final = 'asyncgen_new'
     BAND: Final = 'band'
     BINDING_ALIAS: Final = 'binding_alias'
-    BINOP: Final = 'binop'
     BINOP_ADD: Final = 'binop_add'
     BINOP_FLOOR_DIV: Final = 'binop_floor_div'
     BINOP_MOD: Final = 'binop_mod'
@@ -1664,14 +1640,12 @@ class WireKinds:
     BIT_OR: Final = 'bit_or'
     BIT_XOR: Final = 'bit_xor'
     BOOL: Final = 'bool'
-    BOOL_CONST: Final = 'bool_const'
     BOR: Final = 'bor'
     BORROW: Final = 'borrow'
     BOUND_METHOD_NEW: Final = 'bound_method_new'
     BOX: Final = 'box'
     BOX_FROM_RAW_INT: Final = 'box_from_raw_int'
     BR_IF: Final = 'br_if'
-    BRANCH: Final = 'branch'
     BRANCH_FALSE: Final = 'branch_false'
     BRANCH_TRUE: Final = 'branch_true'
     BUILD_DICT: Final = 'build_dict'
@@ -1764,7 +1738,6 @@ class WireKinds:
     CODE_NEW: Final = 'code_new'
     CODE_SLOT_SET: Final = 'code_slot_set'
     CODE_SLOTS_INIT: Final = 'code_slots_init'
-    COMPARE: Final = 'compare'
     COMPLEX_FROM_OBJ: Final = 'complex_from_obj'
     CONST: Final = 'const'
     CONST_BIGINT: Final = 'const_bigint'
@@ -1788,7 +1761,6 @@ class WireKinds:
     DEL_ATTR_NAME: Final = 'del_attr_name'
     DEL_BOUNDARY: Final = 'del_boundary'
     DEL_INDEX: Final = 'del_index'
-    DEL_ITEM: Final = 'del_item'
     DELETE_VAR: Final = 'delete_var'
     DICT_CLEAR: Final = 'dict_clear'
     DICT_COPY: Final = 'dict_copy'
@@ -1811,7 +1783,6 @@ class WireKinds:
     DIV: Final = 'div'
     DROP_INSERTED: Final = 'drop_inserted'
     ELSE: Final = 'else'
-    END_FOR: Final = 'end_for'
     END_IF: Final = 'end_if'
     ENUMERATE: Final = 'enumerate'
     EQ: Final = 'eq'
@@ -1973,7 +1944,6 @@ class WireKinds:
     LOAD: Final = 'load'
     LOAD_ATTR: Final = 'load_attr'
     LOAD_CONST: Final = 'load_const'
-    LOAD_LOCAL: Final = 'load_local'
     LOAD_METHOD: Final = 'load_method'
     LOAD_SUPER_METHOD: Final = 'load_super_method'
     LOAD_VAR: Final = 'load_var'
@@ -1981,8 +1951,6 @@ class WireKinds:
     LOOP_BREAK_IF_EXCEPTION: Final = 'loop_break_if_exception'
     LOOP_BREAK_IF_FALSE: Final = 'loop_break_if_false'
     LOOP_BREAK_IF_TRUE: Final = 'loop_break_if_true'
-    LOOP_CARRY_INIT: Final = 'loop_carry_init'
-    LOOP_CARRY_UPDATE: Final = 'loop_carry_update'
     LOOP_CONTINUE: Final = 'loop_continue'
     LOOP_END: Final = 'loop_end'
     LOOP_INDEX_END: Final = 'loop_index_end'
@@ -2014,7 +1982,6 @@ class WireKinds:
     MUL: Final = 'mul'
     NE: Final = 'ne'
     NEG: Final = 'neg'
-    NONE_CONST: Final = 'none_const'
     NOP: Final = 'nop'
     NOT: Final = 'not'
     NOT_IN: Final = 'not_in'
@@ -2024,8 +1991,6 @@ class WireKinds:
     OR: Final = 'or'
     ORD: Final = 'ord'
     ORD_AT: Final = 'ord_at'
-    PCALL_WRAP_BEGIN: Final = 'pcall_wrap_begin'
-    PCALL_WRAP_END: Final = 'pcall_wrap_end'
     PHI: Final = 'phi'
     POS: Final = 'pos'
     POW: Final = 'pow'
@@ -2076,20 +2041,18 @@ class WireKinds:
     STATE_YIELD: Final = 'state_yield'
     STATEFUL_LOCALS_REGISTER: Final = 'stateful_locals_register'
     STATIC_CELL_BASE: Final = 'static_cell_base'
+    STATIC_CELL_LOAD: Final = 'static_cell_load'
     STATIC_CELL_SET: Final = 'static_cell_set'
     STATICMETHOD_NEW: Final = 'staticmethod_new'
     STORE: Final = 'store'
     STORE_ATTR: Final = 'store_attr'
     STORE_FAST: Final = 'store_fast'
     STORE_INDEX: Final = 'store_index'
-    STORE_LOCAL: Final = 'store_local'
     STORE_SUBSCRIPT: Final = 'store_subscript'
     STORE_VAR: Final = 'store_var'
     STR: Final = 'str'
     STR_FROM_OBJ: Final = 'str_from_obj'
     STRING_CAPITALIZE: Final = 'string_capitalize'
-    STRING_CONCAT: Final = 'string_concat'
-    STRING_CONST: Final = 'string_const'
     STRING_COUNT: Final = 'string_count'
     STRING_COUNT_SLICE: Final = 'string_count_slice'
     STRING_ENDSWITH: Final = 'string_endswith'
@@ -2098,19 +2061,10 @@ class WireKinds:
     STRING_FIND: Final = 'string_find'
     STRING_FIND_SLICE: Final = 'string_find_slice'
     STRING_FORMAT: Final = 'string_format'
-    STRING_INDEX: Final = 'string_index'
-    STRING_INDEX_SLICE: Final = 'string_index_slice'
     STRING_JOIN: Final = 'string_join'
     STRING_LOWER: Final = 'string_lower'
     STRING_LSTRIP: Final = 'string_lstrip'
-    STRING_PARTITION: Final = 'string_partition'
-    STRING_REPEAT: Final = 'string_repeat'
     STRING_REPLACE: Final = 'string_replace'
-    STRING_RFIND: Final = 'string_rfind'
-    STRING_RFIND_SLICE: Final = 'string_rfind_slice'
-    STRING_RINDEX: Final = 'string_rindex'
-    STRING_RINDEX_SLICE: Final = 'string_rindex_slice'
-    STRING_RPARTITION: Final = 'string_rpartition'
     STRING_RSTRIP: Final = 'string_rstrip'
     STRING_SPLIT: Final = 'string_split'
     STRING_SPLIT_FIELD: Final = 'string_split_field'
@@ -2126,7 +2080,6 @@ class WireKinds:
     STRING_SPLIT_SEP_DICT_INC: Final = 'string_split_sep_dict_inc'
     STRING_SPLIT_VALIDATE: Final = 'string_split_validate'
     STRING_SPLIT_WS_DICT_INC: Final = 'string_split_ws_dict_inc'
-    STRING_SPLITLINES: Final = 'string_splitlines'
     STRING_STARTSWITH: Final = 'string_startswith'
     STRING_STARTSWITH_SLICE: Final = 'string_startswith_slice'
     STRING_STRIP: Final = 'string_strip'
@@ -2150,7 +2103,6 @@ class WireKinds:
     UNARY_INVERT: Final = 'unary_invert'
     UNARY_NEG: Final = 'unary_neg'
     UNARY_NOT: Final = 'unary_not'
-    UNARY_OP: Final = 'unary_op'
     UNARY_POS: Final = 'unary_pos'
     UNBOX: Final = 'unbox'
     UNBOX_TO_RAW_INT: Final = 'unbox_to_raw_int'
@@ -2601,6 +2553,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'STATE_YIELD': 'state_yield',
     'STATICMETHOD_NEW': 'staticmethod_new',
     'STATIC_CELL_BASE': 'static_cell_base',
+    'STATIC_CELL_LOAD': 'static_cell_load',
     'STATIC_CELL_SET': 'static_cell_set',
     'STORE': 'store',
     'STORE_ATTR': 'store_attr',
@@ -2720,7 +2673,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "asyncgen_new",
         "band",
         "binding_alias",
-        "binop",
         "binop_add",
         "binop_floor_div",
         "binop_mod",
@@ -2732,14 +2684,12 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "bit_or",
         "bit_xor",
         "bool",
-        "bool_const",
         "bor",
         "borrow",
         "bound_method_new",
         "box",
         "box_from_raw_int",
         "br_if",
-        "branch",
         "branch_false",
         "branch_true",
         "build_dict",
@@ -2832,7 +2782,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "code_new",
         "code_slot_set",
         "code_slots_init",
-        "compare",
         "complex_from_obj",
         "const",
         "const_bigint",
@@ -2856,7 +2805,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "del_attr_name",
         "del_boundary",
         "del_index",
-        "del_item",
         "delete_var",
         "dict_clear",
         "dict_copy",
@@ -2879,7 +2827,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "div",
         "drop_inserted",
         "else",
-        "end_for",
         "end_if",
         "enumerate",
         "eq",
@@ -3041,7 +2988,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "load",
         "load_attr",
         "load_const",
-        "load_local",
         "load_method",
         "load_super_method",
         "load_var",
@@ -3049,8 +2995,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "loop_break_if_exception",
         "loop_break_if_false",
         "loop_break_if_true",
-        "loop_carry_init",
-        "loop_carry_update",
         "loop_continue",
         "loop_end",
         "loop_index_end",
@@ -3082,7 +3026,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "mul",
         "ne",
         "neg",
-        "none_const",
         "nop",
         "not",
         "not_in",
@@ -3092,8 +3035,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "or",
         "ord",
         "ord_at",
-        "pcall_wrap_begin",
-        "pcall_wrap_end",
         "phi",
         "pos",
         "pow",
@@ -3144,20 +3085,18 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "state_yield",
         "stateful_locals_register",
         "static_cell_base",
+        "static_cell_load",
         "static_cell_set",
         "staticmethod_new",
         "store",
         "store_attr",
         "store_fast",
         "store_index",
-        "store_local",
         "store_subscript",
         "store_var",
         "str",
         "str_from_obj",
         "string_capitalize",
-        "string_concat",
-        "string_const",
         "string_count",
         "string_count_slice",
         "string_endswith",
@@ -3166,19 +3105,10 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "string_find",
         "string_find_slice",
         "string_format",
-        "string_index",
-        "string_index_slice",
         "string_join",
         "string_lower",
         "string_lstrip",
-        "string_partition",
-        "string_repeat",
         "string_replace",
-        "string_rfind",
-        "string_rfind_slice",
-        "string_rindex",
-        "string_rindex_slice",
-        "string_rpartition",
         "string_rstrip",
         "string_split",
         "string_split_field",
@@ -3194,7 +3124,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "string_split_sep_dict_inc",
         "string_split_validate",
         "string_split_ws_dict_inc",
-        "string_splitlines",
         "string_startswith",
         "string_startswith_slice",
         "string_strip",
@@ -3218,7 +3147,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "unary_invert",
         "unary_neg",
         "unary_not",
-        "unary_op",
         "unary_pos",
         "unbox",
         "unbox_to_raw_int",
@@ -3235,37 +3163,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "yield",
         "yield_from",
         "zip",
-    }
-)
-
-SIMPLEIR_BACKEND_PRIVATE_KINDS: frozenset[WireOpKind] = frozenset(
-    {
-        "binop",
-        "bool_const",
-        "branch",
-        "compare",
-        "del_item",
-        "end_for",
-        "load_local",
-        "loop_carry_init",
-        "loop_carry_update",
-        "none_const",
-        "pcall_wrap_begin",
-        "pcall_wrap_end",
-        "store_local",
-        "string_concat",
-        "string_const",
-        "string_index",
-        "string_index_slice",
-        "string_partition",
-        "string_repeat",
-        "string_rfind",
-        "string_rfind_slice",
-        "string_rindex",
-        "string_rindex_slice",
-        "string_rpartition",
-        "string_splitlines",
-        "unary_op",
     }
 )
 
@@ -3717,6 +3614,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "STATE_YIELD",
         "STATICMETHOD_NEW",
         "STATIC_CELL_BASE",
+        "STATIC_CELL_LOAD",
         "STATIC_CELL_SET",
         "STORE",
         "STORE_ATTR",
@@ -4012,6 +3910,7 @@ CANONICAL_KIND: dict[str, str] = {
     "global_slot_get": "global_slot_get",
     "static_cell_base": "static_cell_base",
     "static_cell_set": "static_cell_set",
+    "static_cell_load": "static_cell_load",
     "module_get_name": "module_get_name",
     "module_set_attr": "module_set_attr",
     "module_del_global": "module_del_global",
@@ -4133,6 +4032,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "global_slot_get",
         "static_cell_base",
         "static_cell_set",
+        "static_cell_load",
         "module_get_name",
         "module_set_attr",
         "module_del_global",
@@ -4549,6 +4449,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "STATE_TRANSITION": True,
     "STATE_YIELD": True,
     "STATIC_CELL_BASE": False,
+    "STATIC_CELL_LOAD": False,
     "STATIC_CELL_SET": True,
     "STORE": True,
     "STORE_ATTR": True,
@@ -5040,6 +4941,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "state_yield": 1024,
     "stateful_locals_register": 1024,
     "static_cell_base": 64,
+    "static_cell_load": 64,
     "static_cell_set": 64,
     "store": 64,
     "store_attr": 64,
@@ -5079,10 +4981,8 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
 
 SIMPLEIR_TARGET_RUNTIME_REQUIREMENTS: dict[str, int] = {
     "llvm": 262143,
-    "luau": 11239,
     "mlir": 0,
     "native": 262143,
-    "rust": 0,
     "wasm": 262143,
 }
 
@@ -5266,6 +5166,7 @@ FRONTEND_EFFECT_PURE_KINDS: frozenset[FrontendOpKind] = frozenset(
         "MODULE_SLOT",
         "PHI",
         "STATIC_CELL_BASE",
+        "STATIC_CELL_LOAD",
         "TYPE_GUARD",
         "UNBOX",
         "UNBOX_TO_RAW_INT",
@@ -5678,8 +5579,6 @@ def validate_serialized_kind(kind: str, function_name: str = "<direct>") -> None
     a target support claim for a registered wire operation."""
     if kind in FRONTEND_REGISTERED_KINDS and kind not in SIMPLEIR_REGISTERED_KINDS:
         raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")
-    if kind in SIMPLEIR_BACKEND_PRIVATE_KINDS:
-        raise ValueError(f"function {function_name!r}: backend-private SimpleIR op kind {kind!r} escaped frontend serialization")
     if kind not in SIMPLEIR_REGISTERED_KINDS:
         raise ValueError(f"function {function_name!r}: unregistered SimpleIR op kind {kind!r}")
 

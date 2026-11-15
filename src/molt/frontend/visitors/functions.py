@@ -339,9 +339,16 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 )
             )
         else:
+            # A synchronous def with positional parameters only: an exact
+            # positional call binds nothing, so a proven call can enter its
+            # code directly (HF-846 slice 2; OpIR::direct_shape).
+            direct_shape = vararg is None and varkw is None and not kwonly
             self.emit(
                 MoltOp(
-                    kind="FUNC_NEW", args=[func_symbol, len(params)], result=func_val
+                    kind="FUNC_NEW",
+                    args=[func_symbol, len(params)],
+                    result=func_val,
+                    metadata={"direct_shape": True} if direct_shape else None,
                 )
             )
         name_layout = self._collect_callable_name_layout(

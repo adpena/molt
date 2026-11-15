@@ -137,7 +137,8 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
                 )
             }
             Expansion::Truthiness => expand_truthiness(func, block, split),
-            Expansion::GuardedCall => expand_guarded_call(func, block, split),
+            Expansion::GuardedCall => expand_guarded_call(func, block, split, false),
+            Expansion::ProvenCall => expand_guarded_call(func, block, split, true),
         };
         stats.ops_added += 6;
         stats.values_changed += 1;
@@ -204,6 +205,8 @@ enum Expansion {
     Truthiness,
     /// A guarded call whose target's linkage row admits a direct call.
     GuardedCall,
+    /// A guarded call whose callee integration proved (HF-846 slice 2).
+    ProvenCall,
 }
 
 /// What the stage needs of a guarded call's target, from its linkage row.
@@ -429,10 +432,21 @@ fn expansion_of(
         // binding, not a static ABI, must answer them.
         FastPathExpansionRule::GuardedCall => {
             let facts = targets.get(guarded_target(op)?)?;
-            (!facts.has_closure
+            let admitted = !facts.has_closure
                 && facts.arity + 1 == op.operands.len()
-                && is_boxed_word(repr, op.operands[0]))
-            .then_some(Expansion::GuardedCall)
+                && is_boxed_word(repr, op.operands[0]);
+            if op.proven_target() {
+                // Integration proved the callee is the target's function
+                // object with an exact positional call (HF-846 slice 2); the
+                // linkage row must agree, or the wiring is broken.
+                assert!(
+                    admitted,
+                    "proven call of `{}` disagrees with its linkage row",
+                    guarded_target(op).unwrap_or_default()
+                );
+                return Some(Expansion::ProvenCall);
+            }
+            admitted.then_some(Expansion::GuardedCall)
         }
         FastPathExpansionRule::None => None,
     }
@@ -469,6 +483,13 @@ fn branch(target: BlockId, value: ValueId) -> Terminator {
     Terminator::Branch {
         target,
         args: vec![value],
+    }
+}
+
+fn branch_to(target: BlockId) -> Terminator {
+    Terminator::Branch {
+        target,
+        args: Vec::new(),
     }
 }
 
@@ -872,7 +893,18 @@ fn runtime_call(
 /// one source. The direct call takes the call's argument custody but borrows
 /// the callable, which therefore outlives the call; on the refused path no op
 /// takes the inputs, so drop insertion releases them there.
-fn expand_guarded_call(func: &mut TirFunction, block: BlockId, split: Split) -> BlockId {
+///
+/// A `proven` call (HF-846 slice 2) has no `^code` and no `^slow`: its block
+/// ends in `^enter`'s recursion check. Integration proved the callee is the
+/// target's function object, with an exact positional call of a
+/// positional-only signature and matching entry custody, so the admission
+/// call and the code guard would always pass.
+fn expand_guarded_call(
+    func: &mut TirFunction,
+    block: BlockId,
+    split: Split,
+    proven: bool,
+) -> BlockId {
     use molt_ir::runtime_fn_generated::RuntimeFn;
     let Split {
         op,
@@ -893,40 +925,44 @@ fn expand_guarded_call(func: &mut TirFunction, block: BlockId, split: Split) -> 
 
     let [code, enter, direct, refuse, slow, join] = [(); 6].map(|()| func.fresh_block());
 
-    let nargs = fresh_typed(func, TirType::I64);
-    let shape_word = fresh_typed(func, TirType::I64);
-    let eligible = fresh_typed(func, TirType::I64);
-    let zero = fresh_typed(func, TirType::I64);
-    let admitted = fresh_typed(func, TirType::Bool);
-    end_block(
-        func,
-        block,
-        vec![
-            const_int(nargs, supplied, span),
-            const_int(shape_word, shape, span),
-            runtime_call(
-                RuntimeFn::FunctionDirectCallEligible,
-                vec![callee, nargs, shape_word],
-                vec![eligible],
-                span,
-            ),
-            const_int(zero, 0, span),
-            new_op(OpCode::Ne, vec![eligible, zero], vec![admitted], span),
-        ],
-        cond_branch(admitted, code, slow),
-    );
+    if proven {
+        end_block(func, block, vec![], branch_to(enter));
+    } else {
+        let nargs = fresh_typed(func, TirType::I64);
+        let shape_word = fresh_typed(func, TirType::I64);
+        let eligible = fresh_typed(func, TirType::I64);
+        let zero = fresh_typed(func, TirType::I64);
+        let admitted = fresh_typed(func, TirType::Bool);
+        end_block(
+            func,
+            block,
+            vec![
+                const_int(nargs, supplied, span),
+                const_int(shape_word, shape, span),
+                runtime_call(
+                    RuntimeFn::FunctionDirectCallEligible,
+                    vec![callee, nargs, shape_word],
+                    vec![eligible],
+                    span,
+                ),
+                const_int(zero, 0, span),
+                new_op(OpCode::Ne, vec![eligible, zero], vec![admitted], span),
+            ],
+            cond_branch(admitted, code, slow),
+        );
 
-    let same_code = fresh_typed(func, TirType::Bool);
-    let mut code_is = new_op(OpCode::CodeIs, vec![callee], vec![same_code], span);
-    for key in ["s_value", "_var"] {
-        if let Some(target) = op.attrs.get(key) {
-            code_is.attrs.insert(key.into(), target.clone());
+        let same_code = fresh_typed(func, TirType::Bool);
+        let mut code_is = new_op(OpCode::CodeIs, vec![callee], vec![same_code], span);
+        for key in ["s_value", "_var"] {
+            if let Some(target) = op.attrs.get(key) {
+                code_is.attrs.insert(key.into(), target.clone());
+            }
         }
+        func.blocks.insert(
+            code,
+            new_block(code, vec![code_is], cond_branch(same_code, enter, slow)),
+        );
     }
-    func.blocks.insert(
-        code,
-        new_block(code, vec![code_is], cond_branch(same_code, enter, slow)),
-    );
 
     let depth_ok = fresh_typed(func, TirType::I64);
     let zero_depth = fresh_typed(func, TirType::I64);
@@ -982,13 +1018,15 @@ fn expand_guarded_call(func: &mut TirFunction, block: BlockId, split: Split) -> 
         ),
     );
 
-    let slow_result = fresh_typed(func, TirType::DynBox);
-    let mut slow_call = op;
-    slow_call.results = vec![slow_result];
-    func.blocks.insert(
-        slow,
-        new_block(slow, vec![slow_call], branch(join, slow_result)),
-    );
+    if !proven {
+        let slow_result = fresh_typed(func, TirType::DynBox);
+        let mut slow_call = op;
+        slow_call.results = vec![slow_result];
+        func.blocks.insert(
+            slow,
+            new_block(slow, vec![slow_call], branch(join, slow_result)),
+        );
+    }
     finish(func, block, join, result, rest, terminator);
     join
 }

@@ -604,8 +604,7 @@ fn handle_checked_add_op(
     // by construction, so the sum can NEVER silently wrap and
     // the overflow flag is CONSTANT FALSE (the peel's slow
     // path is correctly dead; the "fast" loop IS the boxed
-    // loop — same semantics, no speedup). This mirrors the
-    // Luau lowering exactly.
+    // loop — same semantics, no speedup).
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     use crate::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
     let mut results = [None, None];

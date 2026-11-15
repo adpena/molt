@@ -1324,6 +1324,16 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "native_extern_linkage",
         "wasm_link_facts_cli",
         "host_diagnostics",
+        # molt-backend's wasm-backend and cbor targets and the cpython-abi
+        # loader target (HF-565), whose features this cell already enables.
+        "cbor_round_trip",
+        "jumpful_malformed_control",
+        "wasm_compilation",
+        "wasm_data_segments",
+        "wasm_fastcall_lowering",
+        "wasm_import_filtering",
+        "wasm_import_registry",
+        "cext_integration",
     }
     for command in (core, complement):
         assert command.argv[:2] == ("cargo", "test")
@@ -1766,9 +1776,13 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert "--no-default-features" in argv
     features = set(argv[argv.index("--features") + 1].split(","))
     assert {"molt-backend/native-backend", "molt-backend/wasm-backend"} <= features
-    # The combined compiler cell also builds the independent facts executable;
-    # daemon-only admission must not enable that unrelated product.
-    assert compiler_features == features | {"molt-wasm-facts/host-tool"}
+    # The combined compiler cell also builds the independent facts executable
+    # and runs the cpython-abi loader target; daemon-only admission must not
+    # enable either unrelated product.
+    assert compiler_features == features | {
+        "molt-wasm-facts/host-tool",
+        "molt-lang-cpython-abi/extension-loader",
+    }
     assert argv[argv.index("--bin") + 2 :] == [
         "--",
         "daemon",
@@ -1831,7 +1845,7 @@ def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane()
 
 
 def test_python_source_change_selects_split_proof_topology() -> None:
-    classes = _classes("src/molt/cli/runtime_wasm_cache.py")
+    classes = _classes("src/molt/cli/runtime_wasm_generation.py")
     assert classes["repository_policy"] is True
     assert classes["python_static"] is True
     assert classes["python_unit"] is True
@@ -2173,12 +2187,6 @@ def test_midend_change_runs_complete_rust_llvm_formal_family() -> None:
     assert classes["rust"] is True
     assert classes["llvm"] is True
     assert classes["formal"] is True
-
-
-def test_luau_change_selects_formal_without_stale_backend_path() -> None:
-    classes = _classes("runtime/molt-backend-luau/src/luau.rs")
-    assert classes["formal"] is True
-    assert classes["rust"] is True
 
 
 def test_llvm_control_plane_changes_run_llvm_stack() -> None:
@@ -9354,22 +9362,20 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
 @pytest.mark.parametrize(
     "path",
     [
-        "runtime/molt-backend-luau/src/luau/op_maps.rs",
-        "runtime/molt-backend-luau/Cargo.toml",
-        "runtime/molt-backend-rust/tests/rust_transpiler_preview.rs",
         "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
+        "runtime/molt-backend-mlir/Cargo.toml",
     ],
 )
 def test_experimental_backend_changes_select_no_experimental_gate(path: str) -> None:
-    # Owner decision 2026-11-05: Luau, the Rust emitter and MLIR run in no
-    # presubmit or postsubmit cell. A change to their sources may still select
+    # Owner decision 2026-11-05: MLIR runs in no presubmit or postsubmit cell
+    # (the Luau and Rust emitters were deleted 2026-11-12). A change to their sources may still select
     # shared authority gates, but none of those gates runs an excluded backend.
     from tools import molt_dev_policy
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     gates, _matched = config.select([path])
     excluded = proof_plan.excluded_backends()
-    assert excluded == frozenset({"luau", "mlir", "rust"})
+    assert excluded == frozenset({"mlir"})
     for gate in gates:
         argv = (
             shlex.split(gate.command)
@@ -9381,18 +9387,18 @@ def test_experimental_backend_changes_select_no_experimental_gate(path: str) -> 
 
 
 def test_experimental_backend_selection_names_each_selection_form() -> None:
-    excluded = frozenset({"luau", "mlir", "rust"})
+    excluded = frozenset({"mlir"})
     select = proof_plan.experimental_backend_selection
     assert (
         select(
-            ["python3", "-m", "molt.cli", "build", "a.py", "--target", "luau"],
+            ["python3", "-m", "molt.cli", "build", "a.py", "--target", "mlir"],
             None,
             excluded,
         )
-        == "--target luau"
+        == "--target mlir"
     )
-    assert select(["cargo", "test", "-p", "molt-backend-rust"], None, excluded) == (
-        "-p molt-backend-rust"
+    assert select(["cargo", "test", "-p", "molt-backend-mlir"], None, excluded) == (
+        "-p molt-backend-mlir"
     )
     assert (
         select(
@@ -9400,12 +9406,12 @@ def test_experimental_backend_selection_names_each_selection_form() -> None:
                 "cargo",
                 "test",
                 "--features",
-                "molt-backend/native-backend,molt-backend/luau-backend",
+                "molt-backend/native-backend,molt-backend/mlir-backend",
             ],
             None,
             excluded,
         )
-        == "--features molt-backend/native-backend,molt-backend/luau-backend"
+        == "--features molt-backend/native-backend,molt-backend/mlir-backend"
     )
     assert select(
         ["cargo", "test", "--all-targets"], "runtime/molt-backend-mlir", excluded

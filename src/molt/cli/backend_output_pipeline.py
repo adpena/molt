@@ -144,11 +144,7 @@ def _emit_backend_pipeline_outputs(
             verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         )
 
-    if (
-        output_layout.is_rust_transpile
-        or output_layout.is_luau_transpile
-        or output_layout.is_wasm
-    ):
+    if output_layout.is_wasm:
         try:
             if (
                 backend_output_destination is None
@@ -196,8 +192,6 @@ def _emit_backend_pipeline_outputs(
                 )
         prepared_non_native_result, prepared_non_native_result_error = (
             _non_native_output._prepare_non_native_build_result(
-                is_rust_transpile=output_layout.is_rust_transpile,
-                is_luau_transpile=output_layout.is_luau_transpile,
                 is_wasm=output_layout.is_wasm,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
                 wasm_opt_level=wasm_opt_level,

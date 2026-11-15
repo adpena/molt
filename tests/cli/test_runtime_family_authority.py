@@ -3133,9 +3133,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         no_default_features=True,
         wasm_cargo_features=(),
         fingerprint_features=(),
-        fingerprint_path=plan_root / "shared.fingerprint.json",
         target_root=plan_root / "target",
-        stored_fingerprint=None,
         fingerprint=None,
         staticlib_fingerprint=None,
     )

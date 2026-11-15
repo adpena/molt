@@ -210,6 +210,7 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                         "logs/runtime_wasm_final_preflight/*.json",
                     ),
                     ("replaced-identity-state", "logs/runtime_wasm_final_preflight/v4"),
+                    ("replaced-identity-state", "logs/runtime_wasm_final_preflight/v5"),
                 ),
             )
         case "external-provider":

@@ -33,6 +33,62 @@ those changes, a rejected idea can start to pay, and a landed one can stop payin
   curiosity work rewards compression progress, so the next experiment is the one the model expects
   to learn most from [8]. History compression passes on only what a model failed to predict [9].
 
+### 2025–2026 work and adjacent prior art (researched 2026-11-14)
+
+Each entry names what it changes in this design.
+
+- **Metaproductivity (Huxley-Gödel Machine, Wang, ..., Schmidhuber, ICLR 2026) [10].** A
+  self-modification's benchmark score is a poor proxy for the gains of its descendants; HGM ranks
+  a change by its clade's metaproductivity (CMP), the aggregated scores of the changes built on it.
+  Molt has the same mismatch: typed `FunctionId` (HF-847 slice 1) changes instructions by zero by
+  design, yet slices 2–6 depend on it. *Change:* an anchor records the typed `enables` edges to the
+  changes that consume its facts, and the lifecycle credits a change with its clade's measured
+  gains, not only its own.
+- **Empirical in place of formal proof (Darwin Gödel Machine, Zhang, Hu, Lu, Lange, Clune, 2025)
+  [11]; the Gödel Machine (Schmidhuber 2003–2007) [12].** The Gödel Machine rewrites itself only
+  with a proof of benefit; DGM replaces the proof with measured benchmark evidence and keeps an
+  archive of all variants, so a weak variant can seed a later strong one. *Change:* correctness
+  keeps the proof discipline (translation validation, below), benefit is measured; rejected
+  variants stay in the registry as reopenable anchors, never deleted.
+- **Airtight metrics (AlphaEvolve, Google DeepMind, 2025) [13].** An evolutionary coding agent
+  found a 23% faster matmul tiling heuristic and up to 32.5% on XLA-generated FlashAttention IR,
+  because every candidate was scored by an automatic evaluator. *Change:* the deterministic axis
+  (instructions retired, HF-459) is the registry's evaluator; wall time is a measured axis with its
+  spread, never a verdict alone.
+- **Many good models (Rudin et al., ICML 2024 position paper) [14]; Rashomon-set enumeration
+  (SORTeD anytime enumeration, 2025 [15]; Rashomon ensemble active learning, 2026 [16]).** Where
+  near-optimal sparse models disagree, the data does not decide; the disagreement is the next
+  measurement. *Change:* the Rashomon queue (Phase 3) uses anytime enumeration, so a partial set
+  can already rank the queue.
+- **Sparse recovery and multiscale analysis (Daubechies) [17, 18, 19].** Iterative soft
+  thresholding recovers a sparse coefficient vector from few linear measurements; iteratively
+  reweighted least squares does the same with guarantees; wavelets separate a signal by scale.
+  Performance work has the same shape: a few context features drive most of an outcome, and a
+  measurement series mixes slow drift, step regressions and noise. *Change:* fit each family's
+  feature weights with an ℓ1-sparse solver before SLIM rounds them to integers, so the score
+  names few features; analyze each benchmark's per-commit instruction series by scale, so a step
+  regression is told apart from drift. Pact's `wavelet_multi_scale_ranker` and
+  `compressive_sensing_lattice_recovery` are the local precedents.
+- **Performance-influence models (Siegmund et al., ESEC/FSE 2015; Fourier learning, ASE 2015; Ha
+  and Zhang, Fourier and Lasso, ICSME 2019) [20, 21, 22].** Configurable systems' performance is
+  learned as a sparse sum of option and interaction terms from few sampled configurations.
+  *Change:* pass and representation choices are the options; the registry samples configurations
+  by expected learning (item 5), not exhaustively.
+- **Correctness apart from heuristics (MLGO, Trofin et al., LLVM) [23].** LLVM's learned inlining
+  and eviction policies decide only among correctness-preserving choices. *Change:* a model in
+  this registry chooses among proven-correct options (a threshold, an order, a representation);
+  it never decides a semantic fact. A bound it learns replaces a hand-picked constant and states
+  its derivation.
+- **Rewrite only with proof (translation validation).** Alive2 checks LLVM's peephole rewrites
+  against their specifications [24]; egg produces proofs for equality-saturation rewrites [25];
+  Cranelift's acyclic e-graphs apply rewrites as they match [26]. *Change:* an anchor's
+  correctness verdict cites the formal-model check of its rewrite (AGENTS.md: rewrites prove
+  themselves against the formal model), not only a passing differential suite.
+- **Typed refusals as labeled data.** A pass that refuses an optimization records a closed-enum
+  reason with the site's typed context (for example `GuardedCallRefusal`, call_anatomy.md 4.5a).
+  *Change:* refusals are anchors with outcome "refused" and their reason as a feature, so a
+  context change that removes a reason reopens exactly the sites it unblocks.
+
 ## Design
 
 1. **Anchors.** One typed record per measured outcome:
@@ -121,3 +177,34 @@ None of this enters the user's compile path.
    Transactions on Autonomous Mental Development 2(3):230–247, 2010.
 9. Schmidhuber. Learning Complex, Extended Sequences Using the Principle of History Compression.
    Neural Computation 4(2):234–242, 1992.
+10. Wang, Piękos, Li, Laakom, Chen, Ostaszewski, Zhuge, Schmidhuber. Huxley-Gödel Machine:
+    Human-Level Coding Agent Development by an Approximation of the Optimal Self-Improving
+    Machine. ICLR 2026; arXiv:2510.21614. Code: https://github.com/metauto-ai/HGM
+11. Zhang, Hu, Lu, Lange, Clune. Darwin Gödel Machine: Open-Ended Evolution of Self-Improving
+    Agents. arXiv:2505.22954, 2025.
+12. Schmidhuber. Gödel Machines: Fully Self-Referential Optimal Universal Self-Improvers. In
+    Artificial General Intelligence, Springer, 2007 (arXiv:cs/0309048, 2003).
+13. Novikov et al. (Google DeepMind). AlphaEvolve: A coding agent for scientific and algorithmic
+    discovery. arXiv:2506.13131, 2025.
+14. Rudin et al. Position: Amazing Things Come From Having Many Good Models. ICML 2024, PMLR
+    235:42783–42795.
+15. SORTeD Rashomon Sets of Sparse Decision Trees: Anytime Enumeration. arXiv:2511.03344, 2025.
+16. REALITrees: Rashomon Ensemble Active Learning for Interpretable Trees. arXiv:2603.22750, 2026.
+17. Daubechies, Defrise, De Mol. An iterative thresholding algorithm for linear inverse problems
+    with a sparsity constraint. Communications on Pure and Applied Mathematics 57(11):1413–1457,
+    2004.
+18. Daubechies, DeVore, Fornasier, Güntürk. Iteratively reweighted least squares minimization for
+    sparse recovery. Communications on Pure and Applied Mathematics 63(1):1–38, 2010.
+19. Daubechies. Ten Lectures on Wavelets. SIAM, 1992.
+20. Siegmund, Grebhahn, Apel, Kästner. Performance-influence models for highly configurable
+    systems. ESEC/FSE 2015.
+21. Zhang, Guo, Blais, Czarnecki. Performance prediction of configurable software systems by
+    Fourier learning. ASE 2015.
+22. Ha, Zhang. Performance-influence model for highly configurable software with Fourier learning
+    and Lasso regression. ICSME 2019.
+23. Trofin, Qian, Brevdo, Lin, Choromanski, Li. MLGO: a Machine Learning Guided Compiler
+    Optimizations Framework. arXiv:2101.04808, 2021; https://llvm.org/docs/MLGO.html
+24. Lopes, Lee, Hur, Liu, Regehr. Alive2: Bounded Translation Validation for LLVM. PLDI 2021.
+25. Willsey, Nandi, Wang, Flatt, Tatlock, Panchekha. egg: Fast and Extensible Equality
+    Saturation. POPL 2021.
+26. Cranelift `cranelift-egraph` (acyclic e-graphs): https://docs.rs/cranelift-egraph

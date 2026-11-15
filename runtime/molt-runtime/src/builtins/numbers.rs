@@ -284,6 +284,31 @@ fn annex_g_box(x: f64) -> f64 {
     (if x.is_infinite() { 1.0f64 } else { 0.0 }).copysign(x)
 }
 
+/// `c_powi`: a complex base to an integral exponent, by repeated
+/// `_Py_c_prod` (`c_powu`), and `_Py_c_quot(1, ...)` for a negative one.
+/// CPython takes it for a real, integral exponent of magnitude at most 100;
+/// the polar formula would round differently (`(-5+12j)` for `(2+3j)**2`).
+/// None is a zero denominator.
+pub(crate) fn complex_powi(x: ComplexParts, n: i64, recover: bool) -> Option<ComplexParts> {
+    let one = ComplexParts { re: 1.0, im: 0.0 };
+    let powu = |n: u64| {
+        let (mut r, mut p, mut mask) = (one, x, 1u64);
+        while mask > 0 && n >= mask {
+            if n & mask != 0 {
+                r = complex_prod(r, p, recover);
+            }
+            mask <<= 1;
+            p = complex_prod(p, p, recover);
+        }
+        r
+    };
+    if n > 0 {
+        Some(powu(n as u64))
+    } else {
+        complex_quot(one, powu(n.unsigned_abs()), recover)
+    }
+}
+
 /// `_Py_c_prod`.
 fn complex_prod(z: ComplexParts, w: ComplexParts, recover: bool) -> ComplexParts {
     let (mut a, mut b, mut c, mut d) = (z.re, z.im, w.re, w.im);
@@ -3610,6 +3635,20 @@ mod complex_arith_tests {
 
     fn r(value: f64) -> ComplexOperand {
         ComplexOperand::Real(value)
+    }
+
+    /// `c_powi`, against CPython 3.12's exact results: `(2+3j)**2` is
+    /// `(-5+12j)` by multiplication, where the polar formula rounds to
+    /// `(-4.999999999999999+11.999999999999998j)`.
+    #[test]
+    fn integral_complex_powers_multiply_as_cpython_does() {
+        let x = ComplexParts { re: 2.0, im: 3.0 };
+        identical(complex_powi(x, 2, false), -5.0, 12.0);
+        identical(complex_powi(x, 3, false), -46.0, 9.0);
+        identical(complex_powi(x, 0, false), 1.0, 0.0);
+        let y = ComplexParts { re: 1.0, im: 1.0 };
+        identical(complex_powi(y, -2, false), 0.0, -0.5);
+        assert!(complex_powi(ComplexParts { re: 0.0, im: 0.0 }, -1, false).is_none());
     }
 
     /// `assertComplexesAreIdentical`: NaNs match NaNs, zeros match by sign.

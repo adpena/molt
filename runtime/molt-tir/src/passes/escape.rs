@@ -44,7 +44,6 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         molt_ir::OpKind::IsNot,
         molt_ir::OpKind::Iter,
         molt_ir::OpKind::Contains,
-        molt_ir::OpKind::Compare,
         molt_ir::OpKind::Copy,
     ]
     .iter()

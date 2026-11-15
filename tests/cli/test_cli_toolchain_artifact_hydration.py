@@ -960,7 +960,11 @@ def test_ensure_backend_binary_reuses_another_checkouts_stored_compiler(
     # that evidence from the store.
     assert len(probes) == 1
     assert not consumer_backend.exists()
-    assert not consumer_target.exists()
+    # No Cargo output lands in the consumer's target. Its build control lives
+    # inside it, since the target is outside the artifact root's shared target.
+    assert not consumer_target.exists() or {
+        path.name for path in consumer_target.iterdir()
+    } == {".molt_state"}
 
 
 def test_stored_native_generation_keeps_portable_dependency_custody(
@@ -1130,14 +1134,14 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     )
     shared = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         root,
-        root / "out/molt_runtime.wasm",
+        "molt_runtime.wasm",
         build_profile="release",
         reloc=False,
         **common,
     )
     relative = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         root,
-        root / "out/molt_runtime_reloc.wasm",
+        "molt_runtime_reloc.wasm",
         build_profile="release",
         reloc=True,
         **common,

@@ -19,8 +19,6 @@ class TargetKind(Enum):
     WASM_FREESTANDING = "wasm-freestanding"
     WASI = "wasm32-wasip1"
     WASM_UNKNOWN = "wasm32-unknown-unknown"
-    RUST = "rust"
-    LUAU = "luau"
     MLIR = "mlir"
 
 
@@ -84,7 +82,7 @@ def is_wasm_target(target: Target) -> bool:
             | TargetKind.WASM_UNKNOWN
         ):
             return True
-        case TargetKind.NATIVE | TargetKind.RUST | TargetKind.LUAU | TargetKind.MLIR:
+        case TargetKind.NATIVE | TargetKind.MLIR:
             return False
         case NativeTargetSpec():
             return False
@@ -96,7 +94,7 @@ def target_triple(target: Target) -> str | None:
     """Project toolchain selection, preserving symbolic host and WASM intent."""
     validate_target(target)
     match target:
-        case TargetKind.NATIVE | TargetKind.RUST | TargetKind.LUAU | TargetKind.MLIR:
+        case TargetKind.NATIVE | TargetKind.MLIR:
             return None
         case TargetKind.WASM | TargetKind.WASI:
             return "wasm32-wasip1"
@@ -120,7 +118,7 @@ def resolve_artifact_target(target: Target) -> ArtifactTarget:
             return TargetKind.WASI
         case TargetKind.WASM_FREESTANDING | TargetKind.WASM_UNKNOWN:
             return TargetKind.WASM_UNKNOWN
-        case TargetKind.RUST | TargetKind.LUAU | TargetKind.MLIR:
+        case TargetKind.MLIR:
             raise ValueError(f"Target {target.value!r} has no artifact target")
         case _:
             assert_never(target)
@@ -151,8 +149,6 @@ def native_target_spec(target: Target) -> NativeTargetSpec:
             | TargetKind.WASM_FREESTANDING
             | TargetKind.WASI
             | TargetKind.WASM_UNKNOWN
-            | TargetKind.RUST
-            | TargetKind.LUAU
             | TargetKind.MLIR
         ):
             raise ValueError(f"Target {target.value!r} is not native")
@@ -173,8 +169,6 @@ def target_is_wasm(target_triple: str) -> bool:
             TargetKind.NATIVE
             | TargetKind.WASM
             | TargetKind.WASM_FREESTANDING
-            | TargetKind.RUST
-            | TargetKind.LUAU
             | TargetKind.MLIR
         ):
             raise ValueError(
@@ -205,8 +199,6 @@ def resolve_link_dialect(
             TargetKind.NATIVE
             | TargetKind.WASM
             | TargetKind.WASM_FREESTANDING
-            | TargetKind.RUST
-            | TargetKind.LUAU
             | TargetKind.MLIR
         ):
             raise ValueError(

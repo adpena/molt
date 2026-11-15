@@ -43,7 +43,7 @@ fn runtime_call_contract_preserves_python_meaning_and_result_custody() {
             assert_eq!(call.realization(target), RuntimeCallRealization::Runtime);
         }
         assert_eq!(
-            call.realization(TargetKind::Rust),
+            call.realization(TargetKind::Mlir),
             RuntimeCallRealization::Unsupported
         );
     }

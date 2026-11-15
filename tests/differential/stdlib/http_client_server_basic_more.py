@@ -1,4 +1,4 @@
-# MOLT_META: backends=llvm,luau,native
+# MOLT_META: backends=llvm,native
 # MOLT_ENV: MOLT_CAPABILITIES=net,env.read,thread.spawn,thread.shared
 """Purpose: differential coverage for http client server basic more."""
 

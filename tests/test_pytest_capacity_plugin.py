@@ -338,3 +338,130 @@ def test_executor_memory_bound_and_positional_boundary_survive_worker_override(
 def test_executor_count_reaches_actual_pytest_despite_operator_override(tmp_path):
     environment = dict(os.environ, PYTEST_XDIST_AUTO_NUM_WORKERS="18")
     assert _workers(tmp_path, "-n18", env=environment, allocation=2) == 2
+
+
+def _select(
+    tmp_path: Path, name: str, *options: str
+) -> tuple[int, dict[str, object] | None, str]:
+    """Run a small cohort with the plugin; return (exit code, outcomes by node).
+
+    ``test_a`` and ``test_ab`` share a prefix: pytest's own --deselect drops
+    both for ``test_a``, so only equality can exclude exactly one.
+    """
+    from molt.pytest_junit import junit_outcomes
+
+    project = tmp_path / name
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ""\n', encoding="utf-8"
+    )
+    (project / "test_sel.py").write_text(
+        "import pytest\n"
+        "def test_a():\n    pass\n"
+        "def test_ab():\n    pass\n"
+        "@pytest.mark.parametrize('value', ['x::y', 'z'])\n"
+        "def test_param(value):\n    pass\n",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
+    for key in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        environment.pop(key, None)
+    report = tmp_path / f"{name}.junit.xml"
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "molt.pytest_capacity_plugin",
+            "-p",
+            "no:cacheprovider",
+            "-o",
+            "junit_family=xunit1",
+            f"--junitxml={report}",
+            *options,
+            str(project / "test_sel.py"),
+        ],
+        cwd=project,
+        env=environment,
+        timeout=180.0,
+    )
+    outcomes = junit_outcomes(report) if report.is_file() else None
+    return result.returncode, outcomes, result.stdout + result.stderr
+
+
+def _nodes(tmp_path: Path, name: str, nodes: list[str]) -> str:
+    import json
+
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps(nodes), encoding="utf-8")
+    return str(path)
+
+
+ALL_NODES = {
+    "test_sel.py::test_a",
+    "test_sel.py::test_ab",
+    "test_sel.py::test_param[x::y]",
+    "test_sel.py::test_param[z]",
+}
+
+
+@pytest.mark.parametrize("workers", [(), ("-n", "2")])
+def test_junit_names_each_test_by_its_collected_node_id(
+    tmp_path: Path, workers: tuple[str, ...]
+) -> None:
+    code, outcomes, output = _select(tmp_path, "all", *workers)
+    assert code == 0, output
+    assert outcomes is not None and set(outcomes) == ALL_NODES
+
+
+@pytest.mark.parametrize("workers", [(), ("-n", "2")])
+def test_skip_nodes_drops_exactly_the_listed_ids(
+    tmp_path: Path, workers: tuple[str, ...]
+) -> None:
+    listed = ["test_sel.py::test_a", "test_sel.py::test_param[x::y]"]
+    code, outcomes, output = _select(
+        tmp_path, "skip", *workers, "--molt-skip-nodes=" + _nodes(tmp_path, "s", listed)
+    )
+    assert code == 0, output
+    assert outcomes is not None
+    assert set(outcomes) == ALL_NODES - set(listed)
+
+
+@pytest.mark.parametrize("workers", [(), ("-n", "2")])
+def test_a_continuation_with_nothing_left_passes(
+    tmp_path: Path, workers: tuple[str, ...]
+) -> None:
+    code, _outcomes, output = _select(
+        tmp_path,
+        "none",
+        *workers,
+        "--molt-skip-nodes=" + _nodes(tmp_path, "s", sorted(ALL_NODES)),
+    )
+    assert code == 0, output
+
+
+def test_run_nodes_keeps_only_the_listed_ids(tmp_path: Path) -> None:
+    listed = ["test_sel.py::test_a", "test_sel.py::test_param[x::y]"]
+    code, outcomes, output = _select(
+        tmp_path, "run", "-n", "0", "--molt-run-nodes=" + _nodes(tmp_path, "r", listed)
+    )
+    assert code == 0, output
+    assert outcomes is not None and set(outcomes) == set(listed)
+
+
+def test_run_nodes_refuses_a_node_that_no_longer_collects(tmp_path: Path) -> None:
+    # A retry that selects nothing would read as a pass; it must fail instead.
+    listed = ["test_sel.py::test_gone"]
+    code, _outcomes, output = _select(
+        tmp_path, "gone", "--molt-run-nodes=" + _nodes(tmp_path, "r", listed)
+    )
+    assert code == pytest.ExitCode.USAGE_ERROR, output
+    assert "test_gone" in output

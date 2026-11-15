@@ -401,11 +401,26 @@ def test_a_guarded_child_leaves_the_recorded_build_current(
     calls: list[str] = []
     fake = _fake_build(calls)
 
+    from molt.checkout_state import (
+        checkout_state_command_roots,
+        checkout_state_lock_paths,
+    )
+    from molt.source_root import compiler_source_root
+
     def guarded_build(*args: Any, **kwargs: Any) -> int:
+        command = [sys.executable, "-c", "pass"]
         child = process_guard.run_completed_command(
-            [sys.executable, "-c", "pass"], env=ProcessEnvironment(dict(os.environ))
+            command, env=ProcessEnvironment(dict(os.environ))
         )
         assert child.returncode == 0
+        # Another process using the same caches and images rewrites their
+        # lifetime locks while this build runs.
+        compiler_root = compiler_source_root()
+        for root, _owner in checkout_state_command_roots(
+            compiler_root, dict(os.environ), command, cwd=compiler_root
+        ):
+            for lock in checkout_state_lock_paths(root):
+                os.utime(lock)
         return fake(*args, **kwargs)
 
     build = build_command._with_early_cutoff(guarded_build)
@@ -506,6 +521,16 @@ def test_a_file_output_replaced_by_a_directory_selects_a_new_binary(
     assert (project / "program" / "app_molt").is_file()
 
 
+@pytest.mark.parametrize("backend", ["cranelift", "llvm"])
+def test_every_native_codegen_backend_may_reuse_a_record(
+    project: Path, backend: str
+) -> None:
+    # Each backend's compiler inputs (LLVM: its SDK headers, libraries and
+    # llvm-config) report to the record, so the backend is only a key value.
+    request = BuildRequest(file_path=str(project / "app.py"), codegen_backend=backend)
+    assert build_command._early_cutoff_request(request) is not None
+
+
 @pytest.mark.parametrize("option", ["diagnostics", "cache_report"])
 def test_requests_for_additional_results_still_do_not_cut_off(
     project: Path, option: str
@@ -543,8 +568,6 @@ def test_requests_for_additional_results_still_do_not_cut_off(
         ),
         ("wasm", {"emit": "obj"}, "Invalid emit mode for wasm target: obj"),
         ("native", {"emit": "wasm"}, "emit=wasm requires --target wasm"),
-        ("rust", {"emit": "jit"}, "emit=jit requires the native target"),
-        ("luau", {"emit": "jit"}, "emit=jit requires the native target"),
         ("mlir", {"emit": "jit"}, "emit=jit requires the native target"),
         (
             "native",
@@ -591,8 +614,6 @@ def test_invalid_output_options_refuse_before_build_scope(
         ("wasm-freestanding", {"require_linked": True}, True, "wasm"),
         ("wasm32-wasip1", {"split_runtime": True}, True, "wasm"),
         ("wasm32-unknown-unknown", {}, False, "wasm"),
-        ("rust", {"linked": True}, True, "bin"),
-        ("luau", {"linked": True}, True, "bin"),
         ("mlir", {}, False, "bin"),
     ],
 )

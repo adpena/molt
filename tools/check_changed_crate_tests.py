@@ -21,7 +21,10 @@ section 9.4.2):
   the cell does not select is dropped (Cargo refuses it) and the cell is
   reported as narrowed; `molt-runtime` is tested by its declared runtime gate
   (tools/run_runtime_test_gate.py), which owns its fresh-process witnesses;
-  a crate no source names runs its default-truth unit, `cargo test -p C --lib`;
+  when a changed path selects that gate's own rule, the landing runs it as a
+  gate and this gate does not run it again;
+  a crate no source names runs its default-truth unit,
+  `cargo test --profile dev-fast -p C --lib` (`DEFAULT_TRUTH_PROFILE`);
 * exclusions: an experimental backend's crate (`excluded_backend` in
   config/release_acceptance_matrix.toml) runs in no presubmit cell, as proof-plan
   validation requires of every static command; it is reported unverified and
@@ -82,6 +85,12 @@ SCHEMA = "molt.changed-crate-tests.v1"
 PLAN_PATH = Path("tools") / "proof_plan.toml"
 LOCAL_TIER = "pre-push"
 RUNTIME_GATE = "tools/run_runtime_test_gate.py"
+# dev-fast and the built-in test profile both inherit dev (Cargo.toml), so
+# debug assertions and overflow checks match (HF-205's concern); dev-fast
+# shares the build the runtime gate and the declared dev-fast cells make,
+# where the test profile rebuilt every dependency (3 min 17 s for one
+# two-test crate in the 2026-11-14 batch a7705a729f).
+DEFAULT_TRUTH_PROFILE = "dev-fast"
 # A cold dev-fast or release-fast build of the backend family plus its lib
 # tests fits; the landing's own ceiling bounds the whole gate.
 CELL_TIMEOUT_SECONDS = 3600.0
@@ -196,9 +205,12 @@ class Cell:
 class Selection:
     reach: Reach
     cells: tuple[Cell, ...]
-    runner: tuple[str, ...] | None  # the runtime gate argv, when reached
+    runner: tuple[str, ...] | None  # the runtime gate argv, when this gate runs it
     runner_packages: frozenset[str]
     unverified: tuple[str, ...]
+    # The runtime gate's packages were reached, and a changed path selects the
+    # gate's own rule, so the landing runs it as a gate of its own.
+    runner_in_batch: bool = False
 
 
 def _libtest_options(
@@ -310,7 +322,17 @@ def plan_sources(plan: Mapping, *, host: str) -> tuple[Source, ...]:
 def runtime_gate(plan: Mapping) -> tuple[tuple[str, ...], frozenset[str]] | None:
     """The rule gate that runs the semantic runtime gate, and the packages whose
     whole libtest it runs (an image without a case list)."""
-    owned = frozenset(image.package for image in SEMANTIC_IMAGES if not image.cases)
+    found = runtime_gate_rule(plan)
+    if found is None:
+        return None
+    argv, _globs = found
+    return argv, frozenset(
+        image.package for image in SEMANTIC_IMAGES if not image.cases
+    )
+
+
+def runtime_gate_rule(plan: Mapping) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """The semantic runtime gate's argv and the globs of the rule that owns it."""
     for rule in plan.get("rule", ()):
         for gate in rule.get("gates", ()):
             argv = tuple(shlex.split(gate))
@@ -320,8 +342,17 @@ def runtime_gate(plan: Mapping) -> tuple[tuple[str, ...], frozenset[str]] | None
                 list(argv[argv.index(RUNTIME_GATE) + 1 :])
             )
             if arguments.policy == "semantic":
-                return argv, owned
+                return argv, tuple(rule.get("globs", ()))
     return None
+
+
+def runtime_rule_selected(plan: Mapping, paths: Iterable[str]) -> bool:
+    """Whether a changed path selects the runtime gate's rule, as the landing
+    policy matches rules (`molt_dev_policy`: a rule matches the paths it globs)."""
+    from tools.dirty_tree_policy import is_ignored as glob_matches
+
+    found = runtime_gate_rule(plan)
+    return found is not None and any(glob_matches(path, found[1]) for path in paths)
 
 
 def libraries(root: Path) -> dict[str, Library]:
@@ -357,6 +388,7 @@ def select(
     runner: tuple[tuple[str, ...], frozenset[str]] | None,
     *,
     experimental: frozenset[str],
+    runner_in_batch: bool = False,
 ) -> Selection:
     """The cells that run every reached crate's whole lib in its declared cells.
 
@@ -428,18 +460,20 @@ def select(
             cell.sources.append(source.id)
         cell.dropped.update(dropped)
     for name in sorted(testable - named - runner_owned):
-        key = CellKey(("--locked",), (), ())
+        key = CellKey(("--locked", "--profile", DEFAULT_TRUTH_PROFILE), (), ())
         cell = cells.setdefault(key, Cell(key))
         cell.packages[name] = name
         cell.toolchains.update(("rustc", "cargo"))
         if "default-truth" not in cell.sources:
             cell.sources.append("default-truth")
+    reached_runner = bool(testable & runner_owned)
     return Selection(
         reach=reach,
         cells=tuple(cells.values()),
-        runner=runner_argv if testable & runner_owned else None,
+        runner=runner_argv if reached_runner and not runner_in_batch else None,
         runner_packages=frozenset(testable & runner_owned),
         unverified=tuple(unverified),
+        runner_in_batch=reached_runner and runner_in_batch,
     )
 
 
@@ -581,15 +615,15 @@ def host_triple() -> str:
 
 def selection_for(base: str, *, root: Path = ROOT) -> Selection:
     plan = tomllib.loads((root / PLAN_PATH).read_text(encoding="utf-8"))
-    reach = dependency_reach(
-        Workspace.load(root), changed_paths(base), base_reader(base)
-    )
+    paths = changed_paths(base)
+    reach = dependency_reach(Workspace.load(root), paths, base_reader(base))
     return select(
         plan_sources(plan, host=host_triple()),
         reach,
         libraries(root),
         runtime_gate(plan),
         experimental=excluded_backend_crates(excluded_backends(root)),
+        runner_in_batch=runtime_rule_selected(plan, paths),
     )
 
 
@@ -618,6 +652,13 @@ def describe(selection: Selection) -> list[str]:
             + ", ".join(sorted(selection.runner_packages))
             + ": "
             + shlex.join(selection.runner)
+        )
+    elif selection.runner_in_batch:
+        lines.append(
+            "changed-crate-tests: runtime gate for "
+            + ", ".join(sorted(selection.runner_packages))
+            + ": a changed path selects its own rule, so the landing runs it as "
+            "a gate; not run again here"
         )
     lines.extend(
         f"changed-crate-tests: unverified: {item}" for item in selection.unverified

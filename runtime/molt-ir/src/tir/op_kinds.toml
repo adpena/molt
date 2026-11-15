@@ -4,19 +4,6 @@
 # grant effect, ownership or target support facts.
 simpleir_preserved_kinds = ["cast", "unreachable", "widen"]
 
-# Target-owned operations accepted by shared SSA when Luau re-lifts rewritten
-# functions. These are excluded from frontend emission vocabulary.
-simpleir_backend_private_kinds = [
-    { backend = "luau", kinds = [
-        "binop", "bool_const", "branch", "compare", "del_item", "end_for",
-        "load_local", "loop_carry_init", "loop_carry_update", "none_const",
-        "pcall_wrap_begin", "pcall_wrap_end", "store_local", "string_concat",
-        "string_const", "string_index", "string_index_slice", "string_partition",
-        "string_repeat", "string_rfind", "string_rfind_slice", "string_rindex",
-        "string_rindex_slice", "string_rpartition", "string_splitlines", "unary_op",
-    ] },
-]
-
 # Exact primitive rich-comparison domains. Equality is total across domains
 # except option-dependent BytesWarning pairs, retained as observable below;
 # ordering is nothrow only within an ordering-enabled domain. This policy is
@@ -470,8 +457,6 @@ simpleir_target_runtime_profiles = [
     { target = "native", rust_variant = "NativeCranelift", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER", "IMPORT_PROTOCOL", "LEXICAL_CELLS"] },
     { target = "wasm", rust_variant = "Wasm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER", "IMPORT_PROTOCOL", "LEXICAL_CELLS"] },
     { target = "llvm", rust_variant = "Llvm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER", "IMPORT_PROTOCOL", "LEXICAL_CELLS"] },
-    { target = "luau", rust_variant = "Luau", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "UNSTRUCTURED_CONTROL", "EXECUTION_FRAME"] },
-    { target = "rust", rust_variant = "Rust", supported = [] },
     { target = "mlir", rust_variant = "Mlir", supported = [] },
 ]
 
@@ -589,7 +574,7 @@ simpleir_object_model_semantics_kinds = [
     "module_new", "module_cache_get", "module_load_cached", "module_cache_set",
     "module_cache_del", "module_import", "module_get_attr", "module_import_from",
     "module_get_name", "module_get_global", "global_slot_get", "module_set_attr",
-    "static_cell_base", "static_cell_set",
+    "static_cell_base", "static_cell_set", "static_cell_load",
     "object_new", "builtin_type", "bound_method_new",
     "func_new", "func_new_closure", "code_new", "code_slot_set", "code_slots_init",
     "set_new", "frozenset_new", "set_add", "set_add_probe", "frozenset_add",
@@ -599,15 +584,10 @@ simpleir_object_model_semantics_kinds = [
     "init_instance", "instance_set_field", "instance_get_field", "instance_has_field",
     "class_set_definition",
     "class_layout_field_count", "class_layout_slot_count",
-    # Luau's backend instance validator admits `callargs_expand_kwstar` only
-    # when the operand has direct canonical ordered-dict provenance. This role
-    # does not claim Luau implements arbitrary Python keys/getitem mappings.
     "callargs_new", "callargs_push_pos", "callargs_push_method_receiver", "callargs_expand_star",
     "callargs_push_kw", "callargs_expand_kwstar",
     "stack_alloc", "object_new_bound", "build_set", "build_slice", "del_attr", "function_defaults_version",
 ]
-# Target-instance admission and support documentation consume this same set.
-simpleir_luau_ordered_mapping_kinds = ["callargs_expand_kwstar", "dict_unpack"]
 
 simpleir_truthiness_semantics_kinds = [
     "bool", "cast_bool", "builtin_bool", "not", "unary_not", "and", "_m_and", "or",
@@ -1422,6 +1402,17 @@ i64_zero_divisor_guard_opcodes = [
     "Div",
     "FloorDiv",
     "Mod",
+]
+
+# literal_materialization_opcodes: the source constant these ops materialize
+# is a code constant in Python; CPython never allocates one when it runs, so
+# the materialization's only failure (allocation) is not Python-observable.
+# A materialization nothing reads is dead code: DCE removes it, inside an
+# exception region too, whichever pass left it unused (HF-846).
+literal_materialization_opcodes = [
+    "ConstStr",
+    "ConstBytes",
+    "ConstBigInt",
 ]
 
 # i64_shift_count_guard_opcodes: raw i64 hoist/lowering proof for these binary
@@ -4398,6 +4389,18 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "StaticCellLoad"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_types = ["dynbox"]
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "StaticCellSet"
 may_call_python = true
 operand_arity = 2
@@ -5093,6 +5096,11 @@ mapper_opcode = "StaticCellBase"
 canonical = "static_cell_set"
 aliases = []
 mapper_opcode = "StaticCellSet"
+
+[[kind]]
+canonical = "static_cell_load"
+aliases = []
+mapper_opcode = "StaticCellLoad"
 
 [[kind]]
 canonical = "module_get_name"
@@ -6691,8 +6699,6 @@ native = "runtime"
 llvm = "runtime"
 wasm = "runtime"
 mlir = "unsupported"
-luau = "luau_iter_carriers"
-rust = "unsupported"
 
 [[runtime_call]]
 kind = "dict_set"
@@ -6703,8 +6709,6 @@ native = "runtime"
 llvm = "runtime"
 wasm = "runtime"
 mlir = "unsupported"
-luau = "luau_dict_storage"
-rust = "unsupported"
 
 # CPython error versus exception_unwind event, carried by exceptional checks.
 [[exception_edge_kind]]

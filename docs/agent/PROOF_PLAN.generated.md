@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 455 |
+| Hashed executable authority inputs | 1 | 413 |
 | Local path rules | 35 | 84 |
 | Unique local commands | 73 | 82 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 242 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 240 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -53,10 +53,10 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 39 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 334 min | 19800 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 23 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 77 min | 4500 s | 120 s | 0 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 77 min | 4200 s | 120 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
-| `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
+| `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 7 |
 | `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 156 |
 
 ## Scheduled families
@@ -100,7 +100,7 @@ Scheduled workflows and farm runs consume the same typed command DAG and receipt
 | `linux-x86_64-py312-linker-release-fast` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `linker` | `elf-x86_64` | `release-fast` |
 | `linux-x86_64-py312-python-audit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python` | `host` | `audit` |
 | `linux-x86_64-rust-audit` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `host` | `audit` |
-| `linux-x86_64-formal-verification` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `formal` | `tir-luau` | `verification` |
+| `linux-x86_64-formal-verification` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `formal` | `tir` | `verification` |
 | `linux-x86_64-py312-queue-portability` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
 | `linux-aarch64-py312-rust-native-dev` | `ubuntu-24.04-arm` | `linux` | `aarch64` | `3.12` | `rust` | `aarch64-unknown-linux-gnu` | `dev` |
 | `macos-arm64-py312-queue-portability` | `macos-14` | `macos` | `aarch64` | `3.12` | `proof-queue` | `host` | `portability` |
@@ -328,7 +328,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust.clippy.backend-wasm-only` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
-| `rust.test.rust-emitter-preview` | `llvm` | `linux-x86_64-rust-native-dev` | `warm` | 300 s | `compiler-build-resource` | 0 |
 | `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
@@ -361,13 +360,13 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `frontend-python` | 1 | 3 |
 | `finding-ids-static` | 1 | 1 |
 | `python-source-dependencies` | 16 | 0 |
-| `frontend-ir-assembly` | 63 | 1 |
+| `frontend-ir-assembly` | 62 | 1 |
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 22 | 0 |
 | `stdlib-intrinsic-contracts` | 7 | 1 |
-| `host-capability-authority` | 12 | 0 |
+| `host-capability-authority` | 10 | 0 |
 | `runtime-profile-schema-authority` | 6 | 0 |
-| `op-kind-registry` | 20 | 1 |
+| `op-kind-registry` | 19 | 1 |
 | `tinygrad-op-contract` | 9 | 2 |
 | `intrinsic-registry` | 22 | 0 |
 | `source-extension-package-sets` | 44 | 0 |
@@ -389,7 +388,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `process-environment-consumers` | 9 | 0 |
 | `repository-scan-records` | 4 | 0 |
 | `guard-wiring-source-observation` | 3 | 0 |
-| `rust-source-scan-consumers` | 5 | 0 |
+| `rust-source-scan-consumers` | 2 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `build-early-cutoff` | 10 | 0 |
 | `runtime-wasm-signatures` | 27 | 1 |
@@ -437,7 +436,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
-| `pending-call-source-authority` | 20 | 1 |
+| `pending-call-source-authority` | 18 | 1 |
 | `compression-stream-state` | 1 | 1 |
 | `release-work-state` | 5 | 0 |
 | `runtime-name-registry` | 4 | 0 |

@@ -29,8 +29,9 @@ import os
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping, Sequence
-from pathlib import Path
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -41,6 +42,10 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 ROOT = bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
+
+if TYPE_CHECKING:
+    from molt.host_capacity import HostWorkDemand
+    from tools.molt_dev_policy import SelectedGate
 
 # Git probes and the importer-test child run under the developer-test guard.
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV_TEST")
@@ -99,6 +104,90 @@ def generator_outputs(root: Path) -> frozenset[str]:
 def receipt_path(root: Path, tree: str) -> Path:
     common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     return common / "molt" / "consumer-receipts" / f"{tree}.json"
+
+
+def proven_gates(
+    root: Path, tree: str, *, exact: bool = False
+) -> Callable[[SelectedGate], bool] | None:
+    """The landing gates the receipt for ``tree`` already ran, or None.
+
+    A static gate reads only the tree's files, so the receipt's run of the
+    same command proves it. A pytest gate is proven when it skips slow
+    tests, as the receipt's run did, and each of its targets is a file the
+    receipt ran as an importer; a ``-k`` or ``-m`` selection only narrows
+    those files. A test that needs landing-built artifacts is never a receipt
+    importer, so its cohort is never proven.
+
+    ``exact`` accepts only a receipt whose run saw exactly the tree's files
+    (no other tracked edit and no untracked file in the checkout): the
+    queue's batch, the landing's last run, asks for it. The lane precheck
+    does not, because the batch runs after it.
+    """
+    try:
+        payload = json.loads(receipt_path(root, tree).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if payload.get("schema") != SCHEMA or payload.get("tree") != tree:
+        return None
+    if exact and payload.get("exact") is not True:
+        return None
+    statics = frozenset(payload["static_gates"])
+    importers = frozenset(payload["importers"])
+    import shlex
+
+    from tools.molt_dev_gates import display
+    from molt.pytest_memory_guard_bootstrap import parse_pytest_arguments
+    from tools.proof_command_argv import pytest_arguments
+
+    def proven(gate: SelectedGate) -> bool:
+        if gate.static:
+            return display(gate.command) in statics
+        if not gate.pytest:
+            return False
+        argv = (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+        arguments = pytest_arguments(argv, root=root)
+        if arguments is None or "--skip-slow" not in arguments:
+            return False
+        # The cohort's targets as pytest's own parser reads them. An option
+        # that changes the configuration or conftests pytest loads makes the
+        # run differ from the receipt's, and a module target or a path the
+        # checkout lacks selects differently or fails: not proven.
+        try:
+            parsed = parse_pytest_arguments(arguments, plugin_options=True)
+        except ValueError:
+            return False
+        if (
+            parsed.pyargs
+            or parsed.inifile is not None
+            or parsed.override_ini
+            or parsed.rootdir is not None
+            or parsed.noconftest
+            or parsed.confcutdir is not None
+        ):
+            return False
+        targets = [Path(target.path) for target in parsed.targets]
+        return bool(targets) and all(
+            not target.is_absolute()
+            and (root / target).is_file()
+            and target.as_posix() in importers
+            for target in targets
+        )
+
+    return proven
+
+
+def checkout_matches(root: Path, tree: str) -> bool:
+    """Whether the checkout holds exactly ``tree``'s files: no file of the
+    tree differs on disk and no untracked, unignored file exists. A scratch
+    index holds the tree, so a new file of the change counts as tracked."""
+    with tempfile.TemporaryDirectory(prefix="molt-consumer-gate-") as scratch:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(scratch) / "index"))
+        _git(root, "read-tree", tree, env=env)
+        return not _git(root, "diff", "--name-only", env=env) and not _git(
+            root, "ls-files", "--others", "--exclude-standard", env=env
+        )
 
 
 def _needs_receipt(root: Path, changed: list[str]) -> bool:
@@ -203,6 +292,23 @@ def landing_built_tests(
     return {test: owners[test] for test in importers if test in owners}
 
 
+def _importer_demand(argv: Sequence[str], files: int) -> HostWorkDemand:
+    """The host share an importer run asks for (``molt.host_capacity``): one
+    worker per test file, and never less than half the host, since one file
+    can hold thousands of tests (tests/test_molt_dev.py holds about 2,700).
+    Two gates of up to half the host's files run together; a larger one asks
+    for more, up to the whole class."""
+    from molt import host_capacity
+    from tools.proof_plan import PYTEST_WORKER_MEMORY_OPTION
+
+    prefix = PYTEST_WORKER_MEMORY_OPTION + "="
+    unit = next(float(word[len(prefix) :]) for word in argv if word.startswith(prefix))
+    half = (host_capacity.cpu_count() + 1) // 2
+    return host_capacity.HostWorkDemand(
+        workers=max(half, files), bytes_per_worker=max(1, int(unit * 1024**3))
+    )
+
+
 def presubmit_pytest_argv(root: Path, tests: Sequence[str]) -> list[str]:
     """The importer run as presubmit makes it: the landing's own formatter
     (``local_pytest_argv``: ``-n auto``, the tests' declared worker memory)
@@ -223,17 +329,27 @@ def run(
     *,
     pytest_args: list[str] | None,
     base: str = "HEAD",
+    bypass_importers: str | None = None,
 ) -> int:
     """Gate the tree a commit of ``paths`` would record, against ``base``.
 
     ``base`` is HEAD for work about to be committed. A committed stack (a
     rebase onto a new main, a bypass push) names the main it lands on, so
     every commit since that main is the change.
+
+    ``bypass_importers`` (a reason) is the owner's bounded bypass for work
+    that unblocks development velocity (2026-11-13, 2026-11-15): the static
+    gates and the change's own test files still run; the importer suites do
+    not, and the receipt names the reason and every skipped importer. Such a
+    receipt proves only the gates that ran (``proven_gates``), so the landing
+    and postsubmit still run the rest; a red postsubmit is reverted within the
+    hour.
     """
     from tools.test_dependency_graph import git_blob_reader, load_graph
 
     base = _git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
     tree = commit_tree(root, paths)
+    exact = checkout_matches(root, tree)
     changed = changed_paths(root, tree, base=base)
     statics = static_gates(root, tree, base=base)
     print(f"consumer-gate: {len(statics)} static gate(s) the landing selects")
@@ -252,6 +368,24 @@ def run(
     )
     landing_built = landing_built_tests(root, readers.importers)
     run_now = [test for test in readers.importers if test not in landing_built]
+    bypassed: list[str] = []
+    if bypass_importers is not None:
+        own_tests = [
+            path
+            for path in changed
+            if path.startswith("tests/")
+            and path.endswith(".py")
+            and PurePosixPath(path).name.startswith("test_")
+            and (root / path).is_file()
+        ]
+        bypassed = [test for test in run_now if test not in own_tests]
+        run_now = own_tests
+        print(
+            f"consumer-gate: BYPASS ({bypass_importers}): running the change's own "
+            f"{len(own_tests)} test file(s); {len(bypassed)} importer file(s) are "
+            "left to the landing and postsubmit",
+            flush=True,
+        )
     print(f"consumer-gate: {len(changed)} changed path(s), tree {tree[:12]}")
     for label, tests in (
         ("importers (run now)", run_now),
@@ -264,7 +398,7 @@ def run(
         print(f"# {label}: {len(tests)}")
         for test in tests:
             print(f"  {test}")
-    flaky_reruns: list[str] = []
+    flaky_reruns: list[str] | None = []
     if run_now:
         if pytest_args is None:
             argv = presubmit_pytest_argv(root, run_now)
@@ -272,23 +406,39 @@ def run(
             argv = [sys.executable, "-m", "pytest", "-q", *pytest_args, *run_now]
         from molt import host_capacity
 
-        # The importer run is suite-sized: it takes the host's one heavy-work
-        # slot, behind any landing, instead of sharing the machine with it.
+        # The importer run takes a share of the host's development capacity:
+        # one pytest worker per test file, each of the files' declared memory.
+        # A small gate leaves room beside it; a large one takes the class.
+        demand = _importer_demand(argv, len(run_now)) if pytest_args is None else None
         with host_capacity.host_work_slot(
             host_capacity.host_work_dir(root),
             label=f"consumer gate ({root.name}, {len(run_now)} test files)",
             work=host_capacity.HostWorkClass.DEVELOPMENT,
             say=lambda message: print(message, flush=True),
+            demand=demand,
         ) as admission:
             if admission.waited_seconds >= 1:
                 print(
                     f"consumer-gate: admitted after {admission.waited_seconds:.0f} s",
                     flush=True,
                 )
-            print("consumer-gate: " + " ".join(argv), flush=True)
             # The importer tests are the holder's job: a test that runs a
             # consumer gate in a child is admitted inside this slot.
             env = {**os.environ, **host_capacity.held_slot_environment()}
+            if admission.grant is not None:
+                from tools.proof_command_argv import allocated_pytest_argv
+
+                env[host_capacity.MEMORY_SLICE_ENV] = str(admission.grant.memory_bytes)
+                argv, workers = allocated_pytest_argv(
+                    argv, root=root, cpus=admission.grant.workers, environment=env
+                )
+                argv = list(argv)
+                print(
+                    f"consumer-gate: granted {admission.grant.workers} worker(s) and "
+                    f"{admission.grant.memory_bytes / 1024**3:.1f} GiB; running {workers}",
+                    flush=True,
+                )
+            print("consumer-gate: " + " ".join(argv), flush=True)
             report = Path(tempfile.mkdtemp(prefix="consumer-gate-")) / "junit.xml"
             failed = (
                 _COMMANDS.run(
@@ -296,15 +446,20 @@ def run(
                 ).returncode
                 != 0
             )
+            preexisting: list[str] = []
             if failed:
-                flaky_reruns = _rerun_failures_alone(root, report, env)
+                flaky_reruns, still_failing = _rerun_failures_alone(root, report, env)
                 failed = flaky_reruns is None
+                if failed and still_failing:
+                    preexisting = _failures_on_base(root, base, still_failing, env)
+                    failed = preexisting != still_failing
         if failed:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
     if commit_tree(root, paths) != tree:
         print("consumer-gate: the change moved while its tests ran", file=sys.stderr)
         return 1
+    exact = exact and checkout_matches(root, tree)
     path = receipt_path(root, tree)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -321,6 +476,15 @@ def run(
         # Tests that failed beside the suite's load and passed alone (Chromium's
         # retry rule); tests/ owners replace their wall-clock waits.
         "flaky_reruns": flaky_reruns,
+        # Tests that fail on the base commit too (Chromium's "without patch"
+        # retry): main's defects, not this change's; their owners fix main.
+        "preexisting_failures": preexisting if run_now else [],
+        # The owner's bounded bypass: its reason and the importers not run here.
+        "bypass": bypass_importers,
+        "bypassed_importers": bypassed,
+        # The tests saw only the tree's files; the queue's batch reuses only
+        # such a receipt (proven_gates(exact=True)).
+        "exact": exact,
     }
     path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
     print(f"consumer-gate: receipt {path}")
@@ -357,20 +521,77 @@ def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
 
 def _rerun_failures_alone(
     root: Path, report: Path, env: Mapping[str, str]
-) -> list[str] | None:
+) -> tuple[list[str] | None, list[str]]:
     """Rerun the failed tests once, alone and in order, as the landing reruns
     a failed gate alone (Chromium's retry rule). Return the tests that passed
-    alone, or None when the failure is the change's."""
+    alone (None when any still fails) and the tests that still fail; an
+    unreadable report or more failures than RERUN_LIMIT still fail as a whole
+    (no ids, no base retry)."""
     ids = _failed_node_ids(root, report)
-    if not ids or len(ids) > RERUN_LIMIT:
-        return None
+    if ids is None:
+        return None, []
+    if not ids:
+        return None, []
+    if len(ids) > RERUN_LIMIT:
+        return None, ids
     print(f"consumer-gate: rerunning {len(ids)} failed test(s) alone once", flush=True)
-    rerun = [sys.executable, "-m", "pytest", "-q", *ids]
-    if _COMMANDS.run(rerun, cwd=root, env=env).returncode != 0:
-        return None
-    for test in ids:
-        print(f"consumer-gate: flaky under load, passed alone: {test}", flush=True)
-    return ids
+    alone = report.with_name("alone.junit.xml")
+    rerun = [sys.executable, "-m", "pytest", "-q", *ids, f"--junitxml={alone}"]
+    if _COMMANDS.run(rerun, cwd=root, env=env).returncode == 0:
+        for test in ids:
+            print(f"consumer-gate: flaky under load, passed alone: {test}", flush=True)
+        return ids, []
+    still = _failed_node_ids(root, alone)
+    return None, still if still is not None else ids
+
+
+def _failures_on_base(
+    root: Path, base: str, tests: list[str], env: Mapping[str, str]
+) -> list[str]:
+    """The ``tests`` that also fail on ``base`` (Chromium's "without patch"
+    retry), in their given order. They run in a temporary detached worktree
+    of ``base`` with its sources first on the import path, so the base's code,
+    not this checkout's editable install, is under test. A test absent at the
+    base is not a base failure."""
+    import shutil
+
+    scratch = Path(tempfile.mkdtemp(prefix="consumer-gate-base-"))
+    tree = scratch / "base"
+    try:
+        _git(root, "worktree", "add", "--detach", "--quiet", str(tree), base)
+        present = [test for test in tests if (tree / test.split("::")[0]).is_file()]
+        if not present:
+            return []
+        report = scratch / "base.junit.xml"
+        print(
+            f"consumer-gate: rerunning {len(present)} failing test(s) on base "
+            f"{base[:12]}",
+            flush=True,
+        )
+        base_env = {
+            **env,
+            "PYTHONPATH": os.pathsep.join(
+                [str(tree / "src"), str(tree), env.get("PYTHONPATH", "")]
+            ).rstrip(os.pathsep),
+        }
+        result = _COMMANDS.run(
+            [sys.executable, "-m", "pytest", "-q", *present, f"--junitxml={report}"],
+            cwd=tree,
+            env=base_env,
+        )
+        if result.returncode == 0:
+            return []
+        failed_on_base = set(_failed_node_ids(tree, report) or ())
+        on_base = [test for test in tests if test in failed_on_base]
+        for test in on_base:
+            print(
+                f"consumer-gate: fails on base too (main's defect): {test}", flush=True
+            )
+        return on_base
+    finally:
+        if tree.exists():
+            _git(root, "worktree", "remove", "--force", str(tree))
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def check(root: Path, paths: list[str]) -> int:
@@ -422,11 +643,27 @@ def main(argv: list[str] | None = None) -> int:
             "work about to be committed); a committed stack names its main"
         ),
     )
+    parser.add_argument(
+        "--bypass-importers",
+        metavar="REASON",
+        default=None,
+        help=(
+            "run: the owner's bounded bypass for velocity work; run the static "
+            "gates and the change's own tests, record REASON and the skipped "
+            "importers; the landing and postsubmit run the rest"
+        ),
+    )
     parser.add_argument("paths", nargs="*", help="the paths the commit names")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     if args.mode == "run":
-        return run(root, args.paths, pytest_args=args.pytest_arg, base=args.base)
+        return run(
+            root,
+            args.paths,
+            pytest_args=args.pytest_arg,
+            base=args.base,
+            bypass_importers=args.bypass_importers,
+        )
     return check(root, args.paths)
 
 

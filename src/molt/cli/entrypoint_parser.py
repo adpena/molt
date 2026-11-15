@@ -65,14 +65,13 @@ def _add_build_parser(
     build_parser = subparsers.add_parser(
         "build",
         help="Build a Python program",
-        description="Compile a Python file to a native binary, WASM module, Luau script, or MLIR text.",
+        description="Compile a Python file to a native binary, WASM module, or MLIR text.",
         formatter_class=_BuildHelpFormatter,
         epilog=(
             "Examples:\n"
             "  molt build app.py                      Build with default settings\n"
             "  molt build app.py --release             Optimized release build\n"
             "  molt build app.py --target wasm         Build for WebAssembly\n"
-            "  molt build app.py --target luau         Build for Luau/Roblox\n"
             "  molt build app.py --target mlir         Emit MLIR text (requires LLVM 22)\n"
             "  molt build --module mypackage           Build a package by module name\n"
         ),
@@ -86,7 +85,7 @@ def _add_build_parser(
         "--target",
         default=None,
         help=(
-            "Build target: native (default), wasm, luau, mlir, or a target triple "
+            "Build target: native (default), wasm, mlir, or a target triple "
             "(e.g., aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl)."
         ),
     )
@@ -1182,7 +1181,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Build and run a Python program",
         description=(
             "Compile a Python file with Molt and execute it.\n"
-            "Supports native, linked WASM (via Node), and Luau (via lune) targets."
+            "Supports native and linked WASM (via Node) targets."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -1190,7 +1189,6 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "  molt run app.py                       Build and run natively\n"
             "  molt run app.py --release              Optimized build and run\n"
             "  molt run app.py --target wasm          Build linked WASM and run with Node\n"
-            "  molt run app.py --target luau          Build and run with lune\n"
             "  molt run app.py --target mlir          Build and JIT via MLIR\n"
             "  molt run app.py --tier jit             Compile into memory and run (no link)\n"
             "  molt run app.py -- --arg1 val          Pass args to your script\n"
@@ -1206,8 +1204,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Build target: native (default), wasm (linked build + Node host), "
-            "luau (build + run with lune), mlir (build + JIT via MLIR), "
-            "or a target triple."
+            "mlir (build + JIT via MLIR), or a target triple."
         ),
     )
     run_parser.add_argument(
@@ -1731,7 +1728,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     validate_parser.add_argument(
         "--backend",
-        choices=["all", "native", "llvm", "wasm", "luau"],
+        choices=["all", "native", "llvm", "wasm"],
         default="all",
         help="Restrict validation to one backend family.",
     )
@@ -2217,21 +2214,17 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  molt deploy cloudflare src/app.py      Deploy to Cloudflare Workers\n"
-            "  molt deploy roblox src/game.py          Deploy to Roblox Studio\n"
             "  molt deploy cloudflare app.py --release  Optimized production deploy\n"
-            "  molt deploy roblox app.py --roblox-project ./my-game\n"
-            "                                          Deploy and copy to Roblox project\n"
             "  molt deploy cloudflare app.py --dry-run  Build only, skip wrangler\n"
             "\n"
             "Platforms:\n"
             "  cloudflare    Build as WASM with --split-runtime, deploy via wrangler\n"
-            "  roblox        Build as Luau, optionally copy to a Roblox project dir\n"
         ),
     )
     deploy_parser.add_argument(
         "platform",
-        choices=["cloudflare", "roblox"],
-        help="Deployment target: cloudflare (WASM Workers) or roblox (Luau).",
+        choices=["cloudflare"],
+        help="Deployment target: cloudflare (WASM Workers).",
     )
     deploy_parser.add_argument("file", nargs="?", help="Path to Python source")
     deploy_parser.add_argument(
@@ -2257,10 +2250,6 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     deploy_parser.add_argument(
         "--out-dir",
         help="Output directory for build artifacts.",
-    )
-    deploy_parser.add_argument(
-        "--roblox-project",
-        help="Path to the Roblox project directory to copy Luau output into.",
     )
     deploy_parser.add_argument(
         "--wrangler-args",

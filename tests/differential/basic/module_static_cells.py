@@ -76,7 +76,7 @@ restored = pickle.loads(pickle.dumps(helper.read_label))
 print("pickle", restored is helper.read_label, restored())
 
 # An import cycle reads a global before its module stores it.
-import module_static_cells_cycle_a as cycle_a
+from module_static_cells_support import cycle_a
 
 print("cycle", cycle_a.seen, cycle_a.after)
 

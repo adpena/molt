@@ -194,8 +194,6 @@ def _prebuild_backend_binary(
         )
     # Same lane classification as `_resolve_build_output_layout`.
     is_wasm = is_wasm_target(target)
-    is_luau_transpile = target is TargetKind.LUAU
-    is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
     try:
         # A target `molt build` rejects must not prewarm some other lane.
         resolve_backend_artifact_contract(
@@ -237,8 +235,6 @@ def _prebuild_backend_binary(
         molt_root=molt_root,
         backend_cargo_profile=backend_cargo_profile,
         is_wasm=is_wasm,
-        is_luau_transpile=is_luau_transpile,
-        is_rust_transpile=is_rust_transpile,
         codegen_backend=codegen_backend,
         rust_cpu=rust_cpu,
     )

@@ -26,10 +26,7 @@ from molt.cli.runtime_features import (
     runtime_features_unsupported_on_target,
     runtime_stdlib_profile_for_required_features,
 )
-from molt.cli.runtime_paths import (
-    _runtime_lib_path,
-    _runtime_wasm_artifact_path,
-)
+from molt.cli.runtime_paths import _runtime_lib_path
 from molt.cli.runtime_wasm_build_timings import (
     _runtime_wasm_build_timings_snapshot,
 )
@@ -44,7 +41,6 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 def _initialize_runtime_artifact_state(
     *,
-    is_rust_transpile: bool,
     is_wasm: bool,
     emit_mode: str,
     molt_root: Path,
@@ -64,17 +60,9 @@ def _initialize_runtime_artifact_state(
         ),
         rust_cpu=rust_cpu,
     )
-    if is_rust_transpile:
-        return state
     if is_wasm:
-        if installed_runtime_active(molt_root):
-            # Installed cells are selected with their typed WASM variant by
-            # _ensure_runtime_wasm_both; ambient runtime directories never apply.
-            return state
-        state.runtime_wasm = _runtime_wasm_artifact_path(molt_root, "molt_runtime.wasm")
-        state.runtime_reloc_wasm = _runtime_wasm_artifact_path(
-            molt_root, "molt_runtime_reloc.wasm"
-        )
+        # _ensure_runtime_wasm_both admits the pair: an installed cell, or the
+        # product store entry of this checkout's inputs.
         return state
     if emit_mode in {"bin", "obj"}:
         # Installed Molt names the retained generation of one shipped cell and
@@ -165,7 +153,6 @@ def _prebuild_runtime_wasm(
         target=TargetKind.WASI,
     )
     runtime_state = _initialize_runtime_artifact_state(
-        is_rust_transpile=False,
         is_wasm=True,
         emit_mode="wasm",
         molt_root=project_root,
@@ -174,13 +161,9 @@ def _prebuild_runtime_wasm(
         stdlib_profile=concrete_stdlib_profile,
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    if runtime_state.runtime_wasm is None or runtime_state.runtime_reloc_wasm is None:
-        return fail("Runtime wasm shared/reloc artifact path is unavailable.")
     if verbose and not json_output:
         print(
-            "Prebuilding atomic runtime wasm shared+reloc generation: "
-            f"{runtime_state.runtime_wasm}",
-            file=sys.stderr,
+            "Prebuilding atomic runtime wasm shared+reloc generation", file=sys.stderr
         )
     if not _ensure_runtime_wasm_both(
         runtime_state,
@@ -197,16 +180,13 @@ def _prebuild_runtime_wasm(
         required_exports=None,
     ):
         return fail("Runtime wasm pair prebuild failed.", runtime_state=runtime_state)
-    if (
-        runtime_state.runtime_wasm_selected is None
-        or runtime_state.runtime_reloc_wasm_selected is None
-        or runtime_state.runtime_wasm_generation is None
-    ):
+    pair = runtime_state.runtime_wasm_pair
+    if pair is None:
         return fail("Runtime wasm pair publication selected no immutable generation.")
     all_artifacts = {
-        "shared": os.fspath(runtime_state.runtime_wasm_selected),
-        "reloc": os.fspath(runtime_state.runtime_reloc_wasm_selected),
-        "generation": os.fspath(runtime_state.runtime_wasm_generation),
+        "shared": os.fspath(pair.shared),
+        "reloc": os.fspath(pair.reloc),
+        "generation": os.fspath(pair.manifest),
     }
     artifacts = (
         all_artifacts

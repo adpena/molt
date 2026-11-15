@@ -13,9 +13,9 @@ pub(crate) struct ListMutationTxn<'a, 'py> {
     py: &'a PyToken<'py>,
     ptr: *mut u8,
     bits: u64,
-    base: *mut Vec<u64>,
+    base: *mut crate::object::molt_vec::MoltVec<u64>,
     base_epoch: u64,
-    next: *mut Vec<u64>,
+    next: *mut crate::object::molt_vec::MoltVec<u64>,
     detached: Vec<u64>,
     committed: bool,
 }
@@ -77,12 +77,12 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
     }
 
     #[inline]
-    fn next(&self) -> &Vec<u64> {
+    fn next(&self) -> &crate::object::molt_vec::MoltVec<u64> {
         unsafe { &*self.next }
     }
 
     #[inline]
-    fn next_mut(&mut self) -> &mut Vec<u64> {
+    fn next_mut(&mut self) -> &mut crate::object::molt_vec::MoltVec<u64> {
         unsafe { &mut *self.next }
     }
 
@@ -186,7 +186,10 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
         for &item in items {
             inc_ref_bits(self.py, item);
         }
-        removed.extend(self.next_mut().splice(low..high, items.iter().copied()));
+        removed.extend(
+            self.next_mut()
+                .splice_to_vec(low..high, items.iter().copied()),
+        );
         let removed_edges = crate::object::refcount_opt::slice_heap_ref_count(&removed);
         let added_edges = crate::object::refcount_opt::slice_heap_ref_count(items);
         unsafe {
@@ -293,8 +296,8 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
 pub(crate) struct ListSortTxn<'a, 'py> {
     py: &'a PyToken<'py>,
     ptr: *mut u8,
-    base: *mut Vec<u64>,
-    detached: *mut Vec<u64>,
+    base: *mut crate::object::molt_vec::MoltVec<u64>,
+    detached: *mut crate::object::molt_vec::MoltVec<u64>,
     prepared: Option<molt_cpython_abi::bridge::PreparedListProjection>,
     sort_epoch: u64,
     finished: bool,
@@ -1018,7 +1021,7 @@ pub(crate) unsafe fn replace_range_with_projection(
         inc_ref_bits(py, item);
     }
     let vec = unsafe { &mut *vec_ptr };
-    removed.extend(vec.splice(low..high, items.iter().copied()));
+    removed.extend(vec.splice_to_vec(low..high, items.iter().copied()));
     let contains_refs = unsafe {
         crate::object::backing::tracked_vec_adjust_heap_edge_count(
             vec_ptr,
@@ -1184,7 +1187,7 @@ fn valid_removal_indices(len: usize, indices: &[usize]) -> bool {
 /// moved at most once, and the untouched prefix is neither read nor written.
 /// Work is O(removed slots + suffix length), independent of the prefix length.
 fn detach_ascending_indices(
-    values: &mut Vec<u64>,
+    values: &mut crate::object::molt_vec::MoltVec<u64>,
     indices: &[usize],
     detached: &mut Vec<u64>,
 ) -> usize {
@@ -1590,7 +1593,7 @@ mod tests {
                     .collect();
                 let mut expected_detached = vec![MoltObject::none().bits()];
                 expected_detached.extend(indices.iter().map(|&index| original[index]));
-                let mut values = original.clone();
+                let mut values = crate::object::molt_vec::MoltVec::from_vec(original.clone());
                 let mut detached = Vec::with_capacity(1 + indices.len());
                 detached.push(MoltObject::none().bits());
                 assert_eq!(

@@ -217,7 +217,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 
     /// An always-inlined helper `name` taking `params` words and returning
     /// one, with its body written by `body` on a fresh frame builder.
-    fn method_site_helper(
+    pub(super) fn site_helper(
         &self,
         name: &str,
         params: usize,
@@ -282,7 +282,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 
     fn ensure_method_site_load_helper(&self) -> FunctionValue<'ctx> {
         let cold = self.ensure_runtime_import(RuntimeFn::MethodSiteLoad);
-        self.method_site_helper("__molt_method_site_load", 4, false, |b, words| {
+        self.site_helper("__molt_method_site_load", 4, false, |b, words| {
             let &[record, receiver, self_out] = words else {
                 unreachable!("the load helper's parameters")
             };
@@ -305,7 +305,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     fn ensure_method_site_call_helper(&self, nargs: usize, cold: RuntimeFn) -> FunctionValue<'ctx> {
         let cold = self.ensure_runtime_import(cold);
         // thread, record, callable, self, args..., admission
-        self.method_site_helper(
+        self.site_helper(
             &format!("__molt_method_site_call_{nargs}"),
             4 + nargs + 1,
             true,

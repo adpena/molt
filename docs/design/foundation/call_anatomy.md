@@ -12,13 +12,21 @@ change.
 
 ## Stage status
 
-Summary: 2026-11-09, release native, macOS arm64, user time against the managed CPython 3.12.16 (-I): Molt runs at 0.26x CPython (geomean of 27 benchmarks measurable on both sides); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+Summary: 2026-11-14, release native, macOS arm64, median user time against the managed CPython 3.12.16 (-I): Molt runs at 0.66x CPython over the 9 benchmarks of 100 ms or more (0.81x over all 58 measurable on both sides, where interpreter startup flatters Molt in the 47 under 50 ms); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+
+The bar is the native reference: instructions per iteration against C for the same loop. The
+CPython ratio is the correctness oracle's companion, not the target. The 2026-11-14 figures come
+from direct timing (each program built once with `molt build --release`, then one warm run and
+five alternating samples per side, outputs identical); the 2026-11-09 figure (0.26x over 27) used
+a different method, so the two are not a trend. Worst five, CPython time over Molt time:
+bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_generator_chain
+0.174, bench_descriptor_property 0.177.
 
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a) | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
@@ -55,6 +63,10 @@ The collector and `struct` costs need their own fixes and wait for no stage. Ins
 push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top of method-heavy
 code (stage 1) and traceback location decoding (`LocationRows`) at the top of `exception_heavy`
 (stage 5).
+
+The P0 compiler program since 2026-11-14 is whole-program type flow and specialization (HF-847,
+`78_whole_program_type_flow.md`): facts cross calls, one body per argument-type context. Stages 6
+and 7 consume its facts; stages 1 and 2 remove the per-call costs that remain after it.
 
 ## Why Molt is slow: five causes and their owners (2026-11-09)
 
@@ -162,9 +174,12 @@ backend:
 
 - Destroy: a terminal release built an edge sink, counted its capacity by walking the payload,
   and detached every item, for a list of inline ints with nothing to release.
-  `heap_lifecycle::retires_without_edges` proves the empty case from the header (no C view, weak
-  reference, scheduler retain, sidecar or owned class edge) and one tag test per item of a list,
-  tuple, slice or range; such an object frees its storage directly.
+  `heap_lifecycle::terminal_retirement` classifies the object from its header (no C view, weak
+  reference, scheduler retain, sidecar or owned class edge). An exact list or tuple then releases
+  its items in place, last to first, in one walk (`release_sequence_items`, CPython's
+  `list_dealloc`); a slice or range of non-heap words frees its storage directly. Every other
+  object keeps the edge sink, and a list's items travel in it as one typed `ListItems` resource,
+  as dict and set rows do, so the census never walks them (2026-11-14, runtime review finding 3).
 - Slicing: every slice bound became a `BigInt` (`DecodedSlice`); an inline int now stays an
   `i64`. A list slice copied the whole list, built an index vector, then copied again;
   `seq_access::snapshot_slice` copies only the selected items into the new list's own backing. An
@@ -200,9 +215,9 @@ identical: `fannkuch_redux.py 9` LLVM 18.76 G to 3.63 G (-80.7%, 0.65 to 0.12 s)
 `bench_dict` within 0.3%. Profile (LLVM, 1,216 self samples against 9,165 on ee6d276030): list
 destroy 11.9%, allocation 16.4%, slicing and the in-place reverse 14.9%, index get/set 20.0%,
 iteration 1.5%, GC membership 3.4%, compiled code 9.8%. What remains is the call-threaded shape:
-every list index is a runtime call on LLVM and WASM (Cranelift keeps a backend-local fast path),
 `for r in rxrange` iterates a range object through the runtime, and `perm1[:]` allocates a list per
-permutation; these move to the codegen foundation as compiled list and range primitives.
+permutation; these move to the codegen foundation as compiled list and range primitives. List
+item reads and stores now compile inline on every backend (section 4.5a, "List items").
 
 P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
@@ -275,7 +290,7 @@ The backend view above understates the problem. One function passes through thes
     Python: discover (parse 1) -> parse 2 -> sema -> visit -> Python mid-end -> serialize to
       SimpleIR (identity = variable-name strings) -> msgpack lease
     Rust:   9 SimpleIR passes -> lift to TIR -> 27 TIR passes -> module phase ->
-      project back to SimpleIR (Cranelift, WASM, Luau) | TIR (LLVM) | SimpleIR only, no TIR (Rust)
+      project back to SimpleIR (Cranelift, WASM) | TIR (LLVM)
 
 Structural defects, each with its owner:
 1. Three optimizers for one fact family: the Python mid-end, nine Rust SimpleIR passes and the
@@ -296,8 +311,8 @@ Structural defects, each with its owner:
    select can never run; `molt run` defaults to dev while `molt build` defaults to release; choices
    cross into Rust as environment variables (757 of 765 registered variables affect output). Owner:
    a typed build plan carried to every consumer (new row).
-5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only Luau and Rust use the
-   early, diagnosed target admission. Owner: one admission for every backend (new row).
+5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only MLIR uses the
+   early, diagnosed target admission (the Luau and Rust targets that also did were deleted 2026-11-12). Owner: one admission for every backend (new row).
 6. Facts lost between stages: Python's exact_class is never serialized; escape analysis's
    stack_eligible is set before the lift and the Cranelift reader sees the projected op (INFERRED
    lost; verify). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
@@ -1145,9 +1160,7 @@ only adds attrs and deletes publications, so it is idempotent. Inlining cannot m
 tables in one word: the TIR inliner refuses any callee with an execution context
 (`inliner/eligibility.rs`). A typed target lowering feature, `cold_origin_frame_location` in
 `SimpleIrLoweringFeatures`, gates the pass. It commits a backend to both cold stores and is true
-for native, LLVM and WASM. Luau and Rust keep every publication: Luau publishes line and
-columns with each location and has no code table to recover them from a LocationId, and the
-Rust backend captures no Origin.
+for native, LLVM and WASM; MLIR captures no Origin.
 
 **M2.1. Which release callbacks read the location.** A release can start a finalizer
 (`__del__`, a weakref callback) that reads the frame. Two releases are not reads:
@@ -1476,7 +1489,7 @@ a module eligible. The bind also records the builtin binding guard bits (HF-79) 
 name some code may store, since a cell store never reaches the dictionary's guard state. Every
 layout name whose body store is unconditional, once, at initialization, with no other writer,
 carries an `InitOnce` fact (function, class, module, intrinsic or other) in the build diagnostics
-(`static_module_cells`); its consumer is a later slice (HF-846). An ineligible module keeps its
+(`static_module_cells`); the third consumer below reads it. An ineligible module keeps its
 dictionary and slot tables unchanged, and the diagnostics name the failed fact.
 
 Measured at 20 times `bench_math_numeric`'s size and on `bench_method_defaults`, interleaved
@@ -1498,9 +1511,127 @@ a float or inline-int read adds about 3 instructions of tag test, and a pointer 
 receiver, which the closed-world binding keeps for its `NameError`) about 15 for the inline
 retain and 15 more for the release that follows, about 140 of the loop's 770 instructions per
 iteration. `InitOnce` with proven initialization dominance removes both (HF-846). Not yet compiled:
-foreign `M.x` reads and stores and `del` (one runtime call routed to the cell, HF-845), and the
-175 stdlib modules whose own `globals().pop("_require_intrinsic", None)` keeps them on dictionary
-namespaces (HF-844).
+foreign `M.x` reads and stores and `del` (one runtime call routed to the cell, HF-845).
+
+HF-844 (2026-11-14): 175 stdlib modules end with `globals().pop("_require_intrinsic", None)`,
+which counted as reaching the module's own mapping. At module scope, with its value discarded, a
+literal key and a constant default, that statement equals a `del` that tolerates an unbound name.
+The frontend lowers it to `module_del_global_if_present`, and the HF-226 authority classifies the
+same statements through the same predicate (`own_namespace_literal_delete`); a module that binds
+`globals` in any scope keeps the old reach. `os`, `_abc` and `typing` replaced computed-key loops and a `globals()`
+cache with literal pops and a `global` declaration. `bench_math_numeric`'s 27-module
+closure went from 8 to 17 cell-eligible modules (`math`, `abc`, `copyreg`, `typing`, `os`,
+`_collections_abc`, `importlib`, `zipimport` among them; 18 with `_abc`). `__future__` still
+writes its own namespace by a computed key.
+
+**Third consumer: init-dominated cell reads (lane initonce, HF-846, 2026-11-14).** A read of an
+`InitOnce` cell `M.n` in `M`'s own code that runs only after `n`'s one store is one load:
+`StaticCellLoad`, no operands, no unbound test, no retain. Integration decides it
+(`static_module_cells.init_dominance`) over the init chain (`closed_world_bindings.InitChain`):
+the init function and each body chunk called from exactly one site off every cycle, one CFG per
+function (the frontend's `cfg_analysis`), a chunk's point counting as done after its call only
+when it dominates every normal return of the chunk (an exit that no `exception_source: unwind`
+landing dominates). In the chain the store must dominate the read. In one of `M`'s functions the
+store must dominate every point at which the function may start: each use of the object its
+`func_new` creates (after a store that publishes it, during any other use; the metadata call runs
+nothing) and each direct call by symbol; a reference from another function of `M` starts it no
+earlier than that function (a least fixed point, so recursion adds nothing); a reference from
+another module, an unordered chunk, or no reference at all lets it start at any time, so an
+import cycle never runs a dominated read early. The same chain now decides "unconditional" for
+the F2 and `InitOnce` facts, which the old depth count lost after the first forward jump (every
+class statement emits one). Each `InitOnce` read left checked gets a build diagnostic naming the
+failed fact (`checked_init_once_reads`). The integration stamp is `{cell, init_once}`; the global
+slot pass emits `StaticCellLoad`; `molt_codegen_abi::static_cell::generate_static_cell_load` holds
+the meaning (the cell's offset, one load), and LLVM, Cranelift and WASM each select one load at a
+constant address. Ownership has one more root fact, `static_cell_view_roots`: the cell owns the
+object for the rest of the program, so nothing releases a view, an adopting call or a frame home
+receives a retained reference, and a `Return` retains it. Module retirement now stores `None`,
+never the unbound word, into each bound cell, as CPython's module clearing does: a finalizer that
+runs module code during retirement reads an object. Measured at 20 times `bench_math_numeric`'s
+size, interleaved against origin/main 8e517ccb32 (five runs each), release, macOS arm64, output
+identical: LLVM 4.719 G → 3.806 G instructions retired (-19.3%; 786 → 634 per iteration), user
+0.17 → 0.15 s; Cranelift 9.110 G → 7.546 G (-17.2%), 0.31 → 0.26 s. The `math` receiver read that
+the closed-world binding keeps for its `NameError` is now a dead pure load, which DCE deletes. On
+LLVM the loop's runtime calls are the four direct intrinsic calls (`sqrt` twice, `log2`, `floor`)
+before and after, and compiled-chunk self samples fell from 332 to 226 of about 1,000 (`sample`,
+200 times the size, warm binaries). Cranelift still calls `molt_is_truthy` and
+`exception_pending` each iteration, before and after; that is the shared lowering's (HF-843).
+Remaining: a method's read of its own class (`class_def` may run hooks), direct calls (HF-846
+slice 2) and inline construction (slice 3).
+
+**Fourth consumer: proven direct calls of module functions (lane initonce, HF-846 slice 2a,
+2026-11-14).** A `call_guarded S [f, args]` whose callee `f` is an init-dominated read of an
+`InitOnce(function)` cell is proven when the cell's one store holds the object of `func_new S`
+(no closure), `S`'s def is synchronous with positional parameters only (the typed
+`OpIR::direct_shape` fact the frontend puts on that `func_new`), the call passes exactly `S`'s
+arity, and `S`'s entry adopts its arguments exactly when the call does (a zero-argument call
+adopts nothing). Integration (`static_module_cells.prove_init_once_calls`) marks it
+`proven_target`; any other such call gets a `closed_world_binding_fallbacks` diagnostic naming
+the failed fact. An exact positional call of a positional-only def binds nothing, so no writer
+fact for `__defaults__` or `__kwdefaults__` is needed; `__code__` cannot change, because a
+cell-eligible module's program reads no code object (`code_rebinding`), and `__code__` accepts
+only a code object. The late lowering enters `S` directly: no `FunctionDirectCallEligible` call,
+no `CodeIs`, no slow call. The recursion check stays (`RecursionEnterFast`/`RecursionExitFast`,
+runtime calls owned by the frames slice). Cranelift and WASM lower guarded calls in their own
+backends and ignore the fact until they consume the late lowering. Calls with defaults, keywords
+or `*args` keep the guarded path.
+
+DCE now removes a literal materialization nothing reads (`literal_materialization_opcodes`:
+`ConstStr`, `ConstBytes`, `ConstBigInt`): a source literal is a code constant, CPython never
+allocates one at run time, so its allocation failure is not observable. `fib` had rebuilt its
+own name literal on every call once `StaticCellLoad` stopped reading it (`string_from_bytes`,
+`const_data_literal_lookup` and `memcmp`, about 25% of its samples).
+
+Class facts, step 1. The binding flow made every class statement with a base non-plain, so each
+subclass body "executed arbitrary Python" and every subclass was `dynamic`. A base read whose
+binding is not invalidated and whose one source origin is a plain class statement (metaclass
+`type`, no `__init_subclass__` in its base chain) now keeps the class plain. Under a closed
+namespace premise, stable module classes and constructor folding use named writers (the HF-226
+authority's own deferred writes and foreign writes, plus a module-scope rebinding walk) instead
+of "the module namespace is observable", which any module-level call of a module function set.
+`bench_class_hierarchy`'s `Leaf()` now folds to `object_new_bound`; its method calls still take
+the method sites until closed-world dispatch (slice 2b) proves them.
+
+Measured `bench_fib` (`fib(30)`, 2,692,537 calls, LLVM, release, macOS arm64), interleaved
+against main, output identical, after subtracting the 11.7 M instructions of an empty program:
+slice 1 took 1.381 G -> 1.278 G instructions retired, about 508 -> 470 per call; slice 2a takes
+1.278 G -> 0.752 G (-41%), about 470 -> 275 per call. A C reference with one real call per call
+retires about 9.5 per call. `bench_class_hierarchy` (26.1 G) and
+`bench_method_default_binding` (2.196 G) do not change: their calls are method calls (slice 2b).
+
+#### List items (2026-11-14)
+
+`xs[i]` and `xs[i] = v` compile inline on Cranelift, LLVM and WASM from one generator,
+`molt_codegen_abi::list_item`, over the frame builder's primitives (the method site pattern).
+The fast path admits an exact list at an inline-int index in range after the negative-index
+adjustment: pointer and int tags, a list type id (`TYPE_ID_LIST` or `TYPE_ID_LIST_INT`), no C
+view, an aux kind of `NONE` or `CLASS_INLINE` with zero class bits, then a length load, one
+unsigned bounds compare and the element load. A generic element is retained; a compact int
+element is boxed inline. A store retains the new word, stores it and releases the old one; a
+compact int list stores an inline int's payload. Everything else (a subclass, a sidecar, a
+compact bool list, a bool, big-int or `__index__` index, out of range, another container, a
+free-threaded build) calls the runtime entry the site called before, which keeps IndexError,
+`__index__` and subclass dispatch.
+
+The storage layout made this possible: every list kind keeps one `#[repr(C)]` `MoltVec` whose
+data pointer and length sit at `LIST_STORAGE_DATA_OFFSET` and `LIST_STORAGE_LEN_OFFSET` (`Vec`'s
+field order is not an ABI). The storage kind is a heap fact, read from the type id at each
+access, because a store can promote a compact list to generic words; no type proof selects it.
+An exact list carries no class edge: the runtime allocates every list with a zero inline class
+word, and a subclass instance stores its class there.
+
+Measured (release, macOS arm64, instructions retired, three interleaved runs per binary, output
+identical), against the storage migration alone: the `isinstance(objs[i & 63], str)` loop
+-17.1% on LLVM and -6.2% on Cranelift; `fannkuch_redux.py 9` -17.2% and -10.4%; `bench_list`
+-2.5% and -1.0%; `bench_dict` within 0.4%. Before the change the LLVM loop called
+`molt_getitem_method` every iteration (`index_impl` and `pin_item` held about 20% of self
+samples); after it the read is inline and only `isinstance` remains a runtime call.
+
+Remaining: Cranelift's proven-list lanes (`list_index_fast_path.rs`: raw-int results, a
+loop-hoisted storage observation, BCE and the sum-reduction unroll) still duplicate the
+meaning for proven sites. They retire when the late TIR stage carries loop-invariant storage
+facts, so the shared generator can take a hoisted observation (HF-847); the generator already
+serves every unproven Cranelift site and the generic store.
 
 ### 4.6 Reference counts
 
@@ -1569,8 +1700,8 @@ literal instead of copying it (today it copies: a parity defect this work fixes)
   store; the loser releases its copy). The load sits at the use, so a cold branch costs nothing
   until it runs. A `representation_facts` rule keyed on this opcode makes its result
   `BoxedImmortal`: a producer proof, which the RC contract admits (`inline_refcount.md`).
-- *Consumers.* Native, LLVM and WASM lower the one opcode; the JIT and the Rust and Luau preludes
-  are not affected (they do not consume `const_str`/`const_bytes`/`const_bigint` data segments).
+- *Consumers.* Native, LLVM and WASM lower the one opcode; the JIT is
+  not affected (they do not consume `const_str`/`const_bytes`/`const_bigint` data segments).
 - *Deletions.* Prologue materialization (native `prepare_heap_literals`, WASM entry literal regions)
   and `runtime/molt-runtime/src/const_data_cache.rs` with all its consumers (`builtins/strings.rs`,
   `object/ops_convert.rs`, `state/lifecycle.rs`, `object/immortal_owner_tests.rs`, `lib.rs`). The
@@ -1627,8 +1758,8 @@ a static layout, such as big integers) remain.
 
 ## 5. Staged plan
 
-Each stage is one complete migration: every backend (native/Cranelift, LLVM, WASM, the JIT, and the
-Rust and Luau preludes where they emit the same operations), every runtime consumer, the generated
+Each stage is one complete migration: every backend (native/Cranelift, LLVM, WASM and the JIT),
+every runtime consumer, the generated
 layout, and the tests. The replaced lane is deleted in the same stage.
 
 ### Stage 1: frame records (first stage, concrete)
@@ -1679,8 +1810,7 @@ record's two retains and each home release are runtime calls.
    `molt_frame_set_line_col`, `molt_trace_set_line` (emission sites include `function_compiler.rs:1107`,
    `fc/funcobj.rs:108`, `fc/funcobj.rs:1154`, `shared.rs:1120`). The thread record pointer comes
    from the existing once-per-function `molt_thread_record` call until stage 3.
-4. LLVM, WASM (shadow stack), JIT and the Rust/Luau preludes (`molt-backend-rust/src/rust/prelude/stateful.rs`
-   defines `molt_trace_enter_slot`) emit the same ops.
+4. LLVM, WASM (shadow stack) and the JIT emit the same ops.
 5. Runtime: delete `FRAME_STACK` and `TRACE_FRAME_PUSH_STACK` (`state/tls.rs`) and migrate their
    consumers (about 148 references in 30 files: tracebacks, `sys._getframe`, frame objects and
    `f_back`, `locals_proxy`, warnings, `module_get_global`'s active globals, `super()` context,
@@ -2015,9 +2145,10 @@ first. These sites hold a hand-written allocator today:
 - `runtime/molt-runtime-resource/src/temp_arena.rs:7`: `TempArena`, chunked
   `Vec<Vec<u8>>` storage with tracker charging. The same `Allocator` impl would
   carry the resource-tracker charge that each call site now pairs by hand.
-- `runtime/molt-runtime/src/object/layout.rs:291` and `:554`: `ListIntStorage` and
-  `ListBoolStorage` allocate their owner with `std::alloc::alloc` and charge the
-  tracker separately. A tracking allocator makes `Box::new_in` charge and release
+- `runtime/molt-runtime/src/object/backing.rs` (`tracked_vec_box_with_buffer`):
+  every object-owned sequence storage (`MoltVec<T>`, one `#[repr(C)]` type for
+  generic, int and bool lists alike) charges the tracker for its owner and
+  buffer by hand. A tracking allocator makes `Box::new_in` charge and release
   in one place.
 - `runtime/molt-runtime/src/object/aux_header.rs:409`: the aux sidecar's raw
   `alloc`, same pattern.

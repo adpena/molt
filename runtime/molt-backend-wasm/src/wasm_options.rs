@@ -72,10 +72,6 @@ pub struct WasmCompileOptions {
     pub split_runtime_app_table_base: Option<u32>,
     /// Poll-table slots the bound runtime defines (`MOLT_WASM_RUNTIME_POLL_SLOTS`).
     pub runtime_poll_slots: WasmRuntimePollSlots,
-    /// Enable `return_call` emission (WASM tail-call proposal).
-    /// Disabled by default until the target feature probe proves support; set
-    /// `MOLT_WASM_TAIL_CALL=1` after that probe to opt into the proposal.
-    pub tail_call_enabled: bool,
     /// Enable native WASM exception handling (WASM 3.0 EH proposal).
     /// Enabled by default for non-relocatable wasm output; set
     /// `MOLT_WASM_NATIVE_EH=0` to disable explicitly.
@@ -119,10 +115,6 @@ impl Default for WasmCompileOptions {
                     .unwrap_or_else(|error| panic!("{error}")),
                 Err(_) => WasmRuntimePollSlots::all(),
             },
-            tail_call_enabled: matches!(
-                backend_env::var(BackendEnv::MOLT_WASM_TAIL_CALL).as_deref(),
-                Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
-            ),
             native_eh_enabled: !matches!(
                 backend_env::var(BackendEnv::MOLT_WASM_NATIVE_EH).as_deref(),
                 Ok("0")

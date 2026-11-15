@@ -191,8 +191,8 @@ the schema, tracker behavior and enforcement limitations. The runtime environmen
 settings select that same configuration; they do not establish complete storage
 coverage or one aggregate budget across threads.
 
-Complete runtime enforcement is a V1.0 release blocker (V1-19). Native, WASM,
-LLVM and Luau require evidence for their actual execution and host cells before
+Complete runtime enforcement is a V1.0 release blocker (V1-19). Native, WASM
+and LLVM require evidence for their actual execution and host cells before
 an enforcement or parity claim. Operating-system or engine limits must be
 established independently for deployments that require hard bounds.
 

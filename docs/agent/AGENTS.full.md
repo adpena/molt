@@ -73,7 +73,7 @@ touching code, docs, tests, benchmarks, or roadmap state.
   capability surface. Accidental ambient behavior is a bug.
 - Quality gates are non-negotiable for claimed support, but they are not a
   license to stall implementation with excessive proof loops. Differential
-  tests, conformance suites, CPython regrtest lanes, native/WASM/LLVM/Luau
+  tests, conformance suites, CPython regrtest lanes, native/WASM/LLVM
   target parity, memory custody, sanitizer/runtime checks, and benchmarks must
   back the claims they prove; do not run broad lanes as progress theater.
 - Verification must stay high-signal. Use focused tests, repro shards,
@@ -412,7 +412,7 @@ This rule applies equally to:
 - **Performance**: redesign the hot path, do not add bypass cases
 - **Architecture**: rework the abstraction, do not stack patches on a wrong foundation
 
-Performance contract: molt MUST be faster than CPython on every benchmark, across every target (native, WASM, LLVM, Luau) and every profile (release-fast, dev-fast, debug-with-asserts). Do not declare a perf task complete until measurements confirm it on all targets.
+Performance contract: molt MUST be faster than CPython on every benchmark, across every target (native, WASM, LLVM) and every profile (release-fast, dev-fast, debug-with-asserts). Do not declare a perf task complete until measurements confirm it on all targets.
 
 ### Concrete examples of partial implementations to reject
 
@@ -534,8 +534,7 @@ Read these first instead of rediscovering project structure:
     backend-facing scalar/container representation plans.
   - `runtime/molt-backend-native/src/native_backend/`,
     `runtime/molt-backend-native/src/llvm_backend/`,
-    `runtime/molt-backend-wasm/src/`, `runtime/molt-backend-luau/src/`, and
-    `runtime/molt-backend-rust/src/` for backend-specific lowering.
+    and `runtime/molt-backend-wasm/src/` for backend-specific lowering.
     `molt-backend` reexports backend leaf APIs behind feature flags; do not
     add new backend encoder, source-emission, or ABI authority under
     `runtime/molt-backend/src/`.
@@ -616,9 +615,8 @@ Read these first instead of rediscovering project structure:
     `libmolt` work.
   - `docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md`
     routes third-party ecosystem claims.
-  - `docs/spec/areas/compiler/backend_representation.generated.md` and
-    `docs/spec/areas/compiler/luau_support_matrix.generated.md` route backend
-    representation and Luau support evidence.
+  - `docs/spec/areas/compiler/backend_representation.generated.md` routes backend
+    representation evidence.
 
 ## Top Priority: Tinygrad + DFlash Fidelity (Non-Negotiable, Turn Blocker)
 - Exact tinygrad semantics and API shape are the public ML contract. No drift is acceptable.
@@ -1580,7 +1578,6 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
   - Optional (recommended on macOS when many agents are active): explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path to avoid accidental fallback to ad-hoc/default targets that can trigger duplicate rebuild storms.
   - Optional: set `MOLT_DIFF_RUN_LOCK_WAIT_SEC=<seconds>` to control how long a diff run waits for the shared run lock (`<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`, default 900s). Set `MOLT_DIFF_RUN_LOCK_POLL_SEC=<seconds>` to tune lock polling cadence.
   - Optional: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to force daemon mode for diff runs. Default is platform-safe auto (`0` on macOS, `1` elsewhere) to avoid dyld import-format instability.
-  - Optional: set `MOLT_DIFF_DYLD_PREFLIGHT=1|0` to select the native binary preflight (default on macOS); a detected defect fails that attempt.
   - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`, or `MOLT_DIFF_FORCE_REBUILD=1` to request rebuilds explicitly. Defaults keep caching enabled and forced rebuilds off; failures never change these settings or the selected roots.
   - Optional: set `MOLT_DIFF_BATCH_COMPILE_SERVER=1` to select persistent batch builds (default off). Startup or request failure is terminal for the selected attempt.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: use the custody-aware sentinel, for example `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`. Keep one supervising diff run per shared target to minimize contention and memory spikes.

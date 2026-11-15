@@ -1015,8 +1015,8 @@ def test_required_backend_output_survives_eviction_after_each_cache_publication(
         BackendArtifactKind,
     )
 
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
-    source = tmp_path / "private.rs"
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
+    source = tmp_path / "private.mlir"
     payload = b'fn main() { println!("required output"); }\n'
     source.write_bytes(payload)
     cache = tmp_path / "cache"
@@ -1042,7 +1042,7 @@ def test_required_backend_output_survives_eviction_after_each_cache_publication(
     monkeypatch.setattr(
         backend_cache, "_publish_immutable_backend_cache_artifact", publish_then_evict
     )
-    output = tmp_path / "output.rs"
+    output = tmp_path / "output.mlir"
     staged = backend_cache._stage_backend_output_and_caches(
         tmp_path,
         source,

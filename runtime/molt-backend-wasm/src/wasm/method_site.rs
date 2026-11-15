@@ -127,7 +127,7 @@ pub(in crate::wasm) fn emit_method_site_bodies(
 
 /// One attached body with `logical` i64 parameters (the RC admission last)
 /// returning an i64 its `generate` leaves on the operand stack.
-fn emit_body(
+pub(in crate::wasm) fn emit_body(
     backend: &mut WasmBackend,
     reloc: bool,
     logical: usize,
@@ -153,7 +153,7 @@ fn emit_body(
         },
     );
     generate(&mut b);
-    assert!(b.closed(), "a method site body left a control label open");
+    assert!(b.closed(), "a generated body left a control label open");
     func.instruction(&Instruction::End);
     backend.codes.function(&func);
     backend.func_count += 1;

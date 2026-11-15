@@ -317,21 +317,6 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
 }
 
 #[test]
-fn preserved_runtime_call_rejects_name_only_symbol_drift() {
-    let ctx = Context::create();
-    let mut backend = make_backend(&ctx);
-    // `binop` names no runtime entry, so the spelled admission adds nothing
-    // and no symbol is formatted from the kind.
-    admit_runtime_entry(&mut backend, "molt_binop");
-    assert!(molt_ir::runtime_fn_generated::preserved_op_runtime_fn(OpKind::Binop).is_none());
-
-    let err = lower_preserved_kind_ir(&backend, OpKind::Binop, 2, true, None)
-        .expect_err("a kind with no runtime entry must fail before LLVM declaration");
-    assert_lowering_error_contains(&err, "binop");
-    assert!(backend.module.get_function("molt_binop").is_none());
-}
-
-#[test]
 #[should_panic(expected = "LLVM function type mismatch for `gen_fn`")]
 fn llvm_symbol_signature_mismatch_rejects_function_symbol_reuse() {
     let ctx = Context::create();

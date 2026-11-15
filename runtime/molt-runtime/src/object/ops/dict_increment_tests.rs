@@ -84,10 +84,22 @@ fn arithmetic_value(py: &PyToken<'_>, method_name: &[u8]) -> (u64, u64, u64) {
     (value, class, function)
 }
 
-/// The in-place increment every fused lane commits through. Called directly it
-/// runs the value's `+` exactly as the statement does, callbacks included.
+/// The statement authority every lane commits through, with the key hashed
+/// once as its callers do. Called directly it runs the value's `+` exactly as
+/// the statement does, callbacks included.
 unsafe fn in_place_increment(py: &PyToken<'_>, dictionary: u64, key: u64, delta: u64) -> bool {
-    unsafe { dict_inc_in_place(py, obj_from_bits(dictionary).as_ptr().unwrap(), key, delta) }
+    unsafe {
+        let Some(hash) = dict_key_hash(py, key) else {
+            return false;
+        };
+        dict_inc_with_hash_in_place(
+            py,
+            obj_from_bits(dictionary).as_ptr().unwrap(),
+            key,
+            hash,
+            delta,
+        )
+    }
 }
 
 /// The fused statement: `Some(done)`, or `None` with the exception pending.

@@ -64,8 +64,7 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
 - Native AOT compilation uses Cranelift by default; LLVM is opt-in and included
   in the declared production compiler feature set. Installed LLVM execution
   still requires its delivered-artifact and release-matrix qualification; the
-  feature declaration alone does not establish it. The Rust source emitter is
-  a separate experimental target, not the native backend.
+  feature declaration alone does not establish it.
 - Native Cranelift codegen decomposition is active at function-boundary
   granularity:
   `runtime/molt-backend-native/src/native_backend/function_compiler/fc/` owns extracted op-family
@@ -105,7 +104,7 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   `sys.version_info` bootstrap. Native/WASM runtime and isolate entry paths stamp
   the selected target version before user code/importlib gates run. Runtime
   version-gated stdlib decisions read that runtime state instead of ambient
-  process env. The experimental Rust and Luau source emitters implement
+  process env. The experimental source emitters implement
   statically lowered, closed-world bootstrap/cache operations, including
   target-version `sys` metadata. That is not general Python import support:
   residual `module_import`, `module_import_from`, and `module_import_star`
@@ -510,25 +509,10 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   active contract is
   `docs/spec/areas/wasm/0970_BROWSER_NUMERIC_KERNEL_EMBED.md`; generated
   split-runtime embed artifacts must keep using generated WASM ABI facts.
-- Luau is a checked source-emission target for the current/future Luau surface;
-  current OpIR support is generated in
-  `docs/spec/areas/compiler/luau_support_matrix.generated.md`.
-- Luau source emission now participates in the shared cached-TIR custody path.
-  `runtime/molt-tir/src/tir/pipeline_cache.rs` owns Luau's cache namespace,
-  SimpleIR-to-TIR lift, per-function TIR pipeline, module assembly,
-  `run_module_pipeline` handoff, selective fail-closed back-conversion, and
-  source-file-aware cache keying. The aggregate backend keeps only Luau target
-  policy and stats formatting. Guarded evidence:
-  `luau_tir_module_pipeline_inlines_direct_local_calls`.
-- Luau contains emitter helpers and focused helper-level tests for operations
-  that remain outside the admitted target surface; helper presence is not
-  target support. The generated Luau support matrix is the sole admission
-  authority. An operation remains unsupported until that contract admits it and
-  checked emission plus CPython-vs-Luau execution prove the claimed semantics.
-- Native, WASM, LLVM, Luau, and fact-graph backend-facing lowering now run
+- Native, WASM, LLVM, and fact-graph backend-facing lowering now run
   through the TIR pipeline; the old environment-variable opt-out has been
   removed so SimpleIR transport metadata cannot bypass typed-IR validation.
-  Native, LLVM, WASM, Luau, and fact-graph diagnostics share
+  Native, LLVM, WASM, and fact-graph diagnostics share
   `runtime/molt-tir/src/tir/pipeline_cache.rs` for cached SimpleIR-to-TIR
   custody, module-phase handoff, selective back-conversion or owned-TIR return,
   source-file-aware cache keys, and skip-path terminal drops, so backend code no
@@ -550,7 +534,7 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
 - The TIR RC drop-insertion substrate is implemented as a terminal drop phase
   (`runtime/molt-passes/src/tir/drop_phase.rs`) backed by
   representation-filtered liveness (`tir/passes/liveness.rs`) and
-  `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, Luau, and native
+  `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, and native
   Cranelift for the proven shared-drop and ExceptionRegion slices through the
   shared TIR authority. `PassStats` now records metadata-only authority changes
   through `attrs_changed`, so zero-physical-drop `drop_inserted` functions are
@@ -670,7 +654,7 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   enter one `_profiling_popen` helper with `MOLT_BENCH` process-group custody
   and shared force-close cleanup instead of scattered raw `Popen` calls.
   `tools/molt_dev.py` now routes git/interpreter probes, live manifest gates,
-  toolchain marker probes, worktree cleanup, and difftest byte captures through
+  toolchain marker probes and worktree cleanup through
   shared guard helpers; detached daemon execution uses fork/exec/wait custody
   instead of `subprocess.call`, publishes `cmd.json`/`sid`/`pid`/`rc` state
   files atomically, and leaves `probe_pid` as the only allowlisted low-level
@@ -726,15 +710,13 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   same shared drop path. The old native-only CreationRef lifetime carve-out and
   exception-pop side path are deleted. Backend consumption evidence now covers
   LLVM lowering order, WASM host-EH/native-EH import behavior plus the LIR
-  `dec_ref` runtime-call lane, and Luau checked lowering of shared drop
-  artifacts as GC no-ops after the Luau target-info terminal drop phase. Luau
-  and LLVM now also have executed runtime proof for
+  `dec_ref` runtime-call lane. LLVM now also has executed runtime proof for
   `tests/differential/memory/exception_raise_catch_loop_leak.py`, whose
-  generated artifacts print `500000` under `luau` and `--target llvm --release`.
+  generated artifact prints `500000` under `--target llvm --release`.
   Validator fail-closed
   coverage now includes missing-pop, ambiguous-depth, path-alternative pop, loop
   re-entry close-boundary, shared `exception_pop` splitting with block-arg
-  payloads, malformed Luau block structure, and terminal
+  payloads, and terminal
   drop-pipeline diagnostics. The prior generated-WASM structural validation
   blocker is fixed: `importlib_import_transaction` now registers the same
   five-argument ABI consumed by its callable wrapper, and the linked artifact
@@ -1079,10 +1061,8 @@ regression coverage, not an installed release receipt or other-platform proof.
 - CPython coverage is incomplete across language, stdlib, and target-specific
   behavior.
 - Native and WASM parity is still incomplete for several claimed surfaces.
-- Luau parity is incomplete and must be extended through checked-build,
-  static-analysis, and CPython-vs-Luau evidence rather than silent stub emission.
 - Native RC ownership now uses the same TIR DropInsertion activation path as
-  LLVM/WASM/Luau for the proven ExceptionRegion slice. Remaining native RC work
+  LLVM/WASM for the proven ExceptionRegion slice. Remaining native RC work
   is deletion of broader automatic temp-RC/value-tracking lanes once shared
   drop/codegen facts cover their full ownership surface. The old native-local
   CreationRef/MatchRef maps and `exception_pop` release side path are gone; no
@@ -1099,9 +1079,7 @@ regression coverage, not an installed release receipt or other-platform proof.
   exception-pop side path are deleted. Checked backend consumption evidence now
   covers LLVM lowering order, WASM host-EH/native-EH
   import behavior plus the LIR `dec_ref` runtime-call lane, shared
-  `exception_pop` block-arg split/drop dominance, and Luau lowering of
-  shared `drop_inserted` / `exception_region_drops_inserted` / `inc_ref` /
-  `dec_ref` / `release` artifacts as GC no-ops plus executed Luau and LLVM
+  `exception_pop` block-arg split/drop dominance, plus executed LLVM
   runtime proof for the raise/catch leak loop. WASM now has runtime differential
   proof for that focused leak loop; completion still requires broader WASM
   `HandlerState` parity and the wider
@@ -1121,7 +1099,7 @@ regression coverage, not an installed release receipt or other-platform proof.
   `tests/differential/memory/exception_raise_catch_loop_leak.py`. This closes
   the raise/catch leak-loop runtime proof for WASM; broader WASM
   `HandlerState` parity remains open. A
-  2026-06-12 targeted `bench_exception_heavy` hot-only after-Luau-parity rerun
+  2026-06-12 targeted `bench_exception_heavy` hot-only rerun
   produced valid in-binary cycle attribution (`inner_loops=40`, launch/page-in
   0.0%, top in-binary frames `molt_runtime::object::dec_ref_ptr` 10.2%,
   `molt_runtime::concurrency::gil::GilGuard::new` 10.1%, and
@@ -1183,7 +1161,7 @@ regression coverage, not an installed release receipt or other-platform proof.
   classifications. Native uses the plan for raw-primary carrier sets, scalar
   slot escape safety, scalar store-target discovery, and operation lane
   preference; raw-primary sets remain stricter carrier-safety subsets. Legacy
-  WASM and Luau scalar fast paths now consume the same plan for
+  WASM scalar fast paths now consume the same plan for
   integer-family arithmetic, comparison, truthiness, and index-key scalar
   decisions instead of trusting scalar `type_hint` transport metadata.
   Generic container annotations now enter TIR as structured `TirType` facts
@@ -1191,7 +1169,7 @@ regression coverage, not an installed release receipt or other-platform proof.
   remaining opaque string hints; malformed, dynamic, or unsupported compound
   hints stay `DynBox`.
   Backend semantic container dispatch now reads those facts through the shared
-  representation plan for Luau, WASM import selection/emission, native
+  representation plan for WASM import selection/emission, native
   `len`/`contains`, and LLVM `len`; `container_type` / `type_hint` strings
   alone no longer select those specialized paths. Semantic `list[int]` remains
   distinct from flat `list_int` storage proof, so direct storage optimizations
@@ -1512,9 +1490,6 @@ regression coverage, not an installed release receipt or other-platform proof.
   - native `build` / `run` / `compare` on `dev` and `release`
   - LLVM release parity on the covered slice
   - linked-WASM CLI build plus Node execution
-  - Luau checked emission, generated support-matrix freshness, runner
-    availability, Rust backend/lowering regressions, and targeted
-    CPython-vs-Luau parity smoke
   - conformance and benchmark entrypoints on the same CLI validation surface
   - honest failure surfaces for intentionally unsupported dynamic execution
 - Compatibility evidence is tracked in the differential suites, generated

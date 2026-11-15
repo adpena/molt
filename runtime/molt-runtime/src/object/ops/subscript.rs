@@ -1550,7 +1550,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                                 ptr,
                                 new_len,
                                 |elems| {
-                                    elems.splice(s..e, src_bytes.iter().copied());
+                                    elems.splice_to_vec(s..e, src_bytes.iter().copied());
                                 },
                             )
                             .is_none()
@@ -2049,7 +2049,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                                 ptr,
                                 len - (e - s),
                                 |elems| {
-                                    elems.drain(s..e);
+                                    elems.drain_to_vec(s..e);
                                 },
                             )
                             .is_none()
@@ -2219,9 +2219,8 @@ unsafe fn sequence_contains_builtin(py: &PyToken<'_>, ptr: *mut u8, needle: u64)
     if let Some(needle) = inline_integer {
         match unsafe { object_type_id(ptr) } {
             TYPE_ID_LIST_INT => {
-                let found = unsafe { crate::object::layout::list_int_vec_ref(ptr) }
-                    .iter()
-                    .any(|&value| value == needle);
+                let found =
+                    unsafe { crate::object::layout::list_int_vec_ref(ptr) }.contains(&needle);
                 return MoltObject::from_bool(found).bits();
             }
             TYPE_ID_LIST_BOOL => {

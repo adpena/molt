@@ -8,8 +8,8 @@ use crate::{
     string_len,
 };
 
-pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr as *mut *mut Vec<u64>) }
+pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut super::molt_vec::MoltVec<u64> {
+    unsafe { *(ptr as *mut *mut super::molt_vec::MoltVec<u64>) }
 }
 
 /// Inline string/bytes storage is `[len, data[0..len], 0]` after MoltHeader.
@@ -59,9 +59,10 @@ impl InlineBytesStorage {
     }
 }
 
-/// String-only immutable-content fact, stored after the shared inline NUL.
-/// Length/data offsets and bytes storage are unchanged. All fresh and resized
-/// storage starts Unknown; producers may publish a fact only after filling it.
+/// String-only immutable-content fact, stored after the shared inline NUL in
+/// the trailer byte's low two bits. Length/data offsets and bytes storage are
+/// unchanged. All fresh and resized storage starts Unknown; producers may
+/// publish a fact only after filling it.
 #[repr(u8)]
 #[derive(Clone, Copy)]
 enum StringAscii {
@@ -69,6 +70,14 @@ enum StringAscii {
     Ascii = 1,
     NonAscii = 2,
 }
+
+const STRING_ASCII_MASK: u8 = 0b011;
+/// Trailer bit: a UTF-8 side cache (`ops_string_utf8`) holds an entry keyed
+/// by this string's address. Set by each insert, before it publishes the
+/// entry; read by `utf8_cache_forget`, so a string that was never cached is
+/// freed or resized without touching the caches. Fresh and resized storage
+/// starts clear.
+const STRING_SIDE_CACHED: u8 = 0b100;
 
 pub(crate) struct StringStorage;
 
@@ -105,7 +114,9 @@ impl StringStorage {
     }
 
     pub(crate) unsafe fn known_ascii(object: *mut u8) -> Option<bool> {
-        match unsafe { &*Self::ascii_slot(object) }.load(std::sync::atomic::Ordering::Acquire) {
+        match unsafe { &*Self::ascii_slot(object) }.load(std::sync::atomic::Ordering::Acquire)
+            & STRING_ASCII_MASK
+        {
             value if value == StringAscii::Ascii as u8 => Some(true),
             value if value == StringAscii::NonAscii as u8 => Some(false),
             value if value == StringAscii::Unknown as u8 => None,
@@ -114,9 +125,11 @@ impl StringStorage {
     }
 
     /// Bytes must be initialized and immutable to other readers. Concurrent
-    /// first readers may compute the same fact; publication is convergent.
+    /// first readers may compute the same fact; publication is convergent:
+    /// the state moves from Unknown (zero) to one value, so an OR publishes
+    /// it without disturbing the side-cache bit.
     pub(crate) unsafe fn publish_ascii(object: *mut u8, ascii: bool) {
-        unsafe { &*Self::ascii_slot(object) }.store(
+        unsafe { &*Self::ascii_slot(object) }.fetch_or(
             if ascii {
                 StringAscii::Ascii
             } else {
@@ -124,6 +137,19 @@ impl StringStorage {
             } as u8,
             std::sync::atomic::Ordering::Release,
         );
+    }
+
+    /// Record that a UTF-8 side cache keys an entry by this string. Call
+    /// before the entry is published.
+    pub(crate) unsafe fn mark_side_cached(object: *mut u8) {
+        unsafe { &*Self::ascii_slot(object) }
+            .fetch_or(STRING_SIDE_CACHED, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) unsafe fn has_side_caches(object: *mut u8) -> bool {
+        unsafe { &*Self::ascii_slot(object) }.load(std::sync::atomic::Ordering::Acquire)
+            & STRING_SIDE_CACHED
+            != 0
     }
 
     pub(crate) unsafe fn is_ascii(object: *mut u8) -> bool {
@@ -202,190 +228,14 @@ impl InlineListInt {
     }
 }
 
-/// Layout-stable storage for `TYPE_ID_LIST_INT` objects.
+/// `TYPE_ID_LIST_INT` storage: the tracked `MoltVec` every list kind shares,
+/// whose data pointer and length sit at `molt_codegen_abi::LIST_STORAGE_*`.
 /// Every slot is admitted by InlineListInt; no heap owner is erased.
-///
-/// `#[repr(C)]` guarantees field order: `[data, len, cap]` at offsets `[0, 8, 16]`.
-/// The Cranelift inline codegen depends on these offsets for direct load/store
-/// without function calls.  Changing field order here WILL break the JIT.
-///
-/// Replaces `Box<Vec<i64>>` which has `#[repr(Rust)]` layout — the compiler
-/// reorders fields arbitrarily between versions (on aarch64-apple-darwin
-/// with Rust 1.94 it is `[cap@0, data@8, len@16]`, NOT `[data@0, len@8, cap@16]`).
-#[repr(C)]
-pub struct ListIntStorage {
-    pub data: *mut i64,
-    pub len: usize,
-    pub cap: usize,
-    owner_bytes: usize,
-    buffer_bytes: usize,
-}
+pub(crate) type ListIntStorage = super::molt_vec::MoltVec<i64>;
 
-impl ListIntStorage {
-    #[inline]
-    fn owner_bytes() -> usize {
-        std::mem::size_of::<Self>()
-    }
-
-    #[inline]
-    fn buffer_bytes(capacity: usize) -> Option<usize> {
-        capacity.checked_mul(std::mem::size_of::<i64>())
-    }
-
-    pub fn with_capacity(capacity: usize) -> Option<*mut ListIntStorage> {
-        let requested_buffer = Self::buffer_bytes(capacity)?;
-        let charge = Self::owner_bytes().checked_add(requested_buffer)?;
-        if !crate::object::backing::charge_alloc(charge) {
-            return None;
-        }
-        let mut vec = Vec::new();
-        if capacity > 0 && vec.try_reserve_exact(capacity).is_err() {
-            crate::object::backing::release_alloc(charge);
-            return None;
-        }
-        let Some(actual_buffer) = Self::buffer_bytes(vec.capacity()) else {
-            drop(vec);
-            crate::object::backing::release_alloc(charge);
-            return None;
-        };
-        if actual_buffer > requested_buffer {
-            let extra = actual_buffer - requested_buffer;
-            if !crate::object::backing::charge_grow(extra) {
-                drop(vec);
-                crate::object::backing::release_alloc(charge);
-                return None;
-            }
-        } else if actual_buffer < requested_buffer {
-            crate::object::backing::release_grow(requested_buffer - actual_buffer);
-        }
-        Self::from_reserved_vec(vec, Self::owner_bytes(), actual_buffer)
-    }
-
-    pub(crate) fn filled(len: usize, value: InlineListInt) -> Option<*mut ListIntStorage> {
-        let ptr = Self::with_capacity(len)?;
-        unsafe {
-            let storage = &mut *ptr;
-            let vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
-            let mut vec = vec;
-            vec.resize(len, value.raw());
-            storage.data = vec.as_mut_ptr();
-            storage.len = vec.len();
-            storage.cap = vec.capacity();
-            std::mem::forget(vec);
-        }
-        Some(ptr)
-    }
-
-    fn from_reserved_vec(
-        mut vec: Vec<i64>,
-        owner_bytes: usize,
-        buffer_bytes: usize,
-    ) -> Option<*mut ListIntStorage> {
-        let storage = ListIntStorage {
-            data: vec.as_mut_ptr(),
-            len: vec.len(),
-            cap: vec.capacity(),
-            owner_bytes,
-            buffer_bytes,
-        };
-        let layout = std::alloc::Layout::new::<ListIntStorage>();
-        let raw = unsafe { std::alloc::alloc(layout) as *mut ListIntStorage };
-        if raw.is_null() {
-            crate::object::backing::release_alloc(owner_bytes.saturating_add(buffer_bytes));
-            return None;
-        }
-        std::mem::forget(vec);
-        unsafe {
-            std::ptr::write(raw, storage);
-        }
-        Some(raw)
-    }
-
-    /// Reconstruct a `Vec<i64>` that owns the buffer.
-    ///
-    /// # Safety
-    /// Must only be called once (e.g. during dealloc).  After this call
-    /// the `ListIntStorage`'s `data` pointer is invalid.
-    pub unsafe fn into_vec(self) -> Vec<i64> {
-        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
-        crate::object::backing::release_alloc(self.owner_bytes.saturating_add(self.buffer_bytes));
-        vec
-    }
-
-    pub unsafe fn reserve_for_len(&mut self, required_len: usize) -> bool {
-        if required_len <= self.cap {
-            return true;
-        }
-        let target_cap = required_len.max(self.cap.saturating_mul(2)).max(4);
-        let Some(old_bytes) = self.cap.checked_mul(std::mem::size_of::<i64>()) else {
-            return false;
-        };
-        let Some(target_bytes) = target_cap.checked_mul(std::mem::size_of::<i64>()) else {
-            return false;
-        };
-        if !crate::object::backing::charge_grow(target_bytes) {
-            return false;
-        }
-
-        let mut replacement = Vec::new();
-        if replacement.try_reserve_exact(target_cap).is_err() {
-            crate::object::backing::release_grow(target_bytes);
-            return false;
-        }
-
-        let Some(actual_bytes) = replacement
-            .capacity()
-            .checked_mul(std::mem::size_of::<i64>())
-        else {
-            crate::object::backing::release_grow(target_bytes);
-            return false;
-        };
-        if actual_bytes > target_bytes {
-            let extra = actual_bytes - target_bytes;
-            if !crate::object::backing::charge_grow(extra) {
-                drop(replacement);
-                crate::object::backing::release_grow(target_bytes);
-                return false;
-            }
-        } else if actual_bytes < target_bytes {
-            crate::object::backing::release_grow(target_bytes - actual_bytes);
-        }
-
-        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
-        replacement.extend_from_slice(vec.as_slice());
-        drop(vec);
-        self.data = replacement.as_mut_ptr();
-        self.len = replacement.len();
-        self.cap = replacement.capacity();
-        self.buffer_bytes = actual_bytes;
-        crate::object::backing::release_grow(old_bytes);
-        std::mem::forget(replacement);
-        true
-    }
-
-    /// Append an i64 value to the storage, growing the buffer if needed.
-    ///
-    /// Uses the same growth strategy as `Vec<i64>::push`: doubles capacity
-    /// when full, amortizing allocation cost to O(1) per element.
-    ///
-    /// This avoids the full promote→NaN-box→push→re-wrap path that
-    /// `molt_list_append` would otherwise take, keeping the list in its
-    /// compact `TYPE_ID_LIST_INT` representation.
-    ///
-    /// # Safety
-    /// `self` must be a valid, heap-allocated `ListIntStorage` whose `data`
-    /// pointer owns its buffer (as established by `from_vec`).
-    pub(crate) unsafe fn push(&mut self, value: InlineListInt) -> bool {
-        if self.len == self.cap && !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
-            return false;
-        }
-        unsafe {
-            std::ptr::write(self.data.add(self.len), value.raw());
-        }
-        self.len += 1;
-        true
-    }
-}
+/// `TYPE_ID_LIST_BOOL` storage: the shared tracked `MoltVec`, one `u8` per
+/// element (0 = False, 1 = True). Bools are inline values, never refcounted.
+pub(crate) type ListBoolStorage = super::molt_vec::MoltVec<u8>;
 
 /// Read the `ListIntStorage` pointer from a `TYPE_ID_LIST_INT` object's data area.
 #[inline]
@@ -393,262 +243,10 @@ pub(crate) unsafe fn list_int_storage_ptr(ptr: *mut u8) -> *mut ListIntStorage {
     unsafe { *(ptr as *mut *mut ListIntStorage) }
 }
 
-/// Read the backing data from a `TYPE_ID_LIST_INT` object as a slice.
-/// The layout stores raw i64 values (not NaN-boxed).
-pub(crate) unsafe fn list_int_vec_ref(ptr: *mut u8) -> ListIntSliceRef {
-    unsafe {
-        let storage = &*list_int_storage_ptr(ptr);
-        ListIntSliceRef {
-            data: storage.data,
-            len: storage.len,
-        }
-    }
-}
-
-/// Thin wrapper providing `Vec<i64>`-like interface for `ListIntStorage`.
-/// Avoids depending on `Vec` internal layout while maintaining call-site compatibility.
-pub(crate) struct ListIntSliceRef {
-    data: *const i64,
-    len: usize,
-}
-
-impl ListIntSliceRef {
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[i64] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len) }
-    }
-
-    #[inline]
-    pub fn iter(&self) -> std::slice::Iter<'_, i64> {
-        self.as_slice().iter()
-    }
-}
-
-impl std::ops::Index<usize> for ListIntSliceRef {
-    type Output = i64;
-    #[inline]
-    fn index(&self, index: usize) -> &i64 {
-        assert!(index < self.len, "ListIntSliceRef index out of bounds");
-        unsafe { &*self.data.add(index) }
-    }
-}
-
-/// Layout-stable storage for `TYPE_ID_LIST_BOOL` objects.
-///
-/// `#[repr(C)]` guarantees field order: `[data, len, cap]` at offsets `[0, 8, 16]`.
-/// Each element is a single `u8` (0 = False, 1 = True), giving 8x memory savings
-/// over storing NaN-boxed bools in a `Vec<u64>`.
-///
-/// No refcounting needed — bools are inline NaN-boxed values with no heap allocation.
-#[repr(C)]
-pub struct ListBoolStorage {
-    pub data: *mut u8,
-    pub len: usize,
-    pub cap: usize,
-    owner_bytes: usize,
-    buffer_bytes: usize,
-}
-
-impl ListBoolStorage {
-    #[inline]
-    fn owner_bytes() -> usize {
-        std::mem::size_of::<Self>()
-    }
-
-    #[inline]
-    fn buffer_bytes(capacity: usize) -> Option<usize> {
-        capacity.checked_mul(std::mem::size_of::<u8>())
-    }
-
-    pub fn with_capacity(capacity: usize) -> Option<*mut ListBoolStorage> {
-        let requested_buffer = Self::buffer_bytes(capacity)?;
-        let charge = Self::owner_bytes().checked_add(requested_buffer)?;
-        if !crate::object::backing::charge_alloc(charge) {
-            return None;
-        }
-        let mut vec = Vec::new();
-        if capacity > 0 && vec.try_reserve_exact(capacity).is_err() {
-            crate::object::backing::release_alloc(charge);
-            return None;
-        }
-        let Some(actual_buffer) = Self::buffer_bytes(vec.capacity()) else {
-            drop(vec);
-            crate::object::backing::release_alloc(charge);
-            return None;
-        };
-        if actual_buffer > requested_buffer {
-            let extra = actual_buffer - requested_buffer;
-            if !crate::object::backing::charge_grow(extra) {
-                drop(vec);
-                crate::object::backing::release_alloc(charge);
-                return None;
-            }
-        } else if actual_buffer < requested_buffer {
-            crate::object::backing::release_grow(requested_buffer - actual_buffer);
-        }
-        Self::from_reserved_vec(vec, Self::owner_bytes(), actual_buffer)
-    }
-
-    pub fn filled(len: usize, value: u8) -> Option<*mut ListBoolStorage> {
-        let ptr = Self::with_capacity(len)?;
-        unsafe {
-            let storage = &mut *ptr;
-            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
-            vec.resize(len, value);
-            storage.data = vec.as_mut_ptr();
-            storage.len = vec.len();
-            storage.cap = vec.capacity();
-            std::mem::forget(vec);
-        }
-        Some(ptr)
-    }
-
-    pub fn from_slice(slice: &[u8]) -> Option<*mut ListBoolStorage> {
-        let ptr = Self::with_capacity(slice.len())?;
-        unsafe {
-            let storage = &mut *ptr;
-            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
-            vec.extend_from_slice(slice);
-            storage.data = vec.as_mut_ptr();
-            storage.len = vec.len();
-            storage.cap = vec.capacity();
-            std::mem::forget(vec);
-        }
-        Some(ptr)
-    }
-
-    pub fn repeated_slice(slice: &[u8], times: usize) -> Option<*mut ListBoolStorage> {
-        let total = slice.len().checked_mul(times)?;
-        let ptr = Self::with_capacity(total)?;
-        unsafe {
-            let storage = &mut *ptr;
-            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
-            for _ in 0..times {
-                vec.extend_from_slice(slice);
-            }
-            storage.data = vec.as_mut_ptr();
-            storage.len = vec.len();
-            storage.cap = vec.capacity();
-            std::mem::forget(vec);
-        }
-        Some(ptr)
-    }
-
-    fn from_reserved_vec(
-        mut vec: Vec<u8>,
-        owner_bytes: usize,
-        buffer_bytes: usize,
-    ) -> Option<*mut ListBoolStorage> {
-        let storage = ListBoolStorage {
-            data: vec.as_mut_ptr(),
-            len: vec.len(),
-            cap: vec.capacity(),
-            owner_bytes,
-            buffer_bytes,
-        };
-        let layout = std::alloc::Layout::new::<ListBoolStorage>();
-        let raw = unsafe { std::alloc::alloc(layout) as *mut ListBoolStorage };
-        if raw.is_null() {
-            crate::object::backing::release_alloc(owner_bytes.saturating_add(buffer_bytes));
-            return None;
-        }
-        std::mem::forget(vec);
-        unsafe {
-            std::ptr::write(raw, storage);
-        }
-        Some(raw)
-    }
-
-    /// Reconstruct a `Vec<u8>` that owns the buffer.
-    ///
-    /// # Safety
-    /// Must only be called once (e.g. during dealloc).  After this call
-    /// the `ListBoolStorage`'s `data` pointer is invalid.
-    pub unsafe fn into_vec(self) -> Vec<u8> {
-        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
-        crate::object::backing::release_alloc(self.owner_bytes.saturating_add(self.buffer_bytes));
-        vec
-    }
-
-    pub unsafe fn reserve_for_len(&mut self, required_len: usize) -> bool {
-        if required_len <= self.cap {
-            return true;
-        }
-        let target_cap = required_len.max(self.cap.saturating_mul(2)).max(8);
-        let Some(old_bytes) = self.cap.checked_mul(std::mem::size_of::<u8>()) else {
-            return false;
-        };
-        let Some(target_bytes) = target_cap.checked_mul(std::mem::size_of::<u8>()) else {
-            return false;
-        };
-        if !crate::object::backing::charge_grow(target_bytes) {
-            return false;
-        }
-
-        let mut replacement = Vec::new();
-        if replacement.try_reserve_exact(target_cap).is_err() {
-            crate::object::backing::release_grow(target_bytes);
-            return false;
-        }
-
-        let Some(actual_bytes) = replacement
-            .capacity()
-            .checked_mul(std::mem::size_of::<u8>())
-        else {
-            crate::object::backing::release_grow(target_bytes);
-            return false;
-        };
-        if actual_bytes > target_bytes {
-            let extra = actual_bytes - target_bytes;
-            if !crate::object::backing::charge_grow(extra) {
-                drop(replacement);
-                crate::object::backing::release_grow(target_bytes);
-                return false;
-            }
-        } else if actual_bytes < target_bytes {
-            crate::object::backing::release_grow(target_bytes - actual_bytes);
-        }
-
-        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
-        replacement.extend_from_slice(vec.as_slice());
-        drop(vec);
-        self.data = replacement.as_mut_ptr();
-        self.len = replacement.len();
-        self.cap = replacement.capacity();
-        self.buffer_bytes = actual_bytes;
-        crate::object::backing::release_grow(old_bytes);
-        std::mem::forget(replacement);
-        true
-    }
-
-    /// Append a u8 value (0 = False, 1 = True) to the storage, growing
-    /// the buffer if needed.
-    ///
-    /// Uses the same growth strategy as `Vec<u8>::push`: doubles capacity
-    /// when full, amortizing allocation cost to O(1) per element.
-    ///
-    /// This keeps the list in its compact `TYPE_ID_LIST_BOOL` representation
-    /// when building bool lists via repeated append (comprehension pattern),
-    /// avoiding the promote-to-generic-list path.
-    ///
-    /// # Safety
-    /// `self` must be a valid, heap-allocated `ListBoolStorage` whose `data`
-    /// pointer owns its buffer (as established by `from_vec`).
-    pub unsafe fn push(&mut self, value: u8) -> bool {
-        if self.len == self.cap && !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
-            return false;
-        }
-        unsafe {
-            std::ptr::write(self.data.add(self.len), value);
-        }
-        self.len += 1;
-        true
-    }
+/// The raw i64 elements of a `TYPE_ID_LIST_INT` object (not NaN-boxed).
+#[inline]
+pub(crate) unsafe fn list_int_vec_ref(ptr: *mut u8) -> &'static ListIntStorage {
+    unsafe { &*list_int_storage_ptr(ptr) }
 }
 
 /// Read the `ListBoolStorage` pointer from a `TYPE_ID_LIST_BOOL` object's data area.
@@ -657,52 +255,36 @@ pub(crate) unsafe fn list_bool_storage_ptr(ptr: *mut u8) -> *mut ListBoolStorage
     unsafe { *(ptr as *mut *mut ListBoolStorage) }
 }
 
-/// Read the backing data from a `TYPE_ID_LIST_BOOL` object as a slice.
-/// The layout stores raw u8 values (0 = False, 1 = True).
-pub(crate) unsafe fn list_bool_vec_ref(ptr: *mut u8) -> ListBoolSliceRef {
-    unsafe {
-        let storage = &*list_bool_storage_ptr(ptr);
-        ListBoolSliceRef {
-            data: storage.data,
-            len: storage.len,
-        }
-    }
+/// The raw u8 elements of a `TYPE_ID_LIST_BOOL` object (0 = False, 1 = True).
+#[inline]
+pub(crate) unsafe fn list_bool_vec_ref(ptr: *mut u8) -> &'static ListBoolStorage {
+    unsafe { &*list_bool_storage_ptr(ptr) }
 }
 
-/// Thin wrapper providing slice-like interface for `ListBoolStorage`.
-pub(crate) struct ListBoolSliceRef {
-    data: *const u8,
-    len: usize,
+/// Append `value` to tracked list storage, growing it as tracked storage
+/// grows; false, with nothing changed, when the growth is refused.
+///
+/// # Safety
+/// `storage` must be live tracked storage under the caller's mutation custody.
+#[inline]
+pub(crate) unsafe fn list_storage_push<T>(
+    storage: *mut super::molt_vec::MoltVec<T>,
+    value: T,
+) -> bool {
+    let (len, capacity) = unsafe { ((*storage).len(), (*storage).capacity()) };
+    // Only a full buffer reaches the charged regrowth; the common append
+    // writes in place, as the deleted per-kind storages did.
+    if len == capacity
+        && !unsafe { super::backing::tracked_vec_reserve_for_len(storage, len.saturating_add(1)) }
+    {
+        return false;
+    }
+    unsafe { (*storage).push(value) };
+    true
 }
 
-impl ListBoolSliceRef {
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len) }
-    }
-
-    #[inline]
-    pub fn iter(&self) -> std::slice::Iter<'_, u8> {
-        self.as_slice().iter()
-    }
-}
-
-impl std::ops::Index<usize> for ListBoolSliceRef {
-    type Output = u8;
-    #[inline]
-    fn index(&self, index: usize) -> &u8 {
-        assert!(index < self.len, "ListBoolSliceRef index out of bounds");
-        unsafe { &*self.data.add(index) }
-    }
-}
-
-pub(crate) unsafe fn bytearray_vec_ptr(ptr: *mut u8) -> *mut Vec<u8> {
-    unsafe { *(ptr as *mut *mut Vec<u8>) }
+pub(crate) unsafe fn bytearray_vec_ptr(ptr: *mut u8) -> *mut crate::object::molt_vec::MoltVec<u8> {
+    unsafe { *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u8>) }
 }
 
 /// Same-size byte access only. Length/capacity changes must enter the counted
@@ -714,7 +296,9 @@ pub(crate) unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut [u8] {
     }
 }
 
-pub(crate) unsafe fn bytearray_vec_ref(ptr: *mut u8) -> &'static Vec<u8> {
+pub(crate) unsafe fn bytearray_vec_ref(
+    ptr: *mut u8,
+) -> &'static crate::object::molt_vec::MoltVec<u8> {
     unsafe {
         let vec_ptr = bytearray_vec_ptr(ptr);
         &*vec_ptr
@@ -905,12 +489,12 @@ pub(crate) unsafe fn reversed_set_index(ptr: *mut u8, idx: usize) {
 /// owned cache, distinct from the tracked iterator vector and strict flag.
 #[repr(C)]
 pub(crate) struct ZipPayload {
-    pub(crate) iterators: *mut Vec<u64>,
+    pub(crate) iterators: *mut crate::object::molt_vec::MoltVec<u64>,
     pub(crate) strict: u64,
     pub(crate) result: u64,
 }
 
-pub(crate) unsafe fn zip_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
+pub(crate) unsafe fn zip_iters_ptr(ptr: *mut u8) -> *mut crate::object::molt_vec::MoltVec<u64> {
     unsafe { std::ptr::addr_of!((*ptr.cast::<ZipPayload>()).iterators).read_unaligned() }
 }
 
@@ -938,13 +522,16 @@ pub(crate) unsafe fn map_func_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
 
-pub(crate) unsafe fn map_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) }
+pub(crate) unsafe fn map_iters_ptr(ptr: *mut u8) -> *mut crate::object::molt_vec::MoltVec<u64> {
+    unsafe {
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut *mut crate::object::molt_vec::MoltVec<u64>)
+    }
 }
 
 /// Offset of the cached `(value, done)` wrapper tuple pointer inside a
 /// TYPE_ID_MAP object.
-const MAP_CACHED_OFFSET: usize = std::mem::size_of::<u64>() + std::mem::size_of::<*mut Vec<u64>>();
+const MAP_CACHED_OFFSET: usize =
+    std::mem::size_of::<u64>() + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>();
 
 /// Total payload bytes for a TYPE_ID_MAP object (after the header).
 pub(crate) const MAP_PAYLOAD_SIZE: usize = MAP_CACHED_OFFSET + std::mem::size_of::<*mut u8>();
@@ -3326,7 +2913,7 @@ pub(crate) unsafe fn class_initialize_native_prefix_unpublished(
             );
             return false;
         };
-        unsafe { *ptr.cast::<*mut Vec<u64>>() = values };
+        unsafe { *ptr.cast::<*mut crate::object::molt_vec::MoltVec<u64>>() = values };
         return true;
     }
     if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE {
@@ -3656,12 +3243,11 @@ pub(crate) unsafe fn dict_subclass_storage_slot(ptr: *mut u8) -> Option<*mut u64
 #[cfg(test)]
 mod tests {
     use super::{
-        ListIntStorage, ZipPayload, ensure_function_code_bits, function_arity_usize,
-        function_code_bits, function_set_code_bits, zip_iters_ptr, zip_result_bits,
-        zip_set_result_bits, zip_set_strict_bits, zip_strict_bits,
+        ZipPayload, ensure_function_code_bits, function_arity_usize, function_code_bits,
+        function_set_code_bits, zip_iters_ptr, zip_result_bits, zip_set_result_bits,
+        zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
-    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
     use crate::{alloc_function_obj, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
     use molt_obj_model::MoltObject;
 
@@ -3887,36 +3473,6 @@ mod tests {
                 }
             }
         });
-    }
-
-    #[test]
-    fn list_int_storage_denied_growth_keeps_original_buffer() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let owner_bytes = std::mem::size_of::<ListIntStorage>();
-        let initial_buffer = 4 * std::mem::size_of::<i64>();
-        let replacement_buffer = 16 * std::mem::size_of::<i64>();
-        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
-            max_memory: Some(owner_bytes + initial_buffer + replacement_buffer - 1),
-            ..Default::default()
-        })));
-        let _reset = crate::test_support::restore_unlimited_tracker_on_drop();
-
-        let ptr = ListIntStorage::with_capacity(4).expect("storage");
-        for value in [1, 2, 3, 4] {
-            assert!(unsafe { (*ptr).push(super::InlineListInt::from_raw(value).unwrap()) });
-        }
-        unsafe {
-            let storage = &mut *ptr;
-            let original_data = storage.data;
-            assert!(!storage.reserve_for_len(16));
-            assert_eq!(storage.cap, 4);
-            assert_eq!(storage.data, original_data);
-            assert_eq!(
-                std::slice::from_raw_parts(storage.data, storage.len),
-                &[1, 2, 3, 4]
-            );
-            drop((*Box::from_raw(ptr)).into_vec());
-        }
     }
 
     #[test]

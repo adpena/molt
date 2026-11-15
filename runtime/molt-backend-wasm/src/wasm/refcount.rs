@@ -53,13 +53,11 @@ impl WasmRefcountScratch {
         }
     }
 
-    pub(in crate::wasm) fn initialize(
-        self,
-        func: &mut Function,
-        imports: &TrackedImportIds,
-        reloc: bool,
-    ) {
-        emit_call(func, reloc, imports[WasmRuntimeImport::RefcountAdmission]);
+    pub(in crate::wasm) fn initialize(self, func: &mut Function) {
+        crate::wasm::pending_work::emit_thread_record_word(
+            func,
+            molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission,
+        );
         func.instruction(&Instruction::LocalSet(self.admission));
     }
 }

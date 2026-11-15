@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::wasm::frame_record::WasmFrameBodies;
+use crate::wasm::list_item::WasmListItemBodies;
 use crate::wasm::method_site::WasmMethodSiteBodies;
 use crate::wasm::refcount::WasmRefcountBodies;
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
@@ -24,6 +25,8 @@ pub(crate) struct TrackedImportIds {
     static_cell_store_bodies: Option<BTreeMap<u32, u32>>,
     /// The module's generated method site load and call bodies.
     method_site_bodies: Option<WasmMethodSiteBodies>,
+    /// The module's generated list item read and store bodies.
+    list_item_bodies: Option<WasmListItemBodies>,
 }
 
 impl TrackedImportIds {
@@ -41,6 +44,7 @@ impl TrackedImportIds {
             global_slot_bodies: None,
             static_cell_store_bodies: None,
             method_site_bodies: None,
+            list_item_bodies: None,
         }
     }
 
@@ -120,6 +124,19 @@ impl TrackedImportIds {
         self.method_site_bodies
             .as_ref()
             .expect("method site bodies must be emitted before any function body")
+    }
+
+    pub(crate) fn set_list_item_bodies(&mut self, bodies: WasmListItemBodies) {
+        assert!(
+            self.list_item_bodies.replace(bodies).is_none(),
+            "a WASM module emits its list item bodies once"
+        );
+    }
+
+    /// The module's generated list item bodies.
+    pub(crate) fn list_item_bodies(&self) -> WasmListItemBodies {
+        self.list_item_bodies
+            .expect("list item bodies must be emitted before any function body")
     }
 
     pub(crate) fn set_frame_bodies(&mut self, bodies: WasmFrameBodies) {

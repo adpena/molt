@@ -2300,14 +2300,16 @@ fn handle_getframe_op(
     }
 }
 
-/// What a method site's inline paths call (`simple_backend::method_site`).
+/// What a shared generator's inline paths call through the frame builder
+/// (`simple_backend::frame_record`): the RC sites and the frame record entry
+/// and exit. A list item site calls only the RC sites.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn native_method_site_sites(
+pub(in crate::native_backend::function_compiler) fn native_frame_sites(
     module: &mut dyn Module,
     import_ids: &mut RuntimeImportIds,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-) -> crate::native_backend::simple_backend::NativeMethodSiteSites {
+) -> NativeFrameSites {
     let mut import = |function| {
         import_runtime_func_ref(
             &mut *module,
@@ -2322,19 +2324,36 @@ pub(in crate::native_backend::function_compiler) fn native_method_site_sites(
         import(RuntimeFn::FrameRecordEnter),
         import(RuntimeFn::FrameRecordExit),
     );
-    let (recursion_enter, recursion_exit) = (
-        import(RuntimeFn::RecursionEnterFast),
-        import(RuntimeFn::RecursionExitFast),
-    );
     use molt_codegen_abi::inline_refcount::RefcountOperation;
+    NativeFrameSites {
+        retain: import_refs.refcount_site(retain, RefcountOperation::Retain),
+        release: import_refs.refcount_site(release, RefcountOperation::Release),
+        enter,
+        exit,
+    }
+}
+
+/// What a method site's inline paths call (`simple_backend::method_site`).
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn native_method_site_sites(
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut NativeFunctionImports,
+) -> crate::native_backend::simple_backend::NativeMethodSiteSites {
+    let frame = native_frame_sites(module, import_ids, builder, import_refs);
+    let mut import = |function| {
+        import_runtime_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            function,
+        )
+    };
     crate::native_backend::simple_backend::NativeMethodSiteSites {
-        frame: NativeFrameSites {
-            retain: import_refs.refcount_site(retain, RefcountOperation::Retain),
-            release: import_refs.refcount_site(release, RefcountOperation::Release),
-            enter,
-            exit,
-        },
-        recursion_enter,
-        recursion_exit,
+        frame,
+        recursion_enter: import(RuntimeFn::RecursionEnterFast),
+        recursion_exit: import(RuntimeFn::RecursionExitFast),
     }
 }

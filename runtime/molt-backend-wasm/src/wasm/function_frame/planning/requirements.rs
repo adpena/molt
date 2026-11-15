@@ -103,10 +103,6 @@ impl FrameRuntimeRequirements {
         !self.stateful && self.saw_jump_or_label
     }
 
-    pub(super) fn tail_call_eligible(&self) -> bool {
-        !self.stateful
-    }
-
     pub(super) fn fast_int_count(&self) -> usize {
         self.fast_int_count
     }

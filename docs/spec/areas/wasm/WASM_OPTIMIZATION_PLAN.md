@@ -161,7 +161,6 @@ All of the following optimizations were completed in the 2026-03-20 session:
 | `memory_copy` intrinsic op | df7f0895 | `memory.copy` emission for bulk linear-memory copies |
 | Full wasm-opt Oz/O3 pipelines | 31a183a4 | Integrated post-link optimization; 15-30% binary size reduction |
 | `--wasm-profile pure` import stripping | 483cb18a | Compile-time IO/ASYNC/TIME import stripping for pure-compute modules |
-| Tail call emission (`return_call`) | 8e5f9f55 | Conservative tail calls for non-stateful functions without EH |
 | Native exception handling groundwork | 00ed70bf | Tag section, try_table/catch/throw; enabled by default (MOLT_WASM_NATIVE_EH=0 to disable) |
 | SIMD stub rewriter support | 76aebc3a | WASI stub rewriter handles SIMD instructions; enables +simd128 freestanding |
 | Box/unbox elimination | 7388c7fe | eq/ne skip unbox; arithmetic uses trusted unbox saving 4 insns/op |
@@ -418,7 +417,7 @@ buffer, import, or callable-closure work.
 - Primary beneficiaries: recursive algorithms (tree traversal, list processing), trampoline dispatch.
 - Estimated impact: prevents stack overflow for deep recursion; minor performance improvement from eliminated stack frame setup/teardown.
 
-**UPDATE 2026-03-20:** Implemented (8e5f9f55). Conservative: only non-stateful functions without exception handling. Reports count via MOLT_WASM_IMPORT_AUDIT=1.
+**UPDATE 2026-11-14:** Deleted. The 8e5f9f55 lowering (opt-in `MOLT_WASM_TAIL_CALL`) had no producer after f2b0b94e94 (2026-07-16) put an `async_work_poll` after every call return, so no call stood in tail position (HF-565). It returns only with a proven rule for the poll in tail position and a measured win.
 
 **Priority**: P2 -- correctness improvement more than performance.
 

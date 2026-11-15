@@ -170,8 +170,6 @@ def _select_backend_binary(
     molt_root: Path,
     backend_cargo_profile: str,
     is_wasm: bool,
-    is_luau_transpile: bool,
-    is_rust_transpile: bool,
     codegen_backend: CodegenBackend,
     rust_cpu: RustCpuPolicy,
 ) -> _BackendSelection:
@@ -184,8 +182,6 @@ def _select_backend_binary(
     """
     backend_features = _backend_features_for_target(
         is_wasm=is_wasm,
-        is_luau_transpile=is_luau_transpile,
-        is_rust_transpile=is_rust_transpile,
         codegen_backend=codegen_backend,
     )
     return _BackendSelection(
@@ -218,8 +214,6 @@ def _ensure_selected_backend_binary(
 
 def _prepare_backend_setup(
     *,
-    is_rust_transpile: bool,
-    is_luau_transpile: bool = False,
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     required_link_features: frozenset[str] = frozenset(),
@@ -266,7 +260,6 @@ def _prepare_backend_setup(
         extra_runtime_features = SOURCE_EXTENSION_RUNTIME_FEATURES
     try:
         runtime_state = _initialize_runtime_artifact_state(
-            is_rust_transpile=is_rust_transpile or is_luau_transpile,
             is_wasm=is_wasm,
             emit_mode=emit_mode,
             molt_root=molt_root,
@@ -320,8 +313,6 @@ def _prepare_backend_setup(
         molt_root=molt_root,
         backend_cargo_profile=backend_cargo_profile,
         is_wasm=is_wasm,
-        is_luau_transpile=is_luau_transpile,
-        is_rust_transpile=is_rust_transpile,
         codegen_backend=codegen.backend,
         rust_cpu=rust_cpu,
     )
@@ -621,8 +612,6 @@ def _start_backend_daemon_under_lock(
 
 def _prepare_backend_dispatch(
     *,
-    is_rust_transpile: bool,
-    is_luau_transpile: bool = False,
     is_wasm: bool,
     wasm_layout: WasmCodegenLayout | None,
     backend_environment: Mapping[str, str],
@@ -652,10 +641,7 @@ def _prepare_backend_dispatch(
             scope = validate_emission_scope(os.environ.get("MOLT_EMISSION_SCOPE"))
             if scope is not None:
                 backend_environment["MOLT_EMISSION_SCOPE"] = scope
-        if (
-            not (is_wasm or is_rust_transpile or is_luau_transpile)
-            and native_runtime_codegen_binding is None
-        ):
+        if not is_wasm and native_runtime_codegen_binding is None:
             raise ValueError(
                 "native backend dispatch requires an admitted runtime binding"
             )
@@ -680,8 +666,6 @@ def _prepare_backend_dispatch(
     # consistent.
     backend_features: tuple[str, ...] = _backend_features_for_target(
         is_wasm=is_wasm,
-        is_luau_transpile=is_luau_transpile,
-        is_rust_transpile=is_rust_transpile,
         codegen_backend=codegen.backend,
     )
     if deterministic or profile == "release":
@@ -693,8 +677,6 @@ def _prepare_backend_dispatch(
             molt_root=molt_root,
             backend_cargo_profile=backend_cargo_profile,
             is_wasm=is_wasm,
-            is_luau_transpile=is_luau_transpile,
-            is_rust_transpile=is_rust_transpile,
             codegen_backend=codegen.backend,
             rust_cpu=rust_cpu,
         )
@@ -724,12 +706,7 @@ def _prepare_backend_dispatch(
     daemon_socket: Path | None = None
     daemon_ready = False
     daemon_config_digest = backend_daemon_config_digest
-    if (
-        start_daemon
-        and not is_rust_transpile
-        and not is_luau_transpile
-        and _backend_daemon_enabled()
-    ):
+    if start_daemon and _backend_daemon_enabled():
         try:
             daemon_config_digest = _backend_daemon_config_digest(
                 molt_root,
@@ -781,8 +758,6 @@ def _execute_backend_compile(
     cache_path: Path | None,
     function_cache_path: Path | None,
     artifacts_root: Path,
-    is_rust_transpile: bool,
-    is_luau_transpile: bool = False,
     is_wasm: bool,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
@@ -1117,8 +1092,6 @@ def _execute_backend_compile(
                 )
             cmd = _factgraph.backend_command_prefix(
                 backend_bin=backend_bin,
-                is_luau_transpile=is_luau_transpile,
-                is_rust_transpile=is_rust_transpile,
                 is_wasm=is_wasm,
                 native_output_kind=native_output_kind,
                 target_triple=target_triple,
@@ -1319,8 +1292,6 @@ def _prepare_backend_compile(
     function_cache_path: Path | None,
     project_root: Path,
     warnings: list[str],
-    is_rust_transpile: bool,
-    is_luau_transpile: bool = False,
     is_wasm: bool,
     split_runtime: bool = False,
     output_artifact: Path,
@@ -1426,8 +1397,6 @@ def _prepare_backend_compile(
                 _prepare_backend_dispatch(
                     capture_origin=capture_origin,
                     native_runtime_codegen_binding=runtime_state.runtime_callable_binding,
-                    is_rust_transpile=is_rust_transpile,
-                    is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
                     wasm_layout=wasm_layout,
                     backend_environment=cache_setup.backend_environment,
@@ -1461,8 +1430,6 @@ def _prepare_backend_compile(
                     cache_path=cache_path,
                     function_cache_path=function_cache_path,
                     artifacts_root=artifacts_root,
-                    is_rust_transpile=is_rust_transpile,
-                    is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
                     diagnostics_enabled=diagnostics_enabled,
                     phase_starts=phase_starts,

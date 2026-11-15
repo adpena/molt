@@ -36,7 +36,7 @@ from tests.runtime_build_identity_helper import runtime_wasm_codegen_binding_fix
         (False, False, 2, 256),
     ],
 )
-def test_layout_uses_bound_pair_not_mutable_selection_or_ambient_overrides(
+def test_layout_uses_bound_pair_not_other_entries_or_ambient_overrides(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     linked: bool,
@@ -45,7 +45,7 @@ def test_layout_uses_bound_pair_not_mutable_selection_or_ambient_overrides(
     table_base: int,
 ) -> None:
     binding = runtime_wasm_codegen_binding_fixture(tmp_path)
-    # Another caller may replace the shared selection, never this codegen pair.
+    # Another family's store entry never reaches this codegen pair.
     runtime_wasm_codegen_binding_fixture(tmp_path, seed="replacement", pages=7)
     for name in (
         "MOLT_WASM_DATA_BASE",
@@ -122,7 +122,6 @@ def _compile(
         function_cache_path=None,
         project_root=root,
         warnings=[],
-        is_rust_transpile=False,
         is_wasm=True,
         split_runtime=True,
         output_artifact=root / "output.wasm",

@@ -36,9 +36,6 @@ from molt.cli.arg_helpers import (
     _build_args_emit,
     _resolve_binary_output,
 )
-from molt.cli.atomic_io import (
-    _atomic_copy_file,
-)
 from molt.capability_policy import (
     CapabilityInput,
     CapabilityPolicy,
@@ -222,7 +219,7 @@ def _run_script_cross(
     audit_log: str | None = None,
     io_mode: str | None = None,
 ) -> int:
-    """Build with a cross target (wasm or luau) and run with the appropriate runtime."""
+    """Build with a cross target (wasm or mlir) and run it with the matching runtime."""
     if file_path and module:
         return _fail(
             "Use a file path or --module, not both.", json_output, command="run"
@@ -314,11 +311,7 @@ def _run_script_cross(
 
         if not json_output:
             target_label = (
-                "WASM"
-                if target in {TargetKind.WASM, TargetKind.WASI}
-                else "MLIR"
-                if target is TargetKind.MLIR
-                else "Luau"
+                "WASM" if target in {TargetKind.WASM, TargetKind.WASI} else "MLIR"
             )
             _notice(f"Building for {target_label}...")
         build_contract, t_build, build_error = _run_wrapper_build(
@@ -366,27 +359,6 @@ def _run_script_cross(
             str(manifest),
             *script_args,
         ]
-    elif target is TargetKind.LUAU:
-        luau_artifact = build_contract.artifacts.get(
-            "luau", build_contract.consumer_output
-        )
-        if not luau_artifact.exists():
-            return _fail(
-                f"Luau artifact not found: {luau_artifact}\n"
-                "Hint: the build may have succeeded but placed output elsewhere. "
-                "Try `molt build --target luau --verbose` to see the output path.",
-                json_output,
-                command="run",
-            )
-        lune = shutil.which("lune")
-        if lune is None:
-            return _fail(
-                "lune not found on PATH. Install it: https://lune-org.github.io/docs/getting-started/installation\n"
-                "Hint: cargo install lune",
-                json_output,
-                command="run",
-            )
-        run_cmd = [lune, "run", str(luau_artifact), "--", *script_args]
     elif target is TargetKind.MLIR:
         # MLIR target: the build phase produces .mlir text. There is no
         # separate run phase -- the MLIR output is the artifact.
@@ -437,7 +409,6 @@ def _deploy(
     build_profile: str | None,
     output: str | None,
     out_dir: str | None,
-    roblox_project: str | None,
     wrangler_args: str,
     dry_run: bool,
     build_args: list[str],
@@ -496,9 +467,6 @@ def _deploy(
             build_cmd_args.extend(["--profile", "cloudflare"])
         if not any(a == "--split-runtime" for a in build_cmd_args):
             build_cmd_args.append("--split-runtime")
-    elif platform == "roblox":
-        if not any(a.startswith("--target") for a in build_cmd_args):
-            build_cmd_args.extend(["--target", "luau"])
 
     try:
         if build_profile and not _build_args_has_profile_flag(build_cmd_args):
@@ -513,8 +481,7 @@ def _deploy(
         build_cmd_args.append("--verbose")
 
     if not json_output:
-        platform_label = "Cloudflare Workers" if platform == "cloudflare" else "Roblox"
-        print(f"Building for {platform_label}...", file=sys.stderr)
+        print("Building for Cloudflare Workers...", file=sys.stderr)
     build_contract, _t_build, build_error = _run_wrapper_build(
         file_path=file_path,
         module=module,
@@ -589,45 +556,6 @@ def _deploy(
             label="deploy",
             memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
         )
-
-    elif platform == "roblox":
-        if roblox_project is None:
-            if not json_output:
-                print(
-                    "Build succeeded. Use --roblox-project <dir> to auto-copy "
-                    "Luau output into your Roblox project.",
-                    file=sys.stderr,
-                )
-            return 0
-        roblox_dir = Path(roblox_project)
-        if not roblox_dir.is_dir():
-            return _fail(
-                f"Roblox project directory not found: {roblox_dir}",
-                json_output,
-                command="deploy",
-            )
-        luau_artifact = build_contract.artifacts.get(
-            "luau", build_contract.consumer_output
-        )
-        if not luau_artifact.exists():
-            return _fail(
-                f"Luau artifact not found at {luau_artifact}. "
-                "Build may have placed it elsewhere; check --verbose output.",
-                json_output,
-                command="deploy",
-            )
-        dest = roblox_dir / luau_artifact.name
-        try:
-            _atomic_copy_file(luau_artifact, dest)
-        except OSError as exc:
-            return _fail(
-                f"Failed to publish Roblox Luau artifact: {exc}",
-                json_output,
-                command="deploy",
-            )
-        if not json_output:
-            print(f"Copied {luau_artifact.name} -> {dest}", file=sys.stderr)
-        return 0
 
     return _fail(f"Unknown deploy platform: {platform}", json_output, command="deploy")
 

@@ -79,11 +79,7 @@ fn pipeline_gates_follow_each_targets_contract() {
         .collect();
     assert_eq!(applied(&TargetInfo::wasm_release_fast()), without_escape);
     assert_eq!(applied(&TargetInfo::llvm_release_fast()), without_escape);
-    for target in [
-        TargetInfo::luau_release_fast(),
-        TargetInfo::rust_release_fast(),
-        TargetInfo::mlir_release_fast(),
-    ] {
+    for target in [TargetInfo::mlir_release_fast()] {
         assert_eq!(applied(&target), TARGET_NEUTRAL, "{:?}", target.target);
     }
 }

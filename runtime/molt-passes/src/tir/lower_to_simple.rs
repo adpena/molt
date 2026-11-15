@@ -1,7 +1,7 @@
 //! TIR -> SimpleIR lowering.
 //!
 //! This module is the canonical custody boundary for projecting optimized TIR
-//! back into the SimpleIR stream consumed by the current native, WASM, and Luau
+//! back into the SimpleIR stream consumed by the current native and WASM
 //! backend entrypoints.  It preserves SimpleIR naming facts, labels, structured
 //! control flow, exception edges, and non-semantic backend metadata without
 //! duplicating ownership or representation authority.

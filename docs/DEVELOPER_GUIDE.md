@@ -348,7 +348,7 @@ Each resolver applies the rule itself:
   and `rust-toolchain.toml`, the reference CPython pins, every Action pinned
   under `.github`, and each npm project's `packageManager`. It queries OSV for
   every candidate release of the pins OSV knows (uv, quint, cargo-deny,
-  cargo-audit, wasm-tools, lune, sccache, the Actions and npm) and never
+  cargo-audit, wasm-tools, sccache, the Actions and npm) and never
   targets a release that carries an advisory, and it reads the `security` flag
   of Node's release index. A pin younger than 7 days fails as EARLY unless it
   is the oldest clean release above an aged release that carries an advisory
@@ -432,7 +432,6 @@ window applies to every file inside the resolver, not in a wrapper around it.
   explicit local investigation. Sparse virtual-address reservations are never
   capped by this RSS policy.
 - **Backend daemon mode**: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to override daemon behavior in diff runs. Otherwise the compiler's `MOLT_BACKEND_DAEMON` policy applies: enabled by default on POSIX, including macOS, and unavailable on Windows.
-- **dyld preflight**: `MOLT_DIFF_DYLD_PREFLIGHT=1|0` selects the native binary preflight (default on macOS). A detected defect fails that attempt.
 - **Cache and rebuild selection**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`, or `MOLT_DIFF_FORCE_REBUILD=1` to request rebuilds explicitly. Defaults keep caching enabled and forced rebuilds off; failures preserve the selected roots and settings.
 - **Batch selection**: `MOLT_DIFF_BATCH_COMPILE_SERVER=1` explicitly selects persistent batch builds (default off). Startup and request failures retain their diagnostics and terminate that selected attempt.
 - **Shared diff Cargo target**: set `MOLT_DIFF_CARGO_TARGET_DIR` to reuse one checkout-scoped Cargo target across diff workers; `tools/throughput_env.sh --apply` sets this to `CARGO_TARGET_DIR` by default.
@@ -465,10 +464,6 @@ Interpretation:
   `tools/check_subprocess_guard_coverage.py` and
   `tools/check_memory_guard_wiring.py`, so raw subprocess launches and broader
   dev/test/bench entrypoint guard drift both fail in the canonical smoke lane.
-- Use `molt validate --suite smoke --backend luau` for the first-class Luau lane;
-  it checks generated support-matrix freshness, Luau backend/lowering Rust tests,
-  checked Luau emission, Luau runner availability, and the targeted
-  CPython-vs-Luau `ord_at` smoke under the shared memory guard.
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
 - Every `tools/dev.py` command that launches through `uv run` first installs

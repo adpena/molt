@@ -7,7 +7,6 @@ use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_table::WasmTableRelocations;
 use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
-use std::cell::Cell;
 use std::collections::{BTreeSet, HashSet};
 
 mod code_metadata;
@@ -24,7 +23,6 @@ pub(super) use site::CallRetentionLiveness;
 pub(super) enum CallOpEmission {
     NotHandled,
     Handled,
-    HandledAndSkipNext,
 }
 
 pub(super) struct CallOpContext<'a, 'ctx, 'm> {
@@ -46,16 +44,11 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) method_site_records:
         &'a std::collections::BTreeMap<(u32, u32), crate::wasm_data::DataSegmentRef>,
     pub(super) frame: &'a WasmFunctionFrame,
-    pub(super) tail_call_enabled: bool,
-    pub(super) tail_call_eligible: bool,
-    pub(super) tail_call_count: &'a Cell<usize>,
-    pub(super) ops: &'a [OpIR],
     pub(super) call_liveness: &'m CallRetentionLiveness<'m>,
     pub(super) rc_skip_inc: &'m HashSet<usize>,
     pub(super) rc_skip_dec: &'m HashSet<String>,
     pub(super) call_live_idx: usize,
     pub(super) op_idx: usize,
-    pub(super) try_stack_is_empty: bool,
     pub(super) return_depth: u32,
 }
 
@@ -93,6 +86,6 @@ pub(super) fn emit_call_op(
 fn handled(emission: CallOpEmission) -> Option<CallOpEmission> {
     match emission {
         CallOpEmission::NotHandled => None,
-        CallOpEmission::Handled | CallOpEmission::HandledAndSkipNext => Some(emission),
+        CallOpEmission::Handled => Some(emission),
     }
 }

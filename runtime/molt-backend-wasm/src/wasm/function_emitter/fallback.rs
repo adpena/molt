@@ -5,7 +5,6 @@ use crate::wasm::context::CompileFuncContext;
 use crate::wasm::function_frame::{WasmFrameControlMode, WasmFunctionFramePlan};
 use crate::wasm::op_loop::{WasmFunctionAnalysis, WasmFunctionEmitContext};
 use crate::wasm::state_dispatch::emit_non_linear_control;
-use std::cell::Cell;
 
 pub(super) fn emit_fallback_function_body(
     backend: &mut WasmBackend,
@@ -35,11 +34,8 @@ pub(super) fn emit_fallback_function_body(
         );
     }
     frame.emit_entry_initializers(&mut func, import_ids, reloc_enabled);
-    frame
-        .locals()
-        .refcount()
-        .initialize(&mut func, import_ids, reloc_enabled);
-    frame.emit_guard_profile_flag(&mut func, reloc_enabled, import_ids);
+    frame.locals().refcount().initialize(&mut func);
+    frame.emit_guard_profile_flag(&mut func);
     // All function ABIs preserve pending Python exceptions. Only structured
     // bodies lower authored handlers with WASM EH; dispatch keeps explicit edges.
     let wasm_eh_enabled = backend.options.native_eh_enabled && !reloc_enabled;
@@ -60,12 +56,6 @@ pub(super) fn emit_fallback_function_body(
         ctx.const_str_scratch_segment,
     );
 
-    let tail_call_enabled = backend.options.tail_call_enabled;
-
-    // Uses Cell so stateful dispatch can emit ops one at a time while sharing
-    // the same tail-call counter.
-    let tail_call_count: Cell<usize> = Cell::new(0);
-
     let analysis = WasmFunctionAnalysis::for_function(func_ir);
 
     {
@@ -79,8 +69,6 @@ pub(super) fn emit_fallback_function_body(
             func_index,
             reloc_enabled,
             native_eh_enabled,
-            tail_call_enabled,
-            tail_call_count: &tail_call_count,
             analysis: &analysis,
         };
 
@@ -104,6 +92,5 @@ pub(super) fn emit_fallback_function_body(
     }
 
     frame.emit_epilogue(&mut func, import_ids, reloc_enabled, wasm_eh_enabled);
-    backend.tail_calls_emitted += tail_call_count.get();
     backend.codes.function(&func);
 }

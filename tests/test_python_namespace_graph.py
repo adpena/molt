@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from itertools import permutations
 from pathlib import Path
 
@@ -17,7 +17,9 @@ from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
     graph_python_namespace_writes,
     join_python_namespace_premises,
+    python_namespace_binding_policy,
 )
+from molt.compiler_analysis.python_binding_flow import PythonBindingPolicy
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 
 
@@ -232,6 +234,34 @@ def test_code_row_makes_every_premise_code_rebinding() -> None:
     assert index.premise(first, frozenset()).code_rebinding
     assert index.merge(code) == frozenset()
     assert UNKNOWN_GRAPH_NAMESPACE_WRITES.premise(first, frozenset()).code_rebinding
+
+
+def test_lowering_sees_exposed_definitions_only_with_a_code_rebinder() -> None:
+    exposed = ((1, 0, 2, 4, "FunctionDef"),)
+    policy = PythonBindingPolicy()
+    quiet = PythonNamespacePremise((), 0, 0, (), opaque_activation_sources=exposed)
+    # Lowering: without a rebinder an exposed function reads its own globals.
+    lowered = python_namespace_binding_policy(policy, quiet, lowering=True)
+    assert lowered.opaque_activation_sources == ()
+    rebinding = replace(quiet, code_rebinding=True)
+    assert (
+        python_namespace_binding_policy(
+            policy, rebinding, lowering=True
+        ).opaque_activation_sources
+        == exposed
+    )
+    # Discovery keeps the exposed set whatever the fact says.
+    assert python_namespace_binding_policy(policy, quiet).opaque_activation_sources == (
+        exposed
+    )
+    # An owner with no proven exposure stays wholly opaque.
+    unknown = replace(quiet, opaque_activation_sources=None)
+    assert (
+        python_namespace_binding_policy(
+            policy, unknown, lowering=True
+        ).opaque_activation_sources
+        is None
+    )
 
 
 def test_reflection_marks_only_its_target_and_writes_no_member() -> None:

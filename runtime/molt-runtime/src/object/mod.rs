@@ -69,6 +69,7 @@ pub(crate) mod list_mutation;
 mod list_representation_tests;
 pub(crate) mod list_storage;
 pub(crate) mod mapping_merge;
+pub(crate) use molt_runtime_core::molt_vec;
 pub(crate) mod memoryview;
 pub(crate) mod native_handle;
 pub(crate) mod native_instance;
@@ -129,7 +130,7 @@ use crate::{
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dict_entries_ptr, dict_table_ptr, map_iters_ptr,
     process_poll_fn_addr, profile_hit, profile_hit_bytes, seq_vec_ptr, set_entries_ptr,
-    set_table_ptr, thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr, zip_iters_ptr,
+    set_table_ptr, thread_poll_fn_addr, utf8_cache_forget, weakref_clear_for_ptr, zip_iters_ptr,
 };
 #[cfg(molt_net)]
 use crate::{
@@ -1017,8 +1018,8 @@ pub(crate) struct MemoryView {
     pub(crate) kind: MemoryViewKind,
     pub(crate) _pad: [u8; 4],
     pub(crate) format_bits: u64,
-    pub(crate) shape_ptr: *mut Vec<isize>,
-    pub(crate) strides_ptr: *mut Vec<isize>,
+    pub(crate) shape_ptr: *mut crate::object::molt_vec::MoltVec<isize>,
+    pub(crate) strides_ptr: *mut crate::object::molt_vec::MoltVec<isize>,
     pub(crate) exports: buffer_exports::BufferExports,
     pub(crate) native_lease: Option<crate::object::foreign::RuntimeBufferLease>,
 }
@@ -1559,7 +1560,10 @@ pub(crate) fn heap_kind_has_class_shape(type_id: u32) -> bool {
 /// Admit shared fields only when the immutable physical shape reserves them.
 /// Logical class membership cannot turn a native payload word into a dictionary.
 /// Native classes with real reserved tails remain admitted by generated policy.
-#[inline]
+/// Always inlined: cycle-collector traversal asks it once per visited list
+/// and instance, and an outlined copy cost bench_gc_pressure 3.9%
+/// instructions (2026-11-14).
+#[inline(always)]
 pub(crate) unsafe fn object_has_class_shape(ptr: *mut u8) -> bool {
     unsafe {
         heap_kind_has_class_shape(object_type_id(ptr)) && object_shape_id(ptr).has_class_fields()
@@ -2581,7 +2585,8 @@ pub(crate) fn alloc_object_with_aux(
         );
     }
     if debug_alloc_list_builder() && type_id == TYPE_ID_LIST_BUILDER {
-        let expected = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
+        let expected = std::mem::size_of::<MoltHeader>()
+            + std::mem::size_of::<*mut crate::object::molt_vec::MoltVec<u64>>();
         eprintln!(
             "molt debug alloc_list_builder: total_size={} expected={}",
             total_size, expected
@@ -3442,11 +3447,15 @@ pub(crate) unsafe fn memoryview_format_bits(ptr: *mut u8) -> u64 {
     unsafe { (*memoryview_ptr(ptr)).format_bits }
 }
 
-pub(crate) unsafe fn memoryview_shape_ptr(ptr: *mut u8) -> *mut Vec<isize> {
+pub(crate) unsafe fn memoryview_shape_ptr(
+    ptr: *mut u8,
+) -> *mut crate::object::molt_vec::MoltVec<isize> {
     unsafe { (*memoryview_ptr(ptr)).shape_ptr }
 }
 
-pub(crate) unsafe fn memoryview_strides_ptr(ptr: *mut u8) -> *mut Vec<isize> {
+pub(crate) unsafe fn memoryview_strides_ptr(
+    ptr: *mut u8,
+) -> *mut crate::object::molt_vec::MoltVec<isize> {
     unsafe { (*memoryview_ptr(ptr)).strides_ptr }
 }
 
@@ -3945,7 +3954,7 @@ pub(crate) unsafe fn maybe_run_object_finalizer_for_cycle(py: &PyToken<'_>, ptr:
     unsafe { run_object_finalizer_in_revival_window(py, ptr) };
 }
 
-unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut Vec<T>) {
+unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut crate::object::molt_vec::MoltVec<T>) {
     if !vec_ptr.is_null() {
         drop(unsafe { backing::tracked_vec_box_from_raw(vec_ptr) });
     }
@@ -3953,7 +3962,7 @@ unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut Vec<T>) {
 
 unsafe fn drop_detached_linear_builder_vec(ptr: *mut u8) {
     unsafe {
-        let slot = ptr as *mut *mut Vec<u64>;
+        let slot = ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>;
         let vec_ptr = slot.replace(std::ptr::null_mut());
         if vec_ptr.is_null() {
             return;
@@ -4674,13 +4683,27 @@ unsafe fn dec_ref_ptr_terminal_body(
         } else {
             None
         };
-        // A payload of non-heap words with no side owner detaches nothing:
-        // its backing store is freed below without the edge sink, its census
-        // or the detach walk. Every other object takes the full transaction.
-        let detaches_edges = module_registry_edge.is_some()
-            || retired_runtime_view.is_some()
-            || !heap_lifecycle::retires_without_edges(ptr, terminal_flags, header_aux.kind);
-        if detaches_edges {
+        // An object with no side owner whose payload detaches nothing, or
+        // only an exact list's or tuple's items, retires without the edge
+        // sink, its census or the detach walk: the items are released in
+        // place, last to first, and the backing store is freed below. A
+        // plain instance keeps one edge, its class, released after the free
+        // as CPython's subtype_dealloc drops the type. Every other object
+        // takes the full transaction.
+        let retirement = if module_registry_edge.is_some() || retired_runtime_view.is_some() {
+            heap_lifecycle::TerminalRetirement::Detach
+        } else {
+            heap_lifecycle::terminal_retirement(py, ptr, terminal_flags, header_aux.kind)
+        };
+        let class_edge = match retirement {
+            heap_lifecycle::TerminalRetirement::ClassEdgeOnly => object_detach_class_edge(ptr),
+            heap_lifecycle::TerminalRetirement::SequenceItems => {
+                heap_lifecycle::release_sequence_items(py, ptr);
+                object_detach_class_edge(ptr)
+            }
+            heap_lifecycle::TerminalRetirement::Detach => 0,
+        };
+        if retirement == heap_lifecycle::TerminalRetirement::Detach {
             let (terminal_edge_count, terminal_resource_count) =
                 heap_lifecycle::terminal_detach_capacity(py, ptr);
             let terminal_resource_count = terminal_resource_count
@@ -4708,20 +4731,20 @@ unsafe fn dec_ref_ptr_terminal_body(
             total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
         terminal_resource_drop_no_unwind(|| {
             match heap_drop_policy(type_id) {
-                Some(HeapDropPolicy::String) => utf8_cache_remove(py, ptr as usize),
+                Some(HeapDropPolicy::String) => utf8_cache_forget(py, ptr),
                 Some(HeapDropPolicy::Type) => {
                     bump_type_version();
                 }
                 Some(HeapDropPolicy::ListInt) => {
                     let storage = layout::list_int_storage_ptr(ptr);
                     if !storage.is_null() {
-                        drop((*Box::from_raw(storage)).into_vec());
+                        drop(backing::tracked_vec_box_from_raw(storage));
                     }
                 }
                 Some(HeapDropPolicy::ListBool) => {
                     let storage = layout::list_bool_storage_ptr(ptr);
                     if !storage.is_null() {
-                        drop((*Box::from_raw(storage)).into_vec());
+                        drop(backing::tracked_vec_box_from_raw(storage));
                     }
                 }
                 Some(HeapDropPolicy::List) => drop_detached_tracked_vec(seq_vec_ptr(ptr)),
@@ -4829,6 +4852,9 @@ unsafe fn dec_ref_ptr_terminal_body(
         });
         if (header_flags & HEADER_FLAG_SCOPED) == 0 {
             record_terminal_deallocation(py, type_id, dealloc_bytes);
+        }
+        if class_edge != 0 {
+            dec_ref_bits(py, class_edge);
         }
         next_tee_link
     }

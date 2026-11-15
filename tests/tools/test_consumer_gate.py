@@ -11,6 +11,7 @@ import pytest
 from tests.process_guard_common import run_guarded_test_process
 from tools import consumer_gate
 from tools.test_dependency_graph import DirectReaders
+from tools.molt_dev_policy import SelectedGate
 
 
 @pytest.fixture(autouse=True)
@@ -321,3 +322,163 @@ def test_the_default_importer_run_is_presubmits() -> None:
     assert "--skip-slow" in argv
     assert any(arg.startswith("--molt-worker-memory-gb=") for arg in argv)
     assert argv[-1] == "tests/tools/test_consumer_gate.py"
+
+
+def _pytest_gate(*args: str) -> SelectedGate:
+    command = ("python", "-m", "pytest", "-q", "-n", "auto", *args)
+    return SelectedGate(command=command, toolchains=(), pytest=True, try_run=True)
+
+
+def test_a_receipt_proves_the_gates_it_ran_and_no_other(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    passing = 'python -c "pass"'
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": [passing]
+    )
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    tree = consumer_gate.commit_tree(repo, ["lib.py"])
+    assert consumer_gate.proven_gates(repo, tree) is None
+
+    assert (
+        consumer_gate.run(repo, ["lib.py"], pytest_args=["-p", "no:cacheprovider"]) == 0
+    )
+    proven = consumer_gate.proven_gates(repo, tree)
+    assert proven is not None
+    # The receipt ran these: the static command, and the importer under
+    # presubmit's --skip-slow (a -k selection only narrows the file).
+    assert proven(SelectedGate(command=passing, toolchains=()))
+    assert proven(_pytest_gate("--maxfail=1", "--skip-slow", "tests/test_lib.py"))
+    assert proven(
+        _pytest_gate("-k", "value", "--skip-slow", "tests/test_lib.py::test_value")
+    )
+    # It did not run these: another static command, a cohort that runs slow
+    # tests, a file it never ran, or a directory of files.
+    assert not proven(SelectedGate(command='python -c "1"', toolchains=()))
+    assert not proven(_pytest_gate("tests/test_lib.py"))
+    assert not proven(_pytest_gate("--skip-slow", "tests/test_lib.py", "tests/t.py"))
+    assert not proven(_pytest_gate("--skip-slow", "tests"))
+    # A different tree has no receipt.
+    (repo / "lib.py").write_text("VALUE = 3\n", encoding="utf-8")
+    assert (
+        consumer_gate.proven_gates(repo, consumer_gate.commit_tree(repo, ["lib.py"]))
+        is None
+    )
+
+
+def test_the_batch_reuses_only_a_receipt_run_on_exactly_the_tree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    monkeypatch.setattr(
+        consumer_gate, "static_gates", lambda root, tree, base="HEAD": []
+    )
+    (repo / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    paths = [".gitignore", "lib.py"]
+    gate = _pytest_gate("--skip-slow", "tests/test_lib.py")
+
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    tree = consumer_gate.commit_tree(repo, paths)
+    exact = consumer_gate.proven_gates(repo, tree, exact=True)
+    assert exact is not None and exact(gate)
+
+    # An untracked file the tree lacks could have made the tests pass: the
+    # lane precheck may still skip the gate, the batch may not.
+    (repo / "helper.py").write_text("X = 1\n", encoding="utf-8")
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    assert consumer_gate.proven_gates(repo, tree, exact=True) is None
+    lane = consumer_gate.proven_gates(repo, tree)
+    assert lane is not None and lane(gate)
+
+
+def test_a_test_failing_on_the_base_too_is_main_red_not_the_changes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-11-15: tests that failed on clean main blocked the receipt of every
+    # change broad enough to select them, so nothing touching dx.py could be
+    # committed. Chromium's "without patch" retry: a failure the base commit
+    # reproduces is main's defect, recorded, and does not block the change.
+    (repo / "tests/test_lib.py").write_text(
+        "def test_value():\n    assert False, 'red on main'\n", encoding="utf-8"
+    )
+    _commit(repo, "main is red")
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    paths = ["lib.py"]
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, paths)
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["preexisting_failures"] == ["tests/test_lib.py::test_value"]
+    assert receipt["flaky_reruns"] is None
+    # The temporary base worktree is gone.
+    assert len(_git(repo, "worktree", "list").splitlines()) == 1
+
+
+def test_the_owners_bypass_runs_static_gates_and_own_tests_and_records_the_rest(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Owner direction 2026-11-15: velocity work lands directly, bypassing the
+    # expensive importer suites; the receipt says so and names what it skipped.
+    (repo / "tests/test_other.py").write_text(
+        "def test_other():\n    assert False, 'an importer the bypass skips'\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "an importer that fails")
+    _graph(monkeypatch, ("tests/test_lib.py", "tests/test_other.py"))
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repo / "tests/test_lib.py").write_text(
+        "def test_value():\n    assert True\n\ndef test_new():\n    assert True\n",
+        encoding="utf-8",
+    )
+    paths = ["lib.py", "tests/test_lib.py"]
+    assert (
+        consumer_gate.run(
+            repo,
+            paths,
+            pytest_args=["-p", "no:cacheprovider"],
+            bypass_importers="unblock landings",
+        )
+        == 0
+    )
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, paths)
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["bypass"] == "unblock landings"
+    assert receipt["importers"] == ["tests/test_lib.py"]
+    assert receipt["bypassed_importers"] == ["tests/test_other.py"]
+    assert consumer_gate.check(repo, paths) == 0
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    _git(repo, "add", "-A")
+    _commit(repo, message)
+
+
+def test_an_importer_run_asks_one_worker_per_file_at_its_declared_memory(
+    tmp_path: Path,
+) -> None:
+    # The host grants shares by this demand (molt.host_capacity): a 13-file
+    # gate no longer holds the whole development class.
+    from molt import host_capacity
+
+    argv = consumer_gate.presubmit_pytest_argv(
+        Path(consumer_gate.__file__).resolve().parents[1],
+        ["tests/tools/test_consumer_gate.py"] * 13,
+    )
+    demand = consumer_gate._importer_demand(argv, 13)
+    unit = next(
+        float(word.split("=", 1)[1])
+        for word in argv
+        if word.startswith("--molt-worker-memory-gb=")
+    )
+    half = (host_capacity.cpu_count() + 1) // 2
+    assert demand == host_capacity.HostWorkDemand(max(13, half), int(unit * 1024**3))
+    # One file still asks for half the host: it may hold thousands of tests.
+    assert consumer_gate._importer_demand(argv, 1).workers == half

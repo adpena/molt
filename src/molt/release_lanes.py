@@ -48,8 +48,6 @@ class ReleaseLane:
 
         return backend_features_for_target(
             is_wasm=self.target == "wasm",
-            is_luau_transpile=False,
-            is_rust_transpile=False,
             codegen_backend=self.codegen_backend,
         )
 

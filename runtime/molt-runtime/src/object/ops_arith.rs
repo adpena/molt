@@ -444,10 +444,12 @@ pub(crate) fn molt_inplace_add_attached_body(_py: &crate::PyToken<'_>, a: u64, b
                                     // Fast: spare capacity — append in place, zero alloc
                                     let l_data = string_bytes(ptr) as *mut u8;
                                     let r_data = string_bytes(r_ptr);
+                                    // Forget the side caches while the trailer still
+                                    // records them; `set_len` resets it.
+                                    super::ops_string::utf8_cache_forget(_py, ptr);
                                     std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
                                     super::layout::InlineBytesStorage::set_len(ptr, content_len);
                                     super::object_set_state(ptr, 0); // invalidate hash
-                                    super::ops_string::utf8_cache_remove(_py, ptr as usize);
                                     inc_ref_bits(_py, a);
                                     return a;
                                 }
@@ -991,8 +993,13 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
 unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
         if count <= 0 {
-            return crate::object::buffer_exports::bytearray_mutate(_py, ptr, 0, Vec::clear)
-                .is_some();
+            return crate::object::buffer_exports::bytearray_mutate(
+                _py,
+                ptr,
+                0,
+                crate::object::molt_vec::MoltVec::clear,
+            )
+            .is_some();
         }
         let count = match usize::try_from(count) {
             Ok(val) => val,
@@ -1573,7 +1580,21 @@ fn complex_power_payload(
             "complex modulo",
         ));
     }
-    Some(match complex_pow(base, exponent) {
+    // CPython's `complex_pow`: a real, integral exponent of magnitude at
+    // most 100 takes repeated multiplication (`c_powi`), not the polar form.
+    let integral =
+        exponent.im == 0.0 && exponent.re == exponent.re.floor() && exponent.re.abs() <= 100.0;
+    let result = if integral && (base.re != 0.0 || base.im != 0.0 || exponent.re > 0.0) {
+        crate::builtins::numbers::complex_powi(
+            base,
+            exponent.re as i64,
+            runtime_target_at_least(py, 3, 14),
+        )
+        .ok_or(())
+    } else {
+        complex_pow(base, exponent)
+    };
+    Some(match result {
         Ok(out) => complex_bits(py, out.re, out.im),
         Err(()) => raise_numeric_error(py, NumericErrorContext::ComplexNegativePower),
     })

@@ -551,16 +551,6 @@ _REGISTRY_JSON = r"""{
       "summary": "Guard scope for compat-suite LLVM backend runs."
     },
     {
-      "name": "MOLT_COMPAT_LUAU_BUILD",
-      "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite Luau backend builds."
-    },
-    {
-      "name": "MOLT_COMPAT_LUAU_RUN",
-      "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite Luau backend runs."
-    },
-    {
       "name": "MOLT_COMPAT_WASM_BUILD",
       "owner": "tools/compat/backends.py",
       "summary": "Guard scope for compat-suite WASM backend builds."
@@ -739,11 +729,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_RUNTIME_WASM",
       "owner": "tools/bench_wasm.py",
       "summary": "Guard scope for WASM runtime builds launched by the WASM benchmark tooling."
-    },
-    {
-      "name": "MOLT_RUST_TEST",
-      "owner": "tests/rust/process_guard.py",
-      "summary": "Guard scope for the Rust-backend test suite's subprocesses."
     },
     {
       "name": "MOLT_SENTINEL",
@@ -3083,16 +3068,6 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "developer",
       "default": "",
-      "kind": "bool",
-      "name": "MOLT_DIFF_DYLD_PREFLIGHT",
-      "output_neutral": false,
-      "owner": "tests/molt_diff.py",
-      "summary": "Enables the otool -l preflight that checks a freshly built test binary for dyld unknown imports format or malformed load command corruption before it runs; 1/true/yes/on enables it, 0/false/no/off disables it, and when unset the check runs on macOS only. A detected defect fails the selected attempt without rerunning it.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
       "kind": "path",
       "name": "MOLT_DIFF_FAILURES",
       "output_neutral": false,
@@ -4702,7 +4677,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MODULE_CHUNK_OPS",
       "output_neutral": false,
       "owner": "src/molt/cli/frontend_pipeline.py",
-      "summary": "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps the default with a warning; the default is 1400, and 1500 for Luau transpile builds.",
+      "summary": "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps the default with a warning; the default is 1400.",
       "values": []
     },
     {
@@ -7945,46 +7920,6 @@ _REGISTRY_JSON = r"""{
       ]
     },
     {
-      "audience": "developer",
-      "default": "300",
-      "kind": "float",
-      "name": "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Wall-clock limit in seconds for the runtime wasm cargo build that tools/bench_wasm.py runs; the value must be a positive number or the tool fails; default 300.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_RUNTIME_DIR",
-      "output_neutral": false,
-      "owner": "src/molt/cli/build_output_layout.py",
-      "summary": "Directory that holds the wasm runtime artifacts (molt_runtime.wasm and molt_runtime_reloc.wasm) for source-checkout builds and the wasm tools; when unset Molt uses <MOLT_EXT_ROOT>/wasm (a relative MOLT_EXT_ROOT is anchored at the project root), else molt-runtime-wasm inside the project's Cargo target beside the native runtime libraries, never the working directory or the source tree; an installed Molt rejects the variable because it ships its own runtime cells.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Set to 1 to make tools/bench_wasm.py build the runtime wasm in the session-scoped cargo target directory derived from the repository root instead of the shared cargo target root; any other value uses the shared root.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_RUNTIME_GPU_PRIMITIVES",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Set to 1, true, yes, or on (case-insensitive) to add the molt_gpu_primitives cargo feature to the runtime wasm build in tools/bench_wasm.py; any other value leaves the feature off.",
-      "values": []
-    },
-    {
       "audience": "internal",
       "default": "",
       "kind": "int",
@@ -7993,26 +7928,6 @@ _REGISTRY_JSON = r"""{
       "owner": "src/molt/cli/wasm_codegen_layout.py",
       "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime: a u64 bit mask of the generated poll-table slots whose poll functions that runtime defines (a runtime without stdlib_net lacks the networking poll functions); the backend fills an absent slot with the sentinel and does not import it, refuses a mask with bits outside the generated slots, and unset means every generated slot.",
       "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "auto",
-      "kind": "enum",
-      "name": "MOLT_WASM_RUNTIME_REBUILD",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Runtime wasm rebuild policy for tools/bench_wasm.py: always (or 1, true, yes) rebuilds every run, never (or 0, false, no) never rebuilds and fails when the runtime is missing or invalid, and any other value means auto, which rebuilds when the runtime is missing, invalid, or older than its sources.",
-      "values": [
-        "auto",
-        "always",
-        "1",
-        "true",
-        "yes",
-        "never",
-        "0",
-        "false",
-        "no"
-      ]
     },
     {
       "audience": "internal",
@@ -8032,16 +7947,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/cli/backend_compile.py",
       "summary": "Function-table base index (u32) of the app's callable region for the wasm backend: molt build strips any inherited value and sets it for the backend from the bound runtime layout, and tools/bench_wasm.py sets it from the runtime's table minimum. The runtime never reads it: runtime callables are keys, so no host publishes a table base (HF-699).",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_TAIL_CALL",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
-      "summary": "Set to 1, true, TRUE, on, or ON to emit return_call tail calls (wasm tail-call proposal) in backend output; off by default until the target feature probe proves support.",
       "values": []
     },
     {

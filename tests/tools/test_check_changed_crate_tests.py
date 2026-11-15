@@ -88,8 +88,12 @@ def test_hf205_cell_is_compiler_authorities_dev_fast_with_its_config(
     assert "--include-ignored" in libtest and "--test-threads=1" in libtest
     assert "read::coff::coff_extended_relocations" in libtest
     assert "--bins" not in argv and "--timings" not in argv
-    # molt-wasm-facts is not selected, so its qualified feature narrows the cell.
-    assert cell.dropped == {"molt-wasm-facts/host-tool"}
+    # molt-wasm-facts and molt-lang-cpython-abi are not selected, so their
+    # qualified features narrow the cell.
+    assert cell.dropped == {
+        "molt-wasm-facts/host-tool",
+        "molt-lang-cpython-abi/extension-loader",
+    }
     profiles = {
         cell.key.build[cell.key.build.index("--profile") + 1]
         for cell in _cells_for(selection, "molt-backend-native")
@@ -138,10 +142,12 @@ def test_a_crate_no_source_names_runs_its_default_truth_unit(plan, libs) -> None
     selection = _select(plan, libs, undeclared[0])
     (cell,) = selection.cells
     assert cell.sources == ["default-truth"]
-    assert cell.argv()[:7] == (
+    assert cell.argv()[:9] == (
         "cargo",
         "test",
         "--locked",
+        "--profile",
+        gate.DEFAULT_TRUTH_PROFILE,
         "-p",
         undeclared[0],
         "--lib",
@@ -150,16 +156,65 @@ def test_a_crate_no_source_names_runs_its_default_truth_unit(plan, libs) -> None
     assert not cell.declared
 
 
+def test_the_default_truth_profile_keeps_the_test_profiles_assertions() -> None:
+    """dev-fast must inherit dev as the built-in test profile does, so the
+    default-truth unit checks the same debug assertions (HF-205)."""
+    profiles = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))[
+        "profile"
+    ]
+    chosen = profiles[gate.DEFAULT_TRUTH_PROFILE]
+    assert chosen.get("inherits") == "dev"
+    for setting in ("debug-assertions", "overflow-checks", "opt-level"):
+        assert setting not in chosen, setting
+
+
+def test_the_runtime_gate_runs_once_when_its_own_rule_is_selected(
+    plan: dict, libs: dict[str, gate.Library]
+) -> None:
+    changed = ["runtime/molt-runtime/src/object/ops_dict.rs"]
+    assert gate.runtime_rule_selected(plan, changed)
+    selection = gate.select(
+        gate.plan_sources(plan, host=HOST),
+        _reach("molt-runtime"),
+        libs,
+        gate.runtime_gate(plan),
+        experimental=EXPERIMENTAL,
+        runner_in_batch=gate.runtime_rule_selected(plan, changed),
+    )
+    assert selection.runner is None
+    assert selection.runner_in_batch
+    assert selection.runner_packages == {"molt-runtime"}
+    assert not _cells_for(selection, "molt-runtime")
+
+
+def test_a_change_reaching_the_runtime_only_by_dependency_keeps_its_runner(
+    plan: dict, libs: dict[str, gate.Library]
+) -> None:
+    # The runtime-lib rule globs one molt-runtime-core file; another file of
+    # that crate reaches molt-runtime only as a reverse dependency.
+    changed = ["runtime/molt-runtime-core/src/lib.rs"]
+    assert not gate.runtime_rule_selected(plan, changed)
+    selection = gate.select(
+        gate.plan_sources(plan, host=HOST),
+        _reach("molt-runtime", "molt-runtime-core"),
+        libs,
+        gate.runtime_gate(plan),
+        experimental=EXPERIMENTAL,
+        runner_in_batch=gate.runtime_rule_selected(plan, changed),
+    )
+    assert selection.runner is not None
+    assert not selection.runner_in_batch
+
+
 def test_an_experimental_backend_crate_runs_in_no_presubmit_cell(plan, libs) -> None:
-    # HF-620 removed the Luau packages from every presubmit source; without the
-    # exclusion the crate fell to its default-truth unit, whose Lune oracles
-    # need a toolchain the plan no longer provisions.
-    assert "molt-backend-luau" in EXPERIMENTAL
-    selection = _select(plan, libs, "molt-backend-luau", "molt-backend-native")
-    assert not _cells_for(selection, "molt-backend-luau")
+    # An excluded backend's crate has no presubmit source; without the exclusion
+    # it would fall to its default-truth unit.
+    assert "molt-backend-mlir" in EXPERIMENTAL
+    selection = _select(plan, libs, "molt-backend-mlir", "molt-backend-native")
+    assert not _cells_for(selection, "molt-backend-mlir")
     assert _cells_for(selection, "molt-backend-native")
     assert any(
-        note.startswith("molt-backend-luau: experimental backend")
+        note.startswith("molt-backend-mlir: experimental backend")
         for note in selection.unverified
     )
 

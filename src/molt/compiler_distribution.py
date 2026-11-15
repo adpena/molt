@@ -40,9 +40,7 @@ MANIFEST_SCHEMA = "molt.release-compiler-source.v6"
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "llvm",
-    "luau-backend",
     "native-backend",
-    "rust-backend",
     "wasm-backend",
 )
 MAX_SOURCE_FILES = 25_000

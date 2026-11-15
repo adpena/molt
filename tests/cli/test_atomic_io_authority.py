@@ -21,7 +21,7 @@ from molt.cli.backend_artifact_contract import (
 )
 from molt import artifact_publication
 from molt import file_publication
-from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
+from molt.cli.runtime_wasm_generation import publish_runtime_wasm_product
 from molt.wasm_artifact import (
     _build_wasm_sections,
     _write_wasm_string,
@@ -30,7 +30,6 @@ from molt.wasm_artifact import (
 from tests.process_guard_common import current_thread_only, install_module_view
 from tests.runtime_build_identity_helper import (
     runtime_build_identity,
-    runtime_cargo_environment_inputs,
 )
 
 
@@ -346,13 +345,13 @@ def test_nested_backend_cache_publication_uses_bounded_stages(tmp_path: Path) ->
     # inner verified copy must not each append another nonce to that basename.
     digest = hashlib.sha256(b"cache-key").hexdigest()
     destination = tmp_path / f"{digest}.artifact-{digest}.stdlib-{digest}.a"
-    source = tmp_path / "source.rs"
+    source = tmp_path / "source.mlir"
     source.write_bytes(b"fn alpha() {}\n")
     warnings: list[str] = []
     identity = backend_cache._publish_immutable_backend_cache_artifact(
         source,
         destination,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
         warnings=warnings,
     ).identity
     assert identity.path == destination
@@ -392,14 +391,13 @@ def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
     reloc = tmp_path / "molt_runtime_reloc.wasm"
     shared.write_bytes(b"shared")
     reloc.write_bytes(b"reloc")
-    publish_runtime_wasm_generation(
+    publish_runtime_wasm_product(
         shared,
         reloc,
         shared_identity=runtime_build_identity("shared", "atomic-publication"),
         reloc_identity=runtime_build_identity("reloc", "atomic-publication"),
-        cargo_environment=runtime_cargo_environment_inputs(),
     )
-    # Immutable shared+reloc members, the atomic pair pointer and the store's
+    # Immutable shared+reloc members, the receipt and the retained store's
     # usage ledger. Internal publication deliberately creates no fixed-name
     # compatibility projections.
     assert len(calls) == 4 * barriers_per_commit

@@ -8,7 +8,7 @@ mod types;
 mod validation;
 
 pub(crate) use emit::{
-    const_expr_i32_const_padded, emit_call, emit_call_indirect, emit_i32_const, emit_return_call,
+    const_expr_i32_const_padded, emit_call, emit_call_indirect, emit_i32_const,
     encode_u32_leb128_padded,
 };
 pub(crate) use execution::{Function, WasmExecutionCallAbis};

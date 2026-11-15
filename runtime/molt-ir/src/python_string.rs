@@ -100,21 +100,6 @@ impl PythonString {
             })
     }
 
-    /// Python's UTF-8 backslashreplace edge used by diagnostic stderr output.
-    /// Storage remains surrogatepass; encoding never fuses surrogate halves.
-    pub fn to_utf8_backslashreplace(&self) -> String {
-        let mut output = String::new();
-        for point in self.code_points() {
-            if let Some(scalar) = char::from_u32(point) {
-                output.push(scalar);
-            } else {
-                use std::fmt::Write;
-                write!(&mut output, "\\u{point:04x}").expect("String writes cannot fail");
-            }
-        }
-        output
-    }
-
     pub fn repr(&self) -> String {
         let quote = if self.0.contains(&b'\'') && !self.0.contains(&b'"') {
             '"'

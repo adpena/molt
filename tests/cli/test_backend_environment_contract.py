@@ -48,7 +48,7 @@ def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
 
 
 def test_wasm_consumers_share_the_same_catalog():
-    for name in ("MOLT_WASM_TAIL_CALL", "MOLT_WASM_NATIVE_EH", "MOLT_WASM_PROFILE"):
+    for name in ("MOLT_WASM_NATIVE_EH", "MOLT_WASM_PROFILE"):
         assert _backend_codegen_env_digest(
             is_wasm=True, env={name: "0"}
         ) != _backend_codegen_env_digest(is_wasm=True, env={})

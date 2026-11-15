@@ -43,9 +43,7 @@ pub enum OpCode {
     ///
     /// Lowering: native = Cranelift `sadd_overflow`; LLVM =
     /// `llvm.sadd.with.overflow.i64`; WASM = raw `i64.add` + the sign-bit
-    /// identity `((lhs ^ sum) & (rhs ^ sum)) < 0`; Luau = the
-    /// `molt_checked_i64_add` prelude helper `(a + b, false)` — f64 addition
-    /// never wraps i64, so the overflow branch is correctly dead there.
+    /// identity `((lhs ^ sum) & (rhs ^ sum)) < 0`.
     ///
     /// Deliberately NOT classified pure-movable/CSE-safe in the effects
     /// oracle: a 2-result op must not be value-numbered or hoisted until the
@@ -70,11 +68,7 @@ pub enum OpCode {
     /// shift of the low 64 bits (`hi != lo >> 63`) — a FULL 64-bit-exact flag,
     /// never a 47-bit `fits_inline` test. LLVM = `llvm.smul.with.overflow.i64`.
     /// WASM = boxed-lane-only v1 (no raw 64x64->128 overflow helper yet, a
-    /// documented target limitation). Luau = the `molt_checked_i64_mul` prelude
-    /// helper which returns `flag = true` whenever exactness cannot be proven
-    /// (f64 loses mantissa bits in the i64 range, so a structural
-    /// `return a*b, false` would be a silent wrong answer — the conservative
-    /// flag forces the sound boxed slow loop).
+    /// documented target limitation).
     ///
     /// Deliberately NOT classified pure-movable/CSE-safe in the effects
     /// oracle: a 2-result op must not be value-numbered or hoisted until the
@@ -389,6 +383,13 @@ pub enum OpCode {
     /// block). Retains `value`, swaps it into the cell and releases the old
     /// word (`molt_codegen_abi::static_cell`). No runtime call, no result.
     StaticCellSet,
+    /// A read of a static cell whose InitOnce store dominates it (HF-846,
+    /// call_anatomy.md 4.5a). No operands; the op carries its `global_slot`
+    /// (cell k of module M's block). The cell is bound and is never written
+    /// again before module retirement, so the read is one load: no unbound
+    /// test, no retain. The result holds no reference of its own; the cell
+    /// owns it, and an escape retains it (`OwnershipRootFacts`). Pure.
+    StaticCellLoad,
     /// Read a named module attribute through the `module_get_name` runtime
     /// entrypoint used by the current native/WASM import surface.
     ///
@@ -571,9 +572,15 @@ const GLOBAL_SLOT_INDEX_ATTR: &str = "global_slot_index";
 /// Present when the slot is a static cell of a cell-eligible module
 /// (call_anatomy.md 4.5a), absent for a namespace slot table.
 const GLOBAL_SLOT_CELL_ATTR: &str = "global_slot_cell";
+/// Present on a read of a static cell that its InitOnce store dominates
+/// (HF-846, `GlobalSlotRef::init_once`).
+const GLOBAL_SLOT_INIT_ONCE_ATTR: &str = "global_slot_init_once";
 /// The compiled method site of a method load or of the call that consumes its
 /// pair (`OpIR::method_site`); only its typed accessor pair spells it.
 const METHOD_SITE_ATTR: &str = "method_site";
+/// A guarded call whose target integration proved (`OpIR::proven_target`);
+/// only its typed accessor pair spells it.
+const PROVEN_TARGET_ATTR: &str = "proven_target";
 
 /// Executable builtin identity, separate from positional arguments. A name
 /// selects runtime builtin lookup; it does not prove a fixed callable, purity,
@@ -881,10 +888,19 @@ impl TirOp {
             Some(&AttrValue::Bool(true)) => true,
             other => panic!("{:?}: malformed global slot cell {other:?}", self.opcode),
         };
+        let init_once = match self.attrs.get(GLOBAL_SLOT_INIT_ONCE_ATTR) {
+            None => false,
+            Some(&AttrValue::Bool(true)) => true,
+            other => panic!(
+                "{:?}: malformed global slot init_once {other:?}",
+                self.opcode
+            ),
+        };
         Some(crate::ir::GlobalSlotRef {
             module,
             index,
             cell,
+            init_once,
         })
     }
 
@@ -897,6 +913,25 @@ impl TirOp {
                 }))
             }
             other => panic!("{:?}: malformed method site {other:?}", self.opcode),
+        }
+    }
+
+    /// Whether integration proved this guarded call's callee is its target's
+    /// function object (HF-846 slice 2, `OpIR::proven_target`).
+    pub fn proven_target(&self) -> bool {
+        match self.attrs.get(PROVEN_TARGET_ATTR) {
+            None => false,
+            Some(&AttrValue::Bool(true)) => true,
+            other => panic!("{:?}: malformed proven target {other:?}", self.opcode),
+        }
+    }
+
+    pub fn set_proven_target(&mut self, proven: bool) {
+        if proven {
+            self.attrs
+                .insert(PROVEN_TARGET_ATTR.into(), AttrValue::Bool(true));
+        } else {
+            self.attrs.remove(PROVEN_TARGET_ATTR);
         }
     }
 
@@ -929,11 +964,18 @@ impl TirOp {
                 } else {
                     self.attrs.remove(GLOBAL_SLOT_CELL_ATTR);
                 }
+                if slot.init_once {
+                    self.attrs
+                        .insert(GLOBAL_SLOT_INIT_ONCE_ATTR.into(), AttrValue::Bool(true));
+                } else {
+                    self.attrs.remove(GLOBAL_SLOT_INIT_ONCE_ATTR);
+                }
             }
             None => {
                 self.attrs.remove(GLOBAL_SLOT_MODULE_ATTR);
                 self.attrs.remove(GLOBAL_SLOT_INDEX_ATTR);
                 self.attrs.remove(GLOBAL_SLOT_CELL_ATTR);
+                self.attrs.remove(GLOBAL_SLOT_INIT_ONCE_ATTR);
             }
         }
     }

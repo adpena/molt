@@ -27,11 +27,6 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-backend-rust/src/rust/prelude.rs::allow_dead_code::emitted-by:emit_header",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::struct:WasmNumericRuntimeSelectorSpec",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
