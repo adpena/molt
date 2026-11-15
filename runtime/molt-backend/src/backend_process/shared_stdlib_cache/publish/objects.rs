@@ -176,6 +176,17 @@ impl StdlibObjectCache {
             .join("object.entry")
     }
 
+    /// Where publication keeps an emission it refused because the entry for
+    /// the same input holds different bytes. Outside every entry directory, so
+    /// keeping it is not a use of the entry; eviction owns no name here.
+    fn refused_object_path(&self, key: &[u8; 32], digest: &[u8; 32]) -> PathBuf {
+        self.cache_root.join("native-stdlib-refused").join(format!(
+            "{}-{}.o",
+            bytes_to_lower_hex(key),
+            bytes_to_lower_hex(digest)
+        ))
+    }
+
     /// Admit an immutable generation as a mapping of its object bytes.
     ///
     /// Publication replaces files atomically and never edits a generation in
@@ -238,10 +249,24 @@ impl StdlibObjectCache {
                                 .position(|(left, right)| left != right)
                                 .unwrap_or(previous.len().min(object.len()));
                             let end = (first_difference + 16).min(previous.len().min(object.len()));
+                            // Keep the refused emission so the two objects can
+                            // be diffed (HF-852: the worker's temporary output
+                            // is gone by now). It lives outside the entry's
+                            // directory, whose mtime is the entry's last use.
+                            let refused = self.refused_object_path(key, &output_digest);
+                            let kept = refused
+                                .parent()
+                                .map_or(Ok(()), std::fs::create_dir_all)
+                                .and_then(|()| {
+                                    molt_artifact_publish::write_atomically(&refused, |writer| {
+                                        writer.write_all(&object)
+                                    })
+                                });
                             return Err(invalid(&format!(
                                 "identical native object inputs produced different output bytes: \
                                  input={} entry={} first_difference={} previous_size={} \
-                                 emitted_size={} previous_bytes={} emitted_bytes={}",
+                                 emitted_size={} previous_bytes={} emitted_bytes={} \
+                                 emitter_input_sha256={} refused_object={}",
                                 bytes_to_lower_hex(key),
                                 path.display(),
                                 first_difference,
@@ -249,6 +274,11 @@ impl StdlibObjectCache {
                                 object.len(),
                                 bytes_to_lower_hex(&previous[first_difference..end]),
                                 bytes_to_lower_hex(&object[first_difference..end]),
+                                origin.input.sha256,
+                                match kept {
+                                    Ok(_) => refused.display().to_string(),
+                                    Err(error) => format!("not kept ({error})"),
+                                },
                             )));
                         }
                         // The first generation owns its original emitter even
