@@ -815,6 +815,8 @@ def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
 def _linux_proc_stat_row(
     pid: int,
     proc_root: Path = Path("/proc"),
+    *,
+    admit_exited: bool = False,
 ) -> tuple[tuple[int, int, int, str], int] | None:
     """Read one `/proc` stat row: the instance identity plus resident kB.
 
@@ -823,6 +825,8 @@ def _linux_proc_stat_row(
     serves both the ancestry sample and the memory accounting. A process that
     has exited and awaits its reap (``_linux_stat_exited``) has no row, as
     Darwin's samplers drop ``SZOMB`` rows: it is no live member of any tree.
+    ``admit_exited`` keeps that row for a caller that owns the unreaped child
+    (``unreaped_child_started_at_ns``).
     """
 
     if pid <= 0 or (
@@ -846,7 +850,7 @@ def _linux_proc_stat_row(
         return None
     if start_ticks < 0 or ticks_per_second <= 0:
         return None
-    if _linux_stat_exited(tail):
+    if not admit_exited and _linux_stat_exited(tail):
         return None
     identity = (
         max(0, ppid),
@@ -870,6 +874,25 @@ def _linux_proc_stat_identity(
 
     row = _linux_proc_stat_row(pid, proc_root)
     return None if row is None else row[0]
+
+
+def unreaped_child_started_at_ns(pid: int) -> int | None:
+    """The start marker of this process's own child, live or exited but unreaped.
+
+    Until its parent reaps it, a child's pid cannot be reused, so its stat row
+    names that one lifetime even after it exits. A child that runs for a few
+    milliseconds exits before any sampler observes it; without this read its
+    launch identity stays unknown, and guard custody cannot tell it from an
+    earlier process that held the same pid. Call it before any wait or poll of
+    the child. Hosts other than Linux answer as ``process_started_at_ns``.
+    """
+
+    if not sys.platform.startswith("linux"):
+        return process_started_at_ns(pid)
+    if type(pid) is not int or pid <= 0:
+        return None
+    row = _linux_proc_stat_row(pid, admit_exited=True)
+    return None if row is None else row[0][2]
 
 
 def _linux_proc_started_at_ns(pid: int) -> int | None:
