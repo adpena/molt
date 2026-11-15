@@ -102,7 +102,7 @@ _BOXED_ALLOCATION_LAYOUT_RULES = {
     "class_missing": "ClassMissing",
 }
 _TYPE_REFINE_ATTR_RESULT_TYPE_RULES = {
-    "object_type_hint": "ObjectTypeHint",
+    "object_class_definition": "ObjectClassDefinition",
     "call_return_type": "CallReturnType",
     "type_guard": "TypeGuard",
     "copy_original_kind": "CopyOriginalKind",
@@ -431,6 +431,9 @@ _SIMPLEIR_CALL_TARGET_ROLES = {
     "external_or_runtime",
     "opaque",
 }
+# Roles of `simpleir_function_reference_roles` (HF-847 slice 1). The Rust
+# projection is `FunctionReferenceRole`; an unlisted kind is `None`.
+FUNCTION_REFERENCE_ROLES = {"required": "Required", "optional": "Optional"}
 _PASS_DELTA_FACT_FIELDS = (
     ("pass_delta_box_opcodes", "box_op"),
     ("pass_delta_unbox_opcodes", "unbox_op"),

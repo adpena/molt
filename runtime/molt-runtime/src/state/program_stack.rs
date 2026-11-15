@@ -51,8 +51,14 @@ pub(crate) fn thread_stack_bytes(configured: usize) -> usize {
 /// context.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_run_program_entry(entry: u64, context: u64) {
-    // SAFETY: the launch passes the compiled entry's address.
-    let entry: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(entry as usize) };
+    // The launch passes the compiled entry's code address; one that the target
+    // cannot represent is a broken launch, not a recoverable error.
+    let Some(code) = crate::provenance::abi::function_ptr(entry) else {
+        std::process::abort();
+    };
+    // SAFETY: `code` is the compiled entry, an `extern "C" fn(u64)`.
+    let entry: unsafe extern "C" fn(u64) =
+        unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn(u64)>(code) };
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
         // SAFETY: the entry runs to completion on the new stack and returns.

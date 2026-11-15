@@ -147,6 +147,9 @@ pub(super) fn wasm_object_new_bound_ir(
 ) -> SimpleIR {
     let mut allocate = wasm_test_op(kind, Some("obj"), vec!["cls"]);
     allocate.value = payload_size;
+    if kind == molt_ir::OpKind::ObjectNewBound {
+        allocate.class_definition = Some("class:test:Fixture".into());
+    }
     let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["obj"]);
     ret.args = Some(vec!["obj".to_string()]);
     SimpleIR {

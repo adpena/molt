@@ -767,6 +767,7 @@ fn apply_promotion(
             hoist_ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: OpCode::ConstStr,
                 operands: vec![],
@@ -777,6 +778,7 @@ fn apply_promotion(
             hoist_ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: load_opcode,
                 operands: vec![module_root, fresh_name],
@@ -1113,6 +1115,7 @@ fn alloc_store_back_ops(
         ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: OpCode::ConstStr,
             operands: vec![],
@@ -1123,6 +1126,7 @@ fn alloc_store_back_ops(
         ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: OpCode::ModuleSetAttr,
             operands: vec![module_root, name_id, values[i]],

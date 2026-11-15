@@ -149,7 +149,7 @@ Payload:
 
 ## 8. WASM host interface (db_query/db_exec)
 WASM builds must call the host through the `db_query` and `db_exec` imports
-that `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declares; they mirror the IPC request
+that `runtime/runtime_abi.toml` declares; they mirror the IPC request
 shape. The host is responsible for executing the query and streaming the
 response bytes back into the module.
 

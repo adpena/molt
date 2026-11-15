@@ -14,7 +14,7 @@ fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
             let mut caller = caller_calling_const(symbol);
             caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
             assert!(
-                collect_call_sites(&caller, &[symbol.into()]).is_empty(),
+                sites_in(caller.clone(), &[symbol]).1.is_empty(),
                 "{kind}: {symbol}"
             );
         }
@@ -35,7 +35,7 @@ fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
             if let Some(kind) = original {
                 caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
             }
-            let sites = collect_call_sites(&caller, &[symbol.into()]);
+            let sites = sites_in(caller.clone(), &[symbol]).1;
             assert_eq!(sites.len(), 1, "{symbol}: {original:?}");
         }
         let mut intrinsic = caller_calling_const(symbol);
@@ -46,7 +46,7 @@ fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
             .ops[0]
             .origin = Some(gpu_kind);
         assert!(
-            collect_call_sites(&intrinsic, &[symbol.into()]).is_empty(),
+            sites_in(intrinsic.clone(), &[symbol]).1.is_empty(),
             "{gpu_kind}"
         );
     }
@@ -54,7 +54,7 @@ fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
     let op = &mut caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0];
     op.opcode = OpCode::Copy;
     op.origin = Some(molt_ir::OpKind::CallInternal);
-    assert!(collect_call_sites(&caller, &["constfn".into()]).is_empty());
+    assert!(sites_in(caller.clone(), &["constfn"]).1.is_empty());
 }
 
 #[test]
@@ -153,6 +153,7 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![p, q],
@@ -171,10 +172,10 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
             .map(crate::tir::printer::print_function)
             .collect();
         let (cg, sm) = analysis(&m);
-        assert_eq!(cg.has_opaque_call(&callee_name), !inlines);
+        assert_eq!(cg.has_opaque_call(callee_name.as_str()), !inlines);
         let tti = TargetInfo::native_release_fast();
         assert_eq!(
-            classify_inline_eligibility(&m.functions[1], &cg, &sm, &tti),
+            classify_inline_eligibility(m.ids[1], &m.functions[1], &cg, &sm, &tti),
             if inlines {
                 crate::tir::call_facts::InlineEligibility::Eligible
             } else {
@@ -227,11 +228,11 @@ fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
     let tti = TargetInfo::native_release_fast();
 
     assert!(
-        sm.get("eval_like").unwrap().op_count > tti.inline_budget("eval_like"),
+        sm.get(id_of(&m, "eval_like")).unwrap().op_count > tti.inline_budget("eval_like"),
         "fixture must be over the base inline budget"
     );
     assert!(
-        sm.get("eval_like").unwrap().op_count <= tti.hot_inline_op_limit(),
+        sm.get(id_of(&m, "eval_like")).unwrap().op_count <= tti.hot_inline_op_limit(),
         "fixture must stay inside the targeted numeric hot-inline cap"
     );
 
@@ -268,11 +269,11 @@ fn run_inliner_uses_hot_budget_for_numeric_return_with_observation_exit() {
     let tti = TargetInfo::native_release_fast();
 
     assert!(
-        sm.get("eval_like").unwrap().op_count > tti.inline_budget("eval_like"),
+        sm.get(id_of(&m, "eval_like")).unwrap().op_count > tti.inline_budget("eval_like"),
         "fixture must be over the base inline budget"
     );
     assert!(
-        sm.get("eval_like").unwrap().op_count <= tti.hot_inline_op_limit(),
+        sm.get(id_of(&m, "eval_like")).unwrap().op_count <= tti.hot_inline_op_limit(),
         "fixture must stay inside the targeted numeric hot-inline cap"
     );
 
@@ -320,6 +321,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -334,6 +336,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![x, y],

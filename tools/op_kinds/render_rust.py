@@ -16,6 +16,7 @@ from .runtime_requirements import (
     target_runtime_requirement_masks,
 )
 from .schema import (
+    FUNCTION_REFERENCE_ROLES,
     _EXCEPTION_REGION_NESTING_ROLES,
     _FUZZ_TIR_ATTR_PAYLOAD_RULES,
     _GENERATOR_FUSION_ITER_USE_ROLES,
@@ -1345,11 +1346,6 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             None,
             "has_function_reference_s_value",
         ),
-        (
-            "simpleir_defined_function_reference_s_value_kinds",
-            "SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS",
-            "references_defined_function",
-        ),
     ):
         kinds = sorted(data.get(table, []))
         if constant:
@@ -1359,6 +1355,25 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
                 + "];\n"
             )
         lines.append(_wire.boolean(data, "simpleir_kind_" + name, kinds))
+    lines.append(
+        "/// Whether an operation's wire `s_value` names a compiled function\n"
+        "/// (HF-847 slice 1); decode moves it into a typed `callee`.\n"
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n"
+        "pub enum FunctionReferenceRole {\n    None,\n    Optional,\n    Required,\n}\n\n"
+    )
+    lines.append(
+        _wire.fact(
+            data,
+            "simpleir_kind_function_reference_role",
+            "FunctionReferenceRole",
+            {
+                row["kind"]: "FunctionReferenceRole::"
+                + FUNCTION_REFERENCE_ROLES[row["role"]]
+                for row in data["simpleir_function_reference_roles"]
+            },
+            "FunctionReferenceRole::None",
+        )
+    )
     return "".join(lines)
 
 

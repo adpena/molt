@@ -25,9 +25,9 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
-| 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
+| 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
-| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | attribute and constructor sites; typed-layout deallocation | HF-202, HF-206 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | constructor sites (HF-847, lane hf847-ctor); guarded field sites inline from one generator (integrator; `GuardedFieldGet/Set` are runtime calls on every backend today, see below); typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
 | 7 TIR inlining | not started | - | - | HF-773 |
@@ -63,6 +63,30 @@ The collector and `struct` costs need their own fixes and wait for no stage. Ins
 push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top of method-heavy
 code (stage 1) and traceback location decoding (`LocationRows`) at the top of `exception_heavy`
 (stage 5).
+
+**Where the time goes in the worst cells (2026-11-15, macOS arm64, LLVM, release, shipping
+runtime profile; `tools/opt_explorer.py profile` on the loops scaled 10x).** Compiled code holds
+2.4% of `bench_struct` self samples (258 of 10,954) and 5.1% of `bench_descriptor_property`
+(256 of 5,039); the runtime holds the rest. Per iteration, instructions retired against the C
+reference:
+
+| benchmark | per iteration | C reference |
+|---|---|---|
+| `bench_struct` (`Point(0, 0)`, two field stores) | ~18,400 | ~30-50 |
+| `bench_descriptor_property` (`total += box.x`) | ~6,780 | ~2-3 |
+| `bench_generator_chain` (one yielded element) | ~3,500 | - |
+| `bench_exception_heavy` (one third raise) | ~8,100 | - |
+
+`bench_struct` buckets: attribute access 27.6%, allocation 18.7%, call dispatch 16.7%, refcount
+7.8%. The construction is generic (`molt_callargs_*`, `molt_call_bind_ic_owned`, then
+`construct_regular_class`, a bound method for `__init__` and an argument tuple on every call),
+and every field store is a runtime call: `main` uses `molt_set_attr_object_ic` because it does
+not know `p` is a `Point`, and `Point.__init__` uses `molt_guarded_field_set` even though the
+frontend proved the layout. `bench_descriptor_property` spends 52% in attribute access: the
+property read takes the generic lookup (`attr_lookup_ptr_with_mode`, descriptor binding, a
+vector call of the getter, SipHash in the lookup path). The fixes are named: constructor sites
+(HF-847), guarded field sites inline from one generator with the guard dropped where no writer
+exists, and a closed-world property read that calls (then inlines) the known getter.
 
 The P0 compiler program since 2026-11-14 is whole-program type flow and specialization (HF-847,
 `78_whole_program_type_flow.md`): facts cross calls, one body per argument-type context. Stages 6

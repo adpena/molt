@@ -692,10 +692,7 @@ fn inline(caller: TirFunction, callee: TirFunction) -> TirFunction {
     let document = inline_fixture_document(&caller, &callee);
     let caller = lift_inline_fixture(&document.functions[0]);
     let callee = lift_inline_fixture(&document.functions[1]);
-    let mut module = TirModule {
-        name: "inline_custody".into(),
-        functions: vec![caller, callee],
-    };
+    let mut module = TirModule::with_own_table("inline_custody", vec![caller, callee]);
     let graph = CallGraph::build(&module);
     let summaries = ModuleSummaries::compute(&module, &graph);
     let stats = run_inliner(
@@ -747,10 +744,14 @@ fn inline_fixture_document(caller: &TirFunction, callee: &TirFunction) -> molt_i
             }
         })
         .collect();
-    let document = molt_ir::SimpleIR {
+    let mut document = molt_ir::SimpleIR {
         functions,
         profile: None,
     };
+    // Decode as production does: each spelled callee becomes its typed row.
+    document
+        .resolve_function_references()
+        .expect("the inline fixture's callees name its functions");
     molt_ir::validate_simple_ir(&document).expect(
         "the whole inline fixture must satisfy production schema and call custody admission",
     );
@@ -794,10 +795,7 @@ fn refused_opaque_inline(caller: TirFunction, callee: TirFunction) -> (TirFuncti
     // Even refusal fixtures must satisfy the same document custody/reference
     // boundary; their original activations remain the independent RC oracle.
     inline_fixture_document(&caller, &callee);
-    let mut module = TirModule {
-        name: "opaque_inline_custody".into(),
-        functions: vec![caller, callee],
-    };
+    let mut module = TirModule::with_own_table("opaque_inline_custody", vec![caller, callee]);
     let before: Vec<_> = module
         .functions
         .iter()
@@ -807,7 +805,13 @@ fn refused_opaque_inline(caller: TirFunction, callee: TirFunction) -> (TirFuncti
     let summaries = ModuleSummaries::compute(&module, &graph);
     let target = TargetInfo::native_release_fast();
     assert_eq!(
-        classify_inline_eligibility(&module.functions[1], &graph, &summaries, &target),
+        classify_inline_eligibility(
+            module.ids[1],
+            &module.functions[1],
+            &graph,
+            &summaries,
+            &target
+        ),
         InlineEligibility::WhyNot(InlineWhyNot::Recursive)
     );
     let stats = run_inliner(&mut module, &graph, &summaries, &target, &HashSet::new());

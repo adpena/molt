@@ -28,7 +28,7 @@ import molt.cli as cli
 from molt.cli import function_references as FR
 from molt.cli import required_features as RF
 from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS,
+    SIMPLEIR_FUNCTION_REFERENCE_KINDS,
 )
 from molt.cli import compiler_metadata as cli_compiler_metadata
 
@@ -194,9 +194,7 @@ def test_explicit_poll_target_retains_its_feature(kind: str) -> None:
     ) == frozenset({"stdlib_regex"})
 
 
-@pytest.mark.parametrize(
-    "kind", sorted(SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS)
-)
+@pytest.mark.parametrize("kind", sorted(SIMPLEIR_FUNCTION_REFERENCE_KINDS))
 def test_generated_reference_kinds_retain_only_exact_defined_target(kind: str) -> None:
     functions = [
         {"name": "molt_main", "ops": [{"kind": kind, "s_value": "target"}]},
@@ -727,13 +725,12 @@ def _rust_source(relative: str) -> str:
 
 def test_defined_function_consumers_use_generated_authority() -> None:
     source = _rust_source("runtime/molt-tir/src/passes/dead_functions.rs")
-    # The closed OpKind carries the generated fact; no consumer matches a
-    # wire spelling.
-    assert ".references_defined_function()" in source
+    # Reachability follows typed callees (HF-847 slice 1); no consumer
+    # matches a wire spelling.
+    assert "op.callee" in source
+    assert "s_value" not in source
     assert "as_str()" not in source
-    assert FR.SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS is (
-        SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS
-    )
+    assert FR.SIMPLEIR_FUNCTION_REFERENCE_KINDS is (SIMPLEIR_FUNCTION_REFERENCE_KINDS)
     assert not hasattr(FR, "FUNCTION_REFERENCE_OP_KINDS")
     assert not hasattr(FR, "POLL_COMPANION_OP_KINDS")
     assert "_DEAD_FUNCTION_ELIM_REFERENCE_KINDS" not in dir(cli)

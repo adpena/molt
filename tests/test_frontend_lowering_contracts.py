@@ -1524,8 +1524,11 @@ overridden = Overridden(4)
     assert all(op.get("kind") != "object_new_bound" for op in ops)
     for name in ("Inherited", "Overridden"):
         (callee,) = _module_global_reads_named(ops, name)
+        # The class call stays generic: `call_func`, or `call_bind` with a
+        # callargs builder; either runs `type.__call__` and the custom `__new__`.
         assert any(
-            op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
+            op["kind"] in {"call_func", "call_bind"}
+            and op.get("args", [None])[0] == callee["out"]
             for op in ops
         ), name
 

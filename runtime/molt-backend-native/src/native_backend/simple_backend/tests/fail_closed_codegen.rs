@@ -65,7 +65,10 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
-    let defined = BTreeSet::from(["caller".to_string()]);
+    let defined = molt_ir::FunctionTable::from_rows([(
+        "caller",
+        molt_ir::function_table::FunctionRowKind::Body,
+    )]);
     backend.compile_func(
         final_function_for_test(caller),
         &BTreeMap::new(),
@@ -139,7 +142,10 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
             &[],
         ),
     );
-    let defined_functions = BTreeSet::from(["caller".to_string(), "helper".to_string()]);
+    let defined_functions = molt_ir::FunctionTable::from_rows([
+        ("caller", molt_ir::function_table::FunctionRowKind::Body),
+        ("helper", molt_ir::function_table::FunctionRowKind::Body),
+    ]);
     let function_arities = BTreeMap::from([
         ("caller".to_string(), caller.params.len()),
         ("helper".to_string(), 1usize),

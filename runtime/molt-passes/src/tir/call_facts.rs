@@ -107,13 +107,14 @@ impl CallFactsTable {
         summaries: &ModuleSummaries,
         tti: &TargetInfo,
     ) -> Self {
-        // Function bodies by name for inline eligibility. The ordered index
-        // provides deterministic traversal and logarithmic callee lookup.
-        let by_name: BTreeMap<&str, &TirFunction> = module
-            .functions
-            .iter()
-            .map(|f| (f.name.as_str(), f))
-            .collect();
+        // Function bodies by id for inline eligibility.
+        let body = module.body_index();
+        let body_of = |id: molt_ir::FunctionId| {
+            body.get(id.index())
+                .copied()
+                .flatten()
+                .map(|index| &module.functions[index])
+        };
 
         let mut table = CallFactsTable::default();
         let sites = FunctionCallSites::for_function(func);
@@ -126,7 +127,7 @@ impl CallFactsTable {
                     continue;
                 };
                 let facts =
-                    analyze_call_site_module(op, site, func, call_graph, summaries, tti, &by_name);
+                    analyze_call_site_module(op, site, func, call_graph, summaries, tti, &body_of);
                 table.facts.insert(result.0, facts);
             }
         }

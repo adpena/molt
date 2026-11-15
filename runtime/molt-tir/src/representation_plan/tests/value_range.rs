@@ -30,6 +30,7 @@ fn tir_op(opcode: TirOpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> T
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

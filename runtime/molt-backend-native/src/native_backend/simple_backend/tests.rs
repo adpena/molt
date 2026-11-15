@@ -430,6 +430,14 @@ fn compile_function_to_clif_with_imports(
 /// Direct codegen controls below instead retain their authored final body.
 fn final_functions_for_test(functions: &[FunctionIR]) -> NativeFinalFunctions {
     let target = crate::tir::target_info::TargetInfo::native_release_fast();
+    // Decode the authored fixture, as the backend's first read would.
+    let mut decoded = functions.to_vec();
+    molt_ir::function_table::resolve_function_references_in(
+        &mut decoded,
+        molt_ir::function_table::OutsideSymbols::Keep,
+    )
+    .unwrap();
+    let functions = &decoded[..];
     let typed = functions
         .iter()
         .map(|function| {
@@ -544,11 +552,18 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
 /// Independent former whole-module oracle, retained only in tests. It observes
 /// actual final SimpleIR through the real shared call graph and drop authority.
 fn final_leaf_oracle(functions: &[FunctionIR]) -> BTreeSet<String> {
-    let functions = functions
+    let table = molt_ir::FunctionTable::of(functions);
+    let bodies = functions
         .iter()
-        .filter(|function| !function.is_extern)
-        .map(crate::tir::lower_from_simple::lower_to_tir)
-        .filter(|function| {
+        .enumerate()
+        .filter(|(_, function)| !function.is_extern)
+        .map(|(index, function)| {
+            (
+                molt_ir::FunctionId::from_index(index),
+                crate::tir::lower_from_simple::lower_to_tir(function),
+            )
+        })
+        .filter(|(_, function)| {
             matches!(
                 function
                     .attrs
@@ -557,11 +572,13 @@ fn final_leaf_oracle(functions: &[FunctionIR]) -> BTreeSet<String> {
             )
         })
         .collect();
-    crate::tir::CallGraph::build(&crate::tir::TirModule {
-        name: "native_leaf_test_oracle".into(),
-        functions,
-    })
-    .leaf_functions()
+    let module =
+        crate::tir::TirModule::from_document("native_leaf_test_oracle", table.clone(), bodies);
+    crate::tir::CallGraph::build(&module)
+        .leaf_functions()
+        .iter()
+        .map(|id| table.symbol(id).to_string())
+        .collect()
 }
 
 /// Share direct function compilation between CLIF inspection and executable
@@ -596,7 +613,7 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
             function,
             &analysis.task_kinds,
             &analysis.task_closure_sizes,
-            &analysis.defined_functions,
+            &analysis.function_table,
             &analysis.closure_functions,
             &analysis.leaf_functions,
             &function_arities,

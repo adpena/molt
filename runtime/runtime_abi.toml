@@ -1,4 +1,8 @@
-# Canonical WASM ABI/import manifest.
+# Canonical runtime ABI manifest: every runtime entry's machine signature,
+# execution context and effects, for native, LLVM and wasm32 alike. It lives
+# beside native_launch_abi.toml, not in a backend crate, because every backend
+# and the runtime consume it. The WASM-only tables below (import stripping,
+# op-loop selectors) retire with the hand-written WASM backend.
 # Generated consumers are produced by tools/gen_wasm_abi.py.
 # Runtime imports require their exact declared exports and signatures; another
 # function with the same machine type is not a substitute for its result contract.

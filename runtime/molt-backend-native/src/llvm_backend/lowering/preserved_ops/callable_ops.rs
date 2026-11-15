@@ -521,12 +521,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::FuncNew => {
-                let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) else {
+                let Some(func_name) = self.callee_symbol(op) else {
                     return false;
                 };
+                let func_name = func_name.as_str();
                 let arity = op
                     .attrs
                     .get("value")
@@ -576,12 +574,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::FuncNewClosure => {
-                let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) else {
+                let Some(func_name) = self.callee_symbol(op) else {
                     return false;
                 };
+                let func_name = func_name.as_str();
                 let arity = op
                     .attrs
                     .get("value")

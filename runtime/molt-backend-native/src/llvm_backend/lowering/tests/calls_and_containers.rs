@@ -23,7 +23,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "runtime_call".into(),
             vec![],
@@ -37,6 +37,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
         entry.ops.push(TirOp {
             origin: Some(OpKind::Call),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![raw; arity],
@@ -101,6 +102,7 @@ fn direct_raw_runtime_calls_bind_words_without_owners() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::Call),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -141,7 +143,7 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
         for with_result in [false, true] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
-            admit_runtime_entry(&mut backend, &symbol);
+            admit_runtime_entry(&mut backend, symbol);
             let mut func = TirFunction::new(
                 "void_runtime_call".into(),
                 vec![],
@@ -155,6 +157,7 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
             entry.ops.push(TirOp {
                 origin: Some(OpKind::Call),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![arg; arity],
@@ -209,6 +212,7 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
             entry.ops.push(TirOp {
                 origin: Some(origin),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![arg],
@@ -263,6 +267,7 @@ fn direct_runtime_calls_reject_unclassified_arity_and_internal_target() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![arg; arity],
@@ -288,7 +293,7 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "discard_runtime_result".into(),
             vec![],
@@ -301,6 +306,7 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![arg],
@@ -375,6 +381,7 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                 entry.ops.push(TirOp {
                     origin: Some(origin),
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![arg],
@@ -496,6 +503,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
                     .push(TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::LoadMethod,
                         operands: vec![input],
@@ -513,6 +521,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             let mut call = TirOp {
                 origin,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -581,6 +590,7 @@ fn compiled_call_results_use_semantic_ownership_without_boxing_discarded_scalars
                 entry.ops.push(TirOp {
                     origin: Some(kind),
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Call,
                     operands: vec![],
@@ -668,6 +678,7 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![raw; width * 2],
@@ -805,6 +816,7 @@ fn dictionary_full_pairs_materialize_once_before_the_constructor() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildDict,
         operands: vec![first, first, second, first],
@@ -873,6 +885,7 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
         entry.ops.push(TirOp {
             origin: Some(OpKind::Call),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![raw],
@@ -945,7 +958,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &producer);
+        admit_runtime_entry(&mut backend, producer);
         let mut func = TirFunction::new(
             "discard_container_result".into(),
             vec![],
@@ -964,6 +977,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -1073,6 +1087,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::IterNextUnboxed,
         operands: vec![iterator],
@@ -1106,7 +1121,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "raw_iterator_input".into(),
             vec![],
@@ -1121,6 +1136,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![raw],
@@ -1181,6 +1197,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::IterNextUnboxed,
         operands: vec![raw],
@@ -1253,6 +1270,7 @@ fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::CallGuarded),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, arg0],
@@ -1293,6 +1311,7 @@ fn lower_import_uses_var_attr_fallback_for_module_name() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Import,
         operands: vec![],
@@ -1331,6 +1350,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1345,6 +1365,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildList,
         operands: vec![raw],
@@ -1355,6 +1376,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildTuple,
         operands: vec![raw],
@@ -1365,6 +1387,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildSet,
         operands: vec![raw],
@@ -1375,6 +1398,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildDict,
         operands: vec![key, raw],
@@ -1428,6 +1452,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1448,6 +1473,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands,
@@ -1514,6 +1540,7 @@ fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstStr,
             operands: vec![],
@@ -1537,6 +1564,7 @@ fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
                 ops: vec![TirOp {
                     origin,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![raw, text],
@@ -1622,6 +1650,7 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::LoadMethod,
         operands: vec![receiver],
@@ -1639,6 +1668,7 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
     let mut call = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallLoadedMethod,
         operands,
@@ -1739,6 +1769,7 @@ fn method_receiver_prefix_guards_the_null_and_ends_only_the_original_credit() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallargsPushMethodReceiver,
         operands: vec![entry.args[0].id, receiver],
@@ -1822,6 +1853,7 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1837,6 +1869,7 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1855,6 +1888,7 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     entry.ops.push(TirOp {
         origin,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![name, base, attr_key, attr_value],

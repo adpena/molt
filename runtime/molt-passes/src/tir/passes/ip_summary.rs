@@ -13,7 +13,7 @@
 //! calls) extend [`FunctionSummary`] when those arcs land; they are intentionally
 //! *not* fabricated here, because an unsound `is_pure=true` would miscompile.
 
-use std::collections::BTreeMap;
+use molt_ir::{FunctionId, FunctionSet};
 
 use super::super::call_graph::CallGraph;
 use super::super::function::TirModule;
@@ -35,10 +35,10 @@ pub struct FunctionSummary {
     pub return_type: TirType,
 }
 
-/// All function summaries for a module, keyed by function name.
+/// All function summaries for a module, indexed by `FunctionId`.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleSummaries {
-    summaries: BTreeMap<String, FunctionSummary>,
+    summaries: Vec<Option<FunctionSummary>>,
 }
 
 impl ModuleSummaries {
@@ -53,59 +53,52 @@ impl ModuleSummaries {
     /// but establishing the bottom-up scaffold now is the structural point of
     /// this pass.
     pub fn compute(module: &TirModule, call_graph: &CallGraph) -> ModuleSummaries {
-        // Index functions by name for O(1) lookup during the ordered walk.
-        let by_name: BTreeMap<&str, &super::super::function::TirFunction> = module
-            .functions
-            .iter()
-            .map(|f| (f.name.as_str(), f))
-            .collect();
-
-        let mut summaries: BTreeMap<String, FunctionSummary> = BTreeMap::new();
+        let body = module.body_index();
+        let mut summaries: Vec<Option<FunctionSummary>> = vec![None; module.table.len()];
 
         for scc in call_graph.bottom_up_order() {
-            for name in scc {
-                let Some(func) = by_name.get(name.as_str()) else {
+            for id in scc {
+                let Some(func) = body[id.index()].map(|index| &module.functions[index]) else {
                     continue;
                 };
                 let op_count = func.blocks.values().map(|b| b.ops.len()).sum();
-                summaries.insert(
-                    name.clone(),
-                    FunctionSummary {
-                        is_leaf: !call_graph.makes_any_call(&name),
-                        op_count,
-                        return_type: func.return_type.clone(),
-                    },
-                );
+                summaries[id.index()] = Some(FunctionSummary {
+                    is_leaf: !call_graph.makes_any_call(id),
+                    op_count,
+                    return_type: func.return_type.clone(),
+                });
             }
         }
 
         ModuleSummaries { summaries }
     }
 
-    /// The summary of `name`, if the function is in the module.
-    pub fn get(&self, name: &str) -> Option<&FunctionSummary> {
-        self.summaries.get(name)
+    /// The summary of `id`, if the function has a body in the module.
+    pub fn get(&self, id: FunctionId) -> Option<&FunctionSummary> {
+        self.summaries.get(id.index())?.as_ref()
     }
 
     /// The set of leaf function names (those whose summary marks `is_leaf`).
     /// Equals [`CallGraph::leaf_functions`]; provided so a consumer holding the
     /// summaries does not need the call graph too.
-    pub fn leaf_functions(&self) -> std::collections::BTreeSet<String> {
-        self.summaries
-            .iter()
-            .filter(|(_, s)| s.is_leaf)
-            .map(|(name, _)| name.clone())
-            .collect()
+    pub fn leaf_functions(&self) -> FunctionSet {
+        let mut leaves = FunctionSet::with_capacity(self.summaries.len());
+        for (index, summary) in self.summaries.iter().enumerate() {
+            if summary.as_ref().is_some_and(|summary| summary.is_leaf) {
+                leaves.insert(FunctionId::from_index(index));
+            }
+        }
+        leaves
     }
 
     /// Number of summarized functions.
     pub fn len(&self) -> usize {
-        self.summaries.len()
+        self.summaries.iter().flatten().count()
     }
 
     /// True if no functions are summarized.
     pub fn is_empty(&self) -> bool {
-        self.summaries.is_empty()
+        self.summaries.iter().all(Option::is_none)
     }
 }
 
@@ -131,6 +124,7 @@ mod tests {
             block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -143,6 +137,7 @@ mod tests {
             block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstNone,
                 operands: vec![],
@@ -156,10 +151,12 @@ mod tests {
     }
 
     fn module(funcs: Vec<TirFunction>) -> TirModule {
-        TirModule {
-            name: "m".into(),
-            functions: funcs,
-        }
+        TirModule::decode_spelled("m", funcs)
+    }
+
+    /// Functions are rows in declaration order: a=0, b=1, c=2.
+    fn id(name: &str) -> molt_ir::FunctionId {
+        molt_ir::FunctionId(u32::from(name.as_bytes()[0] - b'a'))
     }
 
     #[test]
@@ -176,12 +173,12 @@ mod tests {
         let m = module(funcs());
         let summaries = ModuleSummaries::compute(&m, &cg);
 
-        let sa = summaries.get("a").unwrap();
+        let sa = summaries.get(id("a")).unwrap();
         assert!(!sa.is_leaf);
         assert_eq!(sa.return_type, TirType::I64);
         assert_eq!(sa.op_count, 3); // 1 Call + 2 ConstNone
 
-        let sb = summaries.get("b").unwrap();
+        let sb = summaries.get(id("b")).unwrap();
         assert!(sb.is_leaf);
         assert_eq!(sb.return_type, TirType::Str);
         assert_eq!(sb.op_count, 3);
@@ -215,9 +212,9 @@ mod tests {
         let m = module(funcs());
         let summaries = ModuleSummaries::compute(&m, &cg);
         assert_eq!(summaries.len(), 3);
-        assert!(summaries.get("a").is_some());
-        assert!(summaries.get("b").is_some());
-        assert!(summaries.get("c").is_some());
+        assert!(summaries.get(id("a")).is_some());
+        assert!(summaries.get(id("b")).is_some());
+        assert!(summaries.get(id("c")).is_some());
     }
 
     #[test]

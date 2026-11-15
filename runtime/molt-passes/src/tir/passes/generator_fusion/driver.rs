@@ -17,11 +17,12 @@ pub fn run_generator_fusion(
     // Snapshot every fusable poll body up front (owned clones), keyed by name —
     // the splice reads the poll body while holding `&mut` on the caller, and the
     // borrow checker cannot prove disjointness through the module vector.
-    let poll_bodies: HashMap<String, TirFunction> = module
+    let poll_bodies: HashMap<molt_ir::FunctionId, TirFunction> = module
         .functions
         .iter()
-        .filter(|f| {
-            let fusable = is_poll_fusable(f, call_graph);
+        .zip(module.ids.iter().copied())
+        .filter(|(f, id)| {
+            let fusable = is_poll_fusable(*id, f, call_graph);
             if fusable && tti.supports_pending_call_eval_breaker_poll() {
                 assert!(
                     super::super::async_work_poll::is_materialized(f),
@@ -31,29 +32,19 @@ pub fn run_generator_fusion(
             }
             fusable
         })
-        .map(|f| (f.name.clone(), f.clone()))
+        .map(|(f, id)| (id, f.clone()))
         .collect();
     if poll_bodies.is_empty() {
         return stats;
     }
 
-    // Map function name -> index for O(1) caller lookup, owned (drops the borrow
-    // on `module.functions` before mutation).
-    let index_of: HashMap<String, usize> = module
-        .functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.name.clone(), i))
-        .collect();
+    // Callers in deterministic (id) order.
+    let mut callers: Vec<(molt_ir::FunctionId, usize)> =
+        module.ids.iter().copied().zip(0..).collect();
+    callers.sort_unstable();
 
-    // Caller names processed in deterministic order.
-    let mut caller_names: Vec<String> = module.functions.iter().map(|f| f.name.clone()).collect();
-    caller_names.sort();
-
-    for caller_name in caller_names {
-        let Some(&caller_idx) = index_of.get(&caller_name) else {
-            continue;
-        };
+    for (caller_id, caller_idx) in callers {
+        let caller_name = module.functions[caller_idx].name.clone();
         // Collect candidates over the current caller body, then splice them one
         // at a time (re-collecting after each splice — a successful splice
         // rewrites the caller's blocks, invalidating prior coordinates).
@@ -72,15 +63,15 @@ pub fn run_generator_fusion(
                     caller_name
                 );
             }
-            let Some(poll) = poll_bodies.get(&candidate.poll_name) else {
+            let Some(poll) = poll_bodies.get(&candidate.poll) else {
                 break;
             };
             let poll_owned = poll.clone();
             let caller = &mut module.functions[caller_idx];
             let spliced = apply_fusion(caller, &poll_owned, &candidate, &mut stats);
             if spliced {
-                if !stats.changed_functions.contains(&caller_name) {
-                    stats.changed_functions.push(caller_name.clone());
+                if !stats.changed_functions.contains(&caller_id) {
+                    stats.changed_functions.push(caller_id);
                 }
                 // Re-optimize the merged caller jointly (SCCP folds the dead
                 // throw-check, LICM/escape/BCE clean up the fused loop).

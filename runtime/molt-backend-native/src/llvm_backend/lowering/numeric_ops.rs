@@ -1232,6 +1232,7 @@ mod numeric_family_tests {
             entry.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],

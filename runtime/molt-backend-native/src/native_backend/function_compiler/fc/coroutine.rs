@@ -38,6 +38,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     local_inc_ref_obj: NativeRefcountSite,
+    function_table: &molt_ir::FunctionTable,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
@@ -163,7 +164,9 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 .out
                 .as_ref()
                 .expect("call_async requires an owned result");
-            let poll_func_name = op.s_value.as_ref().expect("call_async target missing");
+            let poll_func_name = op
+                .reference_symbol(function_table)
+                .expect("call_async target missing");
             let args = op.args.as_deref();
             let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
             let layout = TaskConstructorLayout::for_call_async();

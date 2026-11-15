@@ -894,7 +894,7 @@ WASM never builds) are absent by construction.
 
 ### 9.1 Current State
 
-Molt uses raw wasmtime imports via `Linker::func_wrap()`. `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declares every import's name and type; no WIT file exists yet. `Cargo.lock` pins the wasmtime version.
+Molt uses raw wasmtime imports via `Linker::func_wrap()`. `runtime/runtime_abi.toml` declares every import's name and type; no WIT file exists yet. `Cargo.lock` pins the wasmtime version.
 
 ### 9.2 Migration Plan (from spec 0400 Section 13)
 
@@ -1006,7 +1006,7 @@ Results must be recorded in `bench/results/` and summarized through the generate
 - `runtime/molt-wasm-host/src/main.rs` -- Wasmtime host runner
 - `runtime/molt-wasm-host/Cargo.toml` -- wasmtime and wasmtime-wasi (versions pinned in `Cargo.lock`)
 - `tools/bench_wasm.py` -- WASM benchmark harness
-- `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` -- WASM import names and types
+- `runtime/runtime_abi.toml` -- WASM import names and types
 
 ### External References
 - [WebAssembly 3.0 Standard](https://webassembly.org/news/2025-09-17-wasm-3.0/) -- Tail calls, exception handling, relaxed SIMD, memory64

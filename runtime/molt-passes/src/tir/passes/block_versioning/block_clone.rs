@@ -55,6 +55,7 @@ pub(super) fn clone_block_with_fresh_values(
         new_ops.push(TirOp {
             origin: op.origin,
             runtime: None,
+            callee: None,
             dialect: op.dialect,
             opcode: op.opcode,
             operands: new_operands,

@@ -34,6 +34,7 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
     let marker = |kind, attrs| TirOp {
         origin: Some(kind),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -139,6 +140,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let marker = |opcode| TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],
@@ -149,6 +151,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let runtime = |kind: OpKind, operands, results| TirOp {
         origin: Some(kind),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
@@ -255,6 +258,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             entry.ops.push(TirOp {
                 origin: Some(OpKind::TraceEnterSlot),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![],
@@ -279,6 +283,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             entry.ops.push(TirOp {
                 origin,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -293,6 +298,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             entry.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ExceptionPending,
                 operands: vec![],
@@ -304,6 +310,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 entry.ops.push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::DecRef,
                     operands: vec![arg],
@@ -315,6 +322,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             entry.ops.push(TirOp {
                 origin: Some(OpKind::TraceExit),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![],
@@ -528,6 +536,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             entry.ops.push(TirOp {
                 origin,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -609,6 +618,7 @@ fn lower_const_and_return() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -653,6 +663,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
     let mut exception_pop = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -665,6 +676,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DecRef,
         operands: vec![owned],
@@ -836,6 +848,7 @@ fn check_exception_edge_feeds_handler_phi() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Import,
             operands: vec![],
@@ -846,6 +859,7 @@ fn check_exception_edge_feeds_handler_phi() {
         let mut check = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![live_value],
@@ -926,6 +940,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
                 entry.ops.push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::TryStart,
                     operands: vec![],
@@ -937,6 +952,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
             let mut check = TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],

@@ -10,21 +10,38 @@ pub fn apply_profile_order(ir: &mut SimpleIR) {
     }
     // The first function is semantic entry identity, not a layout candidate.
     // Native and WASM run reachability after this shared ordering pass.
-    let Some((_, functions)) = ir.functions.split_first_mut() else {
+    if ir.functions.is_empty() {
         return;
-    };
+    }
+    // Profile ranks are keyed by linker symbol: the profile is an external
+    // artifact of a previous build.
     let mut ranks = BTreeMap::new();
     for (idx, name) in profile.hot_functions.iter().enumerate() {
         ranks.entry(name.as_str()).or_insert(idx);
     }
-    // Stable sorting already preserves source order at equal/unranked priority;
-    // a second name-to-original-index map is unnecessary.
-    functions.sort_by_key(|function| {
+    // Stable sorting preserves source order at equal/unranked priority. Rows
+    // move, so every callee is rewritten to its row's new id (I4).
+    let mut order: Vec<usize> = (1..ir.functions.len()).collect();
+    order.sort_by_key(|&row| {
         ranks
-            .get(function.name.as_str())
+            .get(ir.functions[row].name.as_str())
             .copied()
             .unwrap_or(usize::MAX)
     });
+    order.insert(0, 0);
+    let mut map = vec![None; order.len()];
+    for (position, &row) in order.iter().enumerate() {
+        map[row] = Some(molt_ir::FunctionId::from_index(position));
+    }
+    let mut rows: Vec<Option<crate::FunctionIR>> = std::mem::take(&mut ir.functions)
+        .into_iter()
+        .map(Some)
+        .collect();
+    ir.functions = order
+        .iter()
+        .map(|&row| rows[row].take().expect("each row moves once"))
+        .collect();
+    molt_ir::function_table::remap_function_ids(&mut ir.functions, &map);
 }
 
 #[cfg(test)]
@@ -98,6 +115,7 @@ mod tests {
                 s_value: Some("live_callee".into()),
                 ..OpIR::new(molt_ir::OpKind::CallInternal)
             });
+            ir.resolve_function_references().unwrap();
             apply_profile_order(&mut ir);
             super::super::dead_functions::eliminate_dead_functions(&mut ir);
             assert_eq!(

@@ -14,6 +14,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -36,6 +37,7 @@ fn make_const_int(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -51,6 +53,7 @@ fn make_len_primitive(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: Some(molt_ir::OpKind::Len),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,

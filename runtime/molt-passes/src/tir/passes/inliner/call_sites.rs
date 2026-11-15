@@ -1,7 +1,8 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
 use crate::tir::blocks::{BlockId, TirBlock};
-use crate::tir::call_targets::{direct_call_symbol_for_op, gpu_runtime_result_type_for_op};
+use crate::tir::call_graph::CallGraph;
+use crate::tir::call_targets::{direct_callee, gpu_runtime_result_type_for_op};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
@@ -12,17 +13,16 @@ pub(super) struct CallSite {
     pub(super) block: BlockId,
     /// The op index of the `Call` within that block's `ops`.
     pub(super) op_index: usize,
-    /// The callee name (a module-defined function).
-    pub(super) callee: String,
+    /// The callee, a function with a body in this module.
+    pub(super) callee: molt_ir::FunctionId,
 }
 
 /// Collect every statically-direct `Call` op in `caller` whose target is a
-/// module-defined function (resolved via `s_value`), in deterministic order
+/// function with a body in this module (its typed callee), in deterministic order
 /// (blocks sorted by id, ops in index order). Opaque calls, method dispatch,
 /// builtin calls, gpu intrinsics, and copy-fallback calls are NOT collected -
-/// only a proven direct `Call` identity naming a `defined` function.
-pub(super) fn collect_call_sites(caller: &TirFunction, defined: &[String]) -> Vec<CallSite> {
-    let defined_set: BTreeSet<&str> = defined.iter().map(String::as_str).collect();
+/// only a proven direct `Call` identity naming a function with a body.
+pub(super) fn collect_call_sites(caller: &TirFunction, call_graph: &CallGraph) -> Vec<CallSite> {
     let mut sites = Vec::new();
     let mut block_ids: Vec<BlockId> = caller.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
@@ -34,19 +34,16 @@ pub(super) fn collect_call_sites(caller: &TirFunction, defined: &[String]) -> Ve
             if op.opcode != OpCode::Call {
                 continue;
             }
-            let Some(name) = direct_call_symbol_for_op(op) else {
+            let Some(callee) = direct_callee(op) else {
                 continue;
             };
-            if gpu_runtime_result_type_for_op(op).is_some() {
-                continue;
-            }
-            if !defined_set.contains(name) {
+            if gpu_runtime_result_type_for_op(op).is_some() || !call_graph.has_body(callee) {
                 continue;
             }
             sites.push(CallSite {
                 block: bid,
                 op_index,
-                callee: name.to_string(),
+                callee,
             });
         }
     }

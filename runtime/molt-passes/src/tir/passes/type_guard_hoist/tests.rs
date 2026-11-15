@@ -11,6 +11,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -26,6 +27,7 @@ fn make_type_guard(operand: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],

@@ -230,7 +230,7 @@ over stale prose or precedent.
 - Proof-queue operations: `docs/agent/PROOF_QUEUE.md`
 - TIR facts and generation: `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py`
 - Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
-  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
+  `runtime/runtime_abi.toml`
 - CI or JUnit failure triage (NEW versus main, owners): `tools/ci_triage.py RUN_ID|--junit FILE`
 - Why Molt is slow and the staged plan (read its stage status before any performance analysis,
   ordering or speed claim; time CPython with the managed interpreter, never the dev env):

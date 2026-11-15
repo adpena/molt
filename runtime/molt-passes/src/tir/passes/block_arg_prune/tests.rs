@@ -14,6 +14,7 @@ fn copy(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
@@ -29,6 +30,7 @@ fn check_exception(label: i64, operands: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands,
@@ -44,6 +46,7 @@ fn try_start(label: i64, operands: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TryStart,
         operands,

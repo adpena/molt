@@ -257,7 +257,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     representation_plan: &ScalarRepresentationPlan,
     task_kinds: &BTreeMap<String, TrampolineKind>,
     task_closure_sizes: &BTreeMap<String, i64>,
-    defined_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
     known_function_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     function_entry_custody: &BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
@@ -376,7 +376,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::FuncNew => {
-            let Some(func_name) = op.s_value.as_ref() else {
+            let Some(func_name) = op.reference_symbol(function_table) else {
                 return OpFlow::Continue;
             };
             let arity = op.value.unwrap_or(0);
@@ -392,10 +392,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             } else {
                 0
             };
-            let target_ret = function_has_ret
-                .get(func_name.as_str())
-                .copied()
-                .unwrap_or(true);
+            let target_ret = function_has_ret.get(func_name).copied().unwrap_or(true);
             let mut func_sig = module.make_signature();
             if is_task {
                 func_sig.params.push(AbiParam::new(types::I64));
@@ -407,7 +404,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             if target_ret {
                 func_sig.returns.push(AbiParam::new(types::I64));
             }
-            declared_func_arities.insert(func_name.clone(), func_sig.params.len());
+            declared_func_arities.insert(func_name.to_string(), func_sig.params.len());
             let func_id = declare_function_object_target(
                 &mut *module,
                 OpKind::FuncNew,
@@ -417,10 +414,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             );
             let func_ref = module.declare_func_in_func(func_id, builder.func);
             let func_addr = builder.ins().func_addr(types::I64, func_ref);
-            let target_has_ret = function_has_ret
-                .get(func_name.as_str())
-                .copied()
-                .unwrap_or(true);
+            let target_has_ret = function_has_ret.get(func_name).copied().unwrap_or(true);
             let tramp_id = SimpleBackend::ensure_trampoline(
                 &mut *module,
                 &mut *trampoline_ids,
@@ -462,7 +456,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::FuncNewClosure => {
-            let Some(func_name) = op.s_value.as_ref() else {
+            let Some(func_name) = op.reference_symbol(function_table) else {
                 return OpFlow::Continue;
             };
             let arity = op.value.unwrap_or(0);
@@ -494,10 +488,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 representation_plan,
             )
             .expect("closure arg not found");
-            let target_ret = function_has_ret
-                .get(func_name.as_str())
-                .copied()
-                .unwrap_or(true);
+            let target_ret = function_has_ret.get(func_name).copied().unwrap_or(true);
             let mut func_sig = module.make_signature();
             if is_task {
                 func_sig.params.push(AbiParam::new(types::I64));
@@ -510,11 +501,11 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             if target_ret {
                 func_sig.returns.push(AbiParam::new(types::I64));
             }
-            declared_func_arities.insert(func_name.clone(), func_sig.params.len());
+            declared_func_arities.insert(func_name.to_string(), func_sig.params.len());
             // Use Export linkage only when the closure target is
             // defined in this compilation unit; otherwise Import
             // (resolved at link time for batched builds).
-            let closure_linkage = if defined_functions.contains(func_name) {
+            let closure_linkage = if op.references_body(function_table) {
                 Linkage::Export
             } else {
                 Linkage::Import
@@ -528,10 +519,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             );
             let func_ref = module.declare_func_in_func(func_id, builder.func);
             let func_addr = builder.ins().func_addr(types::I64, func_ref);
-            let target_has_ret = function_has_ret
-                .get(func_name.as_str())
-                .copied()
-                .unwrap_or(true);
+            let target_has_ret = function_has_ret.get(func_name).copied().unwrap_or(true);
             let tramp_id = SimpleBackend::ensure_trampoline(
                 &mut *module,
                 &mut *trampoline_ids,
@@ -572,7 +560,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let res = builder.inst_results(call)[0];
             // Track closure function object for direct calls
             if let Some(out_name) = op.out.as_ref() {
-                local_closure_envs.insert(func_name.clone(), out_name.clone());
+                local_closure_envs.insert(func_name.to_string(), out_name.clone());
             }
             bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
@@ -784,8 +772,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             )
             .expect("layout tuple not found");
             let func_name = op
-                .s_value
-                .as_ref()
+                .reference_symbol(function_table)
                 .expect("stateful_locals_register expects symbol");
             // Pointer metadata refers to the target's physical ABI, not the
             // Python callable arity or the spelling of the symbol.
@@ -796,7 +783,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 known_function_arities,
                 function_has_ret,
             );
-            let linkage = if defined_functions.contains(func_name) {
+            let linkage = if op.references_body(function_table) {
                 Linkage::Export
             } else {
                 Linkage::Import

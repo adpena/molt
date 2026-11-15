@@ -65,7 +65,7 @@ A module is “portable” if it:
 
 ## 2.4 Split-runtime import admission
 
-`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` owns each
+`runtime/runtime_abi.toml` owns each
 `molt_runtime` import's canonical export identity, machine signature and result
 ownership contract. Its generated Python and JSON projections serve the linker,
 runtime-image admission and hosts. Unknown manifest sections fail validation;
@@ -304,7 +304,7 @@ This surface is implemented by:
 - JS host in the browser
 - Rust host in the server
 
-`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` is the executable authority
+`runtime/runtime_abi.toml` is the executable authority
 for Molt runtime import names and their canonical machine signatures,
 backend Pure-profile skip prefixes, linker host-import allowlists, strip-tool
 host import classification, split/link output export policy, and op-to-import
@@ -399,7 +399,7 @@ Example:
 
 ### 5.4 Socket host interface (capability-gated)
 WASM socket intrinsics mirror POSIX-style sockets and feed the runtime io_poller:
-- `molt_socket_*` imports (the `[[import]]` rows of `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` list them all)
+- `molt_socket_*` imports (the `[[import]]` rows of `runtime/runtime_abi.toml` list them all)
 - `molt_socket_poll_host(handle, events) -> i32` returns a bitmask of
   `IO_EVENT_READ|IO_EVENT_WRITE|IO_EVENT_ERROR`
 - `molt_socket_wait_host(handle, events, timeout_ms) -> i32` blocks until readiness or timeout
@@ -580,7 +580,7 @@ A v0.1 Portable ABI is successful when:
 ### 13.1 Current State (Phase 1 — Complete)
 
 Molt's WASM target uses **raw wasmtime imports** via `Linker::func_wrap()`
-calls in `molt-wasm-host`. `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declares every
+calls in `molt-wasm-host`. `runtime/runtime_abi.toml` declares every
 import's name and type, and `tools/gen_wasm_abi.py` projects it into the
 backend and the hosts. No WIT file exists yet. `Cargo.lock` pins the wasmtime
 version.

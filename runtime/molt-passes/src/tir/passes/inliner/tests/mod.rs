@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use super::activation::Activations;
-use super::call_sites::collect_call_sites;
 use super::clone_body::{clone_attrs_without_simple_names, clone_function_body_with_fresh_ids};
 use super::eligibility::is_closure;
 use super::splice::splice_call_site;
@@ -36,6 +35,7 @@ fn binary_callee(name: &str, opcode: OpCode, return_type: TirType) -> TirFunctio
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![p0, p1],
@@ -94,6 +94,7 @@ fn closure_callee(name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![env],
@@ -105,6 +106,7 @@ fn closure_callee(name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![cell],
@@ -116,6 +118,7 @@ fn closure_callee(name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![base, x],
@@ -146,6 +149,7 @@ fn const_callee() -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -179,6 +183,7 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -189,6 +194,7 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -199,6 +205,7 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![call_res, one],
@@ -226,6 +233,7 @@ fn over_base_budget_float_callee_with_return_type(name: &str, return_type: TirTy
         f.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
@@ -263,6 +271,7 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -273,6 +282,7 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstFloat,
         operands: vec![],
@@ -283,6 +293,7 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Mul,
         operands: vec![call_res, scale],
@@ -301,14 +312,46 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
 }
 
 fn module(funcs: Vec<TirFunction>) -> TirModule {
-    TirModule {
-        name: "m".into(),
-        functions: funcs,
-    }
+    TirModule::decode_spelled("m", funcs)
 }
 
-fn analysis(m: &TirModule) -> (CallGraph, ModuleSummaries) {
-    let cg = CallGraph::build(m);
+/// The row of the body named `name` in `m`.
+fn id_of(m: &TirModule, name: &str) -> molt_ir::FunctionId {
+    m.ids[m
+        .functions
+        .iter()
+        .position(|function| function.name == name)
+        .unwrap_or_else(|| panic!("no body {name}"))]
+}
+
+/// Decode `caller` with empty bodies named `defined` (rows 1..), and collect
+/// its inlinable call sites. Returns the decoded caller with its sites.
+fn sites_in(
+    caller: TirFunction,
+    defined: &[&str],
+) -> (TirFunction, Vec<super::call_sites::CallSite>) {
+    let mut functions = vec![caller];
+    functions.extend(defined.iter().map(|name| {
+        TirFunction::new(
+            (*name).into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        )
+    }));
+    let mut m = module(functions);
+    let cg = CallGraph::build(&m);
+    let sites = super::call_sites::collect_call_sites(&m.functions[0], &cg);
+    (m.functions.swap_remove(0), sites)
+}
+
+fn analysis(
+    m: &TirModule,
+) -> (
+    crate::tir::call_graph::named::NamedCallGraph,
+    ModuleSummaries,
+) {
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(m);
     let sm = ModuleSummaries::compute(m, &cg);
     (cg, sm)
 }
@@ -344,6 +387,7 @@ fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirF
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -428,6 +472,7 @@ fn caller_calling_obs_with_label_and_type(
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![arg],
@@ -439,6 +484,7 @@ fn caller_calling_obs_with_label_and_type(
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],

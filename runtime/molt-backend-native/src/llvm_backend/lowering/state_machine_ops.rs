@@ -36,15 +36,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             _ => None,
         });
         let layout = TaskConstructorLayout::for_alloc_kind(task_kind);
-        let Some(poll_func_name) = op.attrs.get("s_value").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        }) else {
+        let Some(poll_func_name) = self.callee_symbol(op) else {
             panic!(
                 "alloc_task missing poll function name in {}",
                 self.func.name
             );
         };
+        let poll_func_name = poll_func_name.as_str();
         let poll_addr = self.task_poll_identity(poll_func_name);
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,
@@ -62,12 +60,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn lower_preserved_call_async_op(&mut self, op: &TirOp) -> bool {
         let i64_ty = self.backend.context.i64_type();
-        let Some(poll_func_name) = op.attrs.get("s_value").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        }) else {
+        let Some(poll_func_name) = self.callee_symbol(op) else {
             return false;
         };
+        let poll_func_name = poll_func_name.as_str();
         let Some(&result_id) = op.results.first() else {
             return false;
         };

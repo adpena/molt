@@ -249,7 +249,6 @@ def test_build_timeout_policy_is_compositional(
         ("MOLT_NATIVE_TEST", [sys.executable, "tools/bench.py"]),
         ("MOLT_WASM_TEST", ["cargo", "build", "--locked"]),
         ("MOLT_CLI_TEST", [sys.executable, "tool.py"]),
-        ("MOLT_RUST_TEST", ["rustc", "probe.rs"]),
         ("MOLT_COMPLIANCE", [sys.executable, "probe.py"]),
         ("MOLT_MUTATION", [sys.executable, "probe.py"]),
         ("MOLT_SURFACE_TEST", [sys.executable, "probe.py"]),

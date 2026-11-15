@@ -8,7 +8,7 @@ item 2: "calls by `RuntimeFn`"). Lane: `foundation/typed-runtime-imports`.
 
 Compiled code calls the runtime through about 2,800 entries. A closed type already names them:
 `molt_ir::runtime_fn_generated::RuntimeFn`, generated from the `[[import]]` rows of
-`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` by `tools/gen_wasm_abi.py`. The two native
+`runtime/runtime_abi.toml` by `tools/gen_wasm_abi.py`. The two native
 backends do not use it as the key. They choose, declare and cache runtime functions by spelled
 string. I measured this checkout (base `b658a6917d`):
 
@@ -429,7 +429,7 @@ Follow-ups this design does not do (the integrator assigns them):
 
 Consumers this change touches (producer, generated projections, readers, tests, lists):
 
-- Authority and generator: `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`;
+- Authority and generator: `runtime/runtime_abi.toml`;
   `tools/gen_wasm_abi.py`; `tools/wasm_abi_gen/manifest.py` (`runtime_fn_specs`,
   `RUNTIME_IMPORT_EFFECTS`, `_rust_export_signatures` normalization, static-type rendering);
   `tools/wasm_abi_gen/execution_context.py`; `tools/wasm_abi_gen/render_python.py`.

@@ -1104,8 +1104,9 @@ fn codegen_partition_survives_tir_artifact_roundtrip() {
             tir.execution_context,
             crate::ir::ExecutionContextPolicy::None
         );
-        let bytes = crate::tir::serialize::serialize_tir_function(&tir).unwrap();
-        let restored = crate::tir::serialize::deserialize_tir_function(&bytes).unwrap();
+        let bytes =
+            crate::tir::serialize::serialize_tir_function(&tir, &Default::default()).unwrap();
+        let restored = crate::tir::serialize::deserialize_tir_function(&bytes, &|_| None).unwrap();
         assert_eq!(restored.is_codegen_partition(), partitioned);
         assert_eq!(
             restored.execution_context,
@@ -1142,8 +1143,9 @@ fn parameter_custody_survives_tir_artifact_roundtrip() {
             Some(&crate::tir::ops::AttrValue::Bytes(vec![0, 1])),
             "custody uses its canonical borrowed/transferred byte encoding"
         );
-        let bytes = crate::tir::serialize::serialize_tir_function(&tir).unwrap();
-        let restored = crate::tir::serialize::deserialize_tir_function(&bytes);
+        let bytes =
+            crate::tir::serialize::serialize_tir_function(&tir, &Default::default()).unwrap();
+        let restored = crate::tir::serialize::deserialize_tir_function(&bytes, &|_| None);
         if source.is_extern {
             assert!(tir.blocks.is_empty(), "a declaration must remain bodyless");
             assert!(
@@ -1158,7 +1160,8 @@ fn parameter_custody_survives_tir_artifact_roundtrip() {
                 [Borrowed, Transferred]
             );
             assert_eq!(
-                crate::tir::serialize::serialize_tir_function(&restored).unwrap(),
+                crate::tir::serialize::serialize_tir_function(&restored, &Default::default())
+                    .unwrap(),
                 bytes,
                 "the custody-bearing body must retain its canonical artifact"
             );
@@ -1169,8 +1172,9 @@ fn parameter_custody_survives_tir_artifact_roundtrip() {
     borrowed_source.parameter_custody = vec![Borrowed];
     let explicit_borrowed = lower_to_tir(&borrowed_source);
     assert_eq!(
-        crate::tir::serialize::serialize_tir_function(&borrowed).unwrap(),
-        crate::tir::serialize::serialize_tir_function(&explicit_borrowed).unwrap(),
+        crate::tir::serialize::serialize_tir_function(&borrowed, &Default::default()).unwrap(),
+        crate::tir::serialize::serialize_tir_function(&explicit_borrowed, &Default::default())
+            .unwrap(),
         "implicit and explicit all-borrowed custody have one artifact encoding"
     );
     assert_eq!(borrowed.parameter_custody(0), Borrowed);

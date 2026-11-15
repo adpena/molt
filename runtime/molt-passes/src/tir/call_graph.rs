@@ -72,79 +72,78 @@
 //! opaque edges must still prevent recursion-guard elision. See the `leaf_*`
 //! and builtin-dispatch unit tests.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::VecDeque;
+
+use molt_ir::{FunctionId, FunctionSet};
 
 use super::call_sites::{CallSite, CallSiteTarget, FunctionCallSites};
 use super::function::TirModule;
-use super::ops::{AttrValue, OpCode, TirOp};
+use super::ops::{OpCode, TirOp};
 
 /// A resolved or unresolved call target referenced by one call-bearing op.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEdge {
-    /// A statically-resolved direct call to a function defined in this module.
-    /// The inliner / IPSCCP / IP-escape act on exactly these edges.
-    StaticDirect(String),
+    /// A statically-resolved direct call to a function with a body in this
+    /// module, by its typed id (HF-847 slice 1). The inliner / IPSCCP /
+    /// IP-escape act on exactly these edges.
+    StaticDirect(FunctionId),
     /// A call whose concrete target is unknown to this module: an indirect /
-    /// computed callee, a method dispatch, or a named callee that is extern to
-    /// this module (e.g. compiled in another batch). Conservatively treated as
+    /// computed callee, a method dispatch, or a callee whose row is an extern
+    /// declaration (compiled in another batch). Conservatively treated as
     /// reaching any function — so it is recursion-capable and blocks the
     /// `does-not-recurse` leaf property of its *enclosing* function.
     Opaque,
 }
 
 /// Resolve the shared operation-aware site projection against this module.
-fn classify_call_site(site: &CallSite, defined: &BTreeSet<String>) -> Option<CallEdge> {
-    match &site.target {
+fn classify_call_site(site: &CallSite, has_body: &FunctionSet) -> Option<CallEdge> {
+    match site.target {
         CallSiteTarget::RuntimePrimitive => None,
-        CallSiteTarget::Direct(name) if defined.contains(name) => {
-            Some(CallEdge::StaticDirect(name.clone()))
+        CallSiteTarget::Direct(callee) if has_body.contains(callee) => {
+            Some(CallEdge::StaticDirect(callee))
         }
         CallSiteTarget::Direct(_) | CallSiteTarget::Opaque => Some(CallEdge::Opaque),
     }
 }
 
-/// If `op` is an [`OpCode::AllocTask`] referencing a poll function defined in
-/// this module, return that poll function's name. This is a callable reference
-/// (the runtime drives the task by calling its poll fn) but not a call *out of*
-/// the enclosing function, so it feeds reachability/SCC but not the leaf test.
-fn alloc_task_poll_target(op: &TirOp, defined: &BTreeSet<String>) -> Option<String> {
+/// If `op` is an [`OpCode::AllocTask`] referencing a poll function with a
+/// body in this module, return it. This is a callable reference (the runtime
+/// drives the task by calling its poll fn) but not a call *out of* the
+/// enclosing function, so it feeds reachability/SCC but not the leaf test.
+fn alloc_task_poll_target(op: &TirOp, has_body: &FunctionSet) -> Option<FunctionId> {
     if op.opcode != OpCode::AllocTask {
         return None;
     }
-    match op.attrs.get("s_value") {
-        Some(AttrValue::Str(name)) if defined.contains(name) => Some(name.clone()),
-        _ => None,
-    }
+    op.callee.filter(|callee| has_body.contains(*callee))
 }
 
 /// The whole-program call graph of a [`TirModule`].
 ///
 /// Built once by the module phase and shared (read-only) for the duration of
-/// module compilation. Function identity is the function name (the same key the
-/// SimpleIR DFE BFS and the native module context use).
+/// module compilation. Function identity is the typed [`FunctionId`] of the
+/// module's table; every per-function fact is a vector or bitset indexed by
+/// it (HF-847 slice 1, I7).
 #[derive(Debug, Clone, Default)]
 pub struct CallGraph {
-    /// Functions defined in this module, in deterministic (sorted) order.
-    functions: Vec<String>,
-    /// caller name → the ordered, de-duplicated list of static-direct callee
-    /// names (module-internal targets only). Opaque calls are recorded in
-    /// [`Self::has_opaque_call`], not here.
-    edges: BTreeMap<String, Vec<String>>,
-    /// Reverse edges: callee name → the callers that statically reference it.
-    callers: BTreeMap<String, Vec<String>>,
-    /// caller name → whether its body contains at least one *call* op (static
-    /// or opaque). This is the leaf predicate's complement: a function with no
-    /// call op of any kind is a leaf. (`AllocTask` poll references do NOT set
-    /// this — allocating a task is not a call.)
-    makes_any_call: BTreeMap<String, bool>,
-    /// caller name → whether its body contains an opaque (unresolved) call.
-    /// An opaque call can reach any function, so it is recursion-capable.
-    has_opaque_call: BTreeMap<String, bool>,
-    /// The set of functions that participate in a recursion cycle (a multi-node
-    /// SCC, a direct self-edge, or any function able to reach itself through the
-    /// static edges) plus every function with an opaque call (conservatively
-    /// recursion-capable). See [`Self::recursive_set`].
-    recursive: BTreeSet<String>,
+    /// Functions with a body in this module, in id order.
+    functions: Vec<FunctionId>,
+    has_body: FunctionSet,
+    /// id → the sorted, de-duplicated static-direct callees (bodies only).
+    /// Opaque calls are recorded in [`Self::has_opaque_call`], not here.
+    edges: Vec<Vec<FunctionId>>,
+    /// id → the functions that statically reference it.
+    callers: Vec<Vec<FunctionId>>,
+    /// Functions whose body contains at least one *call* op (static or
+    /// opaque): the leaf predicate's complement. (`AllocTask` poll references
+    /// do NOT set this — allocating a task is not a call.)
+    makes_any_call: FunctionSet,
+    /// Functions whose body contains an opaque (unresolved) call. An opaque
+    /// call can reach any function, so it is recursion-capable.
+    has_opaque_call: FunctionSet,
+    /// Functions that participate in a recursion cycle (a multi-node SCC, a
+    /// direct self-edge) plus every function with an opaque call
+    /// (conservatively recursion-capable). See [`Self::recursive_set`].
+    recursive: FunctionSet,
 }
 
 impl CallGraph {
@@ -155,21 +154,21 @@ impl CallGraph {
     /// Tarjan SCC over the edges. Provenance and slot analysis include fixed
     /// points; this is not merely a linear opcode spelling scan.
     pub fn build(module: &TirModule) -> CallGraph {
-        let defined: BTreeSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
+        let rows = module.table.len();
+        let mut functions = module.ids.clone();
+        functions.sort_unstable();
+        let mut has_body = FunctionSet::with_capacity(rows);
+        for &id in &functions {
+            has_body.insert(id);
+        }
 
-        let mut functions: Vec<String> = defined.iter().cloned().collect();
-        functions.sort();
+        let mut edges: Vec<Vec<FunctionId>> = vec![Vec::new(); rows];
+        let mut callers: Vec<Vec<FunctionId>> = vec![Vec::new(); rows];
+        let mut makes_any_call = FunctionSet::with_capacity(rows);
+        let mut has_opaque_call = FunctionSet::with_capacity(rows);
 
-        let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut makes_any_call: BTreeMap<String, bool> = BTreeMap::new();
-        let mut has_opaque_call: BTreeMap<String, bool> = BTreeMap::new();
-
-        for func in &module.functions {
-            let caller = &func.name;
-            // De-duplicate static callees while preserving first-seen order is
-            // unnecessary (we sort), so collect into a set then sort.
-            let mut static_callees: BTreeSet<String> = BTreeSet::new();
+        for (func, &caller) in module.functions.iter().zip(&module.ids) {
+            let mut static_callees: Vec<FunctionId> = Vec::new();
             let mut any_call = false;
             let mut opaque = false;
 
@@ -178,24 +177,20 @@ impl CallGraph {
                 for (index, op) in block.ops.iter().enumerate() {
                     if let Some(edge) = sites
                         .at((bid, index))
-                        .and_then(|site| classify_call_site(site, &defined))
+                        .and_then(|site| classify_call_site(site, &has_body))
                     {
                         any_call = true;
                         match edge {
-                            CallEdge::StaticDirect(callee) => {
-                                static_callees.insert(callee);
-                            }
-                            CallEdge::Opaque => {
-                                opaque = true;
-                            }
+                            CallEdge::StaticDirect(callee) => static_callees.push(callee),
+                            CallEdge::Opaque => opaque = true,
                         }
                     }
                     // Generator/coroutine poll references: a callable reference
                     // that must appear in the reachability graph (so the poll fn
                     // is not treated as unreachable), but not a call out of the
                     // enclosing function.
-                    if let Some(poll) = alloc_task_poll_target(op, &defined) {
-                        static_callees.insert(poll);
+                    if let Some(poll) = alloc_task_poll_target(op, &has_body) {
+                        static_callees.push(poll);
                     }
                 }
                 // A conditional terminator can execute __bool__/__len__ even
@@ -206,150 +201,125 @@ impl CallGraph {
                 }
             }
 
-            let mut callee_vec: Vec<String> = static_callees.into_iter().collect();
-            callee_vec.sort();
-            for callee in &callee_vec {
-                callers
-                    .entry(callee.clone())
-                    .or_default()
-                    .push(caller.clone());
+            static_callees.sort_unstable();
+            static_callees.dedup();
+            for &callee in &static_callees {
+                callers[callee.index()].push(caller);
             }
-            edges.insert(caller.clone(), callee_vec);
-            makes_any_call.insert(caller.clone(), any_call);
-            has_opaque_call.insert(caller.clone(), opaque);
-        }
-
-        // Ensure every defined function has entries even if it has no edges, so
-        // queries never miss a key.
-        for name in &functions {
-            edges.entry(name.clone()).or_default();
-            makes_any_call.entry(name.clone()).or_insert(false);
-            has_opaque_call.entry(name.clone()).or_insert(false);
-        }
-        for callees in edges.values() {
-            for c in callees {
-                callers.entry(c.clone()).or_default();
+            edges[caller.index()] = static_callees;
+            if any_call {
+                makes_any_call.insert(caller);
+            }
+            if opaque {
+                has_opaque_call.insert(caller);
             }
         }
-        for c in callers.values_mut() {
-            c.sort();
-            c.dedup();
+        for list in &mut callers {
+            list.sort_unstable();
+            list.dedup();
         }
 
         let mut graph = CallGraph {
             functions,
+            has_body,
             edges,
             callers,
             makes_any_call,
             has_opaque_call,
-            recursive: BTreeSet::new(),
+            recursive: FunctionSet::default(),
         };
         graph.recursive = graph.compute_recursive_set();
         graph
     }
 
-    /// All functions in the module, in deterministic sorted order.
-    pub fn functions(&self) -> &[String] {
+    /// The functions with a body in this module, in id order.
+    pub fn functions(&self) -> &[FunctionId] {
         &self.functions
     }
 
-    /// True iff `name` is a function defined in this module — the same
-    /// membership predicate [`classify_call_site`]'s `defined` set encodes (a named
-    /// `Call` target resolves to [`CallEdge::StaticDirect`] iff this holds, else
-    /// [`CallEdge::Opaque`]). Exposed so the [`CallFacts`](crate::tir::call_facts)
-    /// typed-target classifier resolves `StaticDirect` against the *same* truth
-    /// the graph was built from, rather than re-deriving a `defined` set. O(log n)
-    /// over the sorted [`Self::functions`] list.
-    pub fn is_defined(&self, name: &str) -> bool {
-        self.functions
-            .binary_search_by(|f| f.as_str().cmp(name))
-            .is_ok()
+    /// True iff `id` has a body in this module — the membership predicate
+    /// [`classify_call_site`] encodes (a direct callee resolves to
+    /// [`CallEdge::StaticDirect`] iff this holds, else [`CallEdge::Opaque`]).
+    /// Exposed so the [`CallFacts`](crate::tir::call_facts) typed-target
+    /// classifier resolves against the *same* truth the graph was built from.
+    pub fn has_body(&self, id: FunctionId) -> bool {
+        self.has_body.contains(id)
     }
 
-    /// The static-direct callees of `name` (module-internal targets only),
-    /// sorted and de-duplicated. Empty for an unknown function.
-    pub fn callees(&self, name: &str) -> &[String] {
-        self.edges.get(name).map(Vec::as_slice).unwrap_or(&[])
+    /// The static-direct callees of `id` (bodies in this module only),
+    /// sorted and de-duplicated. Empty for a function without a body.
+    pub fn callees(&self, id: FunctionId) -> &[FunctionId] {
+        self.edges.get(id.index()).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// The functions that statically call `name`, sorted and de-duplicated.
-    pub fn callers(&self, name: &str) -> &[String] {
-        self.callers.get(name).map(Vec::as_slice).unwrap_or(&[])
+    /// The functions that statically call `id`, sorted and de-duplicated.
+    pub fn callers(&self, id: FunctionId) -> &[FunctionId] {
+        self.callers
+            .get(id.index())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
-    /// True if `name` contains at least one call op of any kind (static or
+    /// True if `id` contains at least one call op of any kind (static or
     /// opaque). The complement of the leaf predicate.
-    pub fn makes_any_call(&self, name: &str) -> bool {
-        self.makes_any_call.get(name).copied().unwrap_or(false)
+    pub fn makes_any_call(&self, id: FunctionId) -> bool {
+        self.makes_any_call.contains(id)
     }
 
-    /// True if `name` contains an opaque (unresolved / dynamic) call.
-    pub fn has_opaque_call(&self, name: &str) -> bool {
-        self.has_opaque_call.get(name).copied().unwrap_or(false)
+    /// True if `id` contains an opaque (unresolved / dynamic) call.
+    pub fn has_opaque_call(&self, id: FunctionId) -> bool {
+        self.has_opaque_call.contains(id)
     }
 
     /// **Leaf functions**: those whose body contains NO call op of any kind —
     /// neither a static-direct call, nor a method dispatch, nor an opaque /
     /// indirect call. A leaf cannot recurse (it calls nothing), so the native
     /// backend may skip the recursion guard at call sites targeting it.
-    ///
-    /// This is the SOUND, strictly-more-precise replacement for the legacy
-    /// SimpleIR "has no user-level call op" scan: identical predicate, evaluated
-    /// over the post-TIR-optimization opcode set.
-    pub fn leaf_functions(&self) -> BTreeSet<String> {
-        self.functions
-            .iter()
-            .filter(|name| !self.makes_any_call(name))
-            .cloned()
-            .collect()
+    pub fn leaf_functions(&self) -> FunctionSet {
+        let mut leaves = FunctionSet::with_capacity(self.edges.len());
+        for &id in &self.functions {
+            if !self.makes_any_call(id) {
+                leaves.insert(id);
+            }
+        }
+        leaves
     }
 
     /// The set of functions that may participate in recursion: any member of a
     /// non-trivial SCC, any function with a direct self-call edge, and — fail
     /// closed — any function containing an opaque call (which could re-enter
-    /// the program and recurse). Consumed by a future bottom-up inliner (E1) to
-    /// refuse unbounded inlining of recursive cycles.
-    pub fn recursive_set(&self) -> &BTreeSet<String> {
+    /// the program and recurse).
+    pub fn recursive_set(&self) -> &FunctionSet {
         &self.recursive
     }
 
     /// Bottom-up topological order over the **SCC condensation**: each SCC
     /// appears after all SCCs it calls into, so a bottom-up interprocedural pass
     /// (inliner, IP-escape, purity) sees every callee's summary before its
-    /// callers. Within one returned `Vec<String>`, the names form one SCC
-    /// (singleton for non-recursive functions; multi-element for a recursion
-    /// cycle), sorted for determinism. Opaque edges are not in the static graph,
-    /// so they do not constrain the order (an opaque-calling function is ordered
-    /// only by its static edges).
-    pub fn bottom_up_order(&self) -> Vec<Vec<String>> {
+    /// callers. Within one returned `Vec`, the ids form one SCC (singleton for
+    /// non-recursive functions; multi-element for a recursion cycle), sorted.
+    /// Opaque edges are not in the static graph, so they do not constrain the
+    /// order.
+    pub fn bottom_up_order(&self) -> Vec<Vec<FunctionId>> {
         self.tarjan_sccs()
     }
 
     // -- internals -----------------------------------------------------------
 
     /// Compute the recursive set via Tarjan SCCs + self-edges + opaque calls.
-    fn compute_recursive_set(&self) -> BTreeSet<String> {
-        let mut recursive: BTreeSet<String> = BTreeSet::new();
-
-        // Multi-node SCCs are recursion cycles.
+    fn compute_recursive_set(&self) -> FunctionSet {
+        let mut recursive = FunctionSet::with_capacity(self.edges.len());
         for scc in self.tarjan_sccs() {
             if scc.len() > 1 {
-                for name in scc {
-                    recursive.insert(name);
+                for id in scc {
+                    recursive.insert(id);
                 }
             }
         }
-        // Direct self-recursion (a single-node SCC with a self-edge — Tarjan
-        // reports it as a singleton, so detect the self-edge explicitly).
-        for (name, callees) in &self.edges {
-            if callees.iter().any(|c| c == name) {
-                recursive.insert(name.clone());
-            }
-        }
-        // Fail-closed: an opaque call can re-enter the program and recurse.
-        for (name, &opaque) in &self.has_opaque_call {
-            if opaque {
-                recursive.insert(name.clone());
+        for &id in &self.functions {
+            // Direct self-recursion: Tarjan reports a singleton.
+            if self.callees(id).contains(&id) || self.has_opaque_call(id) {
+                recursive.insert(id);
             }
         }
         recursive
@@ -360,18 +330,8 @@ impl CallGraph {
     /// before callers. Each inner `Vec` is one SCC, its members sorted.
     ///
     /// Iterative (explicit stack) to avoid blowing the native stack on deep call
-    /// chains — the same reason the backend uses a 64 MB rayon stack for the TIR
-    /// roundtrip.
-    fn tarjan_sccs(&self) -> Vec<Vec<String>> {
-        // Index functions for the array-based Tarjan state.
-        let index_of: HashMap<&str, usize> = self
-            .functions
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (n.as_str(), i))
-            .collect();
-        let n = self.functions.len();
-
+    /// chains. State is indexed by `FunctionId`.
+    fn tarjan_sccs(&self) -> Vec<Vec<FunctionId>> {
         #[derive(Clone, Copy)]
         struct NodeState {
             index: Option<usize>,
@@ -384,121 +344,103 @@ impl CallGraph {
                 lowlink: 0,
                 on_stack: false,
             };
-            n
+            self.edges.len()
         ];
-        let mut stack: Vec<usize> = Vec::new();
+        let mut stack: Vec<FunctionId> = Vec::new();
         let mut next_index = 0usize;
-        let mut sccs: Vec<Vec<String>> = Vec::new();
+        let mut sccs: Vec<Vec<FunctionId>> = Vec::new();
 
-        // Explicit DFS frame: the node plus a cursor into its successor list.
         struct Frame {
-            node: usize,
+            node: FunctionId,
             succ_cursor: usize,
         }
 
-        // Precompute successor index lists (static edges only).
-        let succ: Vec<Vec<usize>> = self
-            .functions
-            .iter()
-            .map(|name| {
-                self.callees(name)
-                    .iter()
-                    .filter_map(|c| index_of.get(c.as_str()).copied())
-                    .collect::<Vec<usize>>()
-            })
-            .collect();
-
-        for start in 0..n {
-            if state[start].index.is_some() {
+        for &start in &self.functions {
+            if state[start.index()].index.is_some() {
                 continue;
             }
-            let mut frames: Vec<Frame> = vec![Frame {
+            let mut frames = vec![Frame {
                 node: start,
                 succ_cursor: 0,
             }];
-            state[start].index = Some(next_index);
-            state[start].lowlink = next_index;
+            state[start.index()] = NodeState {
+                index: Some(next_index),
+                lowlink: next_index,
+                on_stack: true,
+            };
             next_index += 1;
             stack.push(start);
-            state[start].on_stack = true;
 
             while let Some(frame) = frames.last_mut() {
                 let v = frame.node;
-                if frame.succ_cursor < succ[v].len() {
-                    let w = succ[v][frame.succ_cursor];
+                let successors = self.callees(v);
+                if frame.succ_cursor < successors.len() {
+                    let w = successors[frame.succ_cursor];
                     frame.succ_cursor += 1;
-                    match state[w].index {
+                    match state[w.index()].index {
                         None => {
-                            state[w].index = Some(next_index);
-                            state[w].lowlink = next_index;
+                            state[w.index()] = NodeState {
+                                index: Some(next_index),
+                                lowlink: next_index,
+                                on_stack: true,
+                            };
                             next_index += 1;
                             stack.push(w);
-                            state[w].on_stack = true;
                             frames.push(Frame {
                                 node: w,
                                 succ_cursor: 0,
                             });
                         }
-                        Some(w_index) => {
-                            if state[w].on_stack {
-                                let v_low = state[v].lowlink;
-                                state[v].lowlink = v_low.min(w_index);
-                            }
+                        Some(w_index) if state[w.index()].on_stack => {
+                            let low = &mut state[v.index()].lowlink;
+                            *low = (*low).min(w_index);
                         }
+                        Some(_) => {}
                     }
                 } else {
-                    // All successors of v processed. If v is an SCC root, pop it.
-                    if state[v].lowlink == state[v].index.unwrap() {
-                        let mut component: Vec<String> = Vec::new();
+                    if Some(state[v.index()].lowlink) == state[v.index()].index {
+                        let mut component = Vec::new();
                         loop {
                             let w = stack.pop().expect("tarjan stack underflow");
-                            state[w].on_stack = false;
-                            component.push(self.functions[w].clone());
+                            state[w.index()].on_stack = false;
+                            component.push(w);
                             if w == v {
                                 break;
                             }
                         }
-                        component.sort();
+                        component.sort_unstable();
                         sccs.push(component);
                     }
-                    // Propagate lowlink to the parent frame, if any.
                     frames.pop();
                     if let Some(parent) = frames.last() {
-                        let p = parent.node;
-                        let p_low = state[p].lowlink;
-                        let v_low = state[v].lowlink;
-                        state[p].lowlink = p_low.min(v_low);
+                        let v_low = state[v.index()].lowlink;
+                        let low = &mut state[parent.node.index()].lowlink;
+                        *low = (*low).min(v_low);
                     }
                 }
             }
         }
-
-        // Tarjan emits SCCs in reverse-topological order already (callees before
-        // callers), which is exactly the bottom-up order we want.
         sccs
     }
 }
 
-/// Convenience: BFS reachability over static-direct edges from a set of roots —
-/// the same traversal shape as `passes::eliminate_dead_functions`, exposed here
+/// Convenience: BFS reachability over static-direct edges from a set of roots,
 /// for interprocedural passes that need "everything reachable from main".
 impl CallGraph {
     /// Functions reachable from `roots` via static-direct edges (inclusive of
-    /// the roots themselves that are defined in this module). Opaque edges are
-    /// not followed (the target is unknown); a sound IPO consumer treats any
-    /// function with an opaque caller as conservatively reachable separately.
-    pub fn reachable_from<'a>(&self, roots: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
-        let mut reachable: BTreeSet<String> = BTreeSet::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
-        for r in roots {
-            if self.edges.contains_key(r) && reachable.insert(r.to_string()) {
-                queue.push_back(r.to_string());
+    /// the roots with a body in this module). Opaque edges are not followed.
+    pub fn reachable_from(&self, roots: impl IntoIterator<Item = FunctionId>) -> FunctionSet {
+        let mut reachable = FunctionSet::with_capacity(self.edges.len());
+        let mut queue = VecDeque::new();
+        for root in roots {
+            if self.has_body(root) && reachable.insert(root) {
+                queue.push_back(root);
             }
         }
-        while let Some(name) = queue.pop_front() {
-            for callee in self.callees(&name) {
-                if reachable.insert(callee.clone()) {
-                    queue.push_back(callee.clone());
+        while let Some(id) = queue.pop_front() {
+            for &callee in self.callees(id) {
+                if reachable.insert(callee) {
+                    queue.push_back(callee);
                 }
             }
         }
@@ -507,8 +449,87 @@ impl CallGraph {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod named {
+    //! The graph read back through its module's symbols, for assertions in
+    //! tests that build modules by name ([`TirModule::decode_spelled`]).
+
     use super::*;
+    use std::collections::BTreeSet;
+
+    pub(crate) struct NamedCallGraph {
+        cg: CallGraph,
+        table: molt_ir::FunctionTable,
+    }
+
+    impl std::ops::Deref for NamedCallGraph {
+        type Target = CallGraph;
+        fn deref(&self) -> &CallGraph {
+            &self.cg
+        }
+    }
+
+    impl NamedCallGraph {
+        pub(crate) fn build(module: &TirModule) -> Self {
+            Self {
+                cg: CallGraph::build(module),
+                table: module.table.clone(),
+            }
+        }
+        pub(crate) fn id(&self, name: &str) -> FunctionId {
+            self.table
+                .ids()
+                .find(|id| self.table.symbol(*id) == name)
+                .unwrap_or_else(|| panic!("no row {name}"))
+        }
+        fn names(&self, ids: impl IntoIterator<Item = FunctionId>) -> Vec<String> {
+            ids.into_iter()
+                .map(|id| self.table.symbol(id).to_string())
+                .collect()
+        }
+        fn set(&self, set: &FunctionSet) -> BTreeSet<String> {
+            self.names(set.iter()).into_iter().collect()
+        }
+        pub(crate) fn is_defined(&self, name: &str) -> bool {
+            self.table
+                .ids()
+                .any(|id| self.table.symbol(id) == name && self.cg.has_body(id))
+        }
+        pub(crate) fn functions(&self) -> Vec<String> {
+            self.names(self.cg.functions().iter().copied())
+        }
+        pub(crate) fn leaf_functions(&self) -> BTreeSet<String> {
+            self.set(&self.cg.leaf_functions())
+        }
+        pub(crate) fn recursive_set(&self) -> BTreeSet<String> {
+            self.set(self.cg.recursive_set())
+        }
+        pub(crate) fn callees(&self, name: &str) -> Vec<String> {
+            self.names(self.cg.callees(self.id(name)).iter().copied())
+        }
+        pub(crate) fn callers(&self, name: &str) -> Vec<String> {
+            self.names(self.cg.callers(self.id(name)).iter().copied())
+        }
+        pub(crate) fn has_opaque_call(&self, name: &str) -> bool {
+            self.cg.has_opaque_call(self.id(name))
+        }
+        pub(crate) fn makes_any_call(&self, name: &str) -> bool {
+            self.cg.makes_any_call(self.id(name))
+        }
+        pub(crate) fn bottom_up_order(&self) -> Vec<Vec<String>> {
+            self.cg
+                .bottom_up_order()
+                .into_iter()
+                .map(|scc| self.names(scc))
+                .collect()
+        }
+        pub(crate) fn reachable_from<const N: usize>(&self, roots: [&str; N]) -> BTreeSet<String> {
+            self.set(&self.cg.reachable_from(roots.map(|root| self.id(root))))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
     use crate::tir::blocks::Terminator;
     use crate::tir::function::{TirFunction, TirModule};
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -533,6 +554,7 @@ mod tests {
             block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -546,11 +568,10 @@ mod tests {
     }
 
     fn module(funcs: Vec<TirFunction>) -> TirModule {
-        TirModule {
-            name: "m".into(),
-            functions: funcs,
-        }
+        TirModule::decode_spelled("m", funcs)
     }
+
+    use super::named::NamedCallGraph as G;
 
     // -- leaf detection -------------------------------------------------------
 
@@ -560,7 +581,7 @@ mod tests {
         let a = func_calling("a", &[Some("b")]);
         let b = func_calling("b", &[]);
         let c = func_calling("c", &[]);
-        let cg = CallGraph::build(&module(vec![a, b, c]));
+        let cg = G::build(&module(vec![a, b, c]));
         let leaves = cg.leaf_functions();
         assert!(leaves.contains("b"));
         assert!(leaves.contains("c"));
@@ -571,7 +592,7 @@ mod tests {
     fn opaque_call_disqualifies_leaf() {
         // f has a Call with no s_value (indirect) → opaque → not a leaf.
         let f = func_calling("f", &[None]);
-        let cg = CallGraph::build(&module(vec![f]));
+        let cg = G::build(&module(vec![f]));
         assert!(!cg.leaf_functions().contains("f"));
         assert!(cg.has_opaque_call("f"));
     }
@@ -581,7 +602,7 @@ mod tests {
         // g calls "ext" which is NOT in the module → opaque edge, not a leaf,
         // and no static edge recorded.
         let g = func_calling("g", &[Some("ext")]);
-        let cg = CallGraph::build(&module(vec![g]));
+        let cg = G::build(&module(vec![g]));
         assert!(!cg.leaf_functions().contains("g"));
         assert!(cg.has_opaque_call("g"));
         assert!(
@@ -603,6 +624,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallMethod,
             operands: vec![],
@@ -611,7 +633,7 @@ mod tests {
             source_span: None,
         });
         block.terminator = Terminator::Return { values: vec![] };
-        let cg = CallGraph::build(&module(vec![f]));
+        let cg = G::build(&module(vec![f]));
         assert!(!cg.leaf_functions().contains("f"));
         assert!(cg.has_opaque_call("f"));
     }
@@ -641,6 +663,7 @@ mod tests {
                 .push(TirOp {
                     origin: Some(molt_ir::OpKind::BuiltinFunc),
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![argument],
@@ -648,7 +671,7 @@ mod tests {
                     attrs,
                     source_span: None,
                 });
-            let graph = CallGraph::build(&module(vec![function]));
+            let graph = G::build(&module(vec![function]));
             assert!(graph.makes_any_call("f"));
             assert!(graph.has_opaque_call("f"));
             assert!(!graph.leaf_functions().contains("f"));
@@ -666,7 +689,7 @@ mod tests {
         ] {
             let mut f = func_calling("kernel", &[Some(symbol)]);
             f.blocks.get_mut(&f.entry_block).unwrap().ops[0].origin = Some(kind);
-            let cg = CallGraph::build(&module(vec![f]));
+            let cg = G::build(&module(vec![f]));
             assert!(
                 cg.leaf_functions().contains("kernel"),
                 "{kind}: GPU intrinsic call is not a user edge"
@@ -689,7 +712,7 @@ mod tests {
             for symbol in ["molt_gpu_thread_id", "module_function"] {
                 let mut caller = func_calling("caller", &[Some(symbol)]);
                 caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
-                let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
+                let cg = G::build(&module(vec![caller, func_calling(symbol, &[])]));
                 assert!(cg.has_opaque_call("caller"), "{kind}: {symbol}");
                 assert!(!cg.leaf_functions().contains("caller"), "{kind}: {symbol}");
                 assert!(cg.callees("caller").is_empty(), "{kind}: {symbol}");
@@ -715,7 +738,7 @@ mod tests {
                 if let Some(kind) = original {
                     caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
                 }
-                let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
+                let cg = G::build(&module(vec![caller, func_calling(symbol, &[])]));
                 assert!(!cg.has_opaque_call("caller"), "{symbol}: {original:?}");
                 assert!(
                     !cg.leaf_functions().contains("caller"),
@@ -749,7 +772,7 @@ mod tests {
                 op.opcode = OpCode::Copy;
                 op.results = vec![result];
                 op.origin = Some(kind);
-                let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
+                let cg = G::build(&module(vec![caller, func_calling(symbol, &[])]));
                 let direct = matches!(kind, molt_ir::OpKind::Call | molt_ir::OpKind::CallInternal);
                 assert_eq!(cg.has_opaque_call("caller"), !direct, "{kind}: {symbol}");
                 assert_eq!(
@@ -779,6 +802,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::CallFunc),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -788,7 +812,7 @@ mod tests {
         });
         block.terminator = Terminator::Return { values: vec![] };
         let g = func_calling("g", &[]);
-        let cg = CallGraph::build(&module(vec![f, g]));
+        let cg = G::build(&module(vec![f, g]));
         assert!(
             !cg.leaf_functions().contains("f"),
             "Copy[call_func] is a call"
@@ -813,6 +837,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![v],
@@ -821,7 +846,7 @@ mod tests {
             source_span: None,
         });
         block.terminator = Terminator::Return { values: vec![] };
-        let cg = CallGraph::build(&module(vec![f]));
+        let cg = G::build(&module(vec![f]));
         assert!(cg.leaf_functions().contains("f"));
     }
 
@@ -833,7 +858,7 @@ mod tests {
         let a = func_calling("a", &[Some("b")]);
         let b = func_calling("b", &[Some("c")]);
         let c = func_calling("c", &[]);
-        let cg = CallGraph::build(&module(vec![a, b, c]));
+        let cg = G::build(&module(vec![a, b, c]));
         assert_eq!(cg.callees("a"), &["b".to_string()]);
         assert_eq!(cg.callees("b"), &["c".to_string()]);
         assert!(cg.callees("c").is_empty());
@@ -847,7 +872,7 @@ mod tests {
         // a calls b twice → one static edge.
         let a = func_calling("a", &[Some("b"), Some("b")]);
         let b = func_calling("b", &[]);
-        let cg = CallGraph::build(&module(vec![a, b]));
+        let cg = G::build(&module(vec![a, b]));
         assert_eq!(cg.callees("a"), &["b".to_string()]);
     }
 
@@ -856,7 +881,7 @@ mod tests {
     #[test]
     fn direct_self_recursion_is_recursive() {
         let f = func_calling("f", &[Some("f")]);
-        let cg = CallGraph::build(&module(vec![f]));
+        let cg = G::build(&module(vec![f]));
         assert!(cg.recursive_set().contains("f"));
     }
 
@@ -865,7 +890,7 @@ mod tests {
         // a → b → a
         let a = func_calling("a", &[Some("b")]);
         let b = func_calling("b", &[Some("a")]);
-        let cg = CallGraph::build(&module(vec![a, b]));
+        let cg = G::build(&module(vec![a, b]));
         let rec = cg.recursive_set();
         assert!(rec.contains("a"));
         assert!(rec.contains("b"));
@@ -881,7 +906,7 @@ mod tests {
         let a = func_calling("a", &[Some("b")]);
         let b = func_calling("b", &[Some("c")]);
         let c = func_calling("c", &[]);
-        let cg = CallGraph::build(&module(vec![a, b, c]));
+        let cg = G::build(&module(vec![a, b, c]));
         assert!(cg.recursive_set().is_empty());
     }
 
@@ -889,7 +914,7 @@ mod tests {
     fn opaque_call_is_conservatively_recursive() {
         // An indirect call could re-enter → fail-closed recursive.
         let f = func_calling("f", &[None]);
-        let cg = CallGraph::build(&module(vec![f]));
+        let cg = G::build(&module(vec![f]));
         assert!(cg.recursive_set().contains("f"));
     }
 
@@ -901,7 +926,7 @@ mod tests {
         let a = func_calling("a", &[Some("b")]);
         let b = func_calling("b", &[Some("c")]);
         let c = func_calling("c", &[]);
-        let cg = CallGraph::build(&module(vec![a, b, c]));
+        let cg = G::build(&module(vec![a, b, c]));
         let order: Vec<String> = cg.bottom_up_order().into_iter().flatten().collect();
         let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
         assert!(pos("c") < pos("b"));
@@ -926,6 +951,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::AllocTask,
             operands: vec![],
@@ -935,7 +961,7 @@ mod tests {
         });
         block.terminator = Terminator::Return { values: vec![] };
         let g_poll = func_calling("g_poll", &[]);
-        let cg = CallGraph::build(&module(vec![g, g_poll]));
+        let cg = G::build(&module(vec![g, g_poll]));
         // alloc_task is a poll reference edge…
         assert_eq!(cg.callees("g"), &["g_poll".to_string()]);
         // …but does NOT count as a "call out of g", so g (with only the
@@ -955,7 +981,7 @@ mod tests {
         let b = func_calling("b", &[Some("c")]);
         let c = func_calling("c", &[]);
         let dead = func_calling("dead", &[]);
-        let cg = CallGraph::build(&module(vec![a, b, c, dead]));
+        let cg = G::build(&module(vec![a, b, c, dead]));
         let reach = cg.reachable_from(["a"]);
         assert!(reach.contains("a"));
         assert!(reach.contains("b"));
@@ -965,7 +991,7 @@ mod tests {
 
     #[test]
     fn empty_module_builds() {
-        let cg = CallGraph::build(&module(vec![]));
+        let cg = G::build(&module(vec![]));
         assert!(cg.functions().is_empty());
         assert!(cg.leaf_functions().is_empty());
         assert!(cg.recursive_set().is_empty());

@@ -55,13 +55,17 @@ pub(crate) fn emit_fact_graph_for_ir(
                 linkage: None,
             },
         );
-    let module = molt_backend::tir::TirModule {
-        name: "fact_graph_module".to_string(),
-        functions: tir_functions
+    let module = molt_backend::tir::TirModule::from_document(
+        "fact_graph_module",
+        molt_ir::FunctionTable::of(&ir.functions),
+        tir_functions
             .into_iter()
-            .filter_map(|(is_extern, func)| (!is_extern).then_some(func))
+            .enumerate()
+            .filter_map(|(index, (is_extern, func))| {
+                (!is_extern).then_some((molt_ir::FunctionId::from_index(index), func))
+            })
             .collect(),
-    };
+    );
     let selected = module
         .functions
         .iter()
@@ -97,6 +101,7 @@ pub(crate) fn emit_fact_graph_for_ir(
         selected,
         &call_facts,
         "CallFactsTable::build_for_function",
+        &module.table,
     );
     write_json_artifact_path(request.output_path, &graph)
 }
@@ -226,7 +231,7 @@ mod tests {
                 .collect(),
             ..FunctionIR::default()
         };
-        let ir = SimpleIR {
+        let mut ir = SimpleIR {
             functions: vec![
                 calling("selected", &["recursive_a", "external"]),
                 calling("recursive_a", &["recursive_b"]),
@@ -240,6 +245,7 @@ mod tests {
             ],
             profile: None,
         };
+        ir.resolve_function_references().unwrap();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")

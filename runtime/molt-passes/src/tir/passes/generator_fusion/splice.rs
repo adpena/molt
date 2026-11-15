@@ -184,6 +184,7 @@ fn apply_fusion_staged(
         preheader_init_ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![argument],
@@ -223,8 +224,8 @@ fn apply_fusion_staged(
     // inliner). The `run_pipeline` re-run the driver performs verifies again.
     if let Err(errors) = super::super::super::verify::verify_function(caller) {
         panic!(
-            "[generator_fusion] verification failed after splicing poll '{}' into '{}': {:?}",
-            candidate.poll_name, caller.name, errors
+            "[generator_fusion] verification failed after splicing poll #{} into '{}': {:?}",
+            candidate.poll.0, caller.name, errors
         );
     }
     Some(owners)

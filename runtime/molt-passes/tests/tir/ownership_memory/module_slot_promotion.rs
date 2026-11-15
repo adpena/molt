@@ -10,6 +10,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -186,10 +187,7 @@ fn promotes_bench_sum_shaped_loop() {
     let f = module_loop_func();
     let header = BlockId(1);
     let body = BlockId(2);
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
 
     assert_eq!(changed, vec!["chunk".to_string()], "function promoted");
@@ -243,10 +241,7 @@ fn annotation_only_module_arithmetic_refuses_promotion() {
         entry.ops[7].operands[2] = annotated_n;
     }
     let before = format!("{f:?}");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
 
     let (stats, changed) = run_module_slot_promotion(&mut module);
 
@@ -264,10 +259,7 @@ fn unknown_loop_writer_refuses_transaction_without_mutation() {
     let unknown = crate::fixture_support::append_parameter(&mut f, TirType::DynBox);
     f.blocks.get_mut(&BlockId(2)).unwrap().ops[5].operands[2] = unknown;
     let before = format!("{f:?}");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
 
     let (stats, changed) = run_module_slot_promotion(&mut module);
 
@@ -289,10 +281,7 @@ fn preheader_async_work_poll_refuses_transaction_without_mutation() {
     molt_passes::tir::verify::verify_function(&f)
         .expect("valid preheader callback-control fixture");
     let before = format!("{f:?}");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
 
     let (stats, changed) = run_module_slot_promotion(&mut module);
 
@@ -309,10 +298,7 @@ fn unresolved_dirty_check_refuses_transaction_without_mutation() {
     let mut f = module_loop_func();
     f.label_id_map.clear();
     let before = format!("{f:?}");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
 
     let (stats, changed) = run_module_slot_promotion(&mut module);
 
@@ -345,10 +331,7 @@ fn threading_import_disables_promotion_module_wide() {
         entry.ops = vec![imp];
         entry.terminator = Terminator::Return { values: vec![] };
     }
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f, g],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f, g]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert!(
         changed.is_empty(),
@@ -378,10 +361,7 @@ fn thread_intrinsic_name_string_alone_does_not_refuse() {
         entry.ops = vec![marker];
         entry.terminator = Terminator::Return { values: vec![] };
     }
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f, g],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f, g]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert_eq!(changed, vec!["chunk".to_string()], "string alone is benign");
     assert_eq!(stats.slots_promoted, 3);
@@ -397,10 +377,7 @@ fn call_in_loop_refuses_promotion() {
     call.attrs
         .insert("s_value".into(), AttrValue::Str("opaque".into()));
     f.blocks.get_mut(&body).unwrap().ops.insert(0, call);
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert!(changed.is_empty(), "opaque call in loop => refusal");
     assert_eq!(stats.slots_promoted, 0);
@@ -454,10 +431,7 @@ fn typed_field_initialization_in_loop_does_not_refuse_promotion() {
             offset: 0,
         }
     );
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert_eq!(
         changed,
@@ -481,10 +455,7 @@ fn unrelated_raw_allocation_after_module_seeds_keeps_them_available() {
         .ops
         .push(allocation);
     molt_passes::tir::verify::verify_function(&f).expect("valid allocation after module seeds");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert_eq!(changed, vec!["chunk".to_string()]);
     assert_eq!(stats.slots_promoted, 3);
@@ -502,6 +473,10 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
             "object_new_bound" => {
                 body.ops[0].opcode = OpCode::ObjectNewBound;
                 body.ops[0].operands = vec![class];
+                body.ops[0].attrs.insert(
+                    "class_definition".into(),
+                    AttrValue::Str("class:test:Fixture".into()),
+                );
             }
             "alloc_class" => {
                 body.ops[0].opcode = OpCode::Copy;
@@ -520,10 +495,7 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
         }
         molt_passes::tir::verify::verify_function(&f).expect("valid callback-control fixture");
         let before = format!("{f:?}");
-        let mut module = TirModule {
-            name: "m".into(),
-            functions: vec![f],
-        };
+        let mut module = TirModule::with_own_table("m", vec![f]);
         let (stats, changed) = run_module_slot_promotion(&mut module);
         assert!(
             changed.is_empty(),
@@ -560,10 +532,7 @@ fn module_ops(block: &TirBlock) -> Vec<&TirOp> {
 #[test]
 fn a_loop_poll_versions_the_loop_and_promotes_the_copy_without_polls() {
     let (header, body) = (BlockId(1), BlockId(2));
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![polled_module_loop_func()],
-    };
+    let mut module = TirModule::with_own_table("m", vec![polled_module_loop_func()]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert_eq!(changed, vec!["chunk".to_string()]);
     assert_eq!(stats.slots_promoted, 3);
@@ -662,18 +631,12 @@ fn a_polled_loop_whose_value_is_read_after_it_refuses_without_mutation() {
         f
     };
     // Without a poll the same escape promotes: one loop needs no merge.
-    let mut plain = TirModule {
-        name: "m".into(),
-        functions: vec![escape(module_loop_func())],
-    };
+    let mut plain = TirModule::with_own_table("m", vec![escape(module_loop_func())]);
     assert_eq!(run_module_slot_promotion(&mut plain).1, vec!["chunk"]);
 
     let f = escape(polled_module_loop_func());
     let before = format!("{f:?}");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert!(changed.is_empty(), "two loop copies would need a merge");
     assert_eq!(stats.slots_promoted, 0);
@@ -693,10 +656,7 @@ fn a_polled_loop_with_a_conditional_back_edge_refuses_without_mutation() {
         else_args: vec![],
     };
     let before = format!("{f:?}");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert!(changed.is_empty());
     assert_eq!(stats.slots_promoted, 0);
@@ -719,10 +679,7 @@ fn a_name_constant_read_after_a_polled_loop_is_hoisted_not_refused() {
         exit_block.ops[0].operands[1] = shared_name;
     }
     molt_passes::tir::verify::verify_function(&f).expect("valid shared-name fixture");
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![f],
-    };
+    let mut module = TirModule::with_own_table("m", vec![f]);
     let (stats, changed) = run_module_slot_promotion(&mut module);
     assert_eq!(changed, vec!["chunk".to_string()]);
     assert_eq!(stats.slots_promoted, 3);

@@ -129,7 +129,7 @@ fn entry_custody_word(call_ctx: &CallOpContext<'_, '_, '_>, op: &OpIR, has_closu
         return 0;
     }
     call_ctx.call_site_abi.entry_custody_word(
-        op.s_value.as_deref().expect("func_new names its function"),
+        call_ctx.call_site_abi.target_symbol(op),
         has_closure,
         op.value.unwrap_or(0),
     )
@@ -148,7 +148,7 @@ fn emit_function_constructor(
     trailing_local: Option<u32>,
     entry_custody: Option<u64>,
 ) {
-    let func_name = op.s_value.as_ref().unwrap();
+    let func_name = call_ctx.call_site_abi.target_symbol(op);
     let arity = op.value.unwrap_or(0);
     let table_pair = call_ctx
         .call_site_abi

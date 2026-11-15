@@ -18,7 +18,7 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
         // an attribute, loaded as a program slot.
         let mut params = vec![TirType::DynBox; if read { 2 } else { 3 }];
         // An unchecked annotation may supply this hint for an actual scalar.
-        params[0] = TirType::UserClass("C".into());
+        params[0] = TirType::Class(molt_ir::ClassId::of_definition("class:m:C"));
         let mut func = TirFunction::new(
             kind.to_string(),
             params,
@@ -30,6 +30,7 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: if read {
                 OpCode::LoadAttr
@@ -88,6 +89,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: if is_load {
                 OpCode::LoadAttr
@@ -253,6 +255,7 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::GetAttrName),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0), ValueId(1)],
@@ -284,6 +287,7 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
     let mut load = TirOp {
         origin: Some(OpKind::GetAttrGenericObj),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0)],
@@ -354,6 +358,7 @@ fn lower_generic_attribute_sites_carry_source_identity() {
         let mut access = TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
@@ -409,6 +414,7 @@ fn lower_dynamic_set_attr_name_uses_operand_name() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::SetAttrName),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::StoreAttr,
         operands: vec![ValueId(0), ValueId(1), ValueId(2)],
@@ -441,6 +447,7 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::DelAttrName),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelAttr,
         operands: vec![ValueId(0), ValueId(1)],
@@ -482,6 +489,7 @@ fn lower_preserved_has_attr_name_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::HasAttrName),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj_bits, name_bits],
@@ -518,6 +526,7 @@ fn lower_call_method_uses_call_bind_ic_abi() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallMethod,
         operands: vec![callable, arg0],
@@ -555,6 +564,7 @@ fn lower_call_bind_preserves_callargs_builder_abi() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::CallBind),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, builder],
@@ -589,6 +599,7 @@ fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::CallBind),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, builder],

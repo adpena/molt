@@ -60,13 +60,15 @@ pub(super) fn attr_result_type_override<T>(
 ) -> Option<TirType> {
     match opcode_type_refine_attr_result_type_rule_table(opcode) {
         TypeRefineAttrResultTypeRule::None => None,
-        TypeRefineAttrResultTypeRule::ObjectTypeHint => match attrs.get("_type_hint") {
-            Some(AttrValue::Str(name)) => match TirType::from_type_hint(name) {
-                class_ty @ TirType::UserClass(_) => Some(class_ty),
+        // The allocation's class statement (I6, C1).
+        TypeRefineAttrResultTypeRule::ObjectClassDefinition => {
+            match attrs.get("class_definition") {
+                Some(AttrValue::Str(symbol)) => {
+                    Some(TirType::Class(molt_ir::ClassId::of_definition(symbol)))
+                }
                 _ => None,
-            },
-            _ => None,
-        },
+            }
+        }
         TypeRefineAttrResultTypeRule::CallReturnType => {
             attrs.get("return_type").and_then(|v| match v {
                 AttrValue::Str(s) => parse_return_type_str(s.as_str()),

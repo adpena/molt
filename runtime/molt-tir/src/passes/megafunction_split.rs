@@ -1089,7 +1089,23 @@ pub fn split_large_function(
         functions: std::iter::once(stub).chain(chunks).collect(),
         profile: None,
     };
-    if let Err(detail) = crate::validate_simple_ir(&transformed) {
+    // Check the stub and chunks as a fragment: callee ids index the
+    // enclosing document, so the check reads a copy decoded from the wire
+    // symbols, references outside the fragment kept (HF-847 slice 1).
+    let mut check = transformed.clone();
+    for op in check
+        .functions
+        .iter_mut()
+        .flat_map(|function| function.ops.iter_mut())
+    {
+        op.callee = None;
+    }
+    molt_ir::function_table::resolve_function_references_in(
+        &mut check.functions,
+        molt_ir::function_table::OutsideSymbols::Keep,
+    )
+    .unwrap_or_else(|detail| panic!("megafunction split produced unresolvable IR: {detail}"));
+    if let Err(detail) = crate::validate_simple_ir(&check) {
         panic!("megafunction split produced invalid execution-context IR: {detail}");
     }
 
@@ -1130,6 +1146,10 @@ pub(super) fn split_megafunctions_at_limit(
     let mut split_sources = BTreeMap::new();
     let mut new_functions: Vec<FunctionIR> = Vec::new();
     let old_functions = std::mem::take(&mut ir.functions);
+    // Each stub keeps its row; chunks are appended rows, so no existing id
+    // moves (HF-847 slice 1, I4).
+    let base = old_functions.len();
+    let mut appended: Vec<FunctionIR> = Vec::new();
     let mut occupied_function_names = old_functions
         .iter()
         .map(|function| function.name.clone())
@@ -1152,9 +1172,24 @@ pub(super) fn split_megafunctions_at_limit(
                 for chunk in &chunks {
                     split_sources.insert(chunk.name.clone(), stub.name.clone());
                 }
-                // Insert chunks first so they are defined before the stub calls them.
-                new_functions.extend(chunks);
+                // The stub's calls are this pass's own, one per chunk in order.
+                let mut stub = stub;
+                let mut next = base + appended.len();
+                for op in stub
+                    .ops
+                    .iter_mut()
+                    .filter(|op| op.kind == molt_ir::OpKind::CallInternal)
+                {
+                    op.callee = Some(molt_ir::FunctionId::from_index(next));
+                    next += 1;
+                }
+                assert_eq!(
+                    next - base - appended.len(),
+                    chunks.len(),
+                    "one stub call per chunk"
+                );
                 new_functions.push(stub);
+                appended.extend(chunks);
             }
             Err(original) => {
                 new_functions.push(*original);
@@ -1162,6 +1197,7 @@ pub(super) fn split_megafunctions_at_limit(
         }
     }
 
+    new_functions.extend(appended);
     ir.functions = new_functions;
     split_sources
 }

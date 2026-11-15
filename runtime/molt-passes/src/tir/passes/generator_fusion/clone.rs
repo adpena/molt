@@ -27,6 +27,7 @@ pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -40,6 +41,7 @@ pub(super) fn const_none_op(result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -345,6 +347,7 @@ pub(super) fn clone_and_rewrite_poll(
                         new_ops.push(TirOp {
                             origin: None,
                             runtime: None,
+                            callee: None,
                             dialect: op.dialect,
                             opcode: OpCode::Copy,
                             operands: vec![remap(op.operands[1], &value_map)],
@@ -360,6 +363,7 @@ pub(super) fn clone_and_rewrite_poll(
                         let load = TirOp {
                             origin: None,
                             runtime: None,
+                            callee: None,
                             dialect: op.dialect,
                             opcode: op.opcode,
                             operands: Vec::new(),
@@ -407,6 +411,7 @@ pub(super) fn clone_and_rewrite_poll(
             new_ops.push(TirOp {
                 origin: op.origin,
                 runtime: None,
+                callee: None,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands,

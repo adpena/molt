@@ -661,12 +661,12 @@ def test_method_receivers_are_declared_by_kind() -> None:
     ) == DeclaredClass(point, ReceiverKind.CLASS_OBJECT)
 
 
-def test_wire_hints_never_spell_a_user_class_as_a_builtin() -> None:
+def test_wire_hints_never_spell_a_user_class() -> None:
     project = SimpleTIRGenerator._wire_type_hint
     bound = SimpleTIRGenerator._bound_method_wire
-    assert project(DeclaredClass(ClassId("mod", "Point"))) == "Point"
-    # The backend reads these spellings as builtins; a user class with that
-    # name travels as no hint at all.
+    # A name is not class identity (HF-847 slice 1, D6): a user class travels
+    # as no hint, whatever it is called; an allocation names its statement.
+    assert project(DeclaredClass(ClassId("mod", "Point"))) is None
     assert project(DeclaredClass(ClassId("mod", "int"))) is None
     assert project(DeclaredClass(ClassId("mod", "Any"))) is None
     assert bound(BoundMethodHint(BuiltinClass("list"), "append")) == (
@@ -692,3 +692,20 @@ def test_user_class_named_like_a_hint_spelling_is_not_matched_by_spelling() -> N
     assert [op.kind for op in read_ops if op.kind.startswith("GETATTR")] == [
         "GETATTR_GENERIC_OBJ"
     ]
+
+
+def test_allocation_names_its_class_statement_not_its_name() -> None:
+    # The backend's exact class type comes from the statement an allocation
+    # names (HF-847 slice 1, D6, C1), so same-named classes stay distinct.
+    generator = _lower_exposing_first_class(_EXPOSURE_CONSUMERS, exposed=False)
+    ops = [
+        op for function in generator.to_json()["functions"] for op in function["ops"]
+    ]
+    stamped = {
+        op["class_definition"] for op in ops if op["kind"] == "class_set_definition"
+    }
+    allocations = [op for op in ops if op["kind"] == "object_new_bound"]
+    assert allocations, "the vanilla constructor folds to an allocation"
+    for allocation in allocations:
+        assert allocation["class_definition"] in stamped
+        assert "type_hint" not in allocation

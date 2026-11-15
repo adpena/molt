@@ -6,6 +6,7 @@ fn make_type_guard_op(operand: ValueId, result: ValueId, expected_type: &str) ->
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],

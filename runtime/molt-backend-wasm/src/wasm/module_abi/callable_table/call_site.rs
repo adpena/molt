@@ -11,6 +11,9 @@ pub(in crate::wasm) struct WasmCallableCallSiteAbi<'a> {
     escaped_callable_targets: &'a BTreeSet<String>,
     call_func_spill_offset: u32,
     entry_custody: &'a BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
+    /// The emitted document's function table: a typed callee names its
+    /// linker symbol here (HF-847 slice 1, D4).
+    function_table: &'a molt_ir::FunctionTable,
 }
 
 impl<'a> WasmCallableCallSiteAbi<'a> {
@@ -19,6 +22,7 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
         escaped_callable_targets: &'a BTreeSet<String>,
         call_func_spill_offset: u32,
         entry_custody: &'a BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
+        function_table: &'a molt_ir::FunctionTable,
     ) -> Self {
         Self {
             func_table_slots: &plan.func_to_table_idx,
@@ -28,6 +32,20 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             escaped_callable_targets,
             call_func_spill_offset,
             entry_custody,
+            function_table,
+        }
+    }
+
+    /// The symbol an op's target links by: a typed callee's row, else the
+    /// runtime or builtin symbol the op keeps in `s_value`.
+    pub(in crate::wasm) fn target_symbol<'o>(&'o self, op: &'o crate::OpIR) -> &'o str {
+        match op.callee {
+            Some(id) => self.function_table.symbol(id),
+            None => op
+                .s_value
+                .as_deref()
+                .filter(|symbol| !symbol.is_empty())
+                .unwrap_or_else(|| panic!("{} names no target", op.kind)),
         }
     }
 
@@ -203,7 +221,8 @@ mod tests {
             "callee".to_string(),
             molt_codegen_abi::EntryCustodyDeclaration::declare(true, 3, &[false, true, true]),
         )]);
-        let abi = plan.call_site_abi(&escaped_targets, 4096, &entry_custody);
+        let function_table = molt_ir::FunctionTable::default();
+        let abi = plan.call_site_abi(&escaped_targets, 4096, &entry_custody, &function_table);
         assert_eq!(
             abi.entry_custody_word("callee", true, 2),
             molt_codegen_abi::ENTRY_CUSTODY_ADOPTS
@@ -259,7 +278,8 @@ mod tests {
         );
         let escaped = BTreeSet::new();
         let entry_custody = BTreeMap::new();
-        let abi = plan.call_site_abi(&escaped, 0, &entry_custody);
+        let function_table = molt_ir::FunctionTable::default();
+        let abi = plan.call_site_abi(&escaped, 0, &entry_custody, &function_table);
         assert_eq!(
             abi.table_target("molt_async_sleep_poll", molt_ir::OpKind::AllocTask),
             WasmCallableTableTarget::RuntimeKey(poll)

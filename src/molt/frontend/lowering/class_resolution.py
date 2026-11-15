@@ -61,9 +61,6 @@ type AnnotationClassBinding = ClassId | ModuleImportBinding
 # instance the class created, which shares the class statement's origin).
 _USER_CLASS_IDENTITY = int(PythonIdentity.USER_CLASS)
 
-# Hint spellings the backend reads as something other than a user class.
-_NON_CLASS_HINT_SPELLINGS = frozenset({"Any", "Unknown", "None"})
-
 
 @dataclass(frozen=True, slots=True)
 class ClassDefinitionIndex:
@@ -562,18 +559,15 @@ class ClassResolutionMixin(GeneratorMixinBase):
     def _wire_type_hint(hint: TypeHint) -> str | None:
         """The SimpleIR ``type_hint`` spelling of a value hint, or None.
 
-        A user class travels as its ``__name__``, the backend's opaque
-        ``UserClass`` tag. A user class spelled like a builtin type would read
-        as that builtin, so it travels as no hint at all.
+        A user class travels as no hint: a name is not class identity, and an
+        annotation admits subclasses. The backend's exact class type comes
+        only from an allocation's ``class_definition`` (HF-847 slice 1, D6).
         """
         if isinstance(hint, str):
             return hint
         if isinstance(hint, BoundMethodHint):
             return ClassResolutionMixin._bound_method_wire(hint)
-        name = hint.class_id.name
-        if name in BUILTIN_TYPE_TAGS or name in _NON_CLASS_HINT_SPELLINGS:
-            return None
-        return name
+        return None
 
     @staticmethod
     def _bound_method_wire(hint: BoundMethodHint) -> str | None:

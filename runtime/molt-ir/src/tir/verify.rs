@@ -293,6 +293,35 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 (_, Some(_)) => {}
                 (_, None) => {}
             }
+            if op.callee.is_some() {
+                // A typed callee belongs only to a generated function reference,
+                // and replaces its spelling (HF-847 slice 1, I2).
+                // The late lowering's DirectCall and CodeIs (TIR-only opcodes)
+                // keep the guarded call's callee.
+                let kind = op.origin.or_else(|| opcode_canonical_kind_table(op.opcode));
+                let late = matches!(op.opcode, OpCode::DirectCall | OpCode::CodeIs);
+                if !late
+                    && kind.is_none_or(|kind| {
+                        kind.function_reference_role() == crate::FunctionReferenceRole::None
+                    })
+                {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        format!(
+                            "{:?} carries a callee but references no function",
+                            op.opcode
+                        ),
+                    ));
+                }
+                if op.attrs.contains_key("s_value") {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        format!("{:?} carries both a callee and `s_value`", op.opcode),
+                    ));
+                }
+            }
             if op.opcode == OpCode::CheckException && op.exception_edge_kind().is_none() {
                 errors.push(VerifyError::op(
                     *bid,
@@ -402,7 +431,9 @@ fn op_has_call_callee(op: &super::ops::TirOp) -> bool {
     if op.opcode == super::ops::OpCode::CallBuiltin {
         return op.builtin_call().is_some();
     }
-    if super::call_targets::direct_call_symbol_for_op(op).is_some() {
+    if super::call_targets::direct_callee(op).is_some()
+        || super::call_targets::runtime_call_symbol(op).is_some()
+    {
         return true;
     }
     let kind = op.origin.unwrap_or(crate::OpKind::Call);
@@ -1163,7 +1194,7 @@ fn names_runtime_target(op: &TirOp, runtime: crate::runtime_fn_generated::Runtim
         _ => return false,
     };
     target == runtime.symbol()
-        && (super::call_targets::direct_call_symbol_for_op(op).is_some()
+        && (super::call_targets::runtime_call_symbol(op).is_some()
             || matches!(
                 op.origin,
                 Some(crate::OpKind::BuiltinFunc | crate::OpKind::CallAsync)
@@ -1210,6 +1241,7 @@ mod tests {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -1507,6 +1539,7 @@ mod tests {
             block.ops.push(TirOp {
                 origin: original,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: if operands { vec![ValueId(0)] } else { vec![] },
@@ -1624,6 +1657,7 @@ mod tests {
             block.ops.push(TirOp {
                 origin,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CallBuiltin,
                 operands: (0..operands).map(|index| ValueId(index as u32)).collect(),
@@ -1773,6 +1807,7 @@ mod tests {
                 .push(TirOp {
                     origin,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: match shape.kind {
                         crate::OpKind::ModuleSlot => OpCode::ModuleSlot,
@@ -1862,6 +1897,7 @@ mod tests {
                     .push(TirOp {
                         origin,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: (0..operands).map(ValueId).collect(),
@@ -1904,6 +1940,7 @@ mod tests {
                 .push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Scf,
                     opcode,
                     operands: vec![],
@@ -1969,6 +2006,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -2042,6 +2080,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0)],
@@ -2088,6 +2127,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0), ValueId(1)],
@@ -2134,6 +2174,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0), ValueId(1)],
@@ -2180,6 +2221,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -2215,6 +2257,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnpackSequence,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
@@ -2309,6 +2352,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2367,6 +2411,7 @@ mod tests {
             entry.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -2411,6 +2456,7 @@ mod tests {
                     entry.ops.push(TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: vec![],
@@ -2481,6 +2527,7 @@ mod tests {
                 .push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -2522,6 +2569,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2532,6 +2580,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2585,6 +2634,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Neg,
             operands: vec![undefined], // never defined
@@ -2649,6 +2699,7 @@ mod tests {
                 ops: vec![TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -2671,6 +2722,7 @@ mod tests {
                 ops: vec![TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -2693,6 +2745,7 @@ mod tests {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

@@ -104,12 +104,14 @@ impl WasmCallableTablePlan {
         escaped_callable_targets: &'a BTreeSet<String>,
         call_func_spill_offset: u32,
         entry_custody: &'a BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
+        function_table: &'a molt_ir::FunctionTable,
     ) -> WasmCallableCallSiteAbi<'a> {
         WasmCallableCallSiteAbi::from_table_plan(
             self,
             escaped_callable_targets,
             call_func_spill_offset,
             entry_custody,
+            function_table,
         )
     }
 
@@ -176,6 +178,7 @@ impl WasmCallableTablePlan {
                 Err(error) => issues.push(error),
             }
         }
+        let function_table = molt_ir::FunctionTable::of(&ir.functions);
         for func_ir in &ir.functions {
             if func_ir.is_extern {
                 continue;
@@ -195,7 +198,7 @@ impl WasmCallableTablePlan {
                     }
                     _ => continue,
                 };
-                let Some(target) = op.s_value.as_deref() else {
+                let Some(target) = op.reference_symbol(&function_table) else {
                     issues.push(format!(
                         "{} op {} {} has no target symbol",
                         func_ir.name, op_idx, kind

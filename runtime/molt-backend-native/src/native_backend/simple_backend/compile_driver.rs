@@ -70,6 +70,11 @@ impl SimpleBackend {
         ir: SimpleIR,
         backend: NativeCodegenBackend,
     ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+        // The backend's first read of a program: resolve the callees of a
+        // hand-built document; a decoded one passes through (HF-847, D2).
+        let mut ir = ir;
+        ir.resolve_function_references()
+            .unwrap_or_else(|error| panic!("native SimpleIR decode failed: {error}"));
         self.admit_program(&ir)?;
         Ok(self.compile_selected(ir, backend))
     }
@@ -193,16 +198,10 @@ impl SimpleBackend {
             // is empty here (the native lane needs it only because its module
             // phase runs *before* externalization).
             let non_inlinable = std::collections::HashSet::new();
-            // A guarded call may name a function another object of the program
-            // defines: the whole-program linkage rows supply its signature.
-            let mut program_signatures = function_signatures.clone();
-            if let Some(module_context) = self.module_context.as_ref() {
-                for (name, abi) in &module_context.function_linkage_abis {
-                    program_signatures
-                        .entry(name.clone())
-                        .or_insert(abi.source_signature);
-                }
-            }
+            // A guarded call names a row of this document (a body, or the
+            // extern row of a function another object defines): the row
+            // supplies its signature, by id (HF-847 slice 1).
+            let program_signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
             let tir_funcs = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
                 ir.functions,
                 &mut llvm_cached_tir,
@@ -284,6 +283,16 @@ impl SimpleBackend {
                     .extend(module_context.function_linkage_abis.clone());
             }
 
+            // `tir_funcs` is in document order: a position is a FunctionId.
+            llvm.function_table =
+                molt_ir::FunctionTable::from_rows(tir_funcs.iter().map(|(is_extern, function)| {
+                    let kind = if *is_extern {
+                        molt_ir::function_table::FunctionRowKind::Extern
+                    } else {
+                        molt_ir::function_table::FunctionRowKind::Body
+                    };
+                    (function.name.as_str(), kind)
+                }));
             for (is_extern, tir_func) in &tir_funcs {
                 if *is_extern {
                     crate::llvm_backend::lowering::declare_extern_tir_function(tir_func, &llvm);
@@ -594,7 +603,7 @@ impl SimpleBackend {
                 function,
                 &effective_task_kinds,
                 &effective_task_closure_sizes,
-                &ir_analysis.defined_functions,
+                &ir_analysis.function_table,
                 &effective_closure_functions,
                 &ir_analysis.leaf_functions,
                 &effective_function_arities,

@@ -100,7 +100,7 @@ pub use self::types::FusionStats;
 pub(in crate::tir::passes::generator_fusion) use self::attrs::{
     attr_original_kind, attr_value_int, is_get_iter_op,
 };
-pub(in crate::tir::passes::generator_fusion) use self::attrs::{attr_s_value, attr_task_kind};
+pub(in crate::tir::passes::generator_fusion) use self::attrs::{attr_task_kind, poll_callee};
 pub(in crate::tir::passes::generator_fusion) use self::recognize::{
     collect_fusion_candidates, is_poll_fusable,
 };

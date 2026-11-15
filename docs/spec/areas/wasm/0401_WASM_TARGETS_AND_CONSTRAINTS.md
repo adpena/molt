@@ -84,7 +84,7 @@ their checked-in support probes.
 - All host boundaries are schema-first and versioned.
 - No implicit JS object wrapping or dynamic import behavior.
 - All Molt runtime imports must be enumerated in
-  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` and regenerated with
+  `runtime/runtime_abi.toml` and regenerated with
   `tools/gen_wasm_abi.py`.
 - `externref` and WasmGC references are not an escape hatch around the ABI. They
   are typed lowering/storage facts owned by the selected feature profile.

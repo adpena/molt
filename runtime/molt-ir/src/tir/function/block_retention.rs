@@ -293,6 +293,7 @@ mod tests {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -339,14 +340,20 @@ mod tests {
                     args: vec![],
                 };
             }
-            let before = serialize_tir_function(&func).unwrap();
+            let before = serialize_tir_function(&func, &Default::default()).unwrap();
             assert!(
                 func.retain_blocks(&HashSet::from([func.entry_block]))
                     .is_err()
             );
-            assert_eq!(serialize_tir_function(&func).unwrap(), before);
+            assert_eq!(
+                serialize_tir_function(&func, &Default::default()).unwrap(),
+                before
+            );
             assert!(func.retain_blocks(&HashSet::from([BlockId(1)])).is_err());
-            assert_eq!(serialize_tir_function(&func).unwrap(), before);
+            assert_eq!(
+                serialize_tir_function(&func, &Default::default()).unwrap(),
+                before
+            );
         }
     }
 
@@ -359,12 +366,15 @@ mod tests {
             .unwrap()
             .ops
             .push(labelled_op(OpCode::TryEnd, 99));
-        let before = serialize_tir_function(&func).unwrap();
+        let before = serialize_tir_function(&func, &Default::default()).unwrap();
         let error = func
             .retain_blocks(&HashSet::from([func.entry_block, BlockId(1)]))
             .unwrap_err();
         assert!(error.contains("without a unique target"));
-        assert_eq!(serialize_tir_function(&func).unwrap(), before);
+        assert_eq!(
+            serialize_tir_function(&func, &Default::default()).unwrap(),
+            before
+        );
     }
 
     #[test]
@@ -388,13 +398,16 @@ mod tests {
                 .copied()
                 .filter(|&id| id != removed)
                 .collect();
-            let before = serialize_tir_function(&func).unwrap();
+            let before = serialize_tir_function(&func, &Default::default()).unwrap();
             assert!(
                 func.retain_blocks(&retained)
                     .unwrap_err()
                     .contains("structural root")
             );
-            assert_eq!(serialize_tir_function(&func).unwrap(), before);
+            assert_eq!(
+                serialize_tir_function(&func, &Default::default()).unwrap(),
+                before
+            );
         }
         func.retire_loop_metadata(header);
         assert!(func.loop_roles.is_empty());
@@ -491,13 +504,16 @@ mod tests {
             if structural {
                 func.loop_cond_blocks.insert(func.entry_block, outside);
             }
-            let before = serialize_tir_function(&func).unwrap();
+            let before = serialize_tir_function(&func, &Default::default()).unwrap();
             let error = func
                 .validate_block_retirement(&retired, &HashSet::new(), &rewired, false)
                 .unwrap_err();
             assert!(error.contains("retained block ^3"));
             assert!(error.contains("unrewired edge to retired block ^2"));
-            assert_eq!(serialize_tir_function(&func).unwrap(), before);
+            assert_eq!(
+                serialize_tir_function(&func, &Default::default()).unwrap(),
+                before
+            );
         }
         func.blocks.get_mut(&outside).unwrap().terminator = Terminator::Branch {
             target: header,
@@ -524,7 +540,7 @@ mod tests {
     #[test]
     fn retirement_preflight_requires_honest_entry_and_rewired_target_intent() {
         let func = fixture();
-        let before = serialize_tir_function(&func).unwrap();
+        let before = serialize_tir_function(&func, &Default::default()).unwrap();
         let none = HashSet::new();
         let region = HashSet::from([BlockId(1)]);
         assert!(
@@ -550,6 +566,9 @@ mod tests {
                 .unwrap_err()
                 .contains("missing block")
         );
-        assert_eq!(serialize_tir_function(&func).unwrap(), before);
+        assert_eq!(
+            serialize_tir_function(&func, &Default::default()).unwrap(),
+            before
+        );
     }
 }

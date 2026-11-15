@@ -15,6 +15,7 @@ fn operation(opcode: OpCode, operands: Vec<ValueId>, value: Option<i64>) -> TirO
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

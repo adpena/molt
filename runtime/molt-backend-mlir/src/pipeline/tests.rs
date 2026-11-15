@@ -33,6 +33,7 @@ fn make_sub_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Sub,
         operands: vec![ValueId(0), ValueId(1)],

@@ -58,6 +58,7 @@ impl<'a> SsaContext<'a> {
         let mut constant = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -263,31 +264,15 @@ impl<'a> SsaContext<'a> {
         // and the refined LIR facts.
         if let Some(ref th) = op.type_hint {
             attrs.insert("_type_hint".into(), AttrValue::Str(th.clone()));
-            // Type-refine result values from the frontend's hint.
-            // Currently we only refine to `UserClass` at SSA lift; builtin
-            // scalar refinement is the responsibility of the type-refine pass
-            // and function-owned `value_types`, not legacy transport hints.
-            //
-            // UserClass refinement is the *live* use of
-            // `TirType::UserClass` — every typed-class allocation
-            // (`OBJECT_NEW_BOUND`, dataclass instantiation, etc.)
-            // carries a `type_hint` whose value is the qualified
-            // class name.  Refining DynBox → UserClass(name) lets
-            // downstream passes (escape analysis, devirt, GVN)
-            // reason about class identity without parsing the
-            // attr string at every call site.
-            //
-            // Soundness: `from_type_hint` returns DynBox for any
-            // non-identifier or built-in tag, so we only refine
-            // when the hint is a plain class name.  Joining a
-            // UserClass with DynBox at a phi collapses to DynBox
-            // (covered by the `meet` lattice), so type-erased
-            // exception handler args stay sound.
-            let refined = TirType::from_type_hint(th);
-            if matches!(refined, TirType::UserClass(_)) {
-                for &result in &results {
-                    self.value_types.insert(result, refined.clone());
-                }
+        }
+        // An allocation's result is exactly an instance of the class
+        // statement it names (I6, C1): the only producer of `Class(id)`.
+        if op.kind == crate::OpKind::ObjectNewBound
+            && let Some(symbol) = op.class_definition.as_deref()
+        {
+            let class = TirType::Class(crate::ClassId::of_definition(symbol));
+            for &result in &results {
+                self.value_types.insert(result, class.clone());
             }
         }
         if let Some(source) = op.exception_source {
@@ -366,6 +351,7 @@ impl<'a> SsaContext<'a> {
         let mut tir_op = TirOp {
             origin,
             runtime: ingest_runtime_target(op),
+            callee: op.callee,
             dialect: Dialect::Molt,
             opcode,
             operands,

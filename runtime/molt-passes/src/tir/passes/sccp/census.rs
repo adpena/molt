@@ -8,8 +8,8 @@ use serde::Serialize;
 
 use super::{ConstVal, Lattice, Solver, Use, ValueFacts, decided_edge};
 use crate::tir::blocks::{BlockId, Terminator};
-use crate::tir::call_targets::direct_call_symbol_for_op;
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::call_targets::direct_callee;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -62,11 +62,12 @@ struct ParameterBranch {
 }
 
 #[derive(Debug, Serialize)]
-struct CallSite<'a> {
+struct CallSite {
     block: BlockId,
     op: usize,
     kind: CallKind,
-    candidate: Option<CandidateSymbol<'a>>,
+    /// The callee row of a direct or guarded call (HF-847 slice 1).
+    candidate: Option<molt_ir::FunctionId>,
     /// None for CALL_BIND: its operand is a consumed builder, NOT an argument.
     /// The frontend signature/builder join must resolve binding separately.
     positional: Option<Vec<ArgumentFact>>,
@@ -80,7 +81,7 @@ struct CallCensus<'a> {
     annotations: &'a [TirType],
     undecided_branches: usize,
     parameter_branches: Vec<ParameterBranch>,
-    calls: Vec<CallSite<'a>>,
+    calls: Vec<CallSite>,
 }
 
 fn annotation_nullness(ty: &TirType) -> Option<Lattice> {
@@ -164,7 +165,7 @@ fn call_kind(op: &TirOp) -> Option<CallKind> {
     match op.origin {
         Some(molt_ir::OpKind::CallGuarded) => Some(CallKind::Guarded),
         Some(molt_ir::OpKind::CallBind) => Some(CallKind::Bind),
-        _ => direct_call_symbol_for_op(op).map(|_| CallKind::StaticDirect),
+        _ => direct_callee(op).map(|_| CallKind::StaticDirect),
     }
 }
 
@@ -219,14 +220,10 @@ fn capture<'a>(solver: &Solver<'a>) -> CallCensus<'a> {
         for (index, op) in func.blocks[&block].ops.iter().enumerate() {
             let Some(kind) = call_kind(op) else { continue };
             let candidate = match kind {
-                CallKind::StaticDirect => direct_call_symbol_for_op(op),
-                CallKind::Guarded => match op.attrs.get("s_value") {
-                    Some(AttrValue::Str(name)) if !name.is_empty() => Some(name.as_str()),
-                    _ => None,
-                },
+                CallKind::StaticDirect => direct_callee(op),
+                CallKind::Guarded => op.callee,
                 CallKind::Bind => None,
-            }
-            .map(CandidateSymbol);
+            };
             let positional = match kind {
                 CallKind::Bind => None,
                 CallKind::StaticDirect => Some(&op.operands[..]),

@@ -20,6 +20,7 @@ fn tir_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>, attrs: 
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -218,7 +219,7 @@ fn first_class_calls_use_only_their_canonical_runtime_row() {
     for (symbol, classified) in [("molt_chan_recv", true), ("molt_unclassified_poll", false)] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             format!("first_class_{symbol}"),
             vec![TirType::DynBox],

@@ -570,8 +570,11 @@ pub(crate) fn molt_static_cells_bind_attached_body(
     };
     let names: Box<[&'static [u8]]> = registry.globals_of(id).iter().collect();
     debug_assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
-    let words = ((shifted as u64) << molt_codegen_abi::global_slot::GLOBAL_SLOT_BASE_SHIFT) as usize
-        as *mut u64;
+    let Some(words) = crate::provenance::abi::mut_ptr::<u64>(
+        (shifted as u64) << molt_codegen_abi::global_slot::GLOBAL_SLOT_BASE_SHIFT,
+    ) else {
+        return none;
+    };
     let guard_mask = obj_from_bits(guard_mask_bits).as_int().unwrap_or(-1) as u64;
     unsafe {
         crate::builtins::binding_guards::note_namespace_cell_bindings(dict, guard_mask);

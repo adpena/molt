@@ -45,14 +45,15 @@ pub fn lower_functions_to_tir_module(functions: &[FunctionIR]) -> (TirModule, Ve
         if f.is_extern {
             continue;
         }
-        tir_functions.push(lower_to_tir(f));
+        tir_functions.push((molt_ir::FunctionId::from_index(i), lower_to_tir(f)));
         idx_map.push(i);
     }
     (
-        TirModule {
-            name: "native_module".to_string(),
-            functions: tir_functions,
-        },
+        TirModule::from_document(
+            "native_module",
+            molt_ir::FunctionTable::of(functions),
+            tir_functions,
+        ),
         idx_map,
     )
 }

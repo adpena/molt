@@ -23,6 +23,7 @@ fn simple_value_names_use_entry_param_names() {
             .push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Scf,
                 opcode,
                 operands: vec![],
@@ -91,6 +92,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -173,6 +175,7 @@ fn canonical_name_collision_with_override_is_resolved() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -184,6 +187,7 @@ fn canonical_name_collision_with_override_is_resolved() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -244,6 +248,7 @@ fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -254,6 +259,7 @@ fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckedAdd,
             operands: vec![first, first],
@@ -264,6 +270,7 @@ fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
         TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![first],
@@ -451,6 +458,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
         TirOp {
             origin: Some(molt_ir::OpKind::StoreVar),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![replacement],
@@ -461,6 +469,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -471,6 +480,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::DeleteVar,
             operands: vec![missing, stored],
@@ -481,6 +491,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ModuleCacheSet,
             operands: vec![old, replacement],
@@ -911,6 +922,7 @@ fn type_propagation_types_integer_arithmetic_as_i64() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -921,6 +933,7 @@ fn type_propagation_types_integer_arithmetic_as_i64() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -931,6 +944,7 @@ fn type_propagation_types_integer_arithmetic_as_i64() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![v0, v1],
@@ -989,6 +1003,7 @@ fn type_propagation_types_float_arithmetic_as_f64() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstFloat,
         operands: vec![],
@@ -999,6 +1014,7 @@ fn type_propagation_types_float_arithmetic_as_f64() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstFloat,
         operands: vec![],
@@ -1009,6 +1025,7 @@ fn type_propagation_types_float_arithmetic_as_f64() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![v0, v1],
@@ -1058,6 +1075,7 @@ fn type_propagation_does_not_emit_type_hint_for_bool() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -1068,6 +1086,7 @@ fn type_propagation_does_not_emit_type_hint_for_bool() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -1078,6 +1097,7 @@ fn type_propagation_does_not_emit_type_hint_for_bool() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Eq,
         operands: vec![v0, v1],
@@ -1120,6 +1140,7 @@ fn type_propagation_does_not_emit_scalar_type_hint_for_call_result() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallMethod,
         operands: vec![],

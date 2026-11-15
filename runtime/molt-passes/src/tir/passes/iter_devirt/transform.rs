@@ -20,6 +20,7 @@ pub(super) fn apply_transform(
     let mut len_op = TirOp {
         origin: Some(molt_ir::OpKind::Len),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![c.list_val],
@@ -79,6 +80,7 @@ pub(super) fn apply_transform(
         let cmp_op = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Lt,
             operands: vec![idx_var, len_val],
@@ -112,6 +114,7 @@ pub(super) fn apply_transform(
     let index_op = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![c.list_val, idx_var],
@@ -168,6 +171,7 @@ pub(super) fn apply_transform(
             let add_op = TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![idx_var, one_val],
@@ -203,6 +207,7 @@ pub(super) fn make_const_int(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],

@@ -112,9 +112,9 @@ Or use the existing `tools/wasm_strip_unused.py` (already in the repo) which can
 - Existing analysis: `docs/architecture/wasm-import-analysis.md` (2026-03-06)
 - Existing strip tool: `tools/wasm_strip_unused.py`
 - WASM import registry and host export/fallback data:
-  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
+  `runtime/runtime_abi.toml`
 - WASM split/link export keep policy:
-  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
+  `runtime/runtime_abi.toml`
 - WASM runtime surface planner: `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs`
 - WASM emitted-use import ledger: `runtime/molt-backend-wasm/src/wasm_import_tracking.rs`
 - WASM function-index remapping: `runtime/molt-backend-wasm/src/wasm_binary/code_remap.rs`

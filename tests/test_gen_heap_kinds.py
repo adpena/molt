@@ -801,9 +801,7 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
         ROOT
         / "runtime/molt-backend-wasm/src/wasm/op_loop/core_runtime_ops/allocation_ops.rs"
     ).read_text(encoding="utf-8")
-    wasm_manifest = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml"
-    ).read_text(encoding="utf-8")
+    wasm_manifest = (ROOT / "runtime/runtime_abi.toml").read_text(encoding="utf-8")
 
     assert builders.count("alloc_object_zeroed_unpublished_with_aux(") >= 2
     # HF-198: the runtime body is attached and its C export is generated.

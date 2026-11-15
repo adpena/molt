@@ -253,10 +253,121 @@ impl TirFunction {
 }
 
 /// A module: a collection of TIR functions.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+///
+/// `table` is the function table of the document the module came from,
+/// bodies and extern rows alike; `ids[i]` is the row of `functions[i]`
+/// (HF-847 slice 1). Call edges name callees by those ids.
+#[derive(Debug, Clone)]
 pub struct TirModule {
     pub name: String,
     pub functions: Vec<TirFunction>,
+    pub table: crate::FunctionTable,
+    pub ids: Vec<crate::FunctionId>,
+}
+
+impl TirModule {
+    /// A module whose table is exactly its bodies, in order: `functions[i]`
+    /// is row `i`. A document with extern rows uses [`Self::from_document`].
+    pub fn with_own_table(name: impl Into<String>, functions: Vec<TirFunction>) -> Self {
+        let rows = functions
+            .iter()
+            .map(|function| crate::FunctionIR {
+                name: function.name.clone(),
+                ..crate::FunctionIR::default()
+            })
+            .collect::<Vec<_>>();
+        let ids = (0..functions.len())
+            .map(crate::FunctionId::from_index)
+            .collect();
+        Self {
+            name: name.into(),
+            functions,
+            table: crate::FunctionTable::of(&rows),
+            ids,
+        }
+    }
+
+    /// Decode for hand-built TIR (fixtures, tools): the table is the bodies in
+    /// order plus one extern row per other symbol a function-reference op
+    /// spells, and each such op's `s_value` moves into `callee`, as SimpleIR
+    /// decode does (HF-847 slice 1, D2). Ops of every other kind keep their
+    /// attributes.
+    pub fn decode_spelled(name: impl Into<String>, mut functions: Vec<TirFunction>) -> Self {
+        let mut rows: Vec<crate::FunctionIR> = functions
+            .iter()
+            .map(|function| crate::FunctionIR {
+                name: function.name.clone(),
+                ..crate::FunctionIR::default()
+            })
+            .collect();
+        let mut by_symbol: HashMap<String, crate::FunctionId> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.name.clone(), crate::FunctionId::from_index(index)))
+            .collect();
+        for function in &mut functions {
+            for block in function.blocks.values_mut() {
+                for op in &mut block.ops {
+                    let kind = op.origin.or_else(|| {
+                        super::op_kinds_generated::opcode_canonical_kind_table(op.opcode)
+                    });
+                    if kind.is_none_or(|kind| {
+                        kind.function_reference_role() == crate::FunctionReferenceRole::None
+                    }) || op.callee.is_some()
+                    {
+                        continue;
+                    }
+                    let Some(AttrValue::Str(symbol)) = op.attrs.get("s_value") else {
+                        continue;
+                    };
+                    let next = crate::FunctionId::from_index(rows.len());
+                    let id = *by_symbol.entry(symbol.clone()).or_insert_with(|| {
+                        rows.push(crate::FunctionIR {
+                            name: symbol.clone(),
+                            is_extern: true,
+                            ..crate::FunctionIR::default()
+                        });
+                        next
+                    });
+                    op.attrs.remove("s_value");
+                    op.callee = Some(id);
+                }
+            }
+        }
+        let ids = (0..functions.len())
+            .map(crate::FunctionId::from_index)
+            .collect();
+        Self {
+            name: name.into(),
+            functions,
+            table: crate::FunctionTable::of(&rows),
+            ids,
+        }
+    }
+
+    /// A module over `table` holding the bodies `functions`, each with its row.
+    pub fn from_document(
+        name: impl Into<String>,
+        table: crate::FunctionTable,
+        functions: Vec<(crate::FunctionId, TirFunction)>,
+    ) -> Self {
+        let (ids, functions) = functions.into_iter().unzip();
+        Self {
+            name: name.into(),
+            functions,
+            table,
+            ids,
+        }
+    }
+
+    /// Row -> body index, for the rows that have a body in this module.
+    pub fn body_index(&self) -> Vec<Option<usize>> {
+        let mut index = vec![None; self.table.len()];
+        for (position, id) in self.ids.iter().enumerate() {
+            index[id.index()] = Some(position);
+        }
+        index
+    }
 }
 
 #[cfg(test)]
@@ -328,6 +439,7 @@ mod tests {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -350,6 +462,7 @@ mod tests {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -398,10 +511,7 @@ mod tests {
             TirType::I64,
             crate::FunctionReturnAbi::Value,
         );
-        let module = TirModule {
-            name: "test_module".into(),
-            functions: vec![f1, f2],
-        };
+        let module = TirModule::with_own_table("test_module", vec![f1, f2]);
         assert_eq!(module.name, "test_module");
         assert_eq!(module.functions.len(), 2);
     }

@@ -32,7 +32,7 @@ fn with_typed_runtime_targets(func: &TirFunction) -> TirFunction {
             if op.runtime.is_some() || op.origin == Some(OpKind::CallInternal) {
                 continue;
             }
-            let names_target = crate::tir::call_targets::direct_call_symbol_for_op(op).is_some()
+            let names_target = crate::tir::call_targets::runtime_call_symbol(op).is_some()
                 || matches!(op.origin, Some(OpKind::BuiltinFunc | OpKind::CallAsync));
             if let (true, Some(AttrValue::Str(symbol))) = (names_target, op.attrs.get("s_value")) {
                 op.runtime = RuntimeFn::ALL
@@ -156,8 +156,7 @@ impl ExecutionIrAssertions for str {
 }
 
 fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
-    let backend = LlvmBackend::new(ctx, "test");
-    backend
+    LlvmBackend::new(ctx, "test")
 }
 
 fn test_native_linkage_abi(
@@ -205,6 +204,7 @@ fn const_none_def(result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -238,6 +238,7 @@ fn lowering_error_for_single_op(
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect,
             opcode,
             operands,
@@ -263,6 +264,7 @@ fn const_int_def(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -321,6 +323,7 @@ fn build_i64_add_func() -> (TirFunction, ValueId) {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -366,6 +369,7 @@ fn lower_preserved_kind_ir(
     entry.ops.push(TirOp {
         origin,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,

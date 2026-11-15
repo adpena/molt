@@ -37,7 +37,7 @@ No direct memory access, no object proxies, no dynamic symbol lookup.
 
 ### 2.1 ABI contract and table conventions
 - The canonical ABI definition lives at
-  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` and is the source of truth
+  `runtime/runtime_abi.toml` and is the source of truth
   for WASM import names and host/runtime signatures.
 - WASM outputs export `molt_memory`, `molt_table`, and `molt_call_indirect1`;
   the runtime imports them to drive poll and async control flow.

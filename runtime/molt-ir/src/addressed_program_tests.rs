@@ -51,7 +51,12 @@ fn contracts(functions: &[FunctionIR]) -> Vec<Vec<u8>> {
         .iter()
         .map(|function| {
             let mut bytes = Vec::new();
-            crate::ir::write_function_ir_contract(function, &mut bytes).unwrap();
+            crate::ir::write_function_ir_contract(
+                function,
+                &crate::FunctionTable::default(),
+                &mut bytes,
+            )
+            .unwrap();
             bytes
         })
         .collect()

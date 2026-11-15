@@ -74,7 +74,7 @@ class ImportCategory(str, Enum):
     TABLE = "table"  # __indirect_function_table
 
 
-# Generated from wasm_abi_manifest.toml by tools/gen_wasm_abi.py.
+# Generated from runtime/runtime_abi.toml by tools/gen_wasm_abi.py.
 IMPORT_RULES: list[tuple[str, str, ImportCategory, str]] = [
     (module, name, ImportCategory(category), description)
     for module, name, category, description in _WASM_ABI.WASM_STRIP_IMPORT_RULES

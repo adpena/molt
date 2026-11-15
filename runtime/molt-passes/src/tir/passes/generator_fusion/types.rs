@@ -12,7 +12,7 @@ pub struct FusionStats {
     /// generator was spliced in). Production codegen must back-convert /
     /// re-lower ONLY these functions' (post-fusion) TIR — the module phase folds
     /// this into its `changed_functions` set exactly as it does the inliner's.
-    pub changed_functions: Vec<String>,
+    pub changed_functions: Vec<molt_ir::FunctionId>,
 }
 
 /// A recognized fusion candidate: an `AllocTask(generator)` consumed by a single
@@ -23,8 +23,8 @@ pub(in crate::tir::passes::generator_fusion) struct FusionCandidate {
     pub(in crate::tir::passes::generator_fusion) alloc_idx: usize,
     /// The generator frame value produced by `AllocTask`.
     pub(in crate::tir::passes::generator_fusion) alloc_val: ValueId,
-    /// The `_poll` function name (a module-defined function).
-    pub(in crate::tir::passes::generator_fusion) poll_name: String,
+    /// The `_poll` function (a body in this module).
+    pub(in crate::tir::passes::generator_fusion) poll: molt_ir::FunctionId,
     /// Block holding the `GetIter` (or `iter` Copy) in the caller.
     pub(in crate::tir::passes::generator_fusion) get_iter_block: BlockId,
     /// The iterator value produced by `GetIter`.

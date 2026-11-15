@@ -667,6 +667,7 @@ mod tests {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -1374,6 +1375,7 @@ mod tests {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],

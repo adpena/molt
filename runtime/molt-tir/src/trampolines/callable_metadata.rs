@@ -42,16 +42,21 @@ pub fn merge_callable_facts<T: std::fmt::Debug + PartialEq>(
 impl CallableMetadata {
     pub fn from_functions(functions: &[FunctionIR]) -> Self {
         let mut metadata = Self::default();
+        let table = molt_ir::FunctionTable::of(functions);
         for function in functions.iter().filter(|function| !function.is_extern) {
             for (op_index, op) in function.ops.iter().enumerate() {
                 match op.kind {
                     molt_ir::OpKind::FuncNew | molt_ir::OpKind::FuncNewClosure => {
-                        let name = op.s_value.as_ref().unwrap_or_else(|| {
-                            panic!(
-                                "{} in {} at op {op_index} requires a callable target",
-                                op.kind, function.name
-                            )
-                        });
+                        let name = op
+                            .reference_symbol(&table)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "{} in {} at op {op_index} requires a callable target",
+                                    op.kind, function.name
+                                )
+                            });
+                        let name = &name;
                         let arity = usize::try_from(op.value.unwrap_or(0))
                             .unwrap_or_else(|_| panic!("negative callable arity for {name}"));
                         metadata.escaped_callable_targets.insert(name.clone());

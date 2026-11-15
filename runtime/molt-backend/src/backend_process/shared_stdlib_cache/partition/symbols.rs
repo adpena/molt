@@ -12,6 +12,9 @@ pub(crate) fn prune_and_partition_native_stdlib(
     Vec<molt_backend::FunctionIR>,
     molt_backend::NativeBackendModuleContext,
 ) {
+    // The partition boundary reads a decoded program (HF-847, D2); idempotent.
+    ir.resolve_function_references()
+        .unwrap_or_else(|error| panic!("stdlib partition decode failed: {error}"));
     molt_backend::inject_runtime_exit(ir);
     // Import bedrock: init bodies are reachable only through the registry
     // blob's MODULE_INIT_TABLE relocations, so the registry's init symbols

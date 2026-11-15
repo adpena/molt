@@ -42,6 +42,9 @@ pub struct LlvmBackend<'ctx> {
     /// definitions. Batch workers receive these rows from the whole-program
     /// module context before bodies are partitioned.
     pub function_linkage_abis: BTreeMap<String, NativeFunctionLinkageAbi>,
+    /// The function table of the document being lowered (HF-847 slice 1): a
+    /// typed callee names its linker symbol here.
+    pub function_table: molt_ir::FunctionTable,
     /// Per-function representation facts derived from the shared
     /// `ScalarRepresentationPlan`, keyed by function name. These drive the
     /// LLVM backend's integer-carrier and container dispatch decisions from the
@@ -149,6 +152,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             module,
             builder,
             function_linkage_abis: BTreeMap::new(),
+            function_table: molt_ir::FunctionTable::default(),
             function_repr_facts: BTreeMap::new(),
             runtime_callable_symbols: symbols.runtime_fn_set(),
             runtime_imports: runtime_imports::LlvmRuntimeImports::default(),

@@ -9,7 +9,6 @@ from molt.frontend.lowering.op_kinds_generated import (
 
 from molt.frontend._types import (
     ClassId,
-    DeclaredClass,
     MoltOp,
     MoltValue,
 )
@@ -133,14 +132,20 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            # The allocating constructor bound the class at emission.
+            # The allocating constructor bound the class at emission. Its
+            # result is exactly an instance of the class statement it names
+            # (HF-847 slice 1, D6): the backend's typed `ClassId` comes from
+            # this symbol, never from a spelled class name.
             _onb_md = op.metadata or {}
             _onb_class = _onb_md["class_id"]
             if not isinstance(_onb_class, ClassId):
                 raise TypeError("OBJECT_NEW_BOUND requires its ClassId")
-            _onb_hint = self._wire_type_hint(DeclaredClass(_onb_class))
-            if _onb_hint is not None:
-                _onb_op["type_hint"] = _onb_hint
+            _onb_definition = self._class_layout_definition(_onb_class)
+            if _onb_definition is None:
+                raise TypeError(
+                    "OBJECT_NEW_BOUND requires a class statement that stamps its identity"
+                )
+            _onb_op["class_definition"] = _onb_definition
             _onb_size = _onb_md.get("class_size_bytes")
             if isinstance(_onb_size, int) and _onb_size > 0:
                 _onb_op["value"] = _onb_size

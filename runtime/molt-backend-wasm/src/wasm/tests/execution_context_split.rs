@@ -691,10 +691,11 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         // Each scenario owns a real module entry. Merely placing sibling owners
         // in the baseline module does not root them: the production pipeline
         // correctly removes those unreferenced functions and all their chunks.
-        let ir = SimpleIR {
+        let mut ir = SimpleIR {
             functions,
             profile: None,
         };
+        ir.resolve_function_references().unwrap();
         crate::validate_simple_ir(&ir).unwrap();
         let wasm = WasmBackend::with_options(WasmCompileOptions {
             native_eh_enabled: false,
@@ -1238,10 +1239,11 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         ],
     );
     throwing_callee.execution_context = ExecutionContextPolicy::Inherited;
-    let unwind_ir = SimpleIR {
+    let mut unwind_ir = SimpleIR {
         functions: vec![unwind_owner, throwing_callee],
         profile: None,
     };
+    unwind_ir.resolve_function_references().unwrap();
     crate::validate_simple_ir(&unwind_ir).unwrap();
     let trampolines = crate::wasm::trampoline_analysis::analyze_wasm_trampolines(&unwind_ir);
     let unwind = WasmBackend::with_options(WasmCompileOptions {
