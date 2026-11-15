@@ -2282,16 +2282,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_DEBUG_DEAD_OP_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/dead_ops.rs",
-      "summary": "Traces the pure operations the TIR dead-op pass removes to stderr while the variable is present with any value; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_DEBUG_DECREF_ZERO",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
@@ -3495,7 +3485,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DISABLE_DEAD_OP_ELIM",
       "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/dead_ops.rs",
+      "owner": "runtime/molt-passes/src/tir/drop_phase.rs",
       "summary": "Skips dead-op elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
     },
