@@ -55,58 +55,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::And | OpCode::Or => self.emit_boolean_selection(op),
             OpCode::Bool => {
                 let result_id = op.results[0];
-                let operand_id = op.operands[0];
-                let operand = self.resolve(operand_id);
-                let operand_ty = self.repr_ty(operand_id);
-
-                let bool_val = match operand_ty {
-                    TirType::Bool => operand.into_int_value(),
-                    TirType::I64 => self
-                        .backend
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::NE,
-                            operand.into_int_value(),
-                            self.backend.context.i64_type().const_zero(),
-                            "bool_i64",
-                        )
-                        .unwrap(),
-                    TirType::F64 => self
-                        .backend
-                        .builder
-                        // `bool(nan)` is True: unordered-or-unequal to zero.
-                        .build_float_compare(
-                            inkwell::FloatPredicate::UNE,
-                            operand.into_float_value(),
-                            self.backend.context.f64_type().const_float(0.0),
-                            "bool_f64",
-                        )
-                        .unwrap(),
-                    _ => {
-                        let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
-                        let truthy = self
-                            .backend
-                            .builder
-                            .build_execution_call(
-                                truthy_fn,
-                                &[self.ensure_i64(operand).into()],
-                                "truthy_bool",
-                            )
-                            .unwrap()
-                            .try_as_basic_value()
-                            .unwrap_basic()
-                            .into_int_value();
-                        self.backend
-                            .builder
-                            .build_int_compare(
-                                inkwell::IntPredicate::NE,
-                                truthy,
-                                self.backend.context.i64_type().const_zero(),
-                                "bool_dynbox",
-                            )
-                            .unwrap()
-                    }
-                };
+                let bool_val = self.truth_bit(op.operands[0]);
                 self.values.set_value(result_id, bool_val.into());
                 self.values.set_repr(
                     result_id,

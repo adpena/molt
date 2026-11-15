@@ -3,7 +3,6 @@ use crate::tir::target_info::TargetInfo;
 use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::BTreeSet;
 
-
 fn make_op(kind: molt_ir::OpKind) -> OpIR {
     OpIR {
         kind,

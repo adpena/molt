@@ -1060,44 +1060,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 else_block,
                 else_args,
             } => {
-                let cond_val = self.resolve(*cond);
-                let cond_ty = self.repr_ty(*cond);
-
-                // Convert condition to i1.
-                let cond_i1 = match &cond_ty {
-                    TirType::Bool => cond_val.into_int_value(),
-                    TirType::I64 => self
-                        .backend
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::NE,
-                            cond_val.into_int_value(),
-                            self.backend.context.i64_type().const_int(0, false),
-                            "cond_i1",
-                        )
-                        .unwrap(),
-                    _ => {
-                        // DynBox: call molt_is_truthy
-                        let cond_i64 = self.ensure_i64(cond_val);
-                        let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
-                        let result = self
-                            .backend
-                            .builder
-                            .build_execution_call(truthy_fn, &[cond_i64.into()], "truthy")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .unwrap_basic();
-                        self.backend
-                            .builder
-                            .build_int_compare(
-                                inkwell::IntPredicate::NE,
-                                result.into_int_value(),
-                                self.backend.context.i64_type().const_int(0, false),
-                                "cond_i1",
-                            )
-                            .unwrap()
-                    }
-                };
+                let cond_i1 = self.truth_bit(*cond);
 
                 let then_bb = self.block_map[then_block];
                 let else_bb = self.block_map[else_block];
@@ -1745,6 +1708,63 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// it is held raw, `DynBox` when it is a boxed word. It names a
     /// representation for lowering helpers, never a proven Python type; that
     /// is `TirFunction::value_types`.
+    /// The truth of `operand` as an i1: one spelling for a `Bool` op and a
+    /// conditional branch. A raw bool, int or float is tested inline; a boxed
+    /// word reaches here only where the late lowering stage could not expand
+    /// it (its shared truthiness expansion tests bool and int words inline).
+    pub(super) fn truth_bit(&mut self, operand_id: ValueId) -> inkwell::values::IntValue<'ctx> {
+        let operand = self.resolve(operand_id);
+        let operand_ty = self.repr_ty(operand_id);
+        match operand_ty {
+            TirType::Bool => operand.into_int_value(),
+            TirType::I64 => self
+                .backend
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    operand.into_int_value(),
+                    self.backend.context.i64_type().const_zero(),
+                    "bool_i64",
+                )
+                .unwrap(),
+            TirType::F64 => self
+                .backend
+                .builder
+                // `bool(nan)` is True: unordered-or-unequal to zero.
+                .build_float_compare(
+                    inkwell::FloatPredicate::UNE,
+                    operand.into_float_value(),
+                    self.backend.context.f64_type().const_float(0.0),
+                    "bool_f64",
+                )
+                .unwrap(),
+            _ => {
+                let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
+                let truthy = self
+                    .backend
+                    .builder
+                    .build_execution_call(
+                        truthy_fn,
+                        &[self.ensure_i64(operand).into()],
+                        "truthy_bool",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value();
+                self.backend
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        truthy,
+                        self.backend.context.i64_type().const_zero(),
+                        "bool_dynbox",
+                    )
+                    .unwrap()
+            }
+        }
+    }
+
     pub(super) fn repr_ty(&self, id: ValueId) -> TirType {
         self.values.repr(id).map_or(
             TirType::DynBox,

@@ -340,9 +340,11 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    condition through `molt_is_truthy`, which returned false whenever any exception was pending,
    so the handler saw `True` as false while its own StopAsyncIteration was still pending and
    never cleared it. Cranelift tests the bool tag inline and never called it. The runtime now
-   reports only an exception its own test raises (`async_for_handler_truthiness`). The two
-   backends still spell truthiness twice; one `molt-codegen-abi` truthiness generator for both
-   is the follow-up.
+   reports only an exception its own test raises (`async_for_handler_truthiness`). A `Bool` op and a conditional branch now share one LLVM truth test
+   (`truth_bit`). Routing boxed branch conditions through the C3 truthiness expansion would
+   need the branch's truth test modeled as an exception source: a raising `__bool__` in a
+   branch on a boxed condition is not checked today (inserting `Bool` ops broke
+   exception-region verification in `os.path.join`).
    Second half done (2026-11-15): the lean link. `tools/wasm_link.py --standard-object` admits
    the inputs as before and hands the link to `tools/wasm_object_link.py`: one wasm-ld command
    (the app object, the whole stdlib archive, the relocatable runtime member; exports are the host
