@@ -285,7 +285,7 @@ debug = 0
 # benchmarks by about 0.6%.
 [profile.release-output]
 inherits = "release"
-opt-level = 3
+# opt-level 3 comes from `release`.
 lto = "fat"
 codegen-units = 1
 debug = 0
@@ -338,8 +338,7 @@ opt-level = "z"
 # Measurements and tradeoffs: docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md.
 [profile.wasm-release]
 inherits = "release-size"
-lto = "fat"
-codegen-units = 1
+# Fat LTO in one codegen unit comes from release-output through release-size.
 
 [profile.dev-release]
 inherits = "release"
