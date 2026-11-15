@@ -2164,6 +2164,24 @@ def _owned_by(path: str, table: Mapping[str, object]) -> str | None:
     return None
 
 
+#: The one slow-case deselection the plan's cells use (`-m "not slow"`).
+SLOW_DESELECTION = ("-m", "not slow")
+
+
+def postsubmit_select(select: tuple[str, ...]) -> tuple[str, ...]:
+    """An owner's selector with its slow-case deselection removed.
+
+    Presubmit runs no slow case; postsubmit owns them all and reverts on a new
+    failure (docs/design/landing_queue.md). A cell's `-m "not slow"` keeps its
+    CI tier fast, so postsubmit drops exactly that pair and keeps any other
+    selection.
+    """
+    for index in range(len(select) - 1):
+        if select[index : index + 2] == SLOW_DESELECTION:
+            return select[:index] + select[index + 2 :]
+    return select
+
+
 def graph_selection(
     graph: DependencyGraph,
     changed: Iterable[str],
@@ -2258,7 +2276,7 @@ def graph_selection(
                 (test,) if owner != test else envelope.targets,
                 envelope.toolchains,
                 envelope.owners,
-                () if presubmit else envelope.select,
+                () if presubmit else postsubmit_select(envelope.select),
                 envelope.cells,
                 skip_slow=presubmit,
             )

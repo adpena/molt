@@ -7920,46 +7920,6 @@ _REGISTRY_JSON = r"""{
       ]
     },
     {
-      "audience": "developer",
-      "default": "300",
-      "kind": "float",
-      "name": "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Wall-clock limit in seconds for the runtime wasm cargo build that tools/bench_wasm.py runs; the value must be a positive number or the tool fails; default 300.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_RUNTIME_DIR",
-      "output_neutral": false,
-      "owner": "src/molt/cli/build_output_layout.py",
-      "summary": "Directory that holds the wasm runtime artifacts (molt_runtime.wasm and molt_runtime_reloc.wasm) for source-checkout builds and the wasm tools; when unset Molt uses <MOLT_EXT_ROOT>/wasm (a relative MOLT_EXT_ROOT is anchored at the project root), else molt-runtime-wasm inside the project's Cargo target beside the native runtime libraries, never the working directory or the source tree; an installed Molt rejects the variable because it ships its own runtime cells.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Set to 1 to make tools/bench_wasm.py build the runtime wasm in the session-scoped cargo target directory derived from the repository root instead of the shared cargo target root; any other value uses the shared root.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_RUNTIME_GPU_PRIMITIVES",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Set to 1, true, yes, or on (case-insensitive) to add the molt_gpu_primitives cargo feature to the runtime wasm build in tools/bench_wasm.py; any other value leaves the feature off.",
-      "values": []
-    },
-    {
       "audience": "internal",
       "default": "",
       "kind": "int",
@@ -7968,26 +7928,6 @@ _REGISTRY_JSON = r"""{
       "owner": "src/molt/cli/wasm_codegen_layout.py",
       "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime: a u64 bit mask of the generated poll-table slots whose poll functions that runtime defines (a runtime without stdlib_net lacks the networking poll functions); the backend fills an absent slot with the sentinel and does not import it, refuses a mask with bits outside the generated slots, and unset means every generated slot.",
       "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "auto",
-      "kind": "enum",
-      "name": "MOLT_WASM_RUNTIME_REBUILD",
-      "output_neutral": false,
-      "owner": "tools/bench_wasm.py",
-      "summary": "Runtime wasm rebuild policy for tools/bench_wasm.py: always (or 1, true, yes) rebuilds every run, never (or 0, false, no) never rebuilds and fails when the runtime is missing or invalid, and any other value means auto, which rebuilds when the runtime is missing, invalid, or older than its sources.",
-      "values": [
-        "auto",
-        "always",
-        "1",
-        "true",
-        "yes",
-        "never",
-        "0",
-        "false",
-        "no"
-      ]
     },
     {
       "audience": "internal",

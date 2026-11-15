@@ -17,9 +17,6 @@ from molt.cli.models import (
     _BuildDiagnosticsContext,
     _FrontendTimingRecorderConfig,
 )
-from molt.cli.runtime_wasm_cache_diagnostics import (
-    _runtime_wasm_cache_diagnostics_snapshot,
-)
 from molt.cli.runtime_wasm_build_timings import _runtime_wasm_build_timings_snapshot
 
 
@@ -207,7 +204,6 @@ def _emit_build_diagnostics(
     frontend_parallel = diagnostics.get("frontend_parallel", {})
     frontend_modules_top = diagnostics.get("frontend_module_timings_top", [])
     allocations = diagnostics.get("allocations", {})
-    runtime_wasm_cache = diagnostics.get("runtime_wasm_cache", {})
     runtime_wasm_build = diagnostics.get("runtime_wasm_build", {})
     print("Build diagnostics:", file=sys.stderr)
     compiler = diagnostics.get("compiler")
@@ -259,44 +255,6 @@ def _emit_build_diagnostics(
                     f"{idx}: {file_name}:{line_no} size_bytes={size_bytes} count={count}",
                     file=sys.stderr,
                 )
-    if isinstance(runtime_wasm_cache, dict):
-        admit_attempts = runtime_wasm_cache.get("admit_attempts")
-        admit_hits = runtime_wasm_cache.get("admit_hits")
-        admit_misses = runtime_wasm_cache.get("admit_misses")
-        admit_failures = runtime_wasm_cache.get("admit_failures")
-        admit_hit_rate = runtime_wasm_cache.get("admit_hit_rate")
-        publish_attempts = runtime_wasm_cache.get("publish_attempts")
-        publish_successes = runtime_wasm_cache.get("publish_successes")
-        publish_failures = runtime_wasm_cache.get("publish_failures")
-        publish_success_rate = runtime_wasm_cache.get("publish_success_rate")
-        if (
-            isinstance(admit_attempts, int)
-            and isinstance(admit_hits, int)
-            and isinstance(admit_misses, int)
-            and isinstance(admit_failures, int)
-            and isinstance(admit_hit_rate, (int, float))
-            and isinstance(publish_attempts, int)
-            and isinstance(publish_successes, int)
-            and isinstance(publish_failures, int)
-            and isinstance(publish_success_rate, (int, float))
-        ):
-            print(
-                "- runtime_wasm_cache: "
-                f"admit_hits={admit_hits}/{admit_attempts} "
-                f"admit_misses={admit_misses} "
-                f"admit_failures={admit_failures} "
-                f"admit_hit_rate={float(admit_hit_rate):.6f} "
-                f"publish_successes={publish_successes}/{publish_attempts} "
-                f"publish_failures={publish_failures} "
-                f"publish_success_rate={float(publish_success_rate):.6f}",
-                file=sys.stderr,
-            )
-        last_publish_failure = runtime_wasm_cache.get("last_publish_failure")
-        if isinstance(last_publish_failure, str) and last_publish_failure:
-            print(
-                f"- runtime_wasm_cache.last_publish_failure: {last_publish_failure}",
-                file=sys.stderr,
-            )
     if isinstance(runtime_wasm_build, dict) and runtime_wasm_build:
         cargo_builds = runtime_wasm_build.get("cargo_compile_builds")
         cargo_reuses = runtime_wasm_build.get("cargo_compile_reuses")
@@ -635,9 +593,6 @@ def _build_build_diagnostics_payload(
     lowering_cache_summary = _frontend_lowering_cache_summary(frontend_parallel_payload)
     if lowering_cache_summary is not None:
         payload["frontend_lowering_cache"] = lowering_cache_summary
-    runtime_wasm_cache = _runtime_wasm_cache_diagnostics_snapshot()
-    if runtime_wasm_cache is not None:
-        payload["runtime_wasm_cache"] = runtime_wasm_cache
     runtime_wasm_build = _runtime_wasm_build_timings_snapshot()
     if runtime_wasm_build is not None:
         payload["runtime_wasm_build"] = runtime_wasm_build

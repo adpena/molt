@@ -140,7 +140,7 @@ uses `tmp/gs/v2/`, suite leases use `suite-leases/v3/`, digest rows use
 `file-digests/v3.sqlite`, probes use `toolchain-facts/v3.json`, source hashes use
 `source_hash_cache/v3/`, build records use `build_records/v12/`, and backend sync
 receipts use `artifact_sync/v5/` and immutable sidecars use `.sync.v5.json`.
-Preflight receipts use `logs/runtime_wasm_final_preflight/v5/`. Cargo output declarations and transcript
+Preflight receipts use `logs/runtime_wasm_final_preflight/v6/`. Cargo output declarations and transcript
 identities are published in `execution-v6/` request/result pairs; Cargo payload
 placement uses `molt-proof-output/v2/`; trunk fixture ownership uses
 `<selected role root>/v2/<nonce>/`. Publication journals have a `v3-` name

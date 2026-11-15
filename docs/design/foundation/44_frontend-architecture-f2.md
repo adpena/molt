@@ -961,9 +961,9 @@ validation; the shared input authority does not import that aggregate.
 
 Runtime-source traversal is imported only inside the runtime-fingerprint stage.
 Debug command helpers resolve through the existing explicit CLI command registry.
-Runtime WASM cache observations live in `runtime_wasm_cache_diagnostics.py`;
-frontend diagnostics read that leaf while generation publication/hydration records
-into it. Reading counters therefore does not import runtime identity or Cargo.
+Runtime WASM product store hits and misses are phases of
+`runtime_wasm_build_timings.py`; frontend diagnostics read that leaf, so reading
+them does not import runtime identity or Cargo.
 Neither change suppresses source analysis or hides an admission dependency.
 `compiler_metadata.py` owns the loaded Python source layout: checkout `src`
 or the installed package parent. Both broad and semantic Python fingerprints and

@@ -12,7 +12,7 @@ import secrets
 import sys
 import threading
 import time
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -665,6 +665,15 @@ def darwin_available_bytes(page_size: int, pages: Mapping[str, int]) -> int | No
 # checks (2026-11-13: a 96-file consumer gate held every landing for 19
 # minutes behind the one shared slot; 2026-11-14: lane try runs waited 17 and
 # 39 minutes for batches and for each other).
+#
+# Development work shares its class by capacity, not by count. A job that
+# declares its demand (``HostWorkDemand``: pytest workers and the memory of
+# each) takes a grant of that many of the host's CPUs and that much memory,
+# and runs beside other granted jobs while the grants' sum fits; pytest's -n
+# then follows the grant. A job that declares none needs the whole class, as
+# before. On 2026-11-15 a 13-file consumer gate held the one development slot
+# for 69 minutes, and 110- and 191-file gates waited 30-36 minutes behind it
+# and behind a 942-file gate.
 HOST_WORK_DIRNAME = "host-work"
 
 
@@ -703,10 +712,71 @@ _HELD_SLOTS: set[str] = set()
 
 
 @dataclass(frozen=True, slots=True)
+class HostWorkDemand:
+    """What one development job asks of the host: pytest workers, each with
+    its declared peak memory (``--molt-worker-memory-gb``)."""
+
+    workers: int
+    bytes_per_worker: int
+
+    def __post_init__(self) -> None:
+        if self.workers < 1 or self.bytes_per_worker < 1:
+            raise ValueError("a host-work demand needs a worker and a byte")
+
+
+@dataclass(frozen=True, slots=True)
+class HostWorkGrant:
+    """The share of the development class one job holds."""
+
+    workers: int
+    memory_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class HostWorkAdmission:
-    """What admission cost: the seconds spent waiting for the slot."""
+    """What admission cost (the seconds spent waiting) and, for a job that
+    declared its demand, the share it was granted."""
 
     waited_seconds: float
+    grant: HostWorkGrant | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HostWorkBudget:
+    """What the development class may grant at once: this process's CPUs, and
+    physical memory less the reserve (``headroom_bytes``); None when the host
+    reports no memory size, so memory never refuses."""
+
+    cpus: int
+    memory_bytes: int | None
+
+    @classmethod
+    def observe(cls) -> HostWorkBudget:
+        capacity = memory_capacity()
+        total, _available = capacity.bounded_bytes
+        return cls(
+            cpu_count(),
+            None if total is None else max(0, total - headroom_bytes(capacity)),
+        )
+
+    def grant_for(self, demand: HostWorkDemand) -> HostWorkGrant:
+        """The share ``demand`` asks for, capped at the whole class."""
+        workers = min(demand.workers, self.cpus)
+        if self.memory_bytes is not None:
+            workers = max(1, min(workers, self.memory_bytes // demand.bytes_per_worker))
+        return HostWorkGrant(workers, workers * demand.bytes_per_worker)
+
+    def fits(self, grant: HostWorkGrant, held: Sequence[HostWorkGrant]) -> bool:
+        """Whether ``grant`` fits beside the live ``held`` grants; a job
+        alone is always admitted, even when its share exceeds the class."""
+        if not held:
+            return True
+        if sum(item.workers for item in held) + grant.workers > self.cpus:
+            return False
+        return self.memory_bytes is None or (
+            sum(item.memory_bytes for item in held) + grant.memory_bytes
+            <= self.memory_bytes
+        )
 
 
 def _try_exclusive(handle: BinaryIO) -> bool:
@@ -805,6 +875,129 @@ def _first_in_line(queue: Path, ticket: Path) -> bool:
     return True
 
 
+def _grants_dir(lock: Path) -> Path:
+    return lock.with_suffix(".grants")
+
+
+def _live_grants(lock: Path) -> list[tuple[str, HostWorkGrant]]:
+    """The grants live holders hold, by label.
+
+    A holder keeps its grant file locked for its body; the operating system
+    drops the lock when the holder dies, so the first reader to find a grant
+    unlocked removes it, as an abandoned ticket is removed.
+    """
+    import json
+
+    live: list[tuple[str, HostWorkGrant]] = []
+    directory = _grants_dir(lock)
+    for path in sorted(directory.glob("*.grant")) if directory.is_dir() else ():
+        try:
+            probe = open(path, "a+b")  # noqa: SIM115 - closed below
+        except FileNotFoundError:
+            continue
+        try:
+            if _try_exclusive(probe):
+                probe.close()
+                path.unlink(missing_ok=True)
+                path.with_suffix(".json").unlink(missing_ok=True)
+                continue
+        finally:
+            probe.close()
+        # The record sits beside the locked file: Windows locks are mandatory,
+        # so a holder's locked byte cannot also carry what readers read.
+        try:
+            record = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue  # its holder released it after the probe
+        live.append(
+            (
+                str(record["label"]),
+                HostWorkGrant(int(record["workers"]), int(record["memory_bytes"])),
+            )
+        )
+    return live
+
+
+def _publish_grant(
+    lock: Path, label: str, grant: HostWorkGrant
+) -> tuple[Path, BinaryIO]:
+    """Hold a grant file locked for the body. Its record is published first,
+    and the grant appears under its final name only once locked, so a reader
+    never counts a grant without its record nor removes a newborn one."""
+    import json
+
+    directory = _grants_dir(lock)
+    directory.mkdir(parents=True, exist_ok=True)
+    name = f"{time.time_ns():020d}-{os.getpid()}-{secrets.token_hex(4)}"
+    record = {
+        "label": f"{label} (pid {os.getpid()}, since {time.strftime('%H:%M:%S')})",
+        "workers": grant.workers,
+        "memory_bytes": grant.memory_bytes,
+    }
+    from molt.file_publication import atomic_write_bytes
+
+    atomic_write_bytes(directory / f"{name}.json", json.dumps(record).encode("utf-8"))
+    path = directory / f"{name}.grant"
+    if os.name == "nt":
+        handle = open(path, "a+b")  # noqa: SIM115 - held for the body
+        while not _try_exclusive(handle):
+            time.sleep(0.01)
+        return path, handle
+    staging = directory / f"{name}.joining"
+    handle = open(staging, "a+b")  # noqa: SIM115 - held for the body
+    if not _try_exclusive(handle):
+        handle.close()
+        raise OSError(f"host-work grant {staging} is locked by another process")
+    os.replace(staging, path)
+    return path, handle
+
+
+def _acquire_share(
+    lock: Path,
+    label: str,
+    grant: HostWorkGrant,
+    budget: HostWorkBudget,
+    say: Callable[[str], None],
+    clock: Callable[[], float],
+) -> tuple[Path, BinaryIO]:
+    """Block until ``grant`` fits beside the live grants; hold it.
+
+    Waiters keep arrival order (the ticket queue): the first in line takes the
+    class lock for an instant, reads the live grants and publishes its own
+    when it fits, so two admissions never read the same free capacity. A job
+    that holds the class lock for its body (no declared demand) keeps every
+    other admission out, as the one slot did.
+    """
+    queue = lock.with_suffix(".queue")
+    ticket, ticket_handle = _take_ticket(queue)
+    try:
+        started = reported = clock()
+        first = True
+        while True:
+            if _first_in_line(queue, ticket):
+                handle = open(lock, "a+b")  # noqa: SIM115 - closed below
+                try:
+                    if _try_exclusive(handle):
+                        held = [item for _label, item in _live_grants(lock)]
+                        if budget.fits(grant, held):
+                            return _publish_grant(lock, label, grant)
+                finally:
+                    handle.close()
+            now = clock()
+            if first or now - reported >= _REPORT_SECONDS:
+                holders = [name for name, _item in _live_grants(lock)] or [
+                    _holder(lock)
+                ]
+                say(
+                    f"host-work: {label} ({grant.workers} workers) waits for "
+                    f"{', '.join(holders)} ({now - started:.0f} s)"
+                )
+                reported, first = now, False
+            time.sleep(_POLL_SECONDS)
+    finally:
+        _drop_ticket(ticket, ticket_handle)
+
+
 def _acquire(
     lock: Path, label: str, say: Callable[[str], None], clock: Callable[[], float]
 ) -> BinaryIO:
@@ -858,6 +1051,8 @@ def host_work_slot(
     work: HostWorkClass,
     say: Callable[[str], None],
     clock: Callable[[], float] = time.monotonic,
+    demand: HostWorkDemand | None = None,
+    budget: HostWorkBudget | None = None,
 ) -> Generator[HostWorkAdmission]:
     """Hold this host's heavy-work slot of the job's class for the body.
 
@@ -872,6 +1067,11 @@ def host_work_slot(
     ``held_slot_environment()`` carries ``MOLT_HOST_WORK_SLOT_HELD`` naming
     this slot, so its request is admitted at once too. Without that rule a
     landing's tests that run a consumer gate would wait for their own landing.
+
+    Development work with a ``demand`` holds a share instead of the whole
+    slot (``HostWorkBudget.fits``); the admission names the grant, and the
+    job sizes its workers to it. ``budget`` defaults to this host's. Work
+    without one waits until no share is live and holds the class alone.
     """
     state_dir.mkdir(parents=True, exist_ok=True)
     slot = str(state_dir.resolve())
@@ -883,14 +1083,29 @@ def host_work_slot(
     landing_lock = state_dir / _LANDING_LOCK
     started = clock()
     held: list[tuple[Path, BinaryIO]] = []
+    share: tuple[Path, BinaryIO] | None = None
+    grant: HostWorkGrant | None = None
     try:
         if integration:
             held.append((landing_lock, _acquire(landing_lock, label, say, clock)))
-        held.append((heavy, _acquire(heavy, label, say, clock)))
+        if integration or demand is None:
+            held.append((heavy, _acquire(heavy, label, say, clock)))
+            # The whole class: no share may stay live beside it.
+            while not integration and _live_grants(heavy):
+                time.sleep(_POLL_SECONDS)
+        else:
+            budget = budget or HostWorkBudget.observe()
+            grant = budget.grant_for(demand)
+            share = _acquire_share(heavy, label, grant, budget, say, clock)
         _HELD_SLOTS.add(slot)
-        yield HostWorkAdmission(clock() - started)
+        yield HostWorkAdmission(clock() - started, grant)
     finally:
         _HELD_SLOTS.discard(slot)
+        if share is not None:
+            path, handle = share
+            handle.close()
+            path.unlink(missing_ok=True)
+            path.with_suffix(".json").unlink(missing_ok=True)
         for lock, handle in reversed(held):
             _release(lock, handle)
 

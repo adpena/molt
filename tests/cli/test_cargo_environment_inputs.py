@@ -19,7 +19,7 @@ def test_observed_inputs_retain_absence_empty_and_secret_digests(rule):
     )
     payload = record.to_dict()
     assert payload == {
-        "schema": "molt.cargo-environment-inputs.v1",
+        "schema": "molt.cargo-environment-inputs.v2",
         "name_rule": rule.value,
         "local_unit_count": 3,
         "variables": [
@@ -165,3 +165,39 @@ def test_malformed_records_never_become_admission(mutation):
         payload["variables"][0]["name"] = ""
     with pytest.raises(ValueError):
         CargoEnvironmentInputs.from_dict(payload)
+
+
+def test_owned_remap_locations_do_not_split_observations() -> None:
+    """Two checkouts of one commit observe one Cargo environment (HF-473).
+
+    Molt's own remaps map each checkout and build directory to fixed logical
+    destinations; their physical sources differ per checkout and no output
+    carries them. Any other flag, including a user remap, stays exact.
+    """
+
+    def observe(flags: list[str]) -> CargoEnvironmentInputs:
+        environment = ProcessEnvironment(
+            {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)}
+        )
+        return CargoEnvironmentInputs.capture(
+            environment, ["CARGO_ENCODED_RUSTFLAGS"], local_unit_count=1
+        )
+
+    def owned(checkout: str) -> list[str]:
+        return [
+            "-Copt-level=3",
+            f"--remap-path-prefix={checkout}=/molt/source",
+            f"--remap-path-prefix=/targets/{checkout.rsplit('/', 1)[-1]}=/molt/build",
+        ]
+
+    first = observe(owned("/work/slot-a"))
+    assert first == observe(owned("/elsewhere/slot-b"))
+    first.verify(
+        ProcessEnvironment(
+            {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(owned("/elsewhere/slot-b"))}
+        )
+    )
+    assert first != observe([*owned("/work/slot-a"), "-Ctarget-cpu=native"])
+    assert observe(["--remap-path-prefix=/work/a=/src"]) != observe(
+        ["--remap-path-prefix=/work/b=/src"]
+    )

@@ -373,25 +373,48 @@ def _pytest_report_command(
     log_dir: Path,
 ) -> str | tuple[str, ...]:
     """JUnit is pytest's own test-level failure evidence, kept with the gate's
-    other logs in ``log_dir``."""
+    other logs in ``log_dir``: postsubmit names failing tests from it, and
+    either mode reruns a failed test alone by its node ID
+    (``_run_heavy_gates``). Postsubmit also runs the flaky-marked tests."""
+    if not gate_runs_pytest(gate, repo=runtime.repo):
+        return command
     match runtime.mode:
         case LandingMode.PRESUBMIT:
-            return command
+            extra: tuple[str, ...] = ()
         case LandingMode.POSTSUBMIT:
-            if not gate_runs_pytest(gate, repo=runtime.repo):
-                return command
-            import shlex
-
-            argv = tuple(shlex.split(command)) if isinstance(command, str) else command
-            return (
-                *argv,
-                "--run-flaky",
-                "-o",
-                "junit_family=xunit1",
-                "--junitxml=" + str(log_dir / f"gate-{ordinal:03d}.junit.xml"),
-            )
+            extra = ("--run-flaky",)
         case _:
             assert_never(runtime.mode)
+    import shlex
+
+    argv = tuple(shlex.split(command)) if isinstance(command, str) else command
+    return _with_pytest_options(
+        argv,
+        *extra,
+        "-o",
+        "junit_family=xunit1",
+        "--junitxml=" + str(junit_path(log_dir, ordinal)),
+        repo=runtime.repo,
+    )
+
+
+def junit_path(log_dir: Path, ordinal: int) -> Path:
+    return log_dir / f"gate-{ordinal:03d}.junit.xml"
+
+
+def _with_pytest_options(
+    argv: Sequence[str], *options: str, repo: Path
+) -> tuple[str, ...]:
+    """``argv`` with pytest options added before any ``--``, after which every
+    word is a target."""
+    from tools.proof_command_argv import pytest_arguments
+
+    arguments = pytest_arguments(argv, root=repo)
+    argv = tuple(argv)
+    if arguments is None or "--" not in arguments:
+        return (*argv, *options)
+    boundary = len(argv) - len(arguments) + arguments.index("--")
+    return (*argv[:boundary], *options, *argv[boundary:])
 
 
 def _check_cancellation(runtime: GateRuntime) -> None:
@@ -443,12 +466,14 @@ def gate_failure(
         if record and "stderr_path" in record
         else ""
     )
-    return GateFailure(
+    failure = GateFailure(
         f"gate failed (exit {rc}) after {elapsed:.1f} s: {shown}\n"
         + kept
         + gate_time_summary(gate_seconds)
         + "\n    Integration halts before push; fix the gate and re-run."
     )
+    failure.returncode = rc
+    return failure
 
 
 def concurrent_gate_limit() -> int:
@@ -664,66 +689,329 @@ def _run_heavy_gates(
     gate_seconds: list[tuple[float, str]],
     host_limit: Callable[[], int],
 ) -> None:
-    """Run the heavy block; on a gate failure or a memory stop, rerun the
-    failed gates alone once, then the gates the stop cancelled.
+    """Run the heavy block; on a failure, retry what failed, then run the
+    gates the stop cancelled, until every gate passed or one fails for good.
 
-    A gate that passes alone failed on the load beside it or on a flake, not on
-    the candidate (Chromium's retry rule; Meta's probabilistic flakiness score);
-    a second failure is the candidate's and raises at once. Custody, closure,
-    cancellation and runner faults stop at once, as before: a retry must never
-    hide them, so a gate failure retries only with a clean closure.
+    A test that passes alone failed on the load beside it or on a flake, not
+    on the candidate (Chromium's retry rule; Bazel's flaky-test attempts); a
+    second failure is the candidate's and raises at once. A failed pytest gate
+    whose JUnit names its failed tests reruns only those tests, alone
+    (``_isolate_tests``), in any round: on 2026-11-14 a whole-gate retry spent
+    449.8 s on one flaky test, and a flake in the gates a stop had cancelled
+    failed a lane outright after 905 s. Any other failed gate, and a memory
+    stop, reruns whole and alone, in the first round only. Custody, closure,
+    cancellation and runner faults stop at once: a retry must never hide
+    them, so a failure retries only with a clean closure.
     """
-    try:
-        _run_executor_block(
-            heavy, runtime, gate_seconds, host_limit(), receipt_kind="heavy"
+    block = list(heavy)
+    rounds = 0
+    while True:
+        kind = ("heavy", "heavy-rest")[min(rounds, 1)] + (
+            f"-{rounds}" if rounds > 1 else ""
         )
-        return
-    except (GateFailure, GateMemoryPressure) as first:
-        if runtime.cancelled() or (
-            isinstance(first, GateFailure) and not first.clean_closure
-        ):
-            raise
-        failed = [
-            (ordinal, gate)
-            for ordinal, gate in heavy
-            if display(gate.command) in first.shown
-        ]
-        if not failed:
-            raise
-        runtime.say(
-            f"    retry: {len(failed)} failed heavy gate(s) alone after: "
-            f"{str(first).splitlines()[0]}"
-        )
+        log_dir = runtime.output_dir if rounds == 0 else runtime.output_dir / kind
         try:
             _run_executor_block(
-                failed,
-                runtime,
-                gate_seconds,
-                1,
-                receipt_kind="heavy-retry",
-                log_dir=runtime.output_dir / "heavy-retry",
-            )
-        except BaseException as second:
-            second.add_note(f"first attempt, beside other gates: {first}")
-            raise
-        runtime.say(
-            "    retry passed: the first failure was load or a flake, not the "
-            f"candidate: {str(first).splitlines()[0]}"
-        )
-        rest = [
-            (ordinal, gate)
-            for ordinal, gate in heavy
-            if gate not in runtime.passed and (ordinal, gate) not in failed
-        ]
-        if rest:
-            _run_executor_block(
-                rest,
+                block,
                 runtime,
                 gate_seconds,
                 host_limit(),
-                receipt_kind="heavy-rest",
-                log_dir=runtime.output_dir / "heavy-rest",
+                receipt_kind=kind,
+                log_dir=log_dir,
             )
+            return
+        except (GateFailure, GateMemoryPressure) as failure:
+            if runtime.cancelled() or (
+                isinstance(failure, GateFailure) and not failure.clean_closure
+            ):
+                raise
+            failed = [
+                (ordinal, gate)
+                for ordinal, gate in block
+                if display(gate.command) in failure.shown
+            ]
+            if not failed:
+                raise
+            whole: list[tuple[int, Gate]] = []
+            for ordinal, gate in failed:
+                tests = (
+                    _failed_tests(gate, ordinal, log_dir, runtime)
+                    if isinstance(failure, GateFailure)
+                    else None
+                )
+                if tests is not None:
+                    _isolate_tests(
+                        ordinal, gate, tests, failure, runtime, gate_seconds, host_limit
+                    )
+                elif rounds == 0:
+                    whole.append((ordinal, gate))
+                else:
+                    raise
+            if whole:
+                _retry_whole_gates(whole, failure, runtime, gate_seconds)
+        rounds += 1
+        # Each round passes or raises on every gate it names as failed.
+        block = [
+            (ordinal, gate) for ordinal, gate in heavy if gate not in runtime.passed
+        ]
+        if not block:
+            return
+
+
+def _retry_whole_gates(
+    failed: list[tuple[int, Gate]],
+    first: GateFailure | GateMemoryPressure,
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+) -> None:
+    runtime.say(
+        f"    retry: {len(failed)} failed heavy gate(s) alone after: "
+        f"{str(first).splitlines()[0]}"
+    )
+    try:
+        _run_executor_block(
+            failed,
+            runtime,
+            gate_seconds,
+            1,
+            receipt_kind="heavy-retry",
+            log_dir=runtime.output_dir / "heavy-retry",
+        )
+    except BaseException as second:
+        second.add_note(f"first attempt, beside other gates: {first}")
+        raise
+    runtime.say(
+        "    retry passed: the first failure was load or a flake, not the "
+        f"candidate: {str(first).splitlines()[0]}"
+    )
+    log_dir = runtime.output_dir / "heavy-retry"
+    for ordinal, gate in failed:
+        path = junit_path(runtime.output_dir, ordinal)
+        nodes = _failed_nodes(path)
+        _record_flake(runtime, gate, nodes or (), evidence=log_dir)
+
+
+@dataclass(frozen=True)
+class FailedTests:
+    """What one failed pytest gate's JUnit proves."""
+
+    failed: tuple[str, ...]
+    # Every test the run reported, the failed ones included.
+    reported: frozenset[str]
+    # Whether tests may remain unrun: pytest exit 2 (xdist's maxfail stop),
+    # or exit 1 under --maxfail/-x.
+    interrupted: bool
+
+
+#: Isolation rounds per gate: a continuation that keeps failing new tests is
+#: a host or a candidate problem, not a flake.
+ISOLATION_ROUNDS = 3
+
+
+def _failed_nodes(path: Path) -> tuple[str, ...] | None:
+    from molt.pytest_junit import PytestOutcome, junit_outcomes
+
+    try:
+        outcomes = junit_outcomes(path)
+    except ValueError:
+        return None
+    return tuple(
+        sorted(
+            node
+            for node, outcome in outcomes.items()
+            if outcome is PytestOutcome.FAILED
+        )
+    )
+
+
+def _failed_tests(
+    gate: Gate, ordinal: int, log_dir: Path, runtime: GateRuntime
+) -> FailedTests | None:
+    """The failed tests of a pytest gate's run, or None when its JUnit cannot
+    name them: no report, a collection error, or a report without the node
+    IDs that prove the checkout's plugin can select tests
+    (``molt.pytest_junit``)."""
+    from molt.pytest_junit import PytestOutcome, junit_outcomes
+
+    if not gate_runs_pytest(gate, repo=runtime.repo):
+        return None
+    path = junit_path(log_dir, ordinal)
+    if not path.is_file():
+        return None
+    try:
+        outcomes = junit_outcomes(path)
+    except ValueError as exc:
+        runtime.say(f"    no test-level retry: {exc}")
+        return None
+    failed = tuple(
+        sorted(
+            node
+            for node, outcome in outcomes.items()
+            if outcome is PytestOutcome.FAILED
+        )
+    )
+    if not failed:
+        return None
+    return FailedTests(failed, frozenset(outcomes), _stops_early(gate, runtime.repo))
+
+
+def _stops_early(gate: Gate, repo: Path) -> bool:
+    import shlex
+
+    from molt.pytest_memory_guard_bootstrap import _pytest_argument_parser
+    from tools.proof_command_argv import pytest_arguments
+
+    argv = shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+    arguments = pytest_arguments(argv, root=repo)
+    if arguments is None:
+        return True
+    namespace, _unknown = _pytest_argument_parser(True).parse_known_and_unknown_args(
+        list(arguments)
+    )
+    return bool(getattr(namespace, "maxfail", 0))
+
+
+def _isolate_tests(
+    ordinal: int,
+    gate: Gate,
+    tests: FailedTests,
+    first: GateFailure,
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+    host_limit: Callable[[], int],
+) -> None:
+    """Rerun ``tests.failed`` alone, then what an early stop left unrun.
+
+    The failed tests rerun in one serial process, selected by node ID; a
+    second failure is the candidate's. The continuation reruns the gate's own
+    command minus every reported test. Both keep the gate's argv, so its
+    options, markers and cohort collect as before. On success the gate counts
+    as passed, its log is the last run's, and the flake is recorded.
+    """
+    import shlex
+
+    from molt.file_publication import atomic_write_bytes
+
+    shown = display(gate.command)
+    base = (
+        tuple(shlex.split(gate.command))
+        if isinstance(gate.command, str)
+        else tuple(gate.command)
+    )
+    state = runtime.output_dir / f"gate-{ordinal:03d}.isolation"
+    reported = set(tests.reported)
+    interrupted = tests.interrupted or first.returncode == 2
+    failed = tests.failed
+    log: Path | None = None
+
+    def write(name: str, nodes: Sequence[str]) -> str:
+        path = state / name
+        atomic_write_bytes(path, (json.dumps(sorted(nodes)) + "\n").encode("utf-8"))
+        return str(path)
+
+    def run(kind: str, argv: tuple[str, ...], host: int) -> tuple[GateRuntime, Path]:
+        log_dir = state / kind
+        sub = replace(runtime, passed=[], passed_logs={})
+        _run_executor_block(
+            [(ordinal, replace(gate, command=argv, collection_command=None))],
+            sub,
+            gate_seconds,
+            host,
+            receipt_kind=f"gate-{ordinal:03d}.{kind}",
+            log_dir=log_dir,
+        )
+        return sub, log_dir
+
+    for attempt in range(1, ISOLATION_ROUNDS + 1):
+        runtime.say(
+            f"    retry alone: {len(failed)} failed test(s) of {shown}: "
+            + ", ".join(failed[:5])
+            + (" ..." if len(failed) > 5 else "")
+        )
+        isolated = _with_pytest_options(
+            base,
+            "-n",
+            "0",
+            "--molt-run-nodes=" + write(f"run-{attempt}.json", failed),
+            repo=runtime.repo,
+        )
+        try:
+            sub, _log_dir = run(f"isolate-{attempt}", isolated, 1)
+        except BaseException as second:
+            second.add_note(f"first attempt, beside other gates: {first}")
+            raise
+        log = next(iter(sub.passed_logs.values()), log)
+        runtime.say(
+            "    retry passed: the failure was load or a flake, not the "
+            f"candidate: {', '.join(failed)}"
+        )
+        _record_flake(runtime, gate, failed, evidence=state)
+        if not interrupted:
+            break
+        reported.update(failed)
+        rest = _with_pytest_options(
+            base,
+            "--molt-skip-nodes=" + write(f"skip-{attempt}.json", sorted(reported)),
+            repo=runtime.repo,
+        )
+        runtime.say(
+            f"    continue: {shown} without its {len(reported)} reported test(s)"
+        )
+        try:
+            sub, _log_dir = run(f"continue-{attempt}", rest, host_limit())
+            log = next(iter(sub.passed_logs.values()), log)
+            break
+        except GateFailure as again:
+            if not again.clean_closure:
+                raise
+            more = _failed_tests(
+                replace(gate, command=rest),
+                ordinal,
+                state / f"continue-{attempt}",
+                runtime,
+            )
+            if more is None or attempt == ISOLATION_ROUNDS:
+                again.add_note(f"first attempt, beside other gates: {first}")
+                raise
+            failed = more.failed
+            reported.update(more.reported)
+            interrupted = more.interrupted or again.returncode == 2
+    runtime.passed.append(gate)
+    if log is not None:
+        runtime.passed_logs[shown] = log
+    runtime.ok(f"gate passed after a test-level retry: {shown}")
+
+
+def _record_flake(
+    runtime: GateRuntime, gate: Gate, nodes: Sequence[str], *, evidence: Path
+) -> None:
+    """Append one passed retry to the run's ``flakes.json``: postsubmit reads
+    it so a test that passed alone never reads as main's failure, and the
+    nodes are what a flake owner routes."""
+    from molt.file_publication import atomic_write_bytes
+
+    path = flakes_path(runtime.output_dir)
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        records = []
+    records.append(
+        {"gate": display(gate.command), "tests": list(nodes), "evidence": str(evidence)}
+    )
+    atomic_write_bytes(path, (json.dumps(records, indent=2) + "\n").encode("utf-8"))
+
+
+def flakes_path(output_dir: Path) -> Path:
+    return output_dir / "flakes.json"
+
+
+def recorded_flaky_tests(output_dir: Path) -> frozenset[str]:
+    """The tests a retry of this run passed (``_record_flake``)."""
+    path = flakes_path(output_dir)
+    if not path.is_file():
+        return frozenset()
+    records = json.loads(path.read_text(encoding="utf-8"))
+    return frozenset(node for record in records for node in record["tests"])
 
 
 def _run_serial_gate(

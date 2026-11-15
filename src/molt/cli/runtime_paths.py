@@ -16,10 +16,7 @@ from molt.cli.config_resolution import (
     RUNTIME_STDLIB_PROFILE_TIERS,
     RuntimeStdlibProfile,
 )
-from molt.cli.build_output_layout import (
-    _wasm_runtime_root_from_env,
-    _claim_checkout_state,
-)
+from molt.cli.build_output_layout import _claim_checkout_state
 from molt.default_paths import configured_artifact_root_text
 from molt.dx import project_cargo_target_dir
 
@@ -218,15 +215,3 @@ def _runtime_lib_path(
         target_triple,
         stdlib_profile,
     )
-
-
-def _runtime_wasm_artifact_path(project_root: Path, artifact_name: str) -> Path:
-    return _runtime_wasm_artifact_path_from_env(project_root, artifact_name, os.environ)
-
-
-def _runtime_wasm_artifact_path_from_env(
-    project_root: Path,
-    artifact_name: str,
-    env: Mapping[str, str],
-) -> Path:
-    return _wasm_runtime_root_from_env(project_root, env) / artifact_name

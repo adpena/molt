@@ -1586,10 +1586,16 @@ def run_guarded(
 
             sampler = _sample_owned_job
             sampling_source = "windows_job_members"
+        # Nothing has waited on the child yet, so its pid still names this one
+        # lifetime even if it already exited: read its birth from the
+        # unreaped row. A child of a few milliseconds is often a zombie here,
+        # and the live-process reader drops zombies; closure then could not
+        # tell it from an earlier process with the same pid (farm guests
+        # restart and reuse low pids; HF-12).
         root_started_at_ns = (
             windows_process_handle_started_at_ns(getattr(proc, "_handle", None))
             if _process_model.is_windows_process_model()
-            else _process_model.process_started_at_ns(proc.pid)
+            else _process_model.unreaped_child_started_at_ns(proc.pid)
         )
         if root_started_at_ns is not None:
             assert tracker.known_identities is not None

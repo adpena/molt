@@ -63,10 +63,6 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
     """Compile *src* to an unlinked WASM module, return path."""
     out_dir.mkdir(parents=True, exist_ok=True)
     env = wasm_test_build_env(ROOT, linked=False)
-    # The compiler source tree is never artifact custody. Keep the runtime
-    # generation beside pytest's externally rooted outputs; module-scoped
-    # fixtures share this directory without publishing into ``ROOT / wasm``.
-    env["MOLT_WASM_RUNTIME_DIR"] = str(out_dir.parent / "runtime")
     result = _run_wasm_test_process(
         _molt_build_cmd()
         + [
@@ -218,8 +214,7 @@ def test_build_wasm_uses_wasm_test_guard(
     assert wasm_path == out_dir / "output.wasm"
     assert captured["kwargs"]["cwd"] == ROOT
     assert "timeout" not in captured["kwargs"]
-    captured_env = captured["kwargs"]["env"]
-    assert Path(captured_env["MOLT_WASM_RUNTIME_DIR"]) == tmp_path / "runtime"
+    assert "env" in captured["kwargs"]
 
 
 # ---------------------------------------------------------------------------

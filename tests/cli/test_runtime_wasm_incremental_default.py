@@ -89,10 +89,8 @@ def test_runtime_wasm_policy_matrix(intent, environment, layout, incrementality)
     assert policy.incrementality is incrementality
 
 
-def test_unresolved_cargo_profile_cannot_authorize_publication_or_diagnostics():
+def test_unresolved_cargo_profile_cannot_authorize_diagnostics() -> None:
     policy = resolve_runtime_wasm_build_policy("dev", {})
-    with pytest.raises(ValueError, match="resolved incrementality"):
-        _ = policy.publish_shared_cache
     with pytest.raises(ValueError, match="resolved incrementality"):
         _ = policy.diagnostic_detail
 
@@ -100,8 +98,6 @@ def test_unresolved_cargo_profile_cannot_authorize_publication_or_diagnostics():
 @pytest.mark.parametrize("intent", ["dev", "release"])
 def test_forced_off_request_still_requires_captured_cargo_policy(intent):
     policy = resolve_runtime_wasm_build_policy(intent, {"CARGO_INCREMENTAL": "0"})
-    with pytest.raises(ValueError, match="resolved incrementality"):
-        _ = policy.publish_shared_cache
     with pytest.raises(ValueError, match="resolved incrementality"):
         _ = policy.diagnostic_detail
 

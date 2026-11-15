@@ -47,6 +47,8 @@ class GateFailure(CandidateFailure):
     clean_closure: bool = False
     # The failed gate's display form; the landing reruns exactly that gate.
     shown: tuple[str, ...] = ()
+    # The failed gate's exit status: a pytest exit 2 is an interrupted run.
+    returncode: int | None = None
 
 
 class RebaseConflict(DriverError):

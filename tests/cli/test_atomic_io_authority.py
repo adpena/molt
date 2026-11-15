@@ -21,7 +21,7 @@ from molt.cli.backend_artifact_contract import (
 )
 from molt import artifact_publication
 from molt import file_publication
-from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
+from molt.cli.runtime_wasm_generation import publish_runtime_wasm_product
 from molt.wasm_artifact import (
     _build_wasm_sections,
     _write_wasm_string,
@@ -30,7 +30,6 @@ from molt.wasm_artifact import (
 from tests.process_guard_common import current_thread_only, install_module_view
 from tests.runtime_build_identity_helper import (
     runtime_build_identity,
-    runtime_cargo_environment_inputs,
 )
 
 
@@ -392,14 +391,13 @@ def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
     reloc = tmp_path / "molt_runtime_reloc.wasm"
     shared.write_bytes(b"shared")
     reloc.write_bytes(b"reloc")
-    publish_runtime_wasm_generation(
+    publish_runtime_wasm_product(
         shared,
         reloc,
         shared_identity=runtime_build_identity("shared", "atomic-publication"),
         reloc_identity=runtime_build_identity("reloc", "atomic-publication"),
-        cargo_environment=runtime_cargo_environment_inputs(),
     )
-    # Immutable shared+reloc members, the atomic pair pointer and the store's
+    # Immutable shared+reloc members, the receipt and the retained store's
     # usage ledger. Internal publication deliberately creates no fixed-name
     # compatibility projections.
     assert len(calls) == 4 * barriers_per_commit

@@ -117,27 +117,6 @@ def main() -> None:
 
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
-    if not bench_wasm.build_runtime_wasm(
-        reloc=False,
-        output=bench_wasm.RUNTIME_WASM,
-        tty=False,
-        log=None,
-        limits=limits,
-    ):
-        sys.exit(1)
-    if not bench_wasm.build_runtime_wasm(
-        reloc=True,
-        output=bench_wasm.RUNTIME_WASM_RELOC,
-        tty=False,
-        log=None,
-        limits=limits,
-    ):
-        print(
-            "Relocatable runtime build failed; linked profile is required.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     wasm_binary = bench_wasm.prepare_wasm_binary(
         bench,
         molt_args=bench_wasm.molt_args_for_benchmark(bench),

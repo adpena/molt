@@ -477,9 +477,7 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
         no_default_features=True,
         wasm_cargo_features=(),
         fingerprint_features=(),
-        fingerprint_path=tmp_path / "fingerprint",
         target_root=tmp_path / "target",
-        stored_fingerprint=None,
         fingerprint={"hash": "a" * 64},
         staticlib_fingerprint={"hash": "b" * 64},
     )

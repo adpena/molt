@@ -53,7 +53,6 @@ def _build_entry_wasm(
     test_artifact_root = _linked_test_artifact_root(root, out_dir)
     env["MOLT_HOME"] = str(test_artifact_root)
     env["MOLT_CACHE"] = str(test_artifact_root / ".molt_cache")
-    env["MOLT_WASM_RUNTIME_DIR"] = str(test_artifact_root / "wasm")
     env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
     tmp_root = scratch_root(root, env)
     tmp_root.mkdir(parents=True, exist_ok=True)

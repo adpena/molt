@@ -41,48 +41,6 @@ def _warn(msg: str) -> None:
     _say(f"    WARN: {msg}")
 
 
-def _run_driver_command(
-    cmd: list[str],
-    *,
-    cwd: Path | None = None,
-    env: ProcessEnvironment | None = None,
-    input_text: str | None = None,
-    timeout: float | None = 60.0,
-    prefix: str = "MOLT_DEV",
-) -> subprocess.CompletedProcess[str]:
-    """Run one bounded captured driver command through the shared guard."""
-    return harness_memory_guard.guarded_completed_process(
-        cmd,
-        prefix=prefix,
-        cwd=cwd or DEFAULT_REPO,
-        env=env,
-        input=input_text,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
-def _run_driver_command_bytes(
-    cmd: list[str],
-    *,
-    cwd: Path,
-    env: ProcessEnvironment,
-    timeout: float,
-    prefix: str,
-) -> subprocess.CompletedProcess[bytes]:
-    """Run one bounded captured driver command with byte-exact output custody."""
-    return harness_memory_guard.guarded_completed_process(
-        cmd,
-        prefix=prefix,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=False,
-        timeout=timeout,
-    )
-
-
 def _run_fast_captured_command(
     cmd: list[str],
     *,

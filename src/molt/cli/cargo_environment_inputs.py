@@ -9,18 +9,28 @@ from typing import cast
 
 from molt.exact_json import canonical_json_sha256
 from molt.process_environment import NameRule, ProcessEnvironment
+from molt.rust_toolchain import location_free_rust_flags
 
-_SCHEMA = "molt.cargo-environment-inputs.v1"
+# v2: CARGO_ENCODED_RUSTFLAGS is observed without the physical sources of
+# Molt's owned remaps (HF-473).
+_SCHEMA = "molt.cargo-environment-inputs.v2"
+# Cargo joins encoded flags with the unit separator.
+_ENCODED_RUSTFLAGS = "CARGO_ENCODED_RUSTFLAGS"
 
 
-def _value_digest(value: str | None) -> str | None:
+def _value_digest(name: str, value: str | None) -> str | None:
     # POSIX var_os dependencies can contain surrogate-escaped bytes. Hash the
     # exact frozen Python string without losing or replacing those code points.
-    return (
-        None
-        if value is None
-        else hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
-    )
+    if value is None:
+        return None
+    if name == _ENCODED_RUSTFLAGS and value:
+        # A build script that reads the flags sees the checkout's location in
+        # Molt's owned remaps. The remap maps that location away from every
+        # output (rustc, and cc-rs's matching prefix maps), and the build
+        # identity binds the mapping by logical root, so the location is not
+        # observed: checkouts of one commit share one product store variant.
+        value = "\x1f".join(location_free_rust_flags(value.split("\x1f")))
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _valid_name(name: object) -> bool:
@@ -88,7 +98,7 @@ class CargoEnvironmentInputs:
         return cls(
             environment.rule,
             tuple(
-                (name, _value_digest(environment.get(name)))
+                (name, _value_digest(name, environment.get(name)))
                 for name in sorted(selected)
             ),
             local_unit_count,
@@ -139,7 +149,7 @@ class CargoEnvironmentInputs:
         changed = [
             name
             for name, digest in self.variables
-            if _value_digest(environment.get(name)) != digest
+            if _value_digest(name, environment.get(name)) != digest
         ]
         if changed:
             raise ValueError("Cargo environment inputs changed: " + ", ".join(changed))
