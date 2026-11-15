@@ -1351,43 +1351,40 @@ target) and a plain clone's `<checkout>/target` are not roots the guard owns,
 so no use protocol proves them idle; they stay for an operator purge, as
 section 2.9 item 4 requires.
 
-The runtime WASM pair already lives in one host directory
-(`<MOLT_EXT_ROOT>/wasm`, `molt.cli.runtime_wasm_generation`) keyed by a
-location-independent identity, so it is built once per input on a host that
-sets an artifact root; it has its own store and retention. Ordinary cache hits
-admit the existing family-addressed generation under
-`MOLT_CACHE/runtime-wasm-generations-v2/<family digest>` directly. Cargo environment,
-member content and exports still pass their owning admission checks, and the
-existing generation ledger renews member use before codegen pins the receipt.
-A different family's mutable host selection cannot force copying or publication
-of the retained pair. The diagnostics call these `admit_*` observations.
-Shared families participate in the global cache byte/age budget. Persistent
-external stripes cover directory creation through publication, admission and
-binding renewal; eviction takes the same stripe and rechecks directory identity.
-Each successful ledger replacement refreshes the family directory timestamp
-without touching immutable members. This is part of renewal, including when
-the serialized ledger happens to be unchanged. A family unused for at least
-24 hours can leave even when its private ledger selects a pair. The selected
-target store keeps its different required-output semantics. Budget pressure
-cannot shorten this bounded-operation grace; it is not a full-lifetime reader
-lease or a hard quota. Retirement moves the family out of its live namespace
-before reclaiming payload; later sweeps finish interrupted reclamation.
-Current writers never select the previous shared namespace: its lock protocol
-cannot be mixed with removable-family lifetime. Retire its storage only after
-separately establishing publisher quiescence.
-Low-level hydration remains for explicit installed-runtime relocation and its
-physical-copy benchmark; those consumers need a new storage location. Folding
-the WASM store into the product store is open.
+The runtime WASM pair (`molt_runtime.wasm` and `molt_runtime_reloc.wasm`)
+lives in the same store, kind `wasm-runtime` (HF-473). Its entry is the pair's
+family digest, which names both member identities; a variant per observed
+Cargo environment holds one receipt and two content-named members, staged
+inside the entry and published by one exclusive rename. A hit reads the store
+without a lock and runs no Cargo; a miss takes the family's build lock
+(`ProductStore.ensure`, shared with the native runtime), reads again, and only
+then builds, so concurrent builds with identical inputs compile once in any
+number of checkouts. The checkout's own pair lock now guards only its Cargo
+target, which builds of other families in that checkout share (HF-F227).
+Code generation pins the admitted receipt in place, since a variant is
+immutable, and final link trusts the pair by its family digest and receipt
+role on the link command line (`RuntimeWasmTrust`); no trust record is kept
+per checkout. Installed Molt keeps its shipped cell's retained directory
+(`select_installed_wasm_runtime`), which never enters the store.
 
-Host-wide build state keeps three retention policies, one per kind of
+This deleted three layers: the per-artifact-root selection
+`<MOLT_EXT_ROOT>/wasm` (and `MOLT_WASM_RUNTIME_DIR`), the second
+content-addressed cache `MOLT_CACHE/runtime-wasm-generations-v2/` with its
+admit/publish counters, and the per-checkout `runtime_wasm_generations/*.expected.json`
+records. Before, a checkout that had not built the shared selection refused it,
+and two checkouts that missed at once both compiled, since the pair lock was
+per checkout. The cache pruner still retires the families older builds left in
+`runtime-wasm-generations-v2`, by last use under their stripes; nothing
+publishes there.
+
+Host-wide build state keeps two retention policies, one per kind of
 content; section 2.9 item 4's single table will carry the same rows (HF-434).
 Sizes are the integrator Mac's on 2026-10-22.
 
 | Store | Holds | Last use | Retires | Bytes | Why this policy |
 | --- | --- | --- | --- | --- | --- |
-| Product store, `<target base>/target/.molt-products` | reusable runtimes, host tools and JIT runtime images, one entry per input identity | ledger; every read renews, at most hourly | 5 days unused, at each publication; `molt cache evict` on demand | no budget; 334 MB | Every checkout reuses an entry, so reuse decides. Go trims its build cache by 5 days of non-use, a limit chosen from measured reuse, and sets no size bound either. |
-| WASM pair store, `<MOLT_EXT_ROOT>/wasm` (else the target's `molt-runtime-wasm`) | one target's selected runtime pair and the generations it replaced | ledger; publication and binding | a replaced generation 24 h unused, at each publication; the selected one never | no budget; 519 MB and 624 MB in two roots | A replaced generation has no reuse; only a build that bound it before the switch reads it, and a build ends well inside 24 h. |
-| `MOLT_CACHE` (module, link, stdlib, symbol-fact and shared WASM-family caches; the lane's result cache lives here too) | entries keyed by program and compiler inputs | entry mtime, refreshed on use | 30 days unused, then oldest first past 30 GiB; daily after a build, `molt cache prune` on demand; WASM families retain at least 24 h grace | conditional 30 GiB budget; historical 72 GB and 6.3 GB in two roots | Entries scale with programs built; active owners and WASM reader grace can keep the budget exceeded. |
+| Product store, `<target base>/target/.molt-products` | reusable native and WASM runtimes, host tools and JIT runtime images, one entry per input identity | ledger; every read renews, at most hourly | 5 days unused, at each publication; `molt cache evict` on demand | no budget; 334 MB | Every checkout reuses an entry, so reuse decides. Go trims its build cache by 5 days of non-use, a limit chosen from measured reuse, and sets no size bound either. |
+| `MOLT_CACHE` (module, link, stdlib and symbol-fact caches; the lane's result cache lives here too) | entries keyed by program and compiler inputs | entry mtime, refreshed on use | 30 days unused, then oldest first past 30 GiB; daily after a build, `molt cache prune` on demand | conditional 30 GiB budget; historical 72 GB and 6.3 GB in two roots | Entries scale with programs built; active owners can keep the budget exceeded. |
 
 Host-tool generations inside a store variant use the backend generation store
 (`backend_generation.py`): its selection keeps the one generation a variant

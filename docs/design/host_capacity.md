@@ -254,6 +254,29 @@ first: on 2026-11-14 a try run that had waited 21 minutes longer lost the
 slot to a newer one. The operating system releases every lock when its
 holder dies.
 
+The development class shares by capacity, not by count. A job that declares
+its demand (`HostWorkDemand`: pytest workers and each worker's declared
+memory, `--molt-worker-memory-gb`) holds a grant instead of the class
+(`<lock>.grants/*.grant`, locked for the body, with its record beside it in
+`*.json`). The budget (`HostWorkBudget`) is this process's CPUs and physical
+memory less the reserve; a grant is the demand capped at the budget. The first
+waiter in line takes the class lock for an instant, reads the live grants and
+publishes its own when the sum fits, so two admissions never read the same
+free capacity; a job alone always runs. Pytest's `-n` then follows the grant
+(`allocated_pytest_argv` with the grant's CPUs and its memory exported as
+`MOLT_HOST_MEMORY_SLICE_BYTES`). The consumer gate asks for one worker per
+importer test file and never less than half the host (one file can hold
+thousands of tests): two gates of up to 9 files run together on this 18-CPU
+host, a 13-file gate holds 13 CPUs, and a 942-file gate asks for all 18 and
+waits for the class. Work that declares no
+demand (a try run, postsubmit, a receipt rerun) waits until no grant is live
+and holds the class lock for its body, as the one slot did. A dead holder's
+grant is unlocked, and the first reader removes it. On 2026-11-15 the one
+slot let a 13-file gate hold the class for 69 minutes while 110- and 191-file
+gates waited 30-36 minutes per handoff; the same 13-file gate now holds 13 of
+18 CPUs. Strict arrival order keeps a large job from starving behind a stream
+of small ones (no backfill).
+
 Work the holder starts belongs to the holder's job. The holder exports
 `MOLT_HOST_WORK_SLOT_HELD` (the resolved slot directory) for its body, and a
 descendant that asks for the same slot is admitted at once; otherwise a

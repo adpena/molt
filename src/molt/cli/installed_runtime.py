@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-import os
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence, cast
 import uuid
@@ -102,9 +101,6 @@ from molt.verified_subset import current_host_coordinate
 WASM_RUNTIME_TARGET = "wasm32-wasip1"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
 _RELOC_RUNTIME_NAME = "molt_runtime_reloc.wasm"
-# Source-checkout runtime coordinates. An installed CLI never consults them, so
-# setting one is a request the installed distribution cannot honor.
-_SOURCE_RUNTIME_SELECTORS = ("MOLT_WASM_RUNTIME_DIR",)
 _ADMISSION_ERRORS = (
     OSError,
     ValueError,
@@ -117,20 +113,7 @@ _ADMISSION_ERRORS = (
 
 
 def _installed(project_root: Path) -> InstalledCompiler | None:
-    installed = installed_compiler(project_root)
-    if installed is None:
-        return None
-    selectors = sorted(
-        name for name in _SOURCE_RUNTIME_SELECTORS if os.environ.get(name)
-    )
-    if selectors:
-        raise _runtime_contract.InstalledRuntimeError(
-            "installed Molt uses its shipped runtime cells; "
-            + ", ".join(selectors)
-            + " selects source-checkout runtime artifacts. Unset it, or set "
-            "MOLT_SOURCE_ROOT to a Molt source checkout for runtime development."
-        )
-    return installed
+    return installed_compiler(project_root)
 
 
 def installed_runtime_active(project_root: Path) -> bool:

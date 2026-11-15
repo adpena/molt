@@ -122,11 +122,7 @@ class _RuntimeWasmMemberFinalizer:
         return True
 
 
-def _reuse_target_runtime_wasm(
-    ctx: _RuntimeWasmMemberFinalizer,
-    *,
-    persist_output_fingerprint: bool = True,
-) -> bool | None:
+def _reuse_target_runtime_wasm(ctx: _RuntimeWasmMemberFinalizer) -> bool | None:
     output_fingerprint = ctx.spec.fingerprint
     target_fingerprint = (
         ctx.spec.staticlib_fingerprint if ctx.reloc else output_fingerprint
@@ -218,14 +214,6 @@ def _reuse_target_runtime_wasm(
             artifact=artifact,
             cargo_environment=cargo_environment,
         )
-        if persist_output_fingerprint:
-            ctx.spec.fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_runtime_fingerprint(
-                ctx.spec.fingerprint_path,
-                output_fingerprint,
-                artifact=ctx.runtime_wasm,
-                cargo_environment=cargo_environment,
-            )
     except OSError as exc:
         raise ValueError(
             f"Failed to publish prebuilt runtime wasm metadata: {exc}"
@@ -273,12 +261,7 @@ def _materialize_runtime_wasm_member_from_target(
             ctx.root,
             ctx.lock_name,
         ):
-            return bool(
-                _reuse_target_runtime_wasm(
-                    ctx,
-                    persist_output_fingerprint=False,
-                )
-            )
+            return bool(_reuse_target_runtime_wasm(ctx))
     except BuildLockAcquisitionError as exc:
         _record_runtime_wasm_build_phase(
             "build_lock",

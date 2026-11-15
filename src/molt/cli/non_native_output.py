@@ -105,6 +105,7 @@ from molt.cli.output import (
     subprocess_output_text,
 )
 from molt.cli.python_source_closure import local_python_import_closure
+from molt.cli.runtime_wasm_generation import RuntimeWasmGeneration, RuntimeWasmTrust
 from molt.cli.runtime_wasm_validation import (
     _validate_wasm_structural,
 )
@@ -873,8 +874,7 @@ def _prepare_non_native_build_result_in_generation(
         staged_runtime_wasm: Path | None = None
         runtime_wasm: Path | None = None
         runtime_reloc_wasm: Path | None = None
-        runtime_wasm_generation: Path | None = None
-        runtime_wasm_expected_identity: Path | None = None
+        runtime_wasm_pair: RuntimeWasmGeneration | None = None
         # The split-runtime lane reads the staged artifact set too, so the
         # empty defaults must exist on every path, not just `linked`.
         staged_external_native_artifacts: tuple[
@@ -1032,12 +1032,10 @@ def _prepare_non_native_build_result_in_generation(
                     if failure is None
                     else {"runtime_wasm_failure": failure.json_payload()},
                 )
-            runtime_wasm = runtime_state.runtime_wasm_selected
-            runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
-            runtime_wasm_generation = runtime_state.runtime_wasm_generation
-            runtime_wasm_expected_identity = (
-                runtime_state.runtime_wasm_expected_identity
-            )
+            runtime_wasm_pair = runtime_state.runtime_wasm_pair
+            if runtime_wasm_pair is not None:
+                runtime_wasm = runtime_wasm_pair.shared
+                runtime_reloc_wasm = runtime_wasm_pair.reloc
             if runtime_reloc_wasm is None or not runtime_reloc_wasm.is_file():
                 return None, _fail(
                     "Runtime WASM generation has no selected reloc member",
@@ -1081,27 +1079,18 @@ def _prepare_non_native_build_result_in_generation(
                         command="build",
                     )
             tool = molt_root / "tools" / "wasm_link.py"
-            if (
-                runtime_wasm is None
-                or runtime_wasm_generation is None
-                or not runtime_wasm_generation.is_file()
-                or runtime_wasm_expected_identity is None
-                or not runtime_wasm_expected_identity.is_file()
-            ):
+            if runtime_wasm is None or runtime_wasm_pair is None:
                 return None, _fail(
-                    "Runtime WASM pair has no trusted expected identity",
+                    "Runtime WASM pair has no admitted generation",
                     json_output,
                     command="build",
                 )
             # Provenance authorizes these exact runtime members at execution;
             # it does not change the link when their admitted bytes are equal.
             # Keep it separate from the command's code-generating arguments.
-            runtime_admission_args = [
-                "--runtime-generation",
-                str(runtime_wasm_generation),
-                "--runtime-expected-identity",
-                str(runtime_wasm_expected_identity),
-            ]
+            runtime_admission_args = RuntimeWasmTrust.of(runtime_wasm_pair).arguments(
+                runtime_wasm_pair.manifest
+            )
             link_cmd = [
                 sys.executable,
                 str(tool),
@@ -1561,7 +1550,8 @@ def _prepare_non_native_build_result_in_generation(
                     json_output,
                     command="build",
                 )
-            runtime_wasm = runtime_state.runtime_wasm_selected
+            pair = runtime_state.runtime_wasm_pair
+            runtime_wasm = None if pair is None else pair.shared
             if runtime_wasm is None or not runtime_wasm.is_file():
                 return None, _fail(
                     "Runtime WASM generation has no selected shared member",

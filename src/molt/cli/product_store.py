@@ -39,12 +39,13 @@ places it beside the checkout targets of one artifact root.
 
 from __future__ import annotations
 
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+from typing import TypeVar
 
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.product_kinds import PRODUCT_KINDS, ProductKind
@@ -74,6 +75,7 @@ _ASIDE_PREFIX = ".evicted-"
 # Cargo keeps its lock files: eviction moves an entry aside while a waiter may
 # hold the lock's inode, and a lock inside the entry would move with it.
 _LOCKS = ".locks"
+_Product = TypeVar("_Product")
 
 
 class ProductStoreError(ValueError):
@@ -254,6 +256,28 @@ class ProductStore:
             raise OSError(str(exc)) from exc
         self._report_build_use(identity)
         return evicted
+
+    def ensure(
+        self,
+        identity: str,
+        read: Callable[[], _Product | None],
+        build: Callable[[], _Product],
+    ) -> _Product:
+        """The stored product of ``identity``, or the one ``build`` publishes.
+
+        ``read`` admits this caller's variant of a present entry and returns
+        None for none. A hit renews the entry and takes no lock. A miss holds
+        the identity's build lock (``single_flight``) and reads again, so of
+        concurrent builders with the same inputs, in one checkout or many, one
+        builds and the others admit what it published. ``build`` runs under
+        that lock and publishes into the entry.
+        """
+        if self.record_use(identity) and (found := read()) is not None:
+            return found
+        with self.single_flight(identity):
+            if self.record_use(identity) and (found := read()) is not None:
+                return found
+            return build()
 
     @contextmanager
     def single_flight(self, identity: str) -> Generator[None]:

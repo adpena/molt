@@ -654,7 +654,7 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   enter one `_profiling_popen` helper with `MOLT_BENCH` process-group custody
   and shared force-close cleanup instead of scattered raw `Popen` calls.
   `tools/molt_dev.py` now routes git/interpreter probes, live manifest gates,
-  toolchain marker probes, worktree cleanup, and difftest byte captures through
+  toolchain marker probes and worktree cleanup through
   shared guard helpers; detached daemon execution uses fork/exec/wait custody
   instead of `subprocess.call`, publishes `cmd.json`/`sid`/`pid`/`rc` state
   files atomically, and leaves `probe_pid` as the only allowlisted low-level
