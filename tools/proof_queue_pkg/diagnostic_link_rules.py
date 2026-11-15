@@ -134,7 +134,7 @@ def _append_diagnostics(
                     "hand-editing generated files."
                 ),
                 scopes=(
-                    "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+                    "runtime/runtime_abi.toml",
                     "tools/gen_wasm_abi.py",
                     "src/molt/_wasm_runtime_exports.py",
                 ),
@@ -314,7 +314,7 @@ def _append_diagnostics(
                         "paper over them with prefix admission or package-local shims."
                     ),
                     scopes=(
-                        "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+                        "runtime/runtime_abi.toml",
                         "tools/gen_wasm_abi.py",
                         "src/molt/cli/external_native.py",
                         "tests/test_gen_wasm_abi.py",

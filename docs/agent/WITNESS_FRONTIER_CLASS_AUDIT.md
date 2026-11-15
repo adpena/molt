@@ -355,7 +355,7 @@ model constructors + `molt_cpython_abi_cext_call_trampoline` +
   validation failure, so the index-2688 class is gate-caught before witness run.
   The prior gap class was: a runtime callable numpy reaches via the fixed-arity
   lanes but NOT among the 24 → reject. The table is generated from
-  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` (via `tools/gen_wasm_abi.py`)
+  `runtime/runtime_abi.toml` (via `tools/gen_wasm_abi.py`)
   and guarded by the generated-file drift gate (`tools/molt_dev_gates.toml:216`).
   The 24 cover init needs; completeness for later surfaces should be asserted by a
   gate that cross-references the numpy-reachable runtime-callable set against the

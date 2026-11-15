@@ -78,6 +78,6 @@ execution and conformance remain development-side responsibilities.
   and `molt.compat`.
 - Operation admission: `runtime/molt-ir/src/tir/op_kinds.toml` and its generated
   closed types; frontend census proves registered producer custody.
-- Runtime imports: `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` and its
+- Runtime imports: `runtime/runtime_abi.toml` and its
   generated projections.
 - Extension support: [libmolt ABI contract](libmolt_extension_abi_contract.md).

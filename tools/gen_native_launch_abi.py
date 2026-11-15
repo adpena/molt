@@ -187,9 +187,7 @@ def render_python(
 ) -> str:
     from tools.wasm_abi_gen.execution_context import context_suffix
 
-    with (ROOT / "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml").open(
-        "rb"
-    ) as handle:
+    with (ROOT / "runtime/runtime_abi.toml").open("rb") as handle:
         compiled_bootstrap = "molt_isolate_bootstrap" + context_suffix(
             tomllib.load(handle)
         )

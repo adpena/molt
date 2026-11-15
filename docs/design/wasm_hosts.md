@@ -8,7 +8,7 @@ enforcement) and HF-699 (§6, runtime callables as keys).
 This design extends four authorities and duplicates none:
 - `runtime/host_capabilities.toml` and [CAPABILITIES.md](../CAPABILITIES.md): operations, and the
   `targets` axis built from the deploy profiles;
-- `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`: the import tables;
+- `runtime/runtime_abi.toml`: the import tables;
 - `molt-runtime-vfs`: mounts and file grants;
 - spec 0294 §5.2: the Molt Edge host matrix.
 
@@ -439,7 +439,7 @@ mod zone_data {
 ### Host-import table (TOML) and the time family's only JS
 
 ```toml
-# runtime/molt-backend-wasm/src/wasm_abi_manifest.toml (I1, I3)
+# runtime/runtime_abi.toml (I1, I3)
 [[host_import]]
 module = "env"
 name = "molt_time_zone_name_host"   # writes the IANA zone name, e.g. "Asia/Kolkata"

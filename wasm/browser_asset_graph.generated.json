@@ -227,7 +227,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "f4b10cd18d5a98375b31e71ed715f1e51eec1dfd88aa9a00313907465d6934e2",
+      "sha256": "d89818dd745572cc6e5549b359f7e38e0c8e95af734ed85f4f3aa2c1401673d8",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -465,7 +465,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "0ace6b9608c67320cf8d412d272b307f5e815ef681f5dabbc6752e05f599de23",
+      "sha256": "17b4677496fab04f030baec49eddcab804d31a7478446c659625a09b2d5192b9",
       "source_type": "script"
     },
     "synthetic_errno_generated.js": {
@@ -474,7 +474,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "3d8f02c29701e995c964ce65350eebe84fbc69402877962abc5d66b4c37c09fe",
+      "sha256": "6fdfbf927ffb99250ab3370ef8121debb784cb66f5aee485535e8399bb58fc4e",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {
@@ -501,7 +501,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "aa38f25ee374c14dc0d175e3711e7f642664509239627d7bac59afc99126a1e4",
+      "sha256": "8113c01169355258640ae6a35d277360e35c032b2f4470a0c353496c6fcf24eb",
       "source_type": "script"
     },
     "wasm_abi_generated.json": {

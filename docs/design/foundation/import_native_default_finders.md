@@ -357,7 +357,7 @@ Deleted with the replaced lane, in the same change:
 - `R/intrinsics/manifest.pyi`: entries for the four deleted intrinsics; every
   generated projection through `tools/generators.py write` (runtime resolvers and
   `generated.rs`, `src/molt/_intrinsics.pyi`, `src/molt/_intrinsic_symbols.py`,
-  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` and its generated
+  `runtime/runtime_abi.toml` and its generated
   tables, `src/molt/_wasm_abi_generated.py`, `wasm/wasm_abi_generated.json`,
   the `molt-ir` runtime callable ABI, `R/state/names_generated.rs`).
 

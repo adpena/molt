@@ -524,7 +524,7 @@ owns = ["tools/perf_scoreboard*.py", "tests/tools/perf_scoreboard_fixtures.py"]
 
 [[apparatus_suite]]
 test = "tests/test_gen_wasm_abi.py"
-owns = ["tools/gen_wasm_abi.py", "tools/wasm_abi_gen/**", "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml", "tools/generator_manifest.toml"]
+owns = ["tools/gen_wasm_abi.py", "tools/wasm_abi_gen/**", "runtime/runtime_abi.toml", "tools/generator_manifest.toml"]
 
 [[apparatus_suite]]
 test = "tests/test_checkout_provisioning.py"
@@ -5263,7 +5263,7 @@ globs = [
   "runtime/molt-runtime/**", "runtime/molt-runtime-*/**", "runtime/molt-stdlib-*/**",
   "runtime/molt-obj-model/**", "runtime/molt-codegen-abi/**", "runtime/molt-cpython-abi/**",
   "runtime/molt-gpu/**", "runtime/molt-gpu-runtime/**", "runtime/build_support/**",
-  "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml", "tools/wasm_abi_gen/**",
+  "runtime/runtime_abi.toml", "tools/wasm_abi_gen/**",
   "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
   "LICENSE", "include/molt/**", "vendor/rust/**",
   "src/molt/wasi_c_abi_protocol.txt", "src/molt/wasm_artifact.py",
@@ -6253,7 +6253,7 @@ globs = [
   "runtime/molt-runtime-platform/src/synthetic_errno*.rs",
   "runtime/molt-runtime-platform/src/synthetic_errno/**/*.rs",
   "runtime/molt-runtime-platform/src/wasm_socket_abi*.rs",
-  "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+  "runtime/runtime_abi.toml",
   "runtime/molt-wasm-host/**/*.toml",
   "runtime/molt-wasm-host/Cargo.toml",
   "runtime/molt-artifact-publish/**/*.rs",

@@ -106,7 +106,7 @@ def test_signature_rule_selects_the_oracle_manifest():
         if rule.name == "runtime-wasm-signatures"
     )
     for changed in (
-        "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+        "runtime/runtime_abi.toml",
         "tools/wasm_abi_gen/manifest.py",
         "src/molt/_wasm_abi_generated.py",
     ):

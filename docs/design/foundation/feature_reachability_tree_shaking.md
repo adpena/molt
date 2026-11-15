@@ -46,7 +46,7 @@ literal names does not prove arbitrary dynamic completeness.
 | Protected runtime entrypoints | `runtime/molt-tir/src/passes/runtime_roots.rs`, with Python agreement tests |
 | Intrinsic requirements and target diagnostics | `src/molt/cli/required_features.py`, consumed by `backend_ir.py` |
 | Intrinsic identity and public loader registration | `runtime/molt-runtime/src/intrinsics/manifest.pyi` and generated registries |
-| Symbol availability (feature and target) | Each entry's `# cfg:` line in `runtime/molt-runtime/src/intrinsics/manifest.pyi`; a non-intrinsic runtime export declares `cfg` on its import entry in `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`. Projected by `tools/gen_intrinsics.py` into `src/molt/_runtime_feature_gates.py`, the resolver arms and their absence probes, and by `tools/gen_wasm_abi.py` into the WASM import tables (section 4) |
+| Symbol availability (feature and target) | Each entry's `# cfg:` line in `runtime/molt-runtime/src/intrinsics/manifest.pyi`; a non-intrinsic runtime export declares `cfg` on its import entry in `runtime/runtime_abi.toml`. Projected by `tools/gen_intrinsics.py` into `src/molt/_runtime_feature_gates.py`, the resolver arms and their absence probes, and by `tools/gen_wasm_abi.py` into the WASM import tables (section 4) |
 | Resolver bucketing (which generated resolver module owns a symbol) | `runtime/molt-runtime/src/intrinsics/categories.toml`; it states no availability |
 | Profile names and default | `src/molt/cli/config_resolution.py` |
 | Profile feature closure and tier selection | Cargo feature graph through `src/molt/cli/runtime_features.py` |

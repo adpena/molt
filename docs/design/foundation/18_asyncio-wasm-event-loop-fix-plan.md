@@ -66,7 +66,7 @@ not match the final module.
 Browser, Node, split-runtime packaging, Cloudflare validation, and Python
 artifact inspection consume that same finalized attestation. The section names,
 versions, value-type format, and layout semantics are generated from
-`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`; there is no numeric
+`runtime/runtime_abi.toml`; there is no numeric
 callable export compatibility lane and no independently authored JavaScript
 signature map.
 
