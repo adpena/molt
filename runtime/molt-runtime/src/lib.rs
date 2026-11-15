@@ -821,7 +821,7 @@ pub use crate::object::ops_set::*;
 pub use crate::object::ops_slice::*;
 pub use crate::object::ops_string::*;
 #[allow(unused_imports)]
-pub(crate) use crate::object::ops_string::{utf8_cache_remove, utf8_codepoint_count_cached};
+pub(crate) use crate::object::ops_string::{utf8_cache_forget, utf8_codepoint_count_cached};
 pub use crate::object::ops_vec::*;
 pub(crate) use crate::object::type_ids::*;
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;

@@ -47,6 +47,21 @@ fn build_utf8_cache(bytes: &[u8]) -> Utf8IndexCache {
     Utf8IndexCache { offsets, prefix }
 }
 
+/// Admit `key` as a side-cache key: only a live runtime string may key an
+/// entry, because only a string's free and resize forget its entries. Marks
+/// the string (`StringStorage::mark_side_cached`) before any entry is
+/// published; a non-string key is computed uncached.
+fn admit_cache_key(key: usize) -> bool {
+    let object = key as *mut u8;
+    unsafe {
+        if object_type_id(object) != TYPE_ID_STRING {
+            return false;
+        }
+        crate::object::layout::StringStorage::mark_side_cached(object);
+    }
+    true
+}
+
 fn utf8_cache_get_or_build(
     _py: &PyToken<'_>,
     key: usize,
@@ -61,7 +76,9 @@ fn utf8_cache_get_or_build(
         return Some(cache);
     }
     let cache = Arc::new(build_utf8_cache(bytes));
-    if let Ok(mut store) = runtime_state(_py).utf8_index_cache.lock() {
+    if admit_cache_key(key)
+        && let Ok(mut store) = runtime_state(_py).utf8_index_cache.lock()
+    {
         if let Some(existing) = store.get(key) {
             return Some(existing);
         }
@@ -70,7 +87,14 @@ fn utf8_cache_get_or_build(
     Some(cache)
 }
 
-pub(crate) fn utf8_cache_remove(_py: &PyToken<'_>, key: usize) {
+/// Drop every UTF-8 side-cache entry keyed by the string at `ptr`, before
+/// its storage is freed or its bytes change. A string no cache admitted
+/// (`admit_cache_key`) costs one trailer-byte load: no lock, no hash.
+pub(crate) fn utf8_cache_forget(_py: &PyToken<'_>, ptr: *mut u8) {
+    if !unsafe { crate::object::layout::StringStorage::has_side_caches(ptr) } {
+        return;
+    }
+    let key = ptr as usize;
     if let Ok(mut store) = runtime_state(_py).utf8_index_cache.lock() {
         store.remove(key);
     }
@@ -159,6 +183,9 @@ pub(super) fn utf8_count_cache_store(
     count: i64,
     prefix: Vec<i64>,
 ) {
+    if !admit_cache_key(key) {
+        return;
+    }
     let cache = Arc::new(Utf8CountCache {
         needle: needle.to_vec(),
         count,
@@ -190,7 +217,7 @@ pub(super) fn utf8_count_cache_upgrade_prefix(
         return cache.clone();
     }
     let prefix = build_utf8_count_prefix(hay_bytes, &cache.needle);
-    if prefix.is_empty() {
+    if prefix.is_empty() || !admit_cache_key(key) {
         return cache.clone();
     }
     let upgraded = Arc::new(Utf8CountCache {

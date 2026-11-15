@@ -1361,7 +1361,7 @@ use ops_string_utf8::{
     utf8_byte_to_char_index_cached, utf8_count_cache_count_slice, utf8_count_cache_lookup,
     utf8_count_cache_store, utf8_count_cache_upgrade_prefix,
 };
-pub(crate) use ops_string_utf8::{utf8_cache_remove, utf8_codepoint_count_cached, wtf8_step};
+pub(crate) use ops_string_utf8::{utf8_cache_forget, utf8_codepoint_count_cached, wtf8_step};
 
 #[path = "ops_string_split.rs"]
 mod ops_string_split;
