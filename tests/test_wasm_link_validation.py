@@ -2235,54 +2235,31 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
     assert [entry[2] for entry in relocations] == [0, 1, 2]
 
 
-def test_app_export_adapters_on_a_standard_object_match_the_exported_shape(
+def test_app_export_adapters_leave_a_standard_object_unchanged(
     tmp_path: Path,
 ) -> None:
-    """A standard object (no export section) gets the same adapters.
+    """A standard object (no export section) gets no adapter.
 
-    The independent oracle is the WASM backend's exported shape: the adapter
-    bodies, their relocations and their symbols must be identical, and the
-    standard object must not gain an export section (wasm-ld exports the
-    adapter from its exported symbol flag).
+    LLVM's wasm32 object defines each contract target as a global function
+    symbol, and wasm-ld exports it under that name. The link must neither edit
+    the object nor name an adapter for it.
     """
-    adapted: dict[bool, bytes] = {}
-    maps: dict[bool, dict[str, str]] = {}
-    for standard in (False, True):
-        output = tmp_path / f"output-{standard}.wasm"
-        output.write_bytes(
-            _build_app_adapter_input((0, 1, 3), standard_object=standard)
+    output = tmp_path / "output.wasm"
+    original = _build_app_adapter_input((0, 1, 3), standard_object=True)
+    output.write_bytes(original)
+    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
+    try:
+        adapted, adapter_map = wasm_link_edit._inject_app_export_adapters(
+            _rewrite_input(output),
+            temp_dir,
+            public_export_names=(COMPILED_F0, COMPILED_F1, COMPILED_F2),
+            call_abi=_app_adapter_call_abi(),
+            facts_provider=_facts_provider,
         )
-        temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
-        try:
-            adapted_path, maps[standard] = wasm_link_edit._inject_app_export_adapters(
-                _rewrite_input(output),
-                temp_dir,
-                public_export_names=(COMPILED_F0, COMPILED_F1, COMPILED_F2),
-                call_abi=_app_adapter_call_abi(),
-                facts_provider=_facts_provider,
-            )
-            adapted[standard] = adapted_path.path.read_bytes()
-        finally:
-            temp_dir.cleanup()
-
-    assert maps[True] == maps[False]
-    assert _defined_function_bodies(adapted[True]) == _defined_function_bodies(
-        adapted[False]
-    )
-    assert _code_relocations(adapted[True]) == _code_relocations(adapted[False])
-    assert wasm_link_format._collect_function_exports(adapted[True]) == {}
-
-    def adapter_flags(data: bytes) -> dict[str, int]:
-        return {
-            symbol.name: symbol.flags
-            for symbol in parse_wasm_linking_symbols(data).function_symbols
-            if symbol.name in maps[True].values()
-        }
-
-    flags = adapter_flags(adapted[True])
-    assert flags == adapter_flags(adapted[False])
-    assert set(flags) == set(maps[True].values())
-    assert all(value & FLAG_EXPORTED for value in flags.values())
+        assert adapter_map == {}
+        assert adapted.path.read_bytes() == original
+    finally:
+        temp_dir.cleanup()
 
 
 def test_app_export_adapter_validator_replaces_raw_target_identity(

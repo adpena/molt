@@ -220,16 +220,11 @@ def _inject_app_export_adapters(
     func_type_indices = list(facts["function_type_indices"])[import_count:]
     original_func_count = len(func_type_indices)
     export_indices = facts_provider(data).function_exports
-    # A standard relocatable object (LLVM's wasm32 target) has no export
-    # section: a defined global function symbol is its public identity, and
-    # the adapter's exported symbol flag makes wasm-ld export it.
-    standard_object = not export_indices
-    if standard_object:
-        export_indices = {
-            symbol.name: symbol.index
-            for symbol in facts_provider(data).linking_symbols.function_symbols
-            if symbol.name and symbol.is_defined and symbol.index is not None
-        }
+    if not export_indices:
+        # A standard relocatable object (LLVM's wasm32 target) has no export
+        # section and needs no adapter: each contract target is a defined
+        # global function symbol, and wasm-ld exports it under that name.
+        return output, {}
 
     existing_exports = set(export_indices)
     linking_symbols = facts_provider(data).linking_symbols
@@ -391,24 +386,10 @@ def _inject_app_export_adapters(
             new_sections.append((section_id, bytes(updated_payload)))
             continue
         new_sections.append((section_id, payload))
-    if standard_object:
-        wrapper_symbol_entries = [
-            (
-                adapter_symbol,
-                import_count + original_func_count + index,
-                FLAG_BINDING_GLOBAL
-                | FLAG_EXPLICIT_NAME
-                | FLAG_EXPORTED
-                | FLAG_NO_STRIP,
-            )
-            for index, (_public, adapter_symbol, _type, _target, _symbol) in enumerate(
-                specs
-            )
-        ]
-    elif not saw_export_section:
-        raise ValueError("app export adapter input is missing its export section")
-    if not (saw_function_section and saw_code_section):
-        raise ValueError("app export adapter input is missing function/code sections")
+    if not (saw_function_section and saw_export_section and saw_code_section):
+        raise ValueError(
+            "app export adapter input is missing function/export/code sections"
+        )
 
     updated = _extend_code_relocations(
         _build_sections(new_sections),

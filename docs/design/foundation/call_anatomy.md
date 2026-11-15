@@ -244,7 +244,7 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
 
 1. Blocker 1, closed by HF-699 E2 (b658a6917d): reserved runtime callables are keys on every
    target and no WASM table reserves a runtime region. LLVM objects need no table base.
-2. Slice A, the linked cell (landed 2026-11-12): `--target wasm --backend llvm` compiles through
+2. Slice A, the linked cell (landed 2026-11-15): `--target wasm --backend llvm` compiles through
    LLVM's wasm32 target and links a standard relocatable object. Before, the WASM backend ignored
    the flag. The LLVM lane takes a typed `LlvmCodegenTarget` (host or `wasm32-wasip1`: triple, data
    layout before lowering, generic CPU without reference types, static relocation). The wasm32
@@ -253,8 +253,9 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    `molt_call_indirectN` and `molt_isolate_import`, and the attached-context custom section
    (`!wasm.custom_sections`). Two pointer-width faults are fixed (the resolver's `usize` length;
    8-byte module registry slots). The link tools find a standard object's public functions and
-   `molt_call_indirectN` definitions by linking symbol when it has no export section. The split
-   runtime refuses early. Measured 2026-11-12 (macOS arm64, Node, interleaved medians, output equal
+   `molt_call_indirectN` definitions by linking symbol when it has no export section, and inject
+   no export adapter into it: wasm-ld exports each app-export contract target under its own
+   symbol. The split runtime refuses early. Measured 2026-11-12 (macOS arm64, Node, interleaved medians, output equal
    to CPython 3.12.16 `-I`; instructions retired, WASM backend to LLVM): `bench_fib` 16.70 to 9.12
    billion (0.67 to 0.35 s), `bench_calls` 10.50 to 7.39 billion, `bench_sum` 6.80 to 5.59 billion,
    nbody 200000 steps 46.09 to 41.23 billion (1.82 to 1.66 s). Linked size +15% on the three small
@@ -266,7 +267,13 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    backend daemon reached 27.6 GB RSS. At that cost a differential run times out: 1-in-8 and 1-in-40
    samples of the `basic` lane timed out per build (600 s, then 1200 s) or hit the run's 34.7 GB RSS
    guard; `descriptor_dispatch_mutation` passed and `generator_finally_return_lifetime` fails in the
-   TIR exception-region verifier as on native (HF-215). The full-lane comparison waits for slice B.
+   TIR exception-region verifier as on native (HF-215). 2026-11-15 on main 340f8c3b06 (34-file
+   `basic` sample, 4 jobs, dev profile): `hello` with a class, f-string, dict and caught
+   `KeyError` prints CPython's output; one program passed, `closure_cell_sharing` fails as on
+   native LLVM (HF-295 class b), four builds hit the 600 s timeout and the LLVM daemon reached the
+   31 GB RSS guard. A one-line edit rebuild of a small program takes 187 s on LLVM against 93 s on
+   the WASM backend (load 8; release: backend 35 s, link 37 s of which wasm-opt 25 s). The
+   full-lane comparison waits for slice B.
 3. Slice B, compile latency (blocker 4). Slice A's warm edit-and-rebuild of `bench_fib` takes
    141 s on LLVM against 42 s on the WASM backend (machine under load; backend compile 39 s, link
    78 s, of which the link's WASM fact scans take 47 s and wasm-opt 24 s). Plan: compile wasm32
