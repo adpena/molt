@@ -44,14 +44,13 @@ impl SimpleBackend {
         // partitioning; physical symbol spelling carries no authority.
         let source_callables =
             molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
-        // One lane target answers every target query below: the shared SimpleIR
-        // pipeline, the Cranelift TIR cache, and dead-op elimination.
+        // One lane target answers every target query below: the Cranelift TIR
+        // cache and dead-op elimination. The TIR pipeline is the one optimizer.
         let lane_target_info = if use_llvm {
             crate::tir::target_info::TargetInfo::llvm_release_fast()
         } else {
             crate::tir::target_info::TargetInfo::native_from_simd_caps(self.target_simd_caps())
         };
-        molt_tir::passes::run_simple_ir_pipeline(ir, &lane_target_info);
 
         // Capture task/closure custody from the unsplit body exactly once.
         // The first TIR lift must see bounded bodies, including the LLVM lane.
