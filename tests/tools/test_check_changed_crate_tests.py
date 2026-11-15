@@ -536,3 +536,34 @@ def test_rerun_failed_passes_only_when_each_named_test_passes_alone(
     assert ran == [tuple(rerun["argv"])]
     last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert last["status"] == ("passed" if passes else "failed")
+
+
+def test_cells_build_grouped_by_their_projected_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # molt-runtime-platform's build script tracks PATH: each switch between
+    # projected environments rebuilds it and its dependents, so cells with
+    # one environment build together, in declared order within the group.
+    def toolchain_environment(
+        plan: object, names: tuple[str, ...], *, environ: dict[str, str]
+    ) -> dict[str, str]:
+        return {"PATH": "/wasm:/bin"} if "wasm-ld" in names else {}
+
+    class Plan:
+        def toolchain_closure(self, names: list[str]) -> tuple[str, ...]:
+            return tuple(names)
+
+    monkeypatch.setattr(gate, "toolchain_environment", toolchain_environment)
+    cells = []
+    for label, toolchains in (
+        ("a", {"cargo"}),
+        ("b", {"cargo", "wasm-ld"}),
+        ("c", {"cargo"}),
+        ("d", {"cargo", "wasm-ld"}),
+    ):
+        cell = gate.Cell(gate.CellKey((label,), (), ()))
+        cell.sources = [label]
+        cell.toolchains = set(toolchains)
+        cells.append(cell)
+    ordered = gate.build_order(cells, Plan())  # type: ignore[arg-type]
+    assert [cell.label for cell in ordered] == ["a", "c", "b", "d"]

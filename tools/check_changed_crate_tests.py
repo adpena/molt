@@ -33,7 +33,8 @@ section 9.4.2):
   Cargo's compiler-artifact records, and its `test result:` line to that
   package; each declared integration binary must report a summary too. A cell that exits non-zero, a selected crate without a summary,
   or a declared crate that runs 0 tests fails the gate;
-* schedule: cells run beside each other (`cell_workers`). Cargo's build lock
+* schedule: cells run beside each other (`cell_workers`), grouped by their
+  projected toolchain environment (`build_order`). Cargo's build lock
   serializes their builds on the shared target and releases it before tests
   run, so one cell's tests overlap the next cell's build. Each cell's output
   prints whole when it finishes;
@@ -803,6 +804,36 @@ def cell_workers(count: int) -> int:
     )
 
 
+def build_order(cells: Sequence[Cell], plan: ProofPlan) -> list[Cell]:
+    """The cells grouped by their projected toolchain environment, declared
+    order within a group.
+
+    A build script that tracks an ambient variable (molt-runtime-platform
+    tracks PATH, SDKROOT and DEVELOPER_DIR) reruns when consecutive builds on
+    the shared target see different values, and every dependent rebuilds: a
+    warm two-cell run rebuilt molt-runtime-platform and molt-wasm-host on each
+    switch (26-40 s). Grouping keeps each cell's own CI environment and
+    switches once per group.
+    """
+
+    def key(cell: Cell) -> tuple[tuple[str, str], ...]:
+        try:
+            delta = toolchain_environment(
+                plan,
+                plan.toolchain_closure(sorted(cell.toolchains)),
+                environ=dict(os.environ),
+            )
+        except ToolchainNotProvisioned:
+            return ()  # the cell reports it when it runs
+        return tuple(sorted(delta.items()))
+
+    keys = {cell.label: key(cell) for cell in cells}
+    first: dict[tuple[tuple[str, str], ...], int] = {}
+    for index, cell in enumerate(cells):
+        first.setdefault(keys[cell.label], index)
+    return sorted(cells, key=lambda cell: first[keys[cell.label]])
+
+
 def failed_tests(
     cells: Sequence[Cell], results: Mapping[str, CellResult]
 ) -> list[dict] | None:
@@ -973,7 +1004,10 @@ def main(argv: list[str] | None = None) -> int:
             if selection.runner is not None
             else None
         )
-        pending = {pool.submit(run, cell): cell for cell in selection.cells}
+        pending = {
+            pool.submit(run, cell): cell
+            for cell in build_order(selection.cells, proof_plan)
+        }
         try:
             for future in as_completed(pending):
                 results[pending[future].label] = future.result()
