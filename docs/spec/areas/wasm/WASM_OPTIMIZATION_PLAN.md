@@ -620,8 +620,8 @@ when the effective final runtime package strips debug information, including
 package, configuration, environment and explicit rustc overrides. Retained DWARF
 keeps its original offsets. The selected response file enters the captured Cargo
 plan and member identity; response rebinding retains SDK custody and repins the
-resource generation. Native shipping keeps its separately measured ThinLTO/16
-policy. Invalid artifacts fail closed without an alternate-profile retry.
+resource generation. Native shipping uses the same fat LTO/one-unit policy at
+opt-level 3 (measured 2026-11-15 in `Cargo.toml`). Invalid artifacts fail closed without an alternate-profile retry.
 
 The October 2026 codec correction made Unicode name tables reachable from generic
 named escapes and runtime-selected error handlers. Those semantics and the core
