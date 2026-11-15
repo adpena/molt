@@ -23,6 +23,7 @@ from molt.compiler_analysis.python_namespace_graph import (
     NO_GRAPH_NAMESPACE_WRITES,
     PythonGraphNamespaceWrites,
     PythonNamespacePremise,
+    bind_namespace_writer,
     graph_python_namespace_writes,
 )
 from molt.compiler_analysis.python_namespace_writes import (
@@ -821,7 +822,7 @@ def local_python_import_closure(
         visited, covered_sources, topology_digest = walk(graph_writes)
         found = graph_python_namespace_writes(
             (
-                write
+                bind_namespace_writer(write, module_source.name)
                 for module_source in sorted(
                     visited, key=lambda item: (item.name, item.path.as_posix())
                 )

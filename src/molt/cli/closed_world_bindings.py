@@ -79,6 +79,9 @@ class ModuleNamespaceFacts:
                 "the program writes some module namespace by a computed name "
                 "or mapping, so no module's foreign writers are known"
             )
+        writer = self.premise.escape_writer(name)
+        if writer is not None:
+            return f"written at {writer} through an escaped module value"
         if name in self.premise.foreign_writes:
             return "another module writes it by name"
         return None

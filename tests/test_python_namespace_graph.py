@@ -285,3 +285,49 @@ def test_reflection_marks_only_its_target_and_writes_no_member() -> None:
     assert index.merge(named) == frozenset({first})
     assert index.merge(anywhere) is None
     assert index.premise(second, frozenset()).namespace_reflected
+
+
+def test_escaped_module_values_meet_named_member_stores(tmp_path: Path) -> None:
+    """A name stored as an attribute anywhere is a write of every module whose
+    value escapes, and of no other module (call_anatomy.md 4.5a)."""
+    from molt.compiler_analysis.python_namespace_graph import (
+        PythonGraphNamespaceIndex,
+        bind_namespace_writer,
+        graph_python_namespace_writes,
+    )
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+
+    warnings, other = tmp_path / "warnings.py", tmp_path / "other.py"
+    sources = {"warnings": warnings, "other": other}
+    store = PythonNamespaceWrite(None, "_impl", "member_store", 296)
+    own = PythonNamespaceWrite(None, None, "own_module_escape", 266)
+    index = PythonGraphNamespaceIndex()
+    index.merge(
+        graph_python_namespace_writes(
+            [store, own], sources.get, writer=("warnings", warnings)
+        )
+    )
+    escaped = index.premise(warnings, frozenset())
+    assert escaped.foreign_writes == ("_impl",)
+    assert escaped.escape_writes == (("_impl", "warnings:296"),)
+    assert escaped.escape_writer("_impl") == "warnings:296"
+    assert escaped.escape_writer("other_name") is None
+    kept = index.premise(other, frozenset())
+    assert kept.foreign_writes == ()
+    assert kept.escape_writes == ()
+
+    # A store admitted after the escape still reaches the escaped module.
+    later = PythonNamespaceWrite(None, "late", "member_store", 7)
+    changed = index.merge(
+        graph_python_namespace_writes([later], sources.get, writer=("other", other))
+    )
+    assert changed is not None and warnings in changed
+    assert "late" in index.premise(warnings, frozenset()).foreign_writes
+
+    # A flattened walk names the writer of an own escape itself.
+    bound = bind_namespace_writer(own, "warnings")
+    assert (bound.module, bound.construct) == ("warnings", "module_escape")
+    flat = graph_python_namespace_writes([store, bound], sources.get)
+    assert flat.escaped == frozenset({warnings})
+    # Without a writer an own escape is any module's value.
+    assert graph_python_namespace_writes([own], sources.get).escaped is None
