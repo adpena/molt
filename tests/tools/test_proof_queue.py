@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import uuid
 from collections.abc import Callable, Mapping
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
@@ -5272,6 +5273,11 @@ def _execute_request(
         command, cargo_output_root=_real_cargo_output_root()
     )
     request = result.with_suffix(".request.json")
+    # Each execution owns a fresh nonce, as the runner mints one per request.
+    # A declared Cargo output root outlives tmp_path, and pytest reuses the
+    # numbered tmp_path of a passed test (tmp_path_retention_policy="failed"),
+    # so a fixed nonce selects the earlier test's run scratch again.
+    execution_nonce = uuid.uuid4().hex + uuid.uuid4().hex
     request.write_text(
         json.dumps(
             {
@@ -5280,7 +5286,7 @@ def _execute_request(
                 ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "unit-run",
-                "execution_nonce": "a" * 64,
+                "execution_nonce": execution_nonce,
                 "env_override_names": [],
                 "command": command,
                 "envelope": envelope,

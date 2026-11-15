@@ -26,8 +26,13 @@ def _make_unreachable_cycles(count: int) -> int:
     return made
 
 
+# Automatic collection would reclaim some cycles before the explicit call, in
+# CPython as in Molt; disable it so gc.collect() alone accounts for all of them.
+gc.collect()
+gc.disable()
 n = _make_unreachable_cycles(64)
 collected = gc.collect()
+gc.enable()
 print("created", n, "unreachable reference cycles")
 print("collected_is_int", isinstance(collected, int))
 print("collected_at_least_nodes", collected >= n * 2)

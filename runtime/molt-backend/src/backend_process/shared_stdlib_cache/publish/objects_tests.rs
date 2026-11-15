@@ -251,6 +251,12 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     assert!(disagreement.contains(&bytes_to_lower_hex(&key)));
     assert!(disagreement.contains(&cache.path(&key).display().to_string()));
     assert!(disagreement.contains("first_difference="));
+    assert!(disagreement.contains(&changed_origin.input.sha256));
+    // The refused emission is kept, byte for byte, outside the entry.
+    let digest: [u8; 32] = Sha256::digest(&different).into();
+    let refused = cache.refused_object_path(&key, &digest);
+    assert!(disagreement.contains(&refused.display().to_string()));
+    assert_eq!(std::fs::read(&refused).unwrap(), different);
     assert_eq!(std::fs::read(cache.path(&key)).unwrap(), stored);
     std::fs::write(&source, b"invalid object").unwrap();
     assert!(cache.publish(&key, &source, &origin).is_err());

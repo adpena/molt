@@ -2050,6 +2050,14 @@ def test_outer_completion_publishes_payload_before_maintenance_dispatch(
     marker = tmp_path / "payload-ran"
     summary = tmp_path / "guard.json"
     selected = {
+        # `molt dx run` materializes this checkout's roots. A hosted job's
+        # checkout contract is process-global; without it the checkout reads as
+        # a plain clone whose custody is its own source tree.
+        **{
+            key: os.environ[key]
+            for key in dx.GITHUB_ACTIONS_CUSTODY_ENV_KEYS
+            if owner == "dx_run" and key in os.environ
+        },
         **env,
         "PATH": os.environ.get("PATH", ""),
         "MOLT_DISK_GUARD_HIGH_WATER_GB": "0.001",

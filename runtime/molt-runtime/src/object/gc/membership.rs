@@ -19,7 +19,8 @@ use super::{GcMembershipAdmission, NUM_GENERATIONS, PERMANENT_GENERATION};
 use crate::object::{MoltHeader, PtrSlot};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const GENERATION_LISTS: usize = NUM_GENERATIONS + 1;
+/// One member list per generation, the permanent one included.
+pub(super) const GENERATION_LISTS: usize = NUM_GENERATIONS + 1;
 
 /// Bytes reserved before the `MoltHeader` of a head-bearing allocation.
 pub(crate) const GC_HEAD_BYTES: usize = 8;
@@ -97,8 +98,9 @@ impl Generation {
         self.0
     }
 
+    /// This generation's member list, `0..GENERATION_LISTS`.
     #[inline]
-    fn list(self) -> usize {
+    pub(super) fn list(self) -> usize {
         usize::from(self.0)
     }
 
@@ -226,6 +228,16 @@ impl Membership {
     #[inline]
     pub(super) unsafe fn is_tracked(slot: PtrSlot) -> bool {
         unsafe { GcHead::of(slot) }.place().is_some()
+    }
+
+    /// `slot`'s generation and position in its member list, read from its head
+    /// alone; `None` when it is untracked.
+    ///
+    /// # Safety
+    /// `slot` is a live object whose allocation reserved a GC head.
+    #[inline(always)]
+    pub(super) unsafe fn place(slot: PtrSlot) -> Option<(Generation, usize)> {
+        unsafe { GcHead::of(slot) }.place()
     }
 
     /// The ordinal of `slot`'s current tracking lifetime.
