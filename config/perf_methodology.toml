@@ -52,8 +52,11 @@ schema = "molt-perf-methodology-v1"
 # v41: proven class calls allocate inline and enter __init__ directly (41fd9714d0),
 # so instruction counts of class-heavy workloads can move; it landed without the
 # lock. Earlier reports retain their recorded comparison class.
-version = 41
-content_sha256 = "ad8847be2eb1fa04350688045acf358d82d9a143947764009988b7c9d6c990f6"
+# v42: constructor results stay exact when no code can assign __class__
+# (75547a09db), so admitted type facts and instruction counts can move; it landed
+# without the lock. Earlier reports retain their recorded comparison class.
+version = 42
+content_sha256 = "e8885c1ba45316a2ff92223cf62774931659448ac10c1b53e85cf59f6658f1f9"
 
 [[methodology]]
 path = "tools/safe_run.py"
