@@ -65,37 +65,14 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         if self.current_func_name == "molt_main":
             return self._emit_globals_dict()
         # A function's locals() is its frame's: the runtime reads the executing
-        # frame's homes or task payload. Luau and Rust, which keep no runtime
-        # frame, build the dict from these (name, value) pairs, where an unbound
-        # name's value is the missing sentinel. `shared`: before PEP 667 an
-        # activation's locals() is one dict that each call refreshes.
-        pairs: list[MoltValue] = []
-        public_names = set(self.scope_assigned)
-        public_names.update(self.async_locals)
-        public_names.update(self.parameter_bindings)
-        for name in sorted(public_names):
-            value = self._load_local_value_unchecked(name)
-            if value is None:
-                continue
-            key = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
-            pairs.extend((key, value))
-        for name in sorted(self.free_vars):
-            if name in public_names:
-                continue
-            cell = self._load_free_var_cell(name)
-            if cell is None:
-                continue
-            hint = self.free_var_hints.get(name, "Any")
-            value = self._emit_cell_get(cell, type_hint=hint)
-            key = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
-            pairs.extend((key, value))
+        # frame's homes or task payload, so the op carries no operands.
+        # `shared`: before PEP 667 an activation's locals() is one dict that
+        # each call refreshes.
         res = MoltValue(self.next_var(), type_hint="dict")
         self.emit(
             MoltOp(
                 kind="FRAME_LOCALS",
-                args=pairs,
+                args=[],
                 result=res,
                 metadata={"shared": self.target_python < (3, 13)},
             )

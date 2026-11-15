@@ -568,8 +568,6 @@ def test_requests_for_additional_results_still_do_not_cut_off(
         ),
         ("wasm", {"emit": "obj"}, "Invalid emit mode for wasm target: obj"),
         ("native", {"emit": "wasm"}, "emit=wasm requires --target wasm"),
-        ("rust", {"emit": "jit"}, "emit=jit requires the native target"),
-        ("luau", {"emit": "jit"}, "emit=jit requires the native target"),
         ("mlir", {"emit": "jit"}, "emit=jit requires the native target"),
         (
             "native",
@@ -616,8 +614,6 @@ def test_invalid_output_options_refuse_before_build_scope(
         ("wasm-freestanding", {"require_linked": True}, True, "wasm"),
         ("wasm32-wasip1", {"split_runtime": True}, True, "wasm"),
         ("wasm32-unknown-unknown", {}, False, "wasm"),
-        ("rust", {"linked": True}, True, "bin"),
-        ("luau", {"linked": True}, True, "bin"),
         ("mlir", {}, False, "bin"),
     ],
 )

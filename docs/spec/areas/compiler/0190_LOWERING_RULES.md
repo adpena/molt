@@ -252,8 +252,7 @@ enclosing block labels directly, including
 pending-error checks and ready await continuations. One pure control plan projects
 `molt-ir`'s executable operation edges and implicit exits onto the generated WASM
 physical block boundaries before frame locals or data segments are allocated.
-This topology view performs no name liveness fixed point. The existing Rust/Luau
-logical-flow projection consumes the same edge producer before its liveness work;
+This topology view performs no name liveness fixed point.
 WASM does not reconstruct label, lexical-loop or exceptional successors.
 
 An ordinary normalized Jumpful function admits entry at operation zero. Only reachable
@@ -299,22 +298,6 @@ initial frontend transport admission still permits that input grammar. Final
 owned/dropped IR is never relifted to repair a missing normalization. This
 postcondition is shared by final typed projection, source backends and authored
 final codegen fixtures.
-
-Luau
-labelled transfers project the shared executable SimpleIR graph (excluding
-verifier-only reachability edges), with explicit pending/handled exception state
-in the coroutine-owned frame context. No backend pairs textual TRY intervals or
-skips cleanup operations by matching source patterns.
-
-Rust-source labelled control flow uses the existing structured-PHI rewrite and
-shared TIR lift/lowering for SSA edge assignments, then the shared executable
-SimpleIR graph for dispatch. Residual unstructured PHIs fail explicitly instead
-of guessing a predecessor. A jump never
-implies a return or selects the last stored value. Source-order alias hints cannot
-cross dispatch blocks. This does not expand Rust's admitted object, exception or
-coroutine capabilities; unsupported domains remain explicit admission failures.
-The current Rust target policy also gates unstructured control and truthiness;
-internal executable-emission tests do not confer checked-target support.
 
 Shared TIR-to-SimpleIR lowering owns block-argument transport for every target.
 Explicit exception transfers end their source basic block. Their canonical CFG
@@ -374,11 +357,6 @@ Field-role knowledge alone does not admit an operation or a raw carrier:
 unsupported binding spellings retain their backend rejection, and only
 registered checked-arithmetic operations authorize value/overflow result pairs.
 
-Rust-source labelled flow preserves the canonical separation between ABI
-parameter names and mutable local storage. Storage declarations live outside
-dispatch arms, parameter-backed slots start with their incoming values, and the
-existing source-backend writeback protocol uses the canonical slot mapping.
-
 Native list-buffer caching consumes the same typed operation effects and
 executable CFG dominance facts. Ordinary and indexed loops share one preheader
 producer for scope publication and storage/layout loads. Nested loop effects
@@ -406,8 +384,7 @@ Hoisted operands must dominate the destination through the canonical CFG.
 Source-ordered SimpleIR motion cannot prove dominance of
 resumption edges into a loop and must not run before that analysis. Native,
 LLVM and WASM preparation and the frontend midend no longer have a second
-constant-hoisting pass;
-Luau source postprocessing likewise does not perform textual LICM.
+constant-hoisting pass.
 Deferred class calls keep live global lookup inside the executed loop body;
 there is no frontend preheader class cache or name-based effect-proof override.
 Zero-iteration loops cannot acquire, cache or raise from an unexecuted class read.
@@ -782,7 +759,7 @@ guarded specialization only:
   `str` marks every name, since its `__eq__` may match any of them. A
   user dictionary installed as globals is untracked and never satisfies a
   guard. A module's `__dict__` is read-only, so a namespace is never
-  replaced. Luau namespaces track nothing, so the Luau guard is always false.
+  replaced.
 
 Exact user-class layout follows the actual lowered result, never a constructor
 name recovered from the AST. Only a constructionally exact result may carry
@@ -918,9 +895,6 @@ full-width integer boxing still materializes and retires its temporary owner
 when discarded, preserving allocation failure. Pure representation extraction
 does not create an owner for an absent result. Consumers must distinguish
 semantic result arity from the presence of an observable result binding.
-Rust-source and Luau use their existing value carriers for the same conversions;
-their shared representation handlers preserve reserved `none`, omit discarded
-bindings, and reject malformed operand counts even when no result is bound.
 
 No-result explicit retains are credits for the current binding epoch. Rebinding
 starts a new epoch and cannot spend the previous object's explicit credit
@@ -1130,11 +1104,6 @@ In particular, an empty value-ABI return is boxed `None`, never raw integer zero
 An empty extern declaration is not a body proving a `None` result: its value
 ABI has an unknown boxed semantic result, and lowering keeps the declaration
 free of synthetic executable signature operations.
-
-Luau coroutine wrappers retire their exact execution-context lookup on terminal
-completion, failure or explicit close through the shared frame authority.
-Weak indexing handles abandonment; terminal retirement does not depend on GC
-pressure, collection timing or eventual disappearance of retained wrappers.
 
 Callable capability requirements are independent of exact callable identity.
 Live global loads union the requirements of possible imported provenance and

@@ -329,21 +329,20 @@ theorem optimized_evalExpr_target_independent
 The following properties depend on the backend target and cannot be
 lifted from TIR alone:
 
-1. **Binary size**: Native binaries, WASM modules, Luau scripts, and
-   Rust source files have vastly different sizes.
+1. **Binary size**: Native binaries and WASM modules have vastly
+   different sizes.
 
-2. **Execution speed**: Native code is faster than WASM, which is faster
-   than interpreted Luau.
+2. **Execution speed**: Native code and WASM run at different speeds.
 
 3. **Memory layout**: While NaN-boxed values are identical, the heap
    layout (allocation addresses, GC behavior) may differ between
    native and WASM.
 
 4. **I/O timing**: The timing of I/O operations depends on the backend's
-   runtime (native OS, WASM runtime, Luau VM).
+   runtime (native OS, WASM runtime).
 
-5. **Binary format**: ELF vs Mach-O vs WASM module vs Luau source vs
-   Rust source -- structurally different output formats.
+5. **Binary format**: ELF vs Mach-O vs WASM module -- structurally different
+   output formats.
 
 These are all **non-observable** properties in Molt's model: they cannot
 be detected by the program itself (no timing introspection, no binary

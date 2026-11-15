@@ -518,7 +518,7 @@ pinned Python) and run
 the runner temp short: the backend daemon socket path derives from it.
 
 The plan also admits each command's pinned toolchains (LLVM, the wasi-sdk,
-wasm-tools, Binaryen, Node, Lune), which CI's setup actions put first on
+wasm-tools, Binaryen, Node), which CI's setup actions put first on
 `PATH`. The proof runner, `molt_dev.py integrate` and the generators check
 put the installed pinned providers first themselves (`admit_toolchains` in
 `tools/proof_plan.py`), so a developer shell with other versions first needs
@@ -639,7 +639,7 @@ compilation to its existing build-plus-run reservation, clipped by the item's
 absolute deadline. The first execution of a newly emitted native or LLVM image
 can spend that attempt's unused cold allowance; it cannot restart the deadline
 or consume another backend's reservation. An explicitly unbounded build does
-not remove a finite run cap. CPython and existing WASM/Luau host execution keep
+not remove a finite run cap. CPython and existing WASM host execution keep
 their ordinary run caps. No extra execution establishes readiness.
 
 WASM execution tests distinguish guest-VM deadlines from native child-process

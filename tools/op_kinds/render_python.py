@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .registration import (
-    backend_private_kinds,
     frontend_kinds_for_wire_kind,
     registered_frontend_kinds,
     registered_simpleir_kinds,
@@ -405,9 +404,7 @@ def _render_py_kind_types(data: dict) -> str:
     )
     out.append("FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {\n")
     lowering: dict[str, str] = {}
-    for wire in sorted(
-        registered_simpleir_kinds(data) - backend_private_kinds(data).keys()
-    ):
+    for wire in sorted(registered_simpleir_kinds(data)):
         for frontend in frontend_kinds_for_wire_kind(data, wire):
             lowering[frontend] = wire
     for row in data.get("kind", []):
@@ -436,11 +433,6 @@ def render_py(data: dict) -> str:
     out.append(
         _render_py_frozenset(
             "SIMPLEIR_REGISTERED_KINDS", sorted(registered_simpleir_kinds(data))
-        )
-    )
-    out.append(
-        _render_py_frozenset(
-            "SIMPLEIR_BACKEND_PRIVATE_KINDS", sorted(backend_private_kinds(data))
         )
     )
     out.append(
@@ -597,10 +589,6 @@ def render_py(data: dict) -> str:
     )
     out.append(
         '        raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")\n'
-    )
-    out.append("    if kind in SIMPLEIR_BACKEND_PRIVATE_KINDS:\n")
-    out.append(
-        '        raise ValueError(f"function {function_name!r}: backend-private SimpleIR op kind {kind!r} escaped frontend serialization")\n'
     )
     out.append("    if kind not in SIMPLEIR_REGISTERED_KINDS:\n")
     out.append(

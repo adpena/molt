@@ -120,8 +120,6 @@ class NativeToolchainSelection:
                 molt_root=project_root,
                 backend_cargo_profile=backend_cargo_profile,
                 is_wasm=False,
-                is_luau_transpile=False,
-                is_rust_transpile=False,
                 codegen_backend=DEFAULT_CODEGEN_BACKEND,
                 rust_cpu=rust_cpu,
             ),

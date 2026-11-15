@@ -197,8 +197,6 @@ def test_workspace_dev_dependency_wildcard_preserves_workspace_policy() -> None:
     expected_hot_members = {
         "molt-backend": {"opt-level": 1, "debug": 0},
         "molt-backend-native": {"opt-level": 1, "debug": 0},
-        "molt-backend-luau": {"opt-level": 1, "debug": 0},
-        "molt-backend-rust": {"opt-level": 1, "debug": 0},
         "molt-backend-wasm": {"opt-level": 1, "debug": 0},
         "molt-tir": {"opt-level": 1, "debug": 0},
         "molt-passes": {"opt-level": 1, "debug": 0},

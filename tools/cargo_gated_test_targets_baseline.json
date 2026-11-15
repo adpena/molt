@@ -1,10 +1,6 @@
 {
  "schema": 1,
  "unrun": {
-  "molt-backend-rust::float_repr_cpython_parity": {
-   "finding": "HF-565",
-   "reason": "the backend-rust gate runs rust_transpiler_preview only"
-  },
   "molt-lang-cpython-abi::l7_numeric_perf_attestation": {
    "finding": "HF-565",
    "reason": "run by tools/numeric_attestation runners, which the plan does not declare as a cargo test invocation of this target"

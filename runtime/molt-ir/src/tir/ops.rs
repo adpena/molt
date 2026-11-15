@@ -43,9 +43,7 @@ pub enum OpCode {
     ///
     /// Lowering: native = Cranelift `sadd_overflow`; LLVM =
     /// `llvm.sadd.with.overflow.i64`; WASM = raw `i64.add` + the sign-bit
-    /// identity `((lhs ^ sum) & (rhs ^ sum)) < 0`; Luau = the
-    /// `molt_checked_i64_add` prelude helper `(a + b, false)` — f64 addition
-    /// never wraps i64, so the overflow branch is correctly dead there.
+    /// identity `((lhs ^ sum) & (rhs ^ sum)) < 0`.
     ///
     /// Deliberately NOT classified pure-movable/CSE-safe in the effects
     /// oracle: a 2-result op must not be value-numbered or hoisted until the
@@ -70,11 +68,7 @@ pub enum OpCode {
     /// shift of the low 64 bits (`hi != lo >> 63`) — a FULL 64-bit-exact flag,
     /// never a 47-bit `fits_inline` test. LLVM = `llvm.smul.with.overflow.i64`.
     /// WASM = boxed-lane-only v1 (no raw 64x64->128 overflow helper yet, a
-    /// documented target limitation). Luau = the `molt_checked_i64_mul` prelude
-    /// helper which returns `flag = true` whenever exactness cannot be proven
-    /// (f64 loses mantissa bits in the i64 range, so a structural
-    /// `return a*b, false` would be a silent wrong answer — the conservative
-    /// flag forces the sound boxed slow loop).
+    /// documented target limitation).
     ///
     /// Deliberately NOT classified pure-movable/CSE-safe in the effects
     /// oracle: a 2-result op must not be value-numbered or hoisted until the

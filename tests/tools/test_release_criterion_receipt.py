@@ -1142,7 +1142,7 @@ def test_structural_engine_preflight_seal_survives_nested_inventory_mutation(
     assert not destination.output_path.exists()
 
 
-def test_structural_schema_matches_unpatched_producer_and_zero_proof_debt_baseline():
+def test_structural_schema_matches_unpatched_producer_and_baseline() -> None:
     from tools import structural_audit
 
     metrics = structural_audit.ratchet_metrics([])
@@ -1153,8 +1153,6 @@ def test_structural_schema_matches_unpatched_producer_and_zero_proof_debt_baseli
     )
     assert set(metrics) == receipt.STRUCTURAL_AUDIT_METRICS
     assert set(baseline) == receipt.STRUCTURAL_AUDIT_METRICS
-    assert metrics["rust_backend_rejection_applicability_total"] == 0
-    assert baseline["rust_backend_rejection_applicability_total"] == 0
 
 
 def test_unpatched_structural_scan_metrics_validate_with_real_receipt_consumer(

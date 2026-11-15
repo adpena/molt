@@ -13,13 +13,6 @@ def read_source(path: Path) -> str:
     return ""
 
 
-def read_required_source(path: Path) -> str:
-    text = read_source(path)
-    if not text:
-        raise FileNotFoundError(f"Source file not found: {path}")
-    return text
-
-
 def parse_lean_hex_constants(text: str) -> dict[str, int]:
     result: dict[str, int] = {}
     for match in re.finditer(
@@ -76,10 +69,6 @@ def parse_rust_enum_variants(text: str, enum_name: str) -> list[str]:
 
 def normalize_lean_variant_name(name: str) -> str:
     return name[:-1] if name.endswith("_") else name
-
-
-def parse_lean_builtin_mappings(text: str) -> list[tuple[str, str]]:
-    return re.findall(r'\("(\w+)",\s*"([^"]+)"\)', text)
 
 
 def parse_lean_eval_binop_rules(text: str) -> list[tuple[str, str, str]]:

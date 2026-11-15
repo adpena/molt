@@ -117,36 +117,6 @@ def _clang_llvm_version_detail(major: int) -> str | None:
     )
 
 
-def _llvm_backend_unavailable_message(root: Path) -> str | None:
-    pin = _required_llvm_backend_pin(root)
-    if pin is None:
-        return None
-    try:
-        verification = verify_available_llvm_toolchain(root)
-        failure_detail = None
-    except LlvmToolchainConfigError as exc:
-        verification = None
-        failure_detail = str(exc)
-    if verification is not None:
-        return None
-    major = pin.major
-    env_var = pin.env_var
-    advice = "\n".join(f"  - {item}" for item in _llvm_backend_advice_for_pin(pin))
-    detail = (
-        failure_detail
-        or _clang_llvm_version_detail(major)
-        or "No matching llvm-config was found."
-    )
-    return (
-        f"LLVM backend requires LLVM {pin.major}.{pin.minor} with llvm-config. "
-        f"{detail}\n"
-        "Set MOLT_LLVM_PREFIX to the SDK prefix, LLVM_CONFIG_PATH to its matching "
-        f"executable, and {env_var} to the root containing that executable's bin "
-        "directory.\n"
-        f"Recommended actions:\n{advice}"
-    )
-
-
 def _llvm_backend_advice_for_pin(pin: LlvmBackendPin) -> list[str]:
     if platform.system() == "Windows":
         return [
@@ -248,11 +218,6 @@ def _wasmtime_setup_advice(system: str) -> list[str]:
             "or: cargo install wasmtime-cli --locked",
         ]
     return ["curl https://wasmtime.dev/install.sh -sSf | bash"]
-
-
-def _luau_runner_setup_advice(system: str) -> list[str]:
-    del system
-    return ["cargo install lune --locked", "or install a luau runner on PATH"]
 
 
 def _windows_vsdevcmd_path() -> Path | None:
@@ -662,15 +627,6 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         advice=_wasmtime_setup_advice(system) if not wasmtime_path else None,
     )
 
-    luau_runner_path = shutil.which("luau") or shutil.which("lune")
-    record(
-        "luau-runner",
-        bool(luau_runner_path),
-        luau_runner_path or "not found",
-        level="warning",
-        advice=_luau_runner_setup_advice(system) if not luau_runner_path else None,
-    )
-
     zig_path = shutil.which("zig")
     record(
         "zig",
@@ -971,7 +927,6 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             "llvm": bool(cc_path) and available["llvm"],
             "wasm": available["wasm"] and bool(wasm_tools_path),
             "linked-wasm": available["wasm"] and bool(wasm_ld_ok and wasm_tools_path),
-            "luau": bool(luau_runner_path),
         }
         profiles = {
             profile: any(
@@ -988,7 +943,6 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             "linked-wasm": bool(
                 cargo_path and wasm_target_ok and wasm_ld_ok and wasm_tools_path
             ),
-            "luau": bool(luau_runner_path),
         }
         profiles = {
             "dev": bool(cargo_path),

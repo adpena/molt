@@ -3371,53 +3371,26 @@ def test_backend_features_for_target_single_source_of_truth(
     monkeypatch.setenv("MOLT_BACKEND", "llvm")
     assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=False,
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         codegen_backend="cranelift",
     ) == ("native-backend",)
     assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=True,
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         codegen_backend="cranelift",
     ) == ("wasm-backend",)
-    # luau implies rust-transpile too; luau wins.
-    assert BACKEND_EXECUTION._backend_features_for_target(
-        is_wasm=False,
-        is_luau_transpile=True,
-        is_rust_transpile=True,
-        codegen_backend="cranelift",
-    ) == ("luau-backend",)
-    assert BACKEND_EXECUTION._backend_features_for_target(
-        is_wasm=False,
-        is_luau_transpile=False,
-        is_rust_transpile=True,
-        codegen_backend="cranelift",
-    ) == ("rust-backend",)
     # The llvm feature folds in and changes both codegen and the binary path.
     assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=False,
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         codegen_backend="llvm",
     ) == ("native-backend", "llvm")
     with pytest.raises(ValueError, match="unknown codegen backend"):
         BACKEND_EXECUTION._backend_features_for_target(
             is_wasm=False,
-            is_luau_transpile=False,
-            is_rust_transpile=False,
             codegen_backend="gcc",  # type: ignore[arg-type]
         )
     # The target-string wrapper derives the booleans purely from `target`.
     assert BACKEND_EXECUTION._backend_features_for_build_target(
         target=admit_target("native"), is_wasm=False, codegen_backend="cranelift"
     ) == ("native-backend",)
-    assert BACKEND_EXECUTION._backend_features_for_build_target(
-        target=admit_target("luau"), is_wasm=False, codegen_backend="cranelift"
-    ) == ("luau-backend",)
-    assert BACKEND_EXECUTION._backend_features_for_build_target(
-        target=admit_target("rust"), is_wasm=False, codegen_backend="cranelift"
-    ) == ("rust-backend",)
     assert BACKEND_EXECUTION._backend_features_for_build_target(
         target=admit_target("wasm"), is_wasm=True, codegen_backend="cranelift"
     ) == ("wasm-backend",)

@@ -897,7 +897,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpKind::FrameLocals => {
                 // `locals()`: the runtime's one authority over the executing
-                // frame; the operand pairs serve targets that build the dict.
+                // frame.
                 let locals_fn = self.ensure_runtime_import(RuntimeFn::LocalsBuiltin);
                 self.emit_borrowed_runtime_call(
                     op,

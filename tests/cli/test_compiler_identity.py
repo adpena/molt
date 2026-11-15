@@ -165,8 +165,6 @@ def test_daemon_dispatch_converts_compiler_identity_rejection(
     monkeypatch.setattr(backend_compile, "_backend_daemon_config_digest", reject)
     prepared, error = backend_compile._prepare_backend_dispatch(
         backend_environment=CodegenSelection().environment(os.environ, profile="dev"),
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         wasm_layout=None,
         deterministic=True,
@@ -479,8 +477,8 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
     c_inputs["SDKROOT"] = ("${c/SDKROOT/search/0}",)
     assert admission(baseline_env).fingerprint != baseline.fingerprint
     c_inputs.clear()
-    # Public Luau builds choose guest chunking after a prewarm. Neither this
-    # setting nor diagnostic verbosity changes the admitted host compiler.
+    # Guest module chunking and diagnostic verbosity, chosen after a prewarm,
+    # do not change the admitted host compiler.
     guest = admission(
         {
             **baseline_env,

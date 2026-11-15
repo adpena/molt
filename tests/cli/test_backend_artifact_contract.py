@@ -34,8 +34,6 @@ from tests.native_artifact_fixtures import elf_header, native_relocatable_object
         ("wasm", "wasm", "WASM", ".wasm"),
         ("wasm-freestanding", "wasm", "WASM", ".wasm"),
         ("wasm32-wasip1", "wasm", "WASM", ".wasm"),
-        ("rust", "bin", "RUST", ".rs"),
-        ("luau", "bin", "LUAU", ".luau"),
         ("mlir", "bin", "MLIR", ".mlir"),
     ],
 )
@@ -60,8 +58,6 @@ def test_cache_identity_distinguishes_all_requested_output_families_and_targets(
     requests = (
         ("native", "obj"),
         ("native", "bin"),
-        ("rust", "bin"),
-        ("luau", "bin"),
         ("mlir", "bin"),
         ("wasm", "wasm"),
         ("wasm-freestanding", "wasm"),
@@ -104,8 +100,6 @@ def test_cache_identity_distinguishes_all_requested_output_families_and_targets(
         ("native", "wasm"),
         ("wasm", "bin"),
         ("wasm", "obj"),
-        ("rust", "obj"),
-        ("luau", "wasm"),
         ("mlir", "obj"),
         ("", "bin"),
         ("wasm32-wasip1", "obj"),
@@ -259,7 +253,7 @@ def test_shared_archive_visitor_resolves_metadata_and_exact_payload_extent(
     ).validate(path)
 
 
-@pytest.mark.parametrize("target", ["rust", "luau", "mlir"])
+@pytest.mark.parametrize("target", ["mlir"])
 def test_text_admission_is_incremental_utf8_and_never_native(
     tmp_path, monkeypatch, target
 ):
@@ -280,7 +274,7 @@ def test_text_admission_is_incremental_utf8_and_never_native(
     contract.validate(path)
 
 
-@pytest.mark.parametrize("target", ["rust", "luau", "mlir"])
+@pytest.mark.parametrize("target", ["mlir"])
 @pytest.mark.parametrize(
     "data", [b"", b" \r\n\t", b"\xff", b"text\xe2\x82", b"text\0tail"]
 )
@@ -326,7 +320,7 @@ def test_wasm_contract_uses_existing_structural_validation(
 
 
 @pytest.mark.parametrize(
-    "target,emit", [("native", "obj"), ("native", "bin"), ("rust", "bin")]
+    "target,emit", [("native", "obj"), ("native", "bin"), ("mlir", "bin")]
 )
 def test_missing_output_fails_with_artifact_context(tmp_path, target, emit):
     contract = contracts.resolve_backend_artifact_contract(

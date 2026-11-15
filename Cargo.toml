@@ -34,8 +34,6 @@ members = [
     "runtime/molt-backend-native",
     "runtime/molt-llvm-link",
     "runtime/molt-jit",
-    "runtime/molt-backend-luau",
-    "runtime/molt-backend-rust",
     "runtime/molt-backend-wasm",
     "runtime/molt-db",
     "runtime/molt-worker",
@@ -119,14 +117,6 @@ opt-level = 1
 debug = 0
 
 [profile.dev.package.molt-backend-native]
-opt-level = 1
-debug = 0
-
-[profile.dev.package.molt-backend-luau]
-opt-level = 1
-debug = 0
-
-[profile.dev.package.molt-backend-rust]
 opt-level = 1
 debug = 0
 

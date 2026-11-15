@@ -582,7 +582,7 @@ do not reseal it or weaken the retirement comparison to permit cleanup.
 
 Differential guest placement is distinct from proof receipt custody. An
 explicit `MOLT_DIFF_GUEST_OUTPUT_ROOT` selects an existing physical directory
-for native/CPython temporary output, Cargo target and linked-WASM/LLVM/Luau
+for native/CPython temporary output, Cargo target and linked-WASM/LLVM
 adapter scratch. The harness captures its directory identity once, validates
 the selected volume against the existing build-capacity floor and refuses
 replacement or an escaped child environment. `MOLT_DIFF_ROOT`, guard events,
@@ -1114,13 +1114,13 @@ wall time; their sequence numbers must not be interpreted as timestamps.
 
 `rust.test.ir-wasm-runtime-authorities` selects the IR/pass and WASM families
 alongside runtime call/frame/namespace/object ownership tests, without requesting
-native/Rust/Luau code generation or ignored runtime GC benchmarks. Runtime
+native code generation or ignored runtime GC benchmarks. Runtime
 families include arena cleanup, sealed attribute layouts and builtin class
 publication/rollback; these sibling contracts run in the same built image.
 Its captured
 Node and WASM-linker tools remain required for actual WASM consumers. The
 compiler-authorities command depends on this batch and owns the complementary
-native/Rust/Luau, IR and lowering tests; it does not repeat pass/WASM libtests.
+native, IR and lowering tests; it does not repeat pass/WASM libtests.
 Use both command receipts when claiming complete compiler-family acceptance.
 Neither correctness batch replaces optimized-runtime proof.
 Both batches stream libtest diagnostics with `--nocapture`: a later runtime

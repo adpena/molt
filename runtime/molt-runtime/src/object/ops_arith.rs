@@ -444,10 +444,12 @@ pub(crate) fn molt_inplace_add_attached_body(_py: &crate::PyToken<'_>, a: u64, b
                                     // Fast: spare capacity — append in place, zero alloc
                                     let l_data = string_bytes(ptr) as *mut u8;
                                     let r_data = string_bytes(r_ptr);
+                                    // Forget the side caches while the trailer still
+                                    // records them; `set_len` resets it.
+                                    super::ops_string::utf8_cache_forget(_py, ptr);
                                     std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
                                     super::layout::InlineBytesStorage::set_len(ptr, content_len);
                                     super::object_set_state(ptr, 0); // invalidate hash
-                                    super::ops_string::utf8_cache_remove(_py, ptr as usize);
                                     inc_ref_bits(_py, a);
                                     return a;
                                 }

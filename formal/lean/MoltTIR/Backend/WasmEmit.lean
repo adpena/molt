@@ -8,11 +8,11 @@
   - Value correspondence: MoltTIR.Value → WASM stack value (NaN-boxed i64)
   - NaN-boxing encoding in WASM linear memory
 
-  Key difference from LuauEmit: WASM is a stack machine. Each emitExpr call
+  WASM is a stack machine. Each emitExpr call
   produces instructions that, when executed, leave exactly one value on the
   operand stack. Instruction emission pops that value and stores it to a local.
 
-  Unlike Luau's 1-based indexing, WASM uses 0-based indexing throughout
+  WASM uses 0-based indexing throughout
   (locals, memory offsets, function indices, table indices).
 
   References:
@@ -118,8 +118,7 @@ def emitUnOpCore : MoltTIR.UnOp → List WasmInstr
     The resulting instruction sequence, when executed, leaves exactly one
     i64 value on the operand stack.
 
-    This is the WASM analogue of LuauEmit.emitExpr, but targets a stack
-    machine instead of an expression-based language. -/
+    It targets a stack machine, not an expression-based language. -/
 def emitExpr (locals : WasmLocals) : MoltTIR.Expr → List WasmInstr
   | .val v => [.i64_const (valueToWasmConst v)]
   | .var x => [.local_get (locals x)]

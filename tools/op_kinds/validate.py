@@ -481,7 +481,7 @@ def load_table(table_path: Path = TABLE) -> dict:
 
     requirement_constants = {row["constant"] for row in requirement_roles}
     target_profiles = data.get("simpleir_target_runtime_profiles", [])
-    expected_targets = {"native", "wasm", "llvm", "luau", "rust", "mlir"}
+    expected_targets = {"native", "wasm", "llvm", "mlir"}
     if not isinstance(target_profiles, list):
         raise OpKindTableError(
             "simpleir_target_runtime_profiles must be an array of tables"

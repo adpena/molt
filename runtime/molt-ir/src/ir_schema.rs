@@ -2,9 +2,9 @@ use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_calla
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements,
     SimpleIrVarFieldRole, kind_consumed_operand_table, kind_is_source_call,
-    kind_source_call_callable_operand, kind_to_opcode_table, simpleir_backend_private_owner,
-    simpleir_backend_service_kind, simpleir_call_target_role, simpleir_op_shape,
-    simpleir_return_shape, simpleir_var_field_role_table,
+    kind_source_call_callable_operand, kind_to_opcode_table, simpleir_backend_service_kind,
+    simpleir_call_target_role, simpleir_op_shape, simpleir_return_shape,
+    simpleir_var_field_role_table,
 };
 use crate::{OpIR, ParameterCustody};
 
@@ -40,9 +40,6 @@ const METHOD_SITE_KINDS: &[crate::OpKind] =
     &[crate::OpKind::LoadMethod, crate::OpKind::CallLoadedMethod];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
-    BackendPrivate {
-        backend: &'static str,
-    },
     ForbiddenVar,
     ForbiddenValue,
     CodeSlotSymbol,
@@ -81,13 +78,6 @@ pub struct OpShapeDiagnostic {
 
 impl std::fmt::Display for OpShapeDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let OpShapeViolation::BackendPrivate { backend } = &self.violation {
-            return write!(
-                f,
-                "backend-private op kind `{}` belongs to {backend} internal lowering and cannot enter an external SimpleIR program",
-                self.kind
-            );
-        }
         write!(f, "[family={}] `{}` ", self.family, self.kind)?;
         match &self.violation {
             OpShapeViolation::ForbiddenVar => {
@@ -158,9 +148,6 @@ impl std::fmt::Display for OpShapeDiagnostic {
                     Some(actual) => write!(f, "{actual}"),
                     None => write!(f, "none"),
                 }
-            }
-            OpShapeViolation::BackendPrivate { .. } => {
-                unreachable!("admission diagnostic formatted above")
             }
             OpShapeViolation::NonNegativeValue { actual } => {
                 write!(
@@ -386,21 +373,7 @@ pub fn validate_simple_ir_op_shapes(ir: &crate::SimpleIR) -> Result<(), Function
 pub fn validate_function_admission_op_shapes(
     func: &crate::FunctionIR,
 ) -> Result<(), FunctionOpShapeDiagnostic> {
-    validate_function_op_shapes(func)?;
-    for (op_index, op) in func.ops.iter().enumerate() {
-        if let Some(backend) = simpleir_backend_private_owner(op.kind) {
-            return Err(FunctionOpShapeDiagnostic {
-                function: func.name.clone(),
-                op_index,
-                shape: OpShapeDiagnostic {
-                    family: "registration",
-                    kind: op.kind.to_string(),
-                    violation: OpShapeViolation::BackendPrivate { backend },
-                },
-            });
-        }
-    }
-    Ok(())
+    validate_function_op_shapes(func)
 }
 
 /// Validate the control-label transport of the typed StateDispatch terminator.

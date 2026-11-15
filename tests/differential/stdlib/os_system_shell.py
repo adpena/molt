@@ -5,8 +5,8 @@
 POSIX CPython converts `command` with PyUnicode_FSConverter: str, bytes and
 os.PathLike are accepted, anything else raises the os.fspath TypeError, and an
 embedded NUL raises ValueError. The result is the raw wait status. WASI has no
-process spawning (CPython's WASI build has no os.system), so the WASM and Luau
-backends are outside this program's matrix.
+process spawning (CPython's WASI build has no os.system), so the WASM backend
+is outside this program's matrix.
 """
 
 import os

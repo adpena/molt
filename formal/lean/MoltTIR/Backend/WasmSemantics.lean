@@ -16,11 +16,6 @@
 -/
 import MoltTIR.Backend.WasmCorrect
 import MoltTIR.Backend.WasmEmit
-import MoltTIR.Backend.LuauSemantics
-import MoltTIR.Backend.LuauEmit
-import MoltTIR.Backend.RustSemantics
-import MoltTIR.Backend.RustEmit
-import MoltTIR.Backend.RustSyntax
 
 set_option autoImplicit false
 
@@ -80,59 +75,5 @@ def wasmResultToOutcome (result : Option (Option Int)) : Option Outcome :=
     This is the WASM-side equivalent of runFunc. -/
 def evalWasmFunc (wf : WasmFunc) (fuel : Nat) : Option Outcome :=
   wasmResultToOutcome (evalWasmFuncBody wf.body.body fuel)
-
-/-- Get the last element of a list, if any. -/
-private def lastElem? {α : Type} : List α → Option α
-  | [] => none
-  | [x] => some x
-  | _ :: xs => lastElem? xs
-
--- ======================================================================
--- Section 2: Luau function-level evaluation
--- ======================================================================
-
-/-- Execute an emitted Luau function body and produce an Outcome.
-    Evaluates the statements in the function body, then extracts
-    the return value (if any) from the final statement.
-
-    This is simplified: it executes the statement list and looks for
-    a return statement's value. A full model would handle control flow. -/
-def evalLuauFuncBody (stmts : List LuauStmt) (_fuel : Nat) : Option Outcome :=
-  match lastElem? stmts with
-  | some (.returnStmt (some retExpr)) =>
-    match evalLuauExpr LuauEnv.empty retExpr with
-    | some lv =>
-      match luauToValue lv with
-      | some v => some (.ret v)
-      | none => some .stuck
-    | none => some .stuck
-  | some (.returnStmt none) => some (.ret .none)
-  | _ => some .stuck  -- no return statement found
-
-/-- Execute an emitted Luau function and produce an Outcome. -/
-def evalLuauFunc (lf : LuauFunc) (fuel : Nat) : Option Outcome :=
-  evalLuauFuncBody lf.body fuel
-
--- ======================================================================
--- Section 3: Rust function-level evaluation
--- ======================================================================
-
-/-- Execute an emitted Rust function body and produce an Outcome.
-    Similar to the Luau version: execute statements, extract return value. -/
-def evalRustFuncBody (stmts : List RustStmt) (_fuel : Nat) : Option Outcome :=
-  match lastElem? stmts with
-  | some (.returnStmt (some retExpr)) =>
-    match evalRustExpr RustEnv.empty retExpr with
-    | some rv =>
-      match rustToValue rv with
-      | some v => some (.ret v)
-      | none => some .stuck
-    | none => some .stuck
-  | some (.returnStmt none) => some (.ret .none)
-  | _ => some .stuck  -- no return statement found
-
-/-- Execute an emitted Rust function and produce an Outcome. -/
-def evalRustFunc (rf : RustFn) (fuel : Nat) : Option Outcome :=
-  evalRustFuncBody rf.body fuel
 
 end MoltTIR.Backend

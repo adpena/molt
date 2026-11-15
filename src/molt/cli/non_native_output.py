@@ -745,8 +745,6 @@ def _external_native_artifact_fingerprint_inputs(
 
 def _prepare_non_native_build_result(
     *,
-    is_rust_transpile: bool,
-    is_luau_transpile: bool,
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_level: str | None = "Oz",
@@ -782,8 +780,6 @@ def _prepare_non_native_build_result(
     with contextlib.ExitStack() as generation_custody:
         return _prepare_non_native_build_result_in_generation(
             generation_custody=generation_custody,
-            is_rust_transpile=is_rust_transpile,
-            is_luau_transpile=is_luau_transpile,
             is_wasm=is_wasm,
             is_wasm_freestanding=is_wasm_freestanding,
             wasm_opt_level=wasm_opt_level,
@@ -819,8 +815,6 @@ def _prepare_non_native_build_result(
 def _prepare_non_native_build_result_in_generation(
     *,
     generation_custody: contextlib.ExitStack,
-    is_rust_transpile: bool,
-    is_luau_transpile: bool,
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_level: str | None = "Oz",
@@ -859,26 +853,6 @@ def _prepare_non_native_build_result_in_generation(
             json_output,
             command="build",
         )
-    if is_rust_transpile:
-        return _PreparedNonNativeResult(
-            primary_output=output_artifact,
-            consumer_output=output_artifact,
-            bundle_root=None,
-            linked_output_path=linked_output_path,
-            success_messages=[f"Successfully transpiled {output_artifact}"],
-            extra_fields={},
-            artifacts={"rust": str(output_artifact)},
-        ), None
-    if is_luau_transpile:
-        return _PreparedNonNativeResult(
-            primary_output=output_artifact,
-            consumer_output=output_artifact,
-            bundle_root=None,
-            linked_output_path=linked_output_path,
-            success_messages=[f"Successfully built {output_artifact}"],
-            extra_fields={},
-            artifacts={"luau": str(output_artifact)},
-        ), None
     if is_wasm:
         output_wasm = output_artifact
         deployment: WasmDeploymentGeneration | None = None

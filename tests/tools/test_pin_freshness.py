@@ -103,11 +103,11 @@ def test_a_release_younger_than_seven_days_waits_with_its_date() -> None:
 
 
 def test_a_stale_pin_moves_only_to_the_newest_aged_release() -> None:
-    pin = _pin("lune", "0.10.5", ("0.10.5", 100), ("0.11.0", 10), ("0.11.1", 1))
+    pin = _pin("sccache", "0.10.5", ("0.10.5", 100), ("0.11.0", 10), ("0.11.1", 1))
     failures, out = _check([pin])
     assert failures == 1
     assert (
-        "STALE   lune: 0.10.5 -> 0.11.0 (authority); 0.11.1 (public 2026-10-21) "
+        "STALE   sccache: 0.10.5 -> 0.11.0 (authority); 0.11.1 (public 2026-10-21) "
         "waits until 2026-10-28T12:00:00Z"
     ) in out
 
@@ -514,7 +514,7 @@ def test_every_pin_reads_its_authority_loader() -> None:
         == (ROOT / ".python-version").read_text(encoding="utf-8").strip()
     )
     # Pins whose upstream publishes advisories through OSV carry a feed.
-    for name in ("uv", "quint", "cargo-deny", "cargo-audit", "wasm-tools", "lune"):
+    for name in ("uv", "quint", "cargo-deny", "cargo-audit", "wasm-tools"):
         assert pins[name].advisories is not None, name
 
 
@@ -1038,28 +1038,28 @@ def _pin_exemption(
 
 
 def test_a_young_pin_without_a_reason_fails_with_its_eligible_date() -> None:
-    pin = _early_pin("lune", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
+    pin = _early_pin("sccache", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
     failures, out = _check([pin])
     assert failures == 1
     assert (
-        "EARLY   lune: 0.11.1 is younger than 7 days (eligible 2026-10-28T12:00:00Z)"
+        "EARLY   sccache: 0.11.1 is younger than 7 days (eligible 2026-10-28T12:00:00Z)"
     ) in out
 
 
 def test_a_young_pin_with_an_exemption_passes() -> None:
-    pin = _early_pin("lune", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
+    pin = _early_pin("sccache", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
     out = io.StringIO()
     failures = pin_freshness.check_pins(
         [pin],
         set(),
         now=NOW,
         holds={},
-        early={"lune": _pin_exemption("lune", "0.11.1", _ago(1) + WEEK)},
+        early={"sccache": _pin_exemption("sccache", "0.11.1", _ago(1) + WEEK)},
         out=out,
     )
     assert failures == 0
     assert (
-        "EARLY   lune: 0.11.1 until 2026-10-28T12:00:00Z (adopted early)"
+        "EARLY   sccache: 0.11.1 until 2026-10-28T12:00:00Z (adopted early)"
         in out.getvalue()
     )
 
@@ -1079,14 +1079,14 @@ def test_a_young_pin_with_an_exemption_passes() -> None:
 def test_a_pin_exemption_must_name_the_pin_and_its_age_out(
     version, until, problem
 ) -> None:
-    pin = _early_pin("lune", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
+    pin = _early_pin("sccache", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
     out = io.StringIO()
     failures = pin_freshness.check_pins(
         [pin],
         set(),
         now=NOW,
         holds={},
-        early={"lune": _pin_exemption("lune", version, until)},
+        early={"sccache": _pin_exemption("sccache", version, until)},
         out=out,
     )
     assert failures == 1
@@ -1137,14 +1137,14 @@ def test_an_advisory_admits_only_the_oldest_clean_fixing_release() -> None:
 def test_an_aged_out_pin_record_warns_without_failing() -> None:
     # A pin's record does nothing once the pin is 7 days old; only a lock
     # exemption's `==` pin keeps freezing its package (see the uv test).
-    policy = pin_freshness.Policy((_pin_exemption("lune", "0.11.1", _ago(1)),), ())
+    policy = pin_freshness.Policy((_pin_exemption("sccache", "0.11.1", _ago(1)),), ())
     out = io.StringIO()
     assert (
         pin_freshness.check_exemptions([policy], now=NOW, expired_fail=True, out=out)
         == 0
     )
     assert out.getvalue().startswith(
-        "WARNING pin: lune 0.11.1 aged out 2026-10-21T12:00:00Z"
+        "WARNING pin: sccache 0.11.1 aged out 2026-10-21T12:00:00Z"
     )
 
 
@@ -1206,11 +1206,11 @@ def test_a_pin_record_citing_an_advisory_must_name_its_oldest_fix(
 
 
 def test_a_pin_without_an_advisory_feed_cannot_cite_an_advisory() -> None:
-    pin = _early_pin("lune", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
+    pin = _early_pin("sccache", "0.11.1", ("0.11.0", 10), ("0.11.1", 1))
     prove = pin_freshness.citation_proof(
         lambda: [pin], pin_freshness.Fetchers(_no_network, post=_no_network), now=NOW
     )
-    problem = prove(_pin_exemption("lune", "0.11.1", NOW, "GHSA-aaaa-bbbb-cccc"))
+    problem = prove(_pin_exemption("sccache", "0.11.1", NOW, "GHSA-aaaa-bbbb-cccc"))
     assert problem is not None
     assert "no advisory feed covers it; cite the ledger row" in problem
 
@@ -1259,9 +1259,9 @@ def test_pin_exemptions_load_from_their_record(tmp_path) -> None:
     record = tmp_path / pin_freshness.PIN_EXEMPTIONS
     record.write_text(
         "schema_version = 1\n\n[[pin]]\n"
-        'name = "lune"\nversion = "0.11.1"\nuntil = 2026-10-28T10:05:45Z\n'
+        'name = "sccache"\nversion = "0.11.1"\nuntil = 2026-10-28T10:05:45Z\n'
         'cites = "HF-1"\nreason = "adopted early"\n\n'
-        '[[pin]]\nname = "lune"\nversion = "0.11.1"\n'
+        '[[pin]]\nname = "sccache"\nversion = "0.11.1"\n'
         'until = 2026-10-28T10:05:45Z\ncites = "HF-2"\nreason = "twice"\n\n'
         '[[pin]]\nname = "uv"\nversion = "0.13.5"\n'
         'until = 2026-10-29T01:35:54Z\ncites = "because"\nreason = "free text"\n\n'
@@ -1273,9 +1273,11 @@ def test_pin_exemptions_load_from_their_record(tmp_path) -> None:
         datetime(2026, 10, 28, 10, 5, 45, tzinfo=UTC)
     ] * 2 + [datetime(2026, 10, 29, 1, 35, 54, tzinfo=UTC)]
     assert any("needs exactly name, version" in p for p in policy.problems)
-    assert any("lune has more than one exemption" in p for p in policy.problems)
+    assert any("sccache has more than one exemption" in p for p in policy.problems)
     # The citation is typed: an open ledger row or a published advisory ID.
-    assert any("lune cites HF-2, not an open ledger row" in p for p in policy.problems)
+    assert any(
+        "sccache cites HF-2, not an open ledger row" in p for p in policy.problems
+    )
     assert any(
         "uv must cite an advisory ID or a ledger row" in p for p in policy.problems
     )
@@ -1807,7 +1809,7 @@ def test_prune_deletes_aged_out_exemptions_relocks_and_keeps_versions(tmp_path) 
     (root / "config").mkdir()
     (root / pin_freshness.PIN_EXEMPTIONS).write_text(
         "# pins\nschema_version = 1\n\n[[pin]]\n"
-        'name = "lune"\nversion = "0.11.1"\nuntil = 2026-10-28T10:05:45Z\n'
+        'name = "sccache"\nversion = "0.11.1"\nuntil = 2026-10-28T10:05:45Z\n'
         'cites = "HF-1"\nreason = "adopted early"\n\n[[pin]]\nname = "uv"\n'
         'version = "0.13.5"\nuntil = 2026-11-30T00:00:00Z\ncites = "HF-1"\n'
         'reason = "later"\n',
@@ -1827,7 +1829,7 @@ def test_prune_deletes_aged_out_exemptions_relocks_and_keeps_versions(tmp_path) 
     assert pruned == [
         "uv.lock: certifi 2026.10.19",
         "web/package-lock.json: @s/types 5.1",
-        "pin: lune 0.11.1",
+        "pin: sccache 0.11.1",
     ]
     assert calls == [
         (["uv", "lock"], root),

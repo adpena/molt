@@ -127,8 +127,8 @@ Indices cover exactly `0..count`; every slot operation names a bound symbol.
 Unused bindings can remain after dead-function elimination. The map is part of
 final application cache identity, but never of reusable function bodies or
 shared object jobs. Native and LLVM objects import immutable per-owner binding
-cells, defined once by the application metadata owner. WASM, Luau and Rust
-source emission resolve the same symbols to immediate indices. Runtime slot
+cells, defined once by the application metadata owner. WASM emission
+resolves the same symbols to immediate indices. Runtime slot
 storage remains a dense per-isolate table.
 
 The first function is the program entry root for shared dead-function elimination.
@@ -942,7 +942,7 @@ All use the standard `args` + `out` pattern.
 may appear without the other. Public builtin acquisition and named runtime
 construction use this encoding; unnamed runtime constructors carry neither.
 The shared SimpleIR/TIR conversion preserves the pair through every optimization
-roundtrip, before native, LLVM, WASM, Luau, or Rust admission and emission.
+roundtrip, before native, LLVM and WASM admission and emission.
 
 ### Module
 
@@ -1115,7 +1115,7 @@ operations. The TIR `kind_to_opcode` function maps only `shl` and `shr` to
 `OpCode::Shl` / `OpCode::Shr`. Because `lshift` / `rshift` are not in the
 mapping, they fall through to `Copy` in the TIR pipeline. This does not affect
 correctness for backends that dispatch on the original `op.kind` string (WASM,
-Luau, Rust, native), but means TIR optimization passes treat shifts as no-ops.
+native), but means TIR optimization passes treat shifts as no-ops.
 Similarly, `del_attr_name`, `has_attr_name`, `get_attr_name_default`,
 `get_attr_special_obj`, `set_attr_name`, and `del_attr_name` are not mapped
 and fall through to `Copy` in TIR. The same applies to many collection method
@@ -1198,16 +1198,8 @@ lazy or already-observed tails; materialization preserves eager tail identity.
 Cold module chunks retain the same producer-derived scalar and container facts
 as other functions. Suppressing their raw-primary carriers is an optimization
 policy, not permission to erase semantic provenance used by target admission.
-In particular, identity against a proven None singleton remains admissible on
-Luau; this does not admit unknown numeric identity or integer arithmetic without
-the target's required exact numeric authority.
 The preserved frontend `iter` spelling and typed `get_iter` projection both
 require the canonical iterable/sequence protocol; neither is runtime-neutral.
-Luau local-frame cookies are owned by the function scope, including context,
-entry depth, code and coroutine owner. Operation capture closures and dispatch
-blocks assign that cookie rather than shadow it, so later source updates and
-frame exit observe the same entry.
-
 
 `frame_context_set` requires internal execution-frame support. Its three boxed
 operands are borrowed; the runtime retains the active frame owners. It has no

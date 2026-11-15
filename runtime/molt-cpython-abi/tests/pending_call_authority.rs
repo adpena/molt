@@ -126,10 +126,6 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
         root.join("runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs"),
     )
     .unwrap();
-    let luau =
-        fs::read_to_string(root.join("runtime/molt-backend-luau/src/luau/compile_pipeline.rs"))
-            .unwrap();
-    let rust = fs::read_to_string(root.join("runtime/molt-backend-rust/src/rust.rs")).unwrap();
     let mlir =
         fs::read_to_string(root.join("runtime/molt-backend-mlir/src/tir_to_mlir.rs")).unwrap();
     let wasm = fs::read_to_string(
@@ -171,27 +167,6 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
             "{name} backend must service async work polls through the pending-exception entry"
         );
     }
-    // Source architecture witness: Rust/Luau reject through shared admission
-    // before private source emission, not stale leaf-emitter string markers.
-    // Actual backend rejection executions live in their own compiler suites.
-    for (backend, target, boundary) in [
-        (
-            &luau,
-            "luau_release_fast",
-            "validate_target_contract_with_representation_plan(",
-        ),
-        (&rust, "rust_release_fast", "admit_target_program("),
-    ] {
-        let checked = &backend[backend
-            .find("pub fn compile_checked(")
-            .expect("public checked boundary")..];
-        let admission = checked.find(boundary).expect("shared target admission");
-        let publication = checked
-            .find("self.emit_source(")
-            .expect("private source generation");
-        assert!(admission < publication);
-        assert!(checked[admission..publication].contains(target));
-    }
     let admission =
         fs::read_to_string(root.join("runtime/molt-tir/src/target_admission.rs")).unwrap();
     let runtime_admission =
@@ -210,7 +185,7 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
             "assert!(TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())"
         )));
     }
-    for target in ["luau", "rust", "mlir"] {
+    for target in ["mlir"] {
         assert!(target_info.contains(&format!("assert!(!TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())")));
     }
     assert!(mlir.contains("op.is_async_work_poll()"));

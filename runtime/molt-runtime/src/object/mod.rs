@@ -130,7 +130,7 @@ use crate::{
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dict_entries_ptr, dict_table_ptr, map_iters_ptr,
     process_poll_fn_addr, profile_hit, profile_hit_bytes, seq_vec_ptr, set_entries_ptr,
-    set_table_ptr, thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr, zip_iters_ptr,
+    set_table_ptr, thread_poll_fn_addr, utf8_cache_forget, weakref_clear_for_ptr, zip_iters_ptr,
 };
 #[cfg(molt_net)]
 use crate::{
@@ -1560,7 +1560,10 @@ pub(crate) fn heap_kind_has_class_shape(type_id: u32) -> bool {
 /// Admit shared fields only when the immutable physical shape reserves them.
 /// Logical class membership cannot turn a native payload word into a dictionary.
 /// Native classes with real reserved tails remain admitted by generated policy.
-#[inline]
+/// Always inlined: cycle-collector traversal asks it once per visited list
+/// and instance, and an outlined copy cost bench_gc_pressure 3.9%
+/// instructions (2026-11-14).
+#[inline(always)]
 pub(crate) unsafe fn object_has_class_shape(ptr: *mut u8) -> bool {
     unsafe {
         heap_kind_has_class_shape(object_type_id(ptr)) && object_shape_id(ptr).has_class_fields()
@@ -4680,20 +4683,27 @@ unsafe fn dec_ref_ptr_terminal_body(
         } else {
             None
         };
-        // A payload of non-heap words with no side owner detaches nothing:
-        // its backing store is freed below without the edge sink, its census
-        // or the detach walk. A plain instance on that path keeps one edge,
-        // its class, released after the free as CPython's subtype_dealloc
-        // drops the type. Every other object takes the full transaction.
-        let detaches_edges = module_registry_edge.is_some()
-            || retired_runtime_view.is_some()
-            || !heap_lifecycle::retires_without_edges(py, ptr, terminal_flags, header_aux.kind);
-        let class_edge = if detaches_edges {
-            0
+        // An object with no side owner whose payload detaches nothing, or
+        // only an exact list's or tuple's items, retires without the edge
+        // sink, its census or the detach walk: the items are released in
+        // place, last to first, and the backing store is freed below. A
+        // plain instance keeps one edge, its class, released after the free
+        // as CPython's subtype_dealloc drops the type. Every other object
+        // takes the full transaction.
+        let retirement = if module_registry_edge.is_some() || retired_runtime_view.is_some() {
+            heap_lifecycle::TerminalRetirement::Detach
         } else {
-            object_detach_class_edge(ptr)
+            heap_lifecycle::terminal_retirement(py, ptr, terminal_flags, header_aux.kind)
         };
-        if detaches_edges {
+        let class_edge = match retirement {
+            heap_lifecycle::TerminalRetirement::ClassEdgeOnly => object_detach_class_edge(ptr),
+            heap_lifecycle::TerminalRetirement::SequenceItems => {
+                heap_lifecycle::release_sequence_items(py, ptr);
+                object_detach_class_edge(ptr)
+            }
+            heap_lifecycle::TerminalRetirement::Detach => 0,
+        };
+        if retirement == heap_lifecycle::TerminalRetirement::Detach {
             let (terminal_edge_count, terminal_resource_count) =
                 heap_lifecycle::terminal_detach_capacity(py, ptr);
             let terminal_resource_count = terminal_resource_count
@@ -4721,7 +4731,7 @@ unsafe fn dec_ref_ptr_terminal_body(
             total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
         terminal_resource_drop_no_unwind(|| {
             match heap_drop_policy(type_id) {
-                Some(HeapDropPolicy::String) => utf8_cache_remove(py, ptr as usize),
+                Some(HeapDropPolicy::String) => utf8_cache_forget(py, ptr),
                 Some(HeapDropPolicy::Type) => {
                     bump_type_version();
                 }

@@ -1085,8 +1085,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         }
         OpKind::FrameLocals => {
             // `locals()`, `vars()`, `dir()`: the runtime's one authority reads
-            // the executing frame's bindings; the operand pairs are for
-            // targets that build the dict themselves.
+            // the executing frame's bindings.
             let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,

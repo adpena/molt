@@ -73,7 +73,7 @@ touching code, docs, tests, benchmarks, or roadmap state.
   capability surface. Accidental ambient behavior is a bug.
 - Quality gates are non-negotiable for claimed support, but they are not a
   license to stall implementation with excessive proof loops. Differential
-  tests, conformance suites, CPython regrtest lanes, native/WASM/LLVM/Luau
+  tests, conformance suites, CPython regrtest lanes, native/WASM/LLVM
   target parity, memory custody, sanitizer/runtime checks, and benchmarks must
   back the claims they prove; do not run broad lanes as progress theater.
 - Verification must stay high-signal. Use focused tests, repro shards,
@@ -412,7 +412,7 @@ This rule applies equally to:
 - **Performance**: redesign the hot path, do not add bypass cases
 - **Architecture**: rework the abstraction, do not stack patches on a wrong foundation
 
-Performance contract: molt MUST be faster than CPython on every benchmark, across every target (native, WASM, LLVM, Luau) and every profile (release-fast, dev-fast, debug-with-asserts). Do not declare a perf task complete until measurements confirm it on all targets.
+Performance contract: molt MUST be faster than CPython on every benchmark, across every target (native, WASM, LLVM) and every profile (release-fast, dev-fast, debug-with-asserts). Do not declare a perf task complete until measurements confirm it on all targets.
 
 ### Concrete examples of partial implementations to reject
 
@@ -534,8 +534,7 @@ Read these first instead of rediscovering project structure:
     backend-facing scalar/container representation plans.
   - `runtime/molt-backend-native/src/native_backend/`,
     `runtime/molt-backend-native/src/llvm_backend/`,
-    `runtime/molt-backend-wasm/src/`, `runtime/molt-backend-luau/src/`, and
-    `runtime/molt-backend-rust/src/` for backend-specific lowering.
+    and `runtime/molt-backend-wasm/src/` for backend-specific lowering.
     `molt-backend` reexports backend leaf APIs behind feature flags; do not
     add new backend encoder, source-emission, or ABI authority under
     `runtime/molt-backend/src/`.
@@ -616,9 +615,8 @@ Read these first instead of rediscovering project structure:
     `libmolt` work.
   - `docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md`
     routes third-party ecosystem claims.
-  - `docs/spec/areas/compiler/backend_representation.generated.md` and
-    `docs/spec/areas/compiler/luau_support_matrix.generated.md` route backend
-    representation and Luau support evidence.
+  - `docs/spec/areas/compiler/backend_representation.generated.md` routes backend
+    representation evidence.
 
 ## Top Priority: Tinygrad + DFlash Fidelity (Non-Negotiable, Turn Blocker)
 - Exact tinygrad semantics and API shape are the public ML contract. No drift is acceptable.

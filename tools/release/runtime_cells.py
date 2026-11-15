@@ -438,7 +438,6 @@ def _produce_wasm(
 
     cargo_profile = request.runtime_profile
     state = _initialize_runtime_artifact_state(
-        is_rust_transpile=False,
         is_wasm=True,
         emit_mode="wasm",
         molt_root=source_root,

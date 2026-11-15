@@ -1467,12 +1467,12 @@ def test_native_cache_admission_hashes_once_and_returns_reusable_generation(
 def test_backend_publication_rejects_swapped_source_before_copy(
     tmp_path, monkeypatch, stage
 ):
-    source = tmp_path / "source.rs"
+    source = tmp_path / "source.mlir"
     source.write_text("fn alpha() {}\n", encoding="utf-8")
-    destination = tmp_path / "out.rs"
+    destination = tmp_path / "out.mlir"
     destination.write_text("prior output", encoding="utf-8")
     original_copy = cache._atomic_copy_file
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
 
     def replace_before_copy(src, dst, **kwargs):
         src.write_text("fn bravo() {}\n", encoding="utf-8")
@@ -1486,11 +1486,11 @@ def test_backend_publication_rejects_swapped_source_before_copy(
         ):
             cache._publish_immutable_backend_cache_artifact(
                 source,
-                tmp_path / "cache.rs",
+                tmp_path / "cache.mlir",
                 artifact_contract=contract,
                 warnings=warnings,
             )
-        assert not (tmp_path / "cache.rs").exists()
+        assert not (tmp_path / "cache.mlir").exists()
     elif stage == "materialize":
         assert not cache._materialize_cached_backend_artifact(
             tmp_path,
@@ -1521,8 +1521,8 @@ def test_backend_publication_rejects_swapped_source_before_copy(
 
 
 def test_immutable_cache_publication_rejects_conflicting_valid_peer(tmp_path):
-    source = tmp_path / "source.rs"
-    destination = tmp_path / "cache.rs"
+    source = tmp_path / "source.mlir"
+    destination = tmp_path / "cache.mlir"
     source.write_text("fn alpha() {}\n", encoding="utf-8")
     destination.write_text("fn bravo() {}\n", encoding="utf-8")
     with pytest.raises(
@@ -1531,21 +1531,21 @@ def test_immutable_cache_publication_rejects_conflicting_valid_peer(tmp_path):
         cache._publish_immutable_backend_cache_artifact(
             source,
             destination,
-            artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+            artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
             warnings=[],
         )
     assert destination.read_text(encoding="utf-8") == "fn bravo() {}\n"
 
 
 def test_immutable_publication_returns_admitted_identity_without_source_alias(tmp_path):
-    source = tmp_path / "source.rs"
-    destination = tmp_path / "cache.rs"
+    source = tmp_path / "source.mlir"
+    destination = tmp_path / "cache.mlir"
     payload = "fn alpha() {}\n"
     source.write_bytes(payload.encode())
     identity = cache._publish_immutable_backend_cache_artifact(
         source,
         destination,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
         warnings=[],
     ).identity
     assert identity.path == destination

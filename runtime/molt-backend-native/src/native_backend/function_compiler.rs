@@ -1071,7 +1071,6 @@ impl SimpleBackend {
                     op.kind,
                     OpKind::BitNot
                         | OpKind::Bool
-                        | OpKind::BoolConst
                         | OpKind::BuiltinBool
                         | OpKind::BuiltinPrint
                         | OpKind::CastBool
@@ -1089,12 +1088,10 @@ impl SimpleBackend {
                         | OpKind::IfNot
                         | OpKind::IsNot
                         | OpKind::LoadConst
-                        | OpKind::NoneConst
                         | OpKind::Not
                         | OpKind::NotIn
                         | OpKind::Print
                         | OpKind::PrintNewline
-                        | OpKind::StringConst
                         | OpKind::UnaryNot
                 ) {
                     eprintln!(

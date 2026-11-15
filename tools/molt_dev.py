@@ -636,10 +636,9 @@ def prepare_gate_environment(
     venv = _resolve_repo_venv(repo, env) if requires_python or explicit else None
     if venv is None:
         if requires_python:
-            raise DriverError(
-                "development image not selected; run "
-                "`python -m molt.checkout_provisioning ensure uv-environment`"
-            )
+            from molt.checkout_provisioning import PROVISION_HINT
+
+            raise DriverError(f"development image not selected; {PROVISION_HINT}")
         return GateEnvironment(env, None, False)
     managed = not bool(env.get("MOLT_VENV"))
     try:
@@ -797,10 +796,9 @@ def _gate_environment(
     venv = context.python_root
     if venv is None:
         if python_gate or shell_python:
-            raise DriverError(
-                "development image not selected; run "
-                "`python -m molt.checkout_provisioning ensure uv-environment`"
-            )
+            from molt.checkout_provisioning import PROVISION_HINT
+
+            raise DriverError(f"development image not selected; {PROVISION_HINT}")
         return cmd, env
     managed = context.managed
     try:

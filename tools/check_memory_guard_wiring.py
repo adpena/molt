@@ -246,24 +246,6 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "benchmark audit helper must guard external commands",
     ),
     TokenContract(
-        "tools/bench_backend_incremental.py",
-        (
-            "harness_memory_guard",
-            "guarded_completed_process",
-            "MOLT_BENCH",
-        ),
-        "backend incremental benchmark helper must guard child commands",
-    ),
-    TokenContract(
-        "tools/benchmark_luau_vs_cpython.py",
-        (
-            "harness_memory_guard",
-            "guarded_completed_process",
-            "repo_process_sentinel",
-        ),
-        "Luau-vs-CPython benchmark runner must guard child commands",
-    ),
-    TokenContract(
         "tools/cpython_regrtest.py",
         (
             "harness_memory_guard",
@@ -603,7 +585,6 @@ REQUIRED_SENTINEL_TOKENS: tuple[str, ...] = (
     "/bench/wasm_bench.py",
     "/bench/scripts/run_demo_bench.py",
     "/bench/scripts/run_db_stub.py",
-    "/bench/luau/run_benchmarks.py",
     "/tests/benchmarks/bench_generator.py",
 )
 

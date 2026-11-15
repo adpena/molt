@@ -348,7 +348,7 @@ Each resolver applies the rule itself:
   and `rust-toolchain.toml`, the reference CPython pins, every Action pinned
   under `.github`, and each npm project's `packageManager`. It queries OSV for
   every candidate release of the pins OSV knows (uv, quint, cargo-deny,
-  cargo-audit, wasm-tools, lune, sccache, the Actions and npm) and never
+  cargo-audit, wasm-tools, sccache, the Actions and npm) and never
   targets a release that carries an advisory, and it reads the `security` flag
   of Node's release index. A pin younger than 7 days fails as EARLY unless it
   is the oldest clean release above an aged release that carries an advisory
@@ -464,10 +464,6 @@ Interpretation:
   `tools/check_subprocess_guard_coverage.py` and
   `tools/check_memory_guard_wiring.py`, so raw subprocess launches and broader
   dev/test/bench entrypoint guard drift both fail in the canonical smoke lane.
-- Use `molt validate --suite smoke --backend luau` for the first-class Luau lane;
-  it checks generated support-matrix freshness, Luau backend/lowering Rust tests,
-  checked Luau emission, Luau runner availability, and the targeted
-  CPython-vs-Luau `ord_at` smoke under the shared memory guard.
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
 - Every `tools/dev.py` command that launches through `uv run` first installs

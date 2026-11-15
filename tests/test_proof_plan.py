@@ -2189,12 +2189,6 @@ def test_midend_change_runs_complete_rust_llvm_formal_family() -> None:
     assert classes["formal"] is True
 
 
-def test_luau_change_selects_formal_without_stale_backend_path() -> None:
-    classes = _classes("runtime/molt-backend-luau/src/luau.rs")
-    assert classes["formal"] is True
-    assert classes["rust"] is True
-
-
 def test_llvm_control_plane_changes_run_llvm_stack() -> None:
     for path in (
         "src/molt/llvm_toolchain.py",
@@ -9368,22 +9362,20 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
 @pytest.mark.parametrize(
     "path",
     [
-        "runtime/molt-backend-luau/src/luau/op_maps.rs",
-        "runtime/molt-backend-luau/Cargo.toml",
-        "runtime/molt-backend-rust/tests/rust_transpiler_preview.rs",
         "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
+        "runtime/molt-backend-mlir/Cargo.toml",
     ],
 )
 def test_experimental_backend_changes_select_no_experimental_gate(path: str) -> None:
-    # Owner decision 2026-11-05: Luau, the Rust emitter and MLIR run in no
-    # presubmit or postsubmit cell. A change to their sources may still select
+    # Owner decision 2026-11-05: MLIR runs in no presubmit or postsubmit cell
+    # (the Luau and Rust emitters were deleted 2026-11-12). A change to their sources may still select
     # shared authority gates, but none of those gates runs an excluded backend.
     from tools import molt_dev_policy
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     gates, _matched = config.select([path])
     excluded = proof_plan.excluded_backends()
-    assert excluded == frozenset({"luau", "mlir", "rust"})
+    assert excluded == frozenset({"mlir"})
     for gate in gates:
         argv = (
             shlex.split(gate.command)
@@ -9395,18 +9387,18 @@ def test_experimental_backend_changes_select_no_experimental_gate(path: str) -> 
 
 
 def test_experimental_backend_selection_names_each_selection_form() -> None:
-    excluded = frozenset({"luau", "mlir", "rust"})
+    excluded = frozenset({"mlir"})
     select = proof_plan.experimental_backend_selection
     assert (
         select(
-            ["python3", "-m", "molt.cli", "build", "a.py", "--target", "luau"],
+            ["python3", "-m", "molt.cli", "build", "a.py", "--target", "mlir"],
             None,
             excluded,
         )
-        == "--target luau"
+        == "--target mlir"
     )
-    assert select(["cargo", "test", "-p", "molt-backend-rust"], None, excluded) == (
-        "-p molt-backend-rust"
+    assert select(["cargo", "test", "-p", "molt-backend-mlir"], None, excluded) == (
+        "-p molt-backend-mlir"
     )
     assert (
         select(
@@ -9414,12 +9406,12 @@ def test_experimental_backend_selection_names_each_selection_form() -> None:
                 "cargo",
                 "test",
                 "--features",
-                "molt-backend/native-backend,molt-backend/luau-backend",
+                "molt-backend/native-backend,molt-backend/mlir-backend",
             ],
             None,
             excluded,
         )
-        == "--features molt-backend/native-backend,molt-backend/luau-backend"
+        == "--features molt-backend/native-backend,molt-backend/mlir-backend"
     )
     assert select(
         ["cargo", "test", "--all-targets"], "runtime/molt-backend-mlir", excluded

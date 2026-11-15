@@ -821,10 +821,6 @@ def _backend_probe_target(
         return product.value
     if "wasm-backend" in backend_features:
         return "wasm"
-    if "luau-backend" in backend_features:
-        return "luau"
-    if "rust-backend" in backend_features:
-        return "rust"
     return "native"
 
 
@@ -1079,9 +1075,7 @@ def _ensure_backend_binary(
                 probe_ir = None
                 probe_cmd = [str(binary), JIT_RUNNER_PROBE_FLAG]
             else:
-                probe_suffix = {"wasm": ".wasm", "luau": ".luau", "rust": ".rs"}.get(
-                    probe_target, ".o"
-                )
+                probe_suffix = ".wasm" if probe_target == "wasm" else ".o"
                 probe_tmp = tempfile.NamedTemporaryFile(
                     prefix="molt_backend_probe_",
                     suffix=probe_suffix,
@@ -1090,7 +1084,7 @@ def _ensure_backend_binary(
                 probe_tmp.close()
                 probe_path = Path(probe_tmp.name)
                 probe_cmd = [str(binary), "--output", str(probe_path)]
-                if probe_target in {"wasm", "luau", "rust"}:
+                if probe_target == "wasm":
                     probe_cmd.extend(["--target", probe_target])
             try:
                 with stable_executable_probe(

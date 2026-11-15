@@ -61,8 +61,6 @@ pub enum OpKind {
     Band,
     #[serde(rename = "binding_alias")]
     BindingAlias,
-    #[serde(rename = "binop")]
-    Binop,
     #[serde(rename = "binop_add")]
     BinopAdd,
     #[serde(rename = "binop_floor_div")]
@@ -85,8 +83,6 @@ pub enum OpKind {
     BitXor,
     #[serde(rename = "bool")]
     Bool,
-    #[serde(rename = "bool_const")]
-    BoolConst,
     #[serde(rename = "bor")]
     Bor,
     #[serde(rename = "borrow")]
@@ -99,8 +95,6 @@ pub enum OpKind {
     BoxFromRawInt,
     #[serde(rename = "br_if")]
     BrIf,
-    #[serde(rename = "branch")]
-    Branch,
     #[serde(rename = "branch_false")]
     BranchFalse,
     #[serde(rename = "branch_true")]
@@ -285,8 +279,6 @@ pub enum OpKind {
     CodeSlotSet,
     #[serde(rename = "code_slots_init")]
     CodeSlotsInit,
-    #[serde(rename = "compare")]
-    Compare,
     #[serde(rename = "complex_from_obj")]
     ComplexFromObj,
     #[serde(rename = "const")]
@@ -333,8 +325,6 @@ pub enum OpKind {
     DelBoundary,
     #[serde(rename = "del_index")]
     DelIndex,
-    #[serde(rename = "del_item")]
-    DelItem,
     #[serde(rename = "delete_var")]
     DeleteVar,
     #[serde(rename = "dict_clear")]
@@ -379,8 +369,6 @@ pub enum OpKind {
     DropInserted,
     #[serde(rename = "else")]
     Else,
-    #[serde(rename = "end_for")]
-    EndFor,
     #[serde(rename = "end_if")]
     EndIf,
     #[serde(rename = "enumerate")]
@@ -703,8 +691,6 @@ pub enum OpKind {
     LoadAttr,
     #[serde(rename = "load_const")]
     LoadConst,
-    #[serde(rename = "load_local")]
-    LoadLocal,
     #[serde(rename = "load_method")]
     LoadMethod,
     #[serde(rename = "load_super_method")]
@@ -719,10 +705,6 @@ pub enum OpKind {
     LoopBreakIfFalse,
     #[serde(rename = "loop_break_if_true")]
     LoopBreakIfTrue,
-    #[serde(rename = "loop_carry_init")]
-    LoopCarryInit,
-    #[serde(rename = "loop_carry_update")]
-    LoopCarryUpdate,
     #[serde(rename = "loop_continue")]
     LoopContinue,
     #[serde(rename = "loop_end")]
@@ -785,8 +767,6 @@ pub enum OpKind {
     Ne,
     #[serde(rename = "neg")]
     Neg,
-    #[serde(rename = "none_const")]
-    NoneConst,
     #[serde(rename = "nop")]
     Nop,
     #[serde(rename = "not")]
@@ -805,10 +785,6 @@ pub enum OpKind {
     Ord,
     #[serde(rename = "ord_at")]
     OrdAt,
-    #[serde(rename = "pcall_wrap_begin")]
-    PcallWrapBegin,
-    #[serde(rename = "pcall_wrap_end")]
-    PcallWrapEnd,
     #[serde(rename = "phi")]
     Phi,
     #[serde(rename = "pos")]
@@ -923,8 +899,6 @@ pub enum OpKind {
     StoreFast,
     #[serde(rename = "store_index")]
     StoreIndex,
-    #[serde(rename = "store_local")]
-    StoreLocal,
     #[serde(rename = "store_subscript")]
     StoreSubscript,
     #[serde(rename = "store_var")]
@@ -935,10 +909,6 @@ pub enum OpKind {
     StrFromObj,
     #[serde(rename = "string_capitalize")]
     StringCapitalize,
-    #[serde(rename = "string_concat")]
-    StringConcat,
-    #[serde(rename = "string_const")]
-    StringConst,
     #[serde(rename = "string_count")]
     StringCount,
     #[serde(rename = "string_count_slice")]
@@ -955,32 +925,14 @@ pub enum OpKind {
     StringFindSlice,
     #[serde(rename = "string_format")]
     StringFormat,
-    #[serde(rename = "string_index")]
-    StringIndex,
-    #[serde(rename = "string_index_slice")]
-    StringIndexSlice,
     #[serde(rename = "string_join")]
     StringJoin,
     #[serde(rename = "string_lower")]
     StringLower,
     #[serde(rename = "string_lstrip")]
     StringLstrip,
-    #[serde(rename = "string_partition")]
-    StringPartition,
-    #[serde(rename = "string_repeat")]
-    StringRepeat,
     #[serde(rename = "string_replace")]
     StringReplace,
-    #[serde(rename = "string_rfind")]
-    StringRfind,
-    #[serde(rename = "string_rfind_slice")]
-    StringRfindSlice,
-    #[serde(rename = "string_rindex")]
-    StringRindex,
-    #[serde(rename = "string_rindex_slice")]
-    StringRindexSlice,
-    #[serde(rename = "string_rpartition")]
-    StringRpartition,
     #[serde(rename = "string_rstrip")]
     StringRstrip,
     #[serde(rename = "string_split")]
@@ -1011,8 +963,6 @@ pub enum OpKind {
     StringSplitValidate,
     #[serde(rename = "string_split_ws_dict_inc")]
     StringSplitWsDictInc,
-    #[serde(rename = "string_splitlines")]
-    StringSplitlines,
     #[serde(rename = "string_startswith")]
     StringStartswith,
     #[serde(rename = "string_startswith_slice")]
@@ -1059,8 +1009,6 @@ pub enum OpKind {
     UnaryNeg,
     #[serde(rename = "unary_not")]
     UnaryNot,
-    #[serde(rename = "unary_op")]
-    UnaryOp,
     #[serde(rename = "unary_pos")]
     UnaryPos,
     #[serde(rename = "unbox")]
@@ -1119,7 +1067,6 @@ impl OpKind {
         Self::AsyncgenNew,
         Self::Band,
         Self::BindingAlias,
-        Self::Binop,
         Self::BinopAdd,
         Self::BinopFloorDiv,
         Self::BinopMod,
@@ -1131,14 +1078,12 @@ impl OpKind {
         Self::BitOr,
         Self::BitXor,
         Self::Bool,
-        Self::BoolConst,
         Self::Bor,
         Self::Borrow,
         Self::BoundMethodNew,
         Self::Box,
         Self::BoxFromRawInt,
         Self::BrIf,
-        Self::Branch,
         Self::BranchFalse,
         Self::BranchTrue,
         Self::BuildDict,
@@ -1231,7 +1176,6 @@ impl OpKind {
         Self::CodeNew,
         Self::CodeSlotSet,
         Self::CodeSlotsInit,
-        Self::Compare,
         Self::ComplexFromObj,
         Self::Const,
         Self::ConstBigint,
@@ -1255,7 +1199,6 @@ impl OpKind {
         Self::DelAttrName,
         Self::DelBoundary,
         Self::DelIndex,
-        Self::DelItem,
         Self::DeleteVar,
         Self::DictClear,
         Self::DictCopy,
@@ -1278,7 +1221,6 @@ impl OpKind {
         Self::Div,
         Self::DropInserted,
         Self::Else,
-        Self::EndFor,
         Self::EndIf,
         Self::Enumerate,
         Self::Eq,
@@ -1440,7 +1382,6 @@ impl OpKind {
         Self::Load,
         Self::LoadAttr,
         Self::LoadConst,
-        Self::LoadLocal,
         Self::LoadMethod,
         Self::LoadSuperMethod,
         Self::LoadVar,
@@ -1448,8 +1389,6 @@ impl OpKind {
         Self::LoopBreakIfException,
         Self::LoopBreakIfFalse,
         Self::LoopBreakIfTrue,
-        Self::LoopCarryInit,
-        Self::LoopCarryUpdate,
         Self::LoopContinue,
         Self::LoopEnd,
         Self::LoopIndexEnd,
@@ -1481,7 +1420,6 @@ impl OpKind {
         Self::Mul,
         Self::Ne,
         Self::Neg,
-        Self::NoneConst,
         Self::Nop,
         Self::Not,
         Self::NotIn,
@@ -1491,8 +1429,6 @@ impl OpKind {
         Self::Or,
         Self::Ord,
         Self::OrdAt,
-        Self::PcallWrapBegin,
-        Self::PcallWrapEnd,
         Self::Phi,
         Self::Pos,
         Self::Pow,
@@ -1550,14 +1486,11 @@ impl OpKind {
         Self::StoreAttr,
         Self::StoreFast,
         Self::StoreIndex,
-        Self::StoreLocal,
         Self::StoreSubscript,
         Self::StoreVar,
         Self::Str,
         Self::StrFromObj,
         Self::StringCapitalize,
-        Self::StringConcat,
-        Self::StringConst,
         Self::StringCount,
         Self::StringCountSlice,
         Self::StringEndswith,
@@ -1566,19 +1499,10 @@ impl OpKind {
         Self::StringFind,
         Self::StringFindSlice,
         Self::StringFormat,
-        Self::StringIndex,
-        Self::StringIndexSlice,
         Self::StringJoin,
         Self::StringLower,
         Self::StringLstrip,
-        Self::StringPartition,
-        Self::StringRepeat,
         Self::StringReplace,
-        Self::StringRfind,
-        Self::StringRfindSlice,
-        Self::StringRindex,
-        Self::StringRindexSlice,
-        Self::StringRpartition,
         Self::StringRstrip,
         Self::StringSplit,
         Self::StringSplitField,
@@ -1594,7 +1518,6 @@ impl OpKind {
         Self::StringSplitSepDictInc,
         Self::StringSplitValidate,
         Self::StringSplitWsDictInc,
-        Self::StringSplitlines,
         Self::StringStartswith,
         Self::StringStartswithSlice,
         Self::StringStrip,
@@ -1618,7 +1541,6 @@ impl OpKind {
         Self::UnaryInvert,
         Self::UnaryNeg,
         Self::UnaryNot,
-        Self::UnaryOp,
         Self::UnaryPos,
         Self::Unbox,
         Self::UnboxToRawInt,
@@ -1661,7 +1583,6 @@ impl OpKind {
             Self::AsyncgenNew => "asyncgen_new",
             Self::Band => "band",
             Self::BindingAlias => "binding_alias",
-            Self::Binop => "binop",
             Self::BinopAdd => "binop_add",
             Self::BinopFloorDiv => "binop_floor_div",
             Self::BinopMod => "binop_mod",
@@ -1673,14 +1594,12 @@ impl OpKind {
             Self::BitOr => "bit_or",
             Self::BitXor => "bit_xor",
             Self::Bool => "bool",
-            Self::BoolConst => "bool_const",
             Self::Bor => "bor",
             Self::Borrow => "borrow",
             Self::BoundMethodNew => "bound_method_new",
             Self::Box => "box",
             Self::BoxFromRawInt => "box_from_raw_int",
             Self::BrIf => "br_if",
-            Self::Branch => "branch",
             Self::BranchFalse => "branch_false",
             Self::BranchTrue => "branch_true",
             Self::BuildDict => "build_dict",
@@ -1773,7 +1692,6 @@ impl OpKind {
             Self::CodeNew => "code_new",
             Self::CodeSlotSet => "code_slot_set",
             Self::CodeSlotsInit => "code_slots_init",
-            Self::Compare => "compare",
             Self::ComplexFromObj => "complex_from_obj",
             Self::Const => "const",
             Self::ConstBigint => "const_bigint",
@@ -1797,7 +1715,6 @@ impl OpKind {
             Self::DelAttrName => "del_attr_name",
             Self::DelBoundary => "del_boundary",
             Self::DelIndex => "del_index",
-            Self::DelItem => "del_item",
             Self::DeleteVar => "delete_var",
             Self::DictClear => "dict_clear",
             Self::DictCopy => "dict_copy",
@@ -1820,7 +1737,6 @@ impl OpKind {
             Self::Div => "div",
             Self::DropInserted => "drop_inserted",
             Self::Else => "else",
-            Self::EndFor => "end_for",
             Self::EndIf => "end_if",
             Self::Enumerate => "enumerate",
             Self::Eq => "eq",
@@ -1982,7 +1898,6 @@ impl OpKind {
             Self::Load => "load",
             Self::LoadAttr => "load_attr",
             Self::LoadConst => "load_const",
-            Self::LoadLocal => "load_local",
             Self::LoadMethod => "load_method",
             Self::LoadSuperMethod => "load_super_method",
             Self::LoadVar => "load_var",
@@ -1990,8 +1905,6 @@ impl OpKind {
             Self::LoopBreakIfException => "loop_break_if_exception",
             Self::LoopBreakIfFalse => "loop_break_if_false",
             Self::LoopBreakIfTrue => "loop_break_if_true",
-            Self::LoopCarryInit => "loop_carry_init",
-            Self::LoopCarryUpdate => "loop_carry_update",
             Self::LoopContinue => "loop_continue",
             Self::LoopEnd => "loop_end",
             Self::LoopIndexEnd => "loop_index_end",
@@ -2023,7 +1936,6 @@ impl OpKind {
             Self::Mul => "mul",
             Self::Ne => "ne",
             Self::Neg => "neg",
-            Self::NoneConst => "none_const",
             Self::Nop => "nop",
             Self::Not => "not",
             Self::NotIn => "not_in",
@@ -2033,8 +1945,6 @@ impl OpKind {
             Self::Or => "or",
             Self::Ord => "ord",
             Self::OrdAt => "ord_at",
-            Self::PcallWrapBegin => "pcall_wrap_begin",
-            Self::PcallWrapEnd => "pcall_wrap_end",
             Self::Phi => "phi",
             Self::Pos => "pos",
             Self::Pow => "pow",
@@ -2092,14 +2002,11 @@ impl OpKind {
             Self::StoreAttr => "store_attr",
             Self::StoreFast => "store_fast",
             Self::StoreIndex => "store_index",
-            Self::StoreLocal => "store_local",
             Self::StoreSubscript => "store_subscript",
             Self::StoreVar => "store_var",
             Self::Str => "str",
             Self::StrFromObj => "str_from_obj",
             Self::StringCapitalize => "string_capitalize",
-            Self::StringConcat => "string_concat",
-            Self::StringConst => "string_const",
             Self::StringCount => "string_count",
             Self::StringCountSlice => "string_count_slice",
             Self::StringEndswith => "string_endswith",
@@ -2108,19 +2015,10 @@ impl OpKind {
             Self::StringFind => "string_find",
             Self::StringFindSlice => "string_find_slice",
             Self::StringFormat => "string_format",
-            Self::StringIndex => "string_index",
-            Self::StringIndexSlice => "string_index_slice",
             Self::StringJoin => "string_join",
             Self::StringLower => "string_lower",
             Self::StringLstrip => "string_lstrip",
-            Self::StringPartition => "string_partition",
-            Self::StringRepeat => "string_repeat",
             Self::StringReplace => "string_replace",
-            Self::StringRfind => "string_rfind",
-            Self::StringRfindSlice => "string_rfind_slice",
-            Self::StringRindex => "string_rindex",
-            Self::StringRindexSlice => "string_rindex_slice",
-            Self::StringRpartition => "string_rpartition",
             Self::StringRstrip => "string_rstrip",
             Self::StringSplit => "string_split",
             Self::StringSplitField => "string_split_field",
@@ -2136,7 +2034,6 @@ impl OpKind {
             Self::StringSplitSepDictInc => "string_split_sep_dict_inc",
             Self::StringSplitValidate => "string_split_validate",
             Self::StringSplitWsDictInc => "string_split_ws_dict_inc",
-            Self::StringSplitlines => "string_splitlines",
             Self::StringStartswith => "string_startswith",
             Self::StringStartswithSlice => "string_startswith_slice",
             Self::StringStrip => "string_strip",
@@ -2160,7 +2057,6 @@ impl OpKind {
             Self::UnaryInvert => "unary_invert",
             Self::UnaryNeg => "unary_neg",
             Self::UnaryNot => "unary_not",
-            Self::UnaryOp => "unary_op",
             Self::UnaryPos => "unary_pos",
             Self::Unbox => "unbox",
             Self::UnboxToRawInt => "unbox_to_raw_int",
@@ -2214,7 +2110,6 @@ impl std::str::FromStr for OpKind {
             "asyncgen_new" => Ok(Self::AsyncgenNew),
             "band" => Ok(Self::Band),
             "binding_alias" => Ok(Self::BindingAlias),
-            "binop" => Ok(Self::Binop),
             "binop_add" => Ok(Self::BinopAdd),
             "binop_floor_div" => Ok(Self::BinopFloorDiv),
             "binop_mod" => Ok(Self::BinopMod),
@@ -2226,14 +2121,12 @@ impl std::str::FromStr for OpKind {
             "bit_or" => Ok(Self::BitOr),
             "bit_xor" => Ok(Self::BitXor),
             "bool" => Ok(Self::Bool),
-            "bool_const" => Ok(Self::BoolConst),
             "bor" => Ok(Self::Bor),
             "borrow" => Ok(Self::Borrow),
             "bound_method_new" => Ok(Self::BoundMethodNew),
             "box" => Ok(Self::Box),
             "box_from_raw_int" => Ok(Self::BoxFromRawInt),
             "br_if" => Ok(Self::BrIf),
-            "branch" => Ok(Self::Branch),
             "branch_false" => Ok(Self::BranchFalse),
             "branch_true" => Ok(Self::BranchTrue),
             "build_dict" => Ok(Self::BuildDict),
@@ -2326,7 +2219,6 @@ impl std::str::FromStr for OpKind {
             "code_new" => Ok(Self::CodeNew),
             "code_slot_set" => Ok(Self::CodeSlotSet),
             "code_slots_init" => Ok(Self::CodeSlotsInit),
-            "compare" => Ok(Self::Compare),
             "complex_from_obj" => Ok(Self::ComplexFromObj),
             "const" => Ok(Self::Const),
             "const_bigint" => Ok(Self::ConstBigint),
@@ -2350,7 +2242,6 @@ impl std::str::FromStr for OpKind {
             "del_attr_name" => Ok(Self::DelAttrName),
             "del_boundary" => Ok(Self::DelBoundary),
             "del_index" => Ok(Self::DelIndex),
-            "del_item" => Ok(Self::DelItem),
             "delete_var" => Ok(Self::DeleteVar),
             "dict_clear" => Ok(Self::DictClear),
             "dict_copy" => Ok(Self::DictCopy),
@@ -2373,7 +2264,6 @@ impl std::str::FromStr for OpKind {
             "div" => Ok(Self::Div),
             "drop_inserted" => Ok(Self::DropInserted),
             "else" => Ok(Self::Else),
-            "end_for" => Ok(Self::EndFor),
             "end_if" => Ok(Self::EndIf),
             "enumerate" => Ok(Self::Enumerate),
             "eq" => Ok(Self::Eq),
@@ -2535,7 +2425,6 @@ impl std::str::FromStr for OpKind {
             "load" => Ok(Self::Load),
             "load_attr" => Ok(Self::LoadAttr),
             "load_const" => Ok(Self::LoadConst),
-            "load_local" => Ok(Self::LoadLocal),
             "load_method" => Ok(Self::LoadMethod),
             "load_super_method" => Ok(Self::LoadSuperMethod),
             "load_var" => Ok(Self::LoadVar),
@@ -2543,8 +2432,6 @@ impl std::str::FromStr for OpKind {
             "loop_break_if_exception" => Ok(Self::LoopBreakIfException),
             "loop_break_if_false" => Ok(Self::LoopBreakIfFalse),
             "loop_break_if_true" => Ok(Self::LoopBreakIfTrue),
-            "loop_carry_init" => Ok(Self::LoopCarryInit),
-            "loop_carry_update" => Ok(Self::LoopCarryUpdate),
             "loop_continue" => Ok(Self::LoopContinue),
             "loop_end" => Ok(Self::LoopEnd),
             "loop_index_end" => Ok(Self::LoopIndexEnd),
@@ -2576,7 +2463,6 @@ impl std::str::FromStr for OpKind {
             "mul" => Ok(Self::Mul),
             "ne" => Ok(Self::Ne),
             "neg" => Ok(Self::Neg),
-            "none_const" => Ok(Self::NoneConst),
             "nop" => Ok(Self::Nop),
             "not" => Ok(Self::Not),
             "not_in" => Ok(Self::NotIn),
@@ -2586,8 +2472,6 @@ impl std::str::FromStr for OpKind {
             "or" => Ok(Self::Or),
             "ord" => Ok(Self::Ord),
             "ord_at" => Ok(Self::OrdAt),
-            "pcall_wrap_begin" => Ok(Self::PcallWrapBegin),
-            "pcall_wrap_end" => Ok(Self::PcallWrapEnd),
             "phi" => Ok(Self::Phi),
             "pos" => Ok(Self::Pos),
             "pow" => Ok(Self::Pow),
@@ -2645,14 +2529,11 @@ impl std::str::FromStr for OpKind {
             "store_attr" => Ok(Self::StoreAttr),
             "store_fast" => Ok(Self::StoreFast),
             "store_index" => Ok(Self::StoreIndex),
-            "store_local" => Ok(Self::StoreLocal),
             "store_subscript" => Ok(Self::StoreSubscript),
             "store_var" => Ok(Self::StoreVar),
             "str" => Ok(Self::Str),
             "str_from_obj" => Ok(Self::StrFromObj),
             "string_capitalize" => Ok(Self::StringCapitalize),
-            "string_concat" => Ok(Self::StringConcat),
-            "string_const" => Ok(Self::StringConst),
             "string_count" => Ok(Self::StringCount),
             "string_count_slice" => Ok(Self::StringCountSlice),
             "string_endswith" => Ok(Self::StringEndswith),
@@ -2661,19 +2542,10 @@ impl std::str::FromStr for OpKind {
             "string_find" => Ok(Self::StringFind),
             "string_find_slice" => Ok(Self::StringFindSlice),
             "string_format" => Ok(Self::StringFormat),
-            "string_index" => Ok(Self::StringIndex),
-            "string_index_slice" => Ok(Self::StringIndexSlice),
             "string_join" => Ok(Self::StringJoin),
             "string_lower" => Ok(Self::StringLower),
             "string_lstrip" => Ok(Self::StringLstrip),
-            "string_partition" => Ok(Self::StringPartition),
-            "string_repeat" => Ok(Self::StringRepeat),
             "string_replace" => Ok(Self::StringReplace),
-            "string_rfind" => Ok(Self::StringRfind),
-            "string_rfind_slice" => Ok(Self::StringRfindSlice),
-            "string_rindex" => Ok(Self::StringRindex),
-            "string_rindex_slice" => Ok(Self::StringRindexSlice),
-            "string_rpartition" => Ok(Self::StringRpartition),
             "string_rstrip" => Ok(Self::StringRstrip),
             "string_split" => Ok(Self::StringSplit),
             "string_split_field" => Ok(Self::StringSplitField),
@@ -2689,7 +2561,6 @@ impl std::str::FromStr for OpKind {
             "string_split_sep_dict_inc" => Ok(Self::StringSplitSepDictInc),
             "string_split_validate" => Ok(Self::StringSplitValidate),
             "string_split_ws_dict_inc" => Ok(Self::StringSplitWsDictInc),
-            "string_splitlines" => Ok(Self::StringSplitlines),
             "string_startswith" => Ok(Self::StringStartswith),
             "string_startswith_slice" => Ok(Self::StringStartswithSlice),
             "string_strip" => Ok(Self::StringStrip),
@@ -2713,7 +2584,6 @@ impl std::str::FromStr for OpKind {
             "unary_invert" => Ok(Self::UnaryInvert),
             "unary_neg" => Ok(Self::UnaryNeg),
             "unary_not" => Ok(Self::UnaryNot),
-            "unary_op" => Ok(Self::UnaryOp),
             "unary_pos" => Ok(Self::UnaryPos),
             "unbox" => Ok(Self::Unbox),
             "unbox_to_raw_int" => Ok(Self::UnboxToRawInt),
@@ -2753,579 +2623,6 @@ impl<'de> serde::Deserialize<'de> for OpKind {
     }
 }
 
-#[inline]
-pub const fn simpleir_backend_private_owner(kind: OpKind) -> Option<&'static str> {
-    match kind {
-        OpKind::MAnd
-        | OpKind::Abs
-        | OpKind::Add
-        | OpKind::Aiter
-        | OpKind::All
-        | OpKind::Alloc
-        | OpKind::AllocClass
-        | OpKind::AllocClassStatic
-        | OpKind::AllocClassTrusted
-        | OpKind::AllocInstance
-        | OpKind::AllocTask
-        | OpKind::And
-        | OpKind::Anext
-        | OpKind::Any
-        | OpKind::AsciiFromObj
-        | OpKind::AsyncForEnd
-        | OpKind::AsyncForStart
-        | OpKind::AsyncWorkPending
-        | OpKind::AsyncWorkPoll
-        | OpKind::AsyncgenNew
-        | OpKind::Band
-        | OpKind::BindingAlias
-        | OpKind::BinopAdd
-        | OpKind::BinopFloorDiv
-        | OpKind::BinopMod
-        | OpKind::BinopMul
-        | OpKind::BinopPow
-        | OpKind::BinopSub
-        | OpKind::BitAnd
-        | OpKind::BitNot
-        | OpKind::BitOr
-        | OpKind::BitXor
-        | OpKind::Bool
-        | OpKind::Bor
-        | OpKind::Borrow
-        | OpKind::BoundMethodNew
-        | OpKind::Box
-        | OpKind::BoxFromRawInt
-        | OpKind::BrIf
-        | OpKind::BranchFalse
-        | OpKind::BranchTrue
-        | OpKind::BuildDict
-        | OpKind::BuildList
-        | OpKind::BuildSet
-        | OpKind::BuildSlice
-        | OpKind::BuildTuple
-        | OpKind::BuiltinAbs
-        | OpKind::BuiltinAll
-        | OpKind::BuiltinAny
-        | OpKind::BuiltinBool
-        | OpKind::BuiltinFloat
-        | OpKind::BuiltinFunc
-        | OpKind::BuiltinInt
-        | OpKind::BuiltinLen
-        | OpKind::BuiltinPrint
-        | OpKind::BuiltinRange
-        | OpKind::BuiltinReversed
-        | OpKind::BuiltinSorted
-        | OpKind::BuiltinStr
-        | OpKind::BuiltinSum
-        | OpKind::BuiltinType
-        | OpKind::Bxor
-        | OpKind::BytearrayCount
-        | OpKind::BytearrayCountSlice
-        | OpKind::BytearrayEndswith
-        | OpKind::BytearrayEndswithSlice
-        | OpKind::BytearrayFillRange
-        | OpKind::BytearrayFind
-        | OpKind::BytearrayFindSlice
-        | OpKind::BytearrayFromObj
-        | OpKind::BytearrayFromStr
-        | OpKind::BytearrayReplace
-        | OpKind::BytearraySplit
-        | OpKind::BytearraySplitMax
-        | OpKind::BytearrayStartswith
-        | OpKind::BytearrayStartswithSlice
-        | OpKind::BytesCount
-        | OpKind::BytesCountSlice
-        | OpKind::BytesEndswith
-        | OpKind::BytesEndswithSlice
-        | OpKind::BytesFind
-        | OpKind::BytesFindSlice
-        | OpKind::BytesFromObj
-        | OpKind::BytesFromStr
-        | OpKind::BytesReplace
-        | OpKind::BytesSplit
-        | OpKind::BytesSplitMax
-        | OpKind::BytesStartswith
-        | OpKind::BytesStartswithSlice
-        | OpKind::Call
-        | OpKind::CallAsync
-        | OpKind::CallBind
-        | OpKind::CallBuiltin
-        | OpKind::CallFunc
-        | OpKind::CallFunction
-        | OpKind::CallGuarded
-        | OpKind::CallIndirect
-        | OpKind::CallInternal
-        | OpKind::CallLoadedMethod
-        | OpKind::CallMethod
-        | OpKind::CallargsExpandKwstar
-        | OpKind::CallargsExpandStar
-        | OpKind::CallargsNew
-        | OpKind::CallargsPushKw
-        | OpKind::CallargsPushMethodReceiver
-        | OpKind::CallargsPushPos
-        | OpKind::Cast
-        | OpKind::CastBool
-        | OpKind::CastFloat
-        | OpKind::CastInt
-        | OpKind::CastStr
-        | OpKind::CheckException
-        | OpKind::CheckedAdd
-        | OpKind::CheckedMul
-        | OpKind::Chr
-        | OpKind::ClassDef
-        | OpKind::ClassLayoutFieldCount
-        | OpKind::ClassLayoutSlotCount
-        | OpKind::ClassSetDefinition
-        | OpKind::ClassmethodNew
-        | OpKind::ClosureLoad
-        | OpKind::ClosureStore
-        | OpKind::CmpEq
-        | OpKind::CmpGe
-        | OpKind::CmpGt
-        | OpKind::CmpLe
-        | OpKind::CmpLt
-        | OpKind::CmpNe
-        | OpKind::CodeNew
-        | OpKind::CodeSlotSet
-        | OpKind::CodeSlotsInit
-        | OpKind::ComplexFromObj
-        | OpKind::Const
-        | OpKind::ConstBigint
-        | OpKind::ConstBool
-        | OpKind::ConstBytes
-        | OpKind::ConstEllipsis
-        | OpKind::ConstFloat
-        | OpKind::ConstInt
-        | OpKind::ConstNone
-        | OpKind::ConstNotImplemented
-        | OpKind::ConstStr
-        | OpKind::Contains
-        | OpKind::ContextEnter
-        | OpKind::ContextExit
-        | OpKind::Copy
-        | OpKind::CopyVar
-        | OpKind::DecRef
-        | OpKind::DelAttr
-        | OpKind::DelAttrGenericObj
-        | OpKind::DelAttrGenericPtr
-        | OpKind::DelAttrName
-        | OpKind::DelBoundary
-        | OpKind::DelIndex
-        | OpKind::DeleteVar
-        | OpKind::DictClear
-        | OpKind::DictCopy
-        | OpKind::DictFromObj
-        | OpKind::DictGet
-        | OpKind::DictItems
-        | OpKind::DictKeys
-        | OpKind::DictNew
-        | OpKind::DictPop
-        | OpKind::DictPopitem
-        | OpKind::DictSet
-        | OpKind::DictSetdefault
-        | OpKind::DictSetdefaultEmptyList
-        | OpKind::DictStrIntInc
-        | OpKind::DictUnpack
-        | OpKind::DictUpdate
-        | OpKind::DictUpdateKwstar
-        | OpKind::DictUpdateMissing
-        | OpKind::DictValues
-        | OpKind::Div
-        | OpKind::DropInserted
-        | OpKind::Else
-        | OpKind::EndIf
-        | OpKind::Enumerate
-        | OpKind::Eq
-        | OpKind::ExceptEnd
-        | OpKind::ExceptStart
-        | OpKind::ExceptionActive
-        | OpKind::ExceptionClass
-        | OpKind::ExceptionClear
-        | OpKind::ExceptionContextSet
-        | OpKind::ExceptionCurrent
-        | OpKind::ExceptionFinallyPendingObserver
-        | OpKind::ExceptionLast
-        | OpKind::ExceptionLastPending
-        | OpKind::ExceptionMatchBuiltin
-        | OpKind::ExceptionNew
-        | OpKind::ExceptionNewBuiltin
-        | OpKind::ExceptionNewBuiltinEmpty
-        | OpKind::ExceptionNewBuiltinOne
-        | OpKind::ExceptionNewFromClass
-        | OpKind::ExceptionPending
-        | OpKind::ExceptionPop
-        | OpKind::ExceptionPush
-        | OpKind::ExceptionRegionDropsInserted
-        | OpKind::ExceptionSetLast
-        | OpKind::ExceptionStackClear
-        | OpKind::ExceptionStackDepth
-        | OpKind::ExceptionStackEnter
-        | OpKind::ExceptionStackExit
-        | OpKind::ExceptionStackSetDepth
-        | OpKind::ExceptiongroupCombine
-        | OpKind::ExceptiongroupMatch
-        | OpKind::FinallyEnd
-        | OpKind::FinallyStart
-        | OpKind::Float
-        | OpKind::FloatFromObj
-        | OpKind::FloorDiv
-        | OpKind::Floordiv
-        | OpKind::ForIter
-        | OpKind::ForIterEnd
-        | OpKind::ForIterStart
-        | OpKind::ForRange
-        | OpKind::FormatString
-        | OpKind::FrameContextSet
-        | OpKind::FrameHomeCell
-        | OpKind::FrameHomeClear
-        | OpKind::FrameHomeLoad
-        | OpKind::FrameHomePrivateCell
-        | OpKind::FrameHomeStore
-        | OpKind::FrameHomeTake
-        | OpKind::FrameLocals
-        | OpKind::FrameLocalsSet
-        | OpKind::FrameSetLocation
-        | OpKind::Free
-        | OpKind::FrozensetAdd
-        | OpKind::FrozensetNew
-        | OpKind::FuncNew
-        | OpKind::FuncNewClosure
-        | OpKind::FunctionClosureBits
-        | OpKind::FunctionDefaultsVersion
-        | OpKind::Ge
-        | OpKind::GenClose
-        | OpKind::GenSend
-        | OpKind::GenThrow
-        | OpKind::GetAttr
-        | OpKind::GetAttrGenericObj
-        | OpKind::GetAttrGenericPtr
-        | OpKind::GetAttrName
-        | OpKind::GetAttrNameDefault
-        | OpKind::GetAttrSpecialObj
-        | OpKind::GetItem
-        | OpKind::GetIter
-        | OpKind::Getframe
-        | OpKind::GlobalSlotGet
-        | OpKind::Goto
-        | OpKind::GpuBarrier
-        | OpKind::GpuBlockDim
-        | OpKind::GpuBlockId
-        | OpKind::GpuGridDim
-        | OpKind::GpuThreadId
-        | OpKind::Gt
-        | OpKind::GuardBool
-        | OpKind::GuardFloat
-        | OpKind::GuardInt
-        | OpKind::GuardLayout
-        | OpKind::GuardNone
-        | OpKind::GuardStr
-        | OpKind::GuardTag
-        | OpKind::GuardType
-        | OpKind::GuardedFieldGet
-        | OpKind::GuardedFieldSet
-        | OpKind::GuardedLoad
-        | OpKind::HasAttrName
-        | OpKind::Id
-        | OpKind::IdentityAlias
-        | OpKind::If
-        | OpKind::IfNot
-        | OpKind::Import
-        | OpKind::ImportFrom
-        | OpKind::ImportName
-        | OpKind::In
-        | OpKind::IncRef
-        | OpKind::Index
-        | OpKind::IndexSet
-        | OpKind::InitInstance
-        | OpKind::InplaceAdd
-        | OpKind::InplaceBitAnd
-        | OpKind::InplaceBitOr
-        | OpKind::InplaceBitXor
-        | OpKind::InplaceDiv
-        | OpKind::InplaceFloordiv
-        | OpKind::InplaceLshift
-        | OpKind::InplaceMatmul
-        | OpKind::InplaceMod
-        | OpKind::InplaceMul
-        | OpKind::InplacePow
-        | OpKind::InplaceRshift
-        | OpKind::InplaceSub
-        | OpKind::InstanceGetField
-        | OpKind::InstanceHasField
-        | OpKind::InstanceSetField
-        | OpKind::Int
-        | OpKind::IntFromObj
-        | OpKind::IntFromStrOfObj
-        | OpKind::Invert
-        | OpKind::InvokeFfi
-        | OpKind::Is
-        | OpKind::IsBoundMethod
-        | OpKind::IsCallable
-        | OpKind::IsGenerator
-        | OpKind::IsNativeAwaitable
-        | OpKind::IsNot
-        | OpKind::IsPending
-        | OpKind::Isinstance
-        | OpKind::Issubclass
-        | OpKind::Iter
-        | OpKind::IterNext
-        | OpKind::IterNextUnboxed
-        | OpKind::Jump
-        | OpKind::Label
-        | OpKind::Le
-        | OpKind::Len
-        | OpKind::Line
-        | OpKind::ListAppend
-        | OpKind::ListClear
-        | OpKind::ListCopy
-        | OpKind::ListCount
-        | OpKind::ListExtend
-        | OpKind::ListFillNew
-        | OpKind::ListFromRange
-        | OpKind::ListIndex
-        | OpKind::ListIndexRange
-        | OpKind::ListInsert
-        | OpKind::ListIntNew
-        | OpKind::ListNew
-        | OpKind::ListPop
-        | OpKind::ListRemove
-        | OpKind::ListReverse
-        | OpKind::ListReverseSlice
-        | OpKind::Load
-        | OpKind::LoadAttr
-        | OpKind::LoadConst
-        | OpKind::LoadMethod
-        | OpKind::LoadSuperMethod
-        | OpKind::LoadVar
-        | OpKind::LoopBreak
-        | OpKind::LoopBreakIfException
-        | OpKind::LoopBreakIfFalse
-        | OpKind::LoopBreakIfTrue
-        | OpKind::LoopContinue
-        | OpKind::LoopEnd
-        | OpKind::LoopIndexEnd
-        | OpKind::LoopIndexNext
-        | OpKind::LoopIndexStart
-        | OpKind::LoopStart
-        | OpKind::Lshift
-        | OpKind::Lt
-        | OpKind::Matmul
-        | OpKind::Missing
-        | OpKind::Mod
-        | OpKind::Mod_
-        | OpKind::ModuleCacheDel
-        | OpKind::ModuleCacheGet
-        | OpKind::ModuleCacheSet
-        | OpKind::ModuleDelGlobal
-        | OpKind::ModuleDelGlobalIfPresent
-        | OpKind::ModuleGetAttr
-        | OpKind::ModuleGetGlobal
-        | OpKind::ModuleGetName
-        | OpKind::ModuleImport
-        | OpKind::ModuleImportFrom
-        | OpKind::ModuleImportStar
-        | OpKind::ModuleLoadCached
-        | OpKind::ModuleNew
-        | OpKind::ModuleSetAttr
-        | OpKind::ModuleSlot
-        | OpKind::Modulo
-        | OpKind::Mul
-        | OpKind::Ne
-        | OpKind::Neg
-        | OpKind::Nop
-        | OpKind::Not
-        | OpKind::NotIn
-        | OpKind::ObjectNew
-        | OpKind::ObjectNewBound
-        | OpKind::OperatorIndex
-        | OpKind::Or
-        | OpKind::Ord
-        | OpKind::OrdAt
-        | OpKind::Phi
-        | OpKind::Pos
-        | OpKind::Pow
-        | OpKind::PowMod
-        | OpKind::Print
-        | OpKind::PrintNewline
-        | OpKind::PropertyNew
-        | OpKind::Raise
-        | OpKind::RaiseFrom
-        | OpKind::Range
-        | OpKind::RangeNew
-        | OpKind::Release
-        | OpKind::ReprFromObj
-        | OpKind::Reraise
-        | OpKind::Ret
-        | OpKind::RetVoid
-        | OpKind::Reversed
-        | OpKind::Round
-        | OpKind::Rshift
-        | OpKind::SetAdd
-        | OpKind::SetAddProbe
-        | OpKind::SetAttr
-        | OpKind::SetAttrGenericObj
-        | OpKind::SetAttrGenericPtr
-        | OpKind::SetAttrName
-        | OpKind::SetClear
-        | OpKind::SetDifferenceUpdate
-        | OpKind::SetDiscard
-        | OpKind::SetIntersectionUpdate
-        | OpKind::SetItem
-        | OpKind::SetNew
-        | OpKind::SetPop
-        | OpKind::SetRemove
-        | OpKind::SetSymdiffUpdate
-        | OpKind::SetUpdate
-        | OpKind::Shl
-        | OpKind::Shr
-        | OpKind::Slice
-        | OpKind::SliceNew
-        | OpKind::Sorted
-        | OpKind::StackAlloc
-        | OpKind::StateBlockEnd
-        | OpKind::StateBlockStart
-        | OpKind::StateLabel
-        | OpKind::StateSet
-        | OpKind::StateSwitch
-        | OpKind::StateTransition
-        | OpKind::StateYield
-        | OpKind::StatefulLocalsRegister
-        | OpKind::StaticCellBase
-        | OpKind::StaticCellLoad
-        | OpKind::StaticCellSet
-        | OpKind::StaticmethodNew
-        | OpKind::Store
-        | OpKind::StoreAttr
-        | OpKind::StoreFast
-        | OpKind::StoreIndex
-        | OpKind::StoreSubscript
-        | OpKind::StoreVar
-        | OpKind::Str
-        | OpKind::StrFromObj
-        | OpKind::StringCapitalize
-        | OpKind::StringCount
-        | OpKind::StringCountSlice
-        | OpKind::StringEndswith
-        | OpKind::StringEndswithSlice
-        | OpKind::StringEq
-        | OpKind::StringFind
-        | OpKind::StringFindSlice
-        | OpKind::StringFormat
-        | OpKind::StringJoin
-        | OpKind::StringLower
-        | OpKind::StringLstrip
-        | OpKind::StringReplace
-        | OpKind::StringRstrip
-        | OpKind::StringSplit
-        | OpKind::StringSplitField
-        | OpKind::StringSplitFieldEnd
-        | OpKind::StringSplitFieldEq
-        | OpKind::StringSplitFieldIsAscii
-        | OpKind::StringSplitFieldLen
-        | OpKind::StringSplitFieldLenFromBounds
-        | OpKind::StringSplitFieldOrdAtBounds
-        | OpKind::StringSplitFieldStart
-        | OpKind::StringSplitFieldToInt
-        | OpKind::StringSplitMax
-        | OpKind::StringSplitSepDictInc
-        | OpKind::StringSplitValidate
-        | OpKind::StringSplitWsDictInc
-        | OpKind::StringStartswith
-        | OpKind::StringStartswithSlice
-        | OpKind::StringStrip
-        | OpKind::StringUpper
-        | OpKind::Sub
-        | OpKind::Subscript
-        | OpKind::Sum
-        | OpKind::TaskWait
-        | OpKind::TraceEnterSlot
-        | OpKind::TraceExit
-        | OpKind::TrueDiv
-        | OpKind::Trunc
-        | OpKind::TryEnd
-        | OpKind::TryStart
-        | OpKind::TupleCount
-        | OpKind::TupleFromList
-        | OpKind::TupleIndex
-        | OpKind::TupleNew
-        | OpKind::TypeGuard
-        | OpKind::TypeOf
-        | OpKind::UnaryInvert
-        | OpKind::UnaryNeg
-        | OpKind::UnaryNot
-        | OpKind::UnaryPos
-        | OpKind::Unbox
-        | OpKind::UnboxToRawInt
-        | OpKind::UnpackSequence
-        | OpKind::Unreachable
-        | OpKind::VecMax
-        | OpKind::VecMin
-        | OpKind::VecProd
-        | OpKind::VecSum
-        | OpKind::WarnStderr
-        | OpKind::WhileEnd
-        | OpKind::WhileStart
-        | OpKind::Widen
-        | OpKind::Yield
-        | OpKind::YieldFrom
-        | OpKind::Zip => None,
-        OpKind::Binop
-        | OpKind::BoolConst
-        | OpKind::Branch
-        | OpKind::Compare
-        | OpKind::DelItem
-        | OpKind::EndFor
-        | OpKind::LoadLocal
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
-        | OpKind::NoneConst
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
-        | OpKind::StoreLocal
-        | OpKind::StringConcat
-        | OpKind::StringConst
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
-        | OpKind::StringSplitlines
-        | OpKind::UnaryOp => Some("luau"),
-    }
-}
-
-pub const SIMPLEIR_BACKEND_PRIVATE_KINDS: &[(OpKind, &str)] = &[
-    (OpKind::Binop, "luau"),
-    (OpKind::BoolConst, "luau"),
-    (OpKind::Branch, "luau"),
-    (OpKind::Compare, "luau"),
-    (OpKind::DelItem, "luau"),
-    (OpKind::EndFor, "luau"),
-    (OpKind::LoadLocal, "luau"),
-    (OpKind::LoopCarryInit, "luau"),
-    (OpKind::LoopCarryUpdate, "luau"),
-    (OpKind::NoneConst, "luau"),
-    (OpKind::PcallWrapBegin, "luau"),
-    (OpKind::PcallWrapEnd, "luau"),
-    (OpKind::StoreLocal, "luau"),
-    (OpKind::StringConcat, "luau"),
-    (OpKind::StringConst, "luau"),
-    (OpKind::StringIndex, "luau"),
-    (OpKind::StringIndexSlice, "luau"),
-    (OpKind::StringPartition, "luau"),
-    (OpKind::StringRepeat, "luau"),
-    (OpKind::StringRfind, "luau"),
-    (OpKind::StringRfindSlice, "luau"),
-    (OpKind::StringRindex, "luau"),
-    (OpKind::StringRindexSlice, "luau"),
-    (OpKind::StringRpartition, "luau"),
-    (OpKind::StringSplitlines, "luau"),
-    (OpKind::UnaryOp, "luau"),
-];
-
 impl OpKind {
     #[inline]
     pub const fn is_registered(self) -> bool {
@@ -3352,7 +2649,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -3364,14 +2660,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -3464,7 +2758,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -3488,7 +2781,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -3511,7 +2803,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -3673,7 +2964,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -3681,8 +2971,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -3714,7 +3002,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -3724,8 +3011,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -3783,14 +3068,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -3799,19 +3081,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -3827,7 +3100,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -3851,7 +3123,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -3994,7 +3265,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -4006,13 +3276,11 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -4105,7 +3373,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -4129,7 +3396,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -4150,7 +3416,6 @@ impl OpKind {
             | OpKind::DictUpdateMissing
             | OpKind::DictValues
             | OpKind::Div
-            | OpKind::EndFor
             | OpKind::Enumerate
             | OpKind::Eq
             | OpKind::ExceptEnd
@@ -4306,12 +3571,9 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopIndexNext
             | OpKind::LoopIndexStart
             | OpKind::Lshift
@@ -4339,7 +3601,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Not
             | OpKind::NotIn
             | OpKind::ObjectNew
@@ -4348,8 +3609,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -4403,14 +3662,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -4419,19 +3675,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -4447,7 +3694,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -4471,7 +3717,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -4541,7 +3786,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -4553,14 +3797,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -4653,7 +3895,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -4677,7 +3918,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -4700,7 +3940,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -4860,15 +4099,12 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
             | OpKind::LoopIndexNext
@@ -4899,7 +4135,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -4909,8 +4144,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -4966,14 +4199,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -4982,19 +4212,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -5010,7 +4231,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -5034,7 +4254,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -5088,7 +4307,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -5100,14 +4318,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -5200,7 +4416,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -5224,7 +4439,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -5247,7 +4461,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -5409,7 +4622,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -5417,8 +4629,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -5450,7 +4660,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -5460,8 +4669,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -5517,14 +4724,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -5533,19 +4737,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -5561,7 +4756,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -5585,7 +4779,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -5634,7 +4827,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -5646,14 +4838,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -5746,7 +4936,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -5770,7 +4959,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -5793,7 +4981,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -5955,7 +5142,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -5963,8 +5149,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -5996,7 +5180,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -6006,8 +5189,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -6064,14 +5245,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -6080,19 +5258,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -6108,7 +5277,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -6132,7 +5300,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -6181,7 +5348,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -6193,14 +5359,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -6293,7 +5457,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -6317,7 +5480,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -6339,7 +5501,6 @@ impl OpKind {
             | OpKind::DictValues
             | OpKind::Div
             | OpKind::DropInserted
-            | OpKind::EndFor
             | OpKind::Enumerate
             | OpKind::Eq
             | OpKind::ExceptEnd
@@ -6498,7 +5659,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -6506,8 +5666,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopIndexEnd
             | OpKind::LoopIndexNext
@@ -6537,7 +5695,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -6547,8 +5704,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -6604,14 +5759,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -6620,19 +5772,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -6648,7 +5791,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -6672,7 +5814,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -6728,7 +5869,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -6740,14 +5880,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -6840,7 +5978,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -6864,7 +6001,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -6887,7 +6023,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -7049,7 +6184,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -7057,8 +6191,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopIndexEnd
             | OpKind::LoopIndexNext
@@ -7088,7 +6220,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -7098,8 +6229,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -7154,14 +6283,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -7170,19 +6296,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -7198,7 +6315,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -7222,7 +6338,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -7275,7 +6390,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -7287,13 +6401,11 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -7386,7 +6498,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -7410,7 +6521,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -7433,7 +6543,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -7594,13 +6703,10 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
             | OpKind::LoopBreak
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -7632,7 +6738,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -7642,8 +6747,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -7701,14 +6804,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -7717,19 +6817,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -7745,7 +6836,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -7769,7 +6859,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -7822,7 +6911,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -7834,14 +6922,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -7934,7 +7020,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -7958,7 +7043,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -7981,7 +7065,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -8143,7 +7226,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -8151,8 +7233,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -8182,7 +7262,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -8192,8 +7271,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -8251,14 +7328,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -8267,19 +7341,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -8295,7 +7360,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -8319,7 +7383,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -8368,7 +7431,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -8380,14 +7442,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -8480,7 +7540,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -8504,7 +7563,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -8527,7 +7585,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -8689,7 +7746,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -8697,8 +7753,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -8730,7 +7784,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -8740,8 +7793,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Pos
             | OpKind::Pow
             | OpKind::PowMod
@@ -8798,14 +7849,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -8814,19 +7862,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -8842,7 +7881,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -8866,7 +7904,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -8912,7 +7949,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -8924,13 +7960,11 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -9022,7 +8056,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -9046,7 +8079,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -9068,7 +8100,6 @@ impl OpKind {
             | OpKind::DictValues
             | OpKind::Div
             | OpKind::DropInserted
-            | OpKind::EndFor
             | OpKind::Enumerate
             | OpKind::Eq
             | OpKind::ExceptEnd
@@ -9223,12 +8254,9 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopIndexNext
             | OpKind::Lshift
             | OpKind::Lt
@@ -9255,7 +8283,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -9265,8 +8292,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -9318,14 +8343,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -9334,19 +8356,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -9362,7 +8375,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -9384,7 +8396,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -9462,7 +8473,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -9474,14 +8484,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -9574,7 +8582,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -9598,7 +8605,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -9621,7 +8627,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -9782,7 +8787,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -9790,8 +8794,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopIndexEnd
             | OpKind::LoopIndexNext
@@ -9820,7 +8822,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -9830,8 +8831,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -9888,14 +8887,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -9904,19 +8900,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -9932,7 +8919,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -9956,7 +8942,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -10008,7 +8993,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -10020,13 +9004,11 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -10118,7 +9100,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -10142,7 +9123,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -10164,7 +9144,6 @@ impl OpKind {
             | OpKind::DictValues
             | OpKind::Div
             | OpKind::DropInserted
-            | OpKind::EndFor
             | OpKind::Enumerate
             | OpKind::Eq
             | OpKind::ExceptEnd
@@ -10322,12 +9301,9 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopIndexEnd
             | OpKind::LoopIndexNext
             | OpKind::Lshift
@@ -10355,7 +9331,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -10365,8 +9340,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -10418,14 +9391,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -10434,19 +9404,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -10462,7 +9423,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -10484,7 +9444,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -10556,7 +9515,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -10568,14 +9526,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -10668,7 +9624,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -10692,7 +9647,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -10715,7 +9669,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -10877,7 +9830,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -10885,8 +9837,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -10918,7 +9868,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -10928,8 +9877,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -10984,14 +9931,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -11000,19 +9944,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -11028,7 +9963,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -11052,7 +9986,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -11101,7 +10034,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -11113,14 +10045,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -11213,7 +10143,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -11237,7 +10166,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -11260,7 +10188,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -11422,7 +10349,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -11430,8 +10356,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -11463,7 +10387,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -11473,8 +10396,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -11530,14 +10451,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -11546,19 +10464,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -11574,7 +10483,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -11598,7 +10506,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -11647,7 +10554,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -11659,14 +10565,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -11759,7 +10663,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -11783,7 +10686,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -11806,7 +10708,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -11967,7 +10868,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -11975,8 +10875,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -12008,7 +10906,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -12018,8 +10915,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -12076,14 +10971,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -12092,19 +10984,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -12120,7 +11003,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -12144,7 +11026,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -12193,7 +11074,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -12205,14 +11085,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -12305,7 +11183,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -12329,7 +11206,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -12352,7 +11228,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -12513,7 +11388,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -12521,8 +11395,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -12554,7 +11426,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -12564,8 +11435,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -12622,14 +11491,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -12638,19 +11504,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -12666,7 +11523,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -12690,7 +11546,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -12738,7 +11593,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -12750,13 +11604,11 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -12848,7 +11700,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -12872,7 +11723,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -12895,7 +11745,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -13055,7 +11904,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -13063,8 +11911,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -13096,7 +11942,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -13106,8 +11951,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -13165,14 +12008,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -13181,19 +12021,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -13209,7 +12040,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -13231,7 +12061,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -13286,7 +12115,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -13298,14 +12126,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -13398,7 +12224,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -13422,7 +12247,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -13445,7 +12269,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -13607,12 +12430,9 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
             | OpKind::LoopIndexNext
@@ -13643,7 +12463,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -13653,8 +12472,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -13712,14 +12529,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -13728,19 +12542,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -13756,7 +12561,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -13780,7 +12584,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -13833,7 +12636,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -13845,14 +12647,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -13945,7 +12745,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -13969,7 +12768,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -13992,7 +12790,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -14154,7 +12951,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -14162,8 +12958,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -14195,7 +12989,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -14205,8 +12998,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Pos
             | OpKind::Pow
             | OpKind::PowMod
@@ -14263,14 +13054,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -14279,19 +13067,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -14307,7 +13086,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -14331,7 +13109,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -14378,7 +13155,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -14390,13 +13166,11 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -14488,7 +13262,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -14512,7 +13285,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -14535,7 +13307,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -14694,7 +13465,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -14702,8 +13472,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -14735,7 +13503,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -14745,8 +13512,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -14801,14 +13566,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -14817,19 +13579,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -14845,7 +13598,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -14867,7 +13619,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -14925,7 +13676,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -14937,14 +13687,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -15037,7 +13785,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -15061,7 +13808,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -15084,7 +13830,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -15246,7 +13991,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -15254,8 +13998,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -15287,7 +14029,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -15297,8 +14038,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -15354,14 +14093,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -15370,19 +14106,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -15398,7 +14125,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -15422,7 +14148,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -15476,7 +14201,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -15488,14 +14212,12 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -15588,7 +14310,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -15612,7 +14333,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -15635,7 +14355,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -15797,7 +14516,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -15805,8 +14523,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -15838,7 +14554,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -15848,8 +14563,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -15905,14 +14618,11 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -15921,19 +14631,10 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -15949,7 +14650,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -15973,7 +14673,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -16028,7 +14727,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -16040,14 +14738,12 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -16140,7 +14836,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -16164,7 +14859,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -16186,7 +14880,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::DictValues
         | OpKind::Div
         | OpKind::DropInserted
-        | OpKind::EndFor
         | OpKind::Enumerate
         | OpKind::Eq
         | OpKind::ExceptEnd
@@ -16346,7 +15039,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -16354,8 +15046,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopIndexEnd
         | OpKind::LoopIndexNext
@@ -16385,7 +15075,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -16395,8 +15084,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -16454,14 +15141,11 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -16470,19 +15154,10 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -16498,7 +15173,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -16522,7 +15196,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -16573,7 +15246,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -16585,13 +15257,11 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -16684,7 +15354,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -16708,7 +15377,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -16729,7 +15397,6 @@ impl OpKind {
             | OpKind::DictUpdateMissing
             | OpKind::DictValues
             | OpKind::Div
-            | OpKind::EndFor
             | OpKind::Enumerate
             | OpKind::Eq
             | OpKind::ExceptEnd
@@ -16885,12 +15552,9 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::Lshift
             | OpKind::Lt
             | OpKind::Matmul
@@ -16916,7 +15580,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Not
             | OpKind::NotIn
             | OpKind::ObjectNew
@@ -16925,8 +15588,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Pos
             | OpKind::Pow
             | OpKind::PowMod
@@ -16979,14 +15640,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -16995,19 +15653,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -17023,7 +15672,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -17047,7 +15695,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -17124,7 +15771,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -17136,14 +15782,12 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -17229,7 +15873,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -17253,7 +15896,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -17276,7 +15918,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -17437,7 +16078,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -17445,8 +16085,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -17478,7 +16116,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -17488,8 +16125,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -17547,14 +16182,11 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -17563,19 +16195,10 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -17591,7 +16214,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -17615,7 +16237,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -17676,7 +16297,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -17688,12 +16308,10 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -17784,7 +16402,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -17807,7 +16424,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DictClear
         | OpKind::DictCopy
         | OpKind::DictFromObj
@@ -17829,7 +16445,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -17988,13 +16603,10 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoopBreak
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -18025,7 +16637,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -18035,8 +16646,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pow
         | OpKind::PowMod
@@ -18090,13 +16699,10 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Store
         | OpKind::StoreAttr
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -18105,19 +16711,10 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -18133,7 +16730,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -18156,7 +16752,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnpackSequence
         | OpKind::Unreachable
         | OpKind::VecMax
@@ -18219,7 +16814,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -18231,14 +16825,12 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -18331,7 +16923,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -18349,7 +16940,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DelBoundary
-        | OpKind::DelItem
         | OpKind::DictClear
         | OpKind::DictCopy
         | OpKind::DictFromObj
@@ -18371,7 +16961,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -18530,7 +17119,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -18538,8 +17126,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -18566,7 +17152,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -18576,8 +17161,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -18626,14 +17209,11 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::StaticCellSet
         | OpKind::StaticmethodNew
         | OpKind::StoreFast
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -18642,19 +17222,10 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -18670,7 +17241,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -18694,7 +17264,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -18763,7 +17332,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -18775,14 +17343,12 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -18875,7 +17441,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -18899,7 +17464,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -18922,7 +17486,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -19084,7 +17647,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -19092,8 +17654,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -19125,7 +17685,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -19135,8 +17694,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -19194,14 +17751,11 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -19210,19 +17764,10 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -19238,7 +17783,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -19262,7 +17806,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -19494,7 +18037,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -19506,12 +18048,10 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -19598,7 +18138,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::CmpLe
         | OpKind::CmpLt
         | OpKind::CmpNe
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -19622,7 +18161,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -19645,7 +18183,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -19796,7 +18333,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -19804,8 +18340,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -19836,7 +18370,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -19846,8 +18379,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pow
         | OpKind::PowMod
@@ -19903,14 +18434,11 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -19919,19 +18447,10 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -19947,7 +18466,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -19969,7 +18487,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnpackSequence
         | OpKind::Unreachable
         | OpKind::VecMax
@@ -20079,14 +18596,11 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -20171,7 +18685,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::ConstBool
         | OpKind::ConstBytes
@@ -20192,7 +18705,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -20214,7 +18726,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::DictValues
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Eq
         | OpKind::ExceptEnd
@@ -20357,7 +18868,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::ListReverseSlice
         | OpKind::Load
         | OpKind::LoadAttr
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -20365,8 +18875,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -20390,7 +18898,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::ModuleSetAttr
         | OpKind::ModuleSlot
         | OpKind::Ne
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -20399,8 +18906,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::PowMod
         | OpKind::Print
@@ -20451,14 +18956,11 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -20467,19 +18969,10 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -20495,7 +18988,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -20514,7 +19006,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::Unbox
         | OpKind::UnpackSequence
         | OpKind::Unreachable
@@ -20770,10 +19261,8 @@ pub const SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS: &[SimpleIrRuntimeRequirement
 pub const fn simpleir_target_name(target: super::target_info::TargetKind) -> &'static str {
     match target {
         super::target_info::TargetKind::Llvm => "llvm",
-        super::target_info::TargetKind::Luau => "luau",
         super::target_info::TargetKind::Mlir => "mlir",
         super::target_info::TargetKind::NativeCranelift => "native",
-        super::target_info::TargetKind::Rust => "rust",
         super::target_info::TargetKind::Wasm => "wasm",
     }
 }
@@ -20786,10 +19275,8 @@ pub fn simpleir_target_runtime_requirements(
 ) -> SimpleIrRuntimeRequirements {
     match target {
         super::target_info::TargetKind::Llvm => SimpleIrRuntimeRequirements(262143),
-        super::target_info::TargetKind::Luau => SimpleIrRuntimeRequirements(11239),
         super::target_info::TargetKind::Mlir => SimpleIrRuntimeRequirements(0),
         super::target_info::TargetKind::NativeCranelift => SimpleIrRuntimeRequirements(262143),
-        super::target_info::TargetKind::Rust => SimpleIrRuntimeRequirements(0),
         super::target_info::TargetKind::Wasm => SimpleIrRuntimeRequirements(262143),
     }
 }
@@ -20917,9 +19404,6 @@ pub const fn simpleir_runtime_requirements_table(
         OpKind::Aiter
         | OpKind::Anext
         | OpKind::AsyncgenNew
-        | OpKind::Binop
-        | OpKind::BoolConst
-        | OpKind::Branch
         | OpKind::BytearrayCount
         | OpKind::BytearrayCountSlice
         | OpKind::BytearrayEndswith
@@ -20950,11 +19434,9 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Cast
         | OpKind::ClassDef
         | OpKind::ClassmethodNew
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::ContextEnter
         | OpKind::ContextExit
-        | OpKind::DelItem
         | OpKind::DictClear
         | OpKind::DictCopy
         | OpKind::DictFromObj
@@ -20962,7 +19444,6 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::DictSetdefault
         | OpKind::DictSetdefaultEmptyList
         | OpKind::DictStrIntInc
-        | OpKind::EndFor
         | OpKind::ExceptionCurrent
         | OpKind::GenClose
         | OpKind::GenSend
@@ -20989,13 +19470,7 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::ListFromRange
         | OpKind::ListIntNew
         | OpKind::ListReverseSlice
-        | OpKind::LoadLocal
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::Matmul
-        | OpKind::NoneConst
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::PowMod
         | OpKind::PrintNewline
         | OpKind::PropertyNew
@@ -21008,28 +19483,16 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::SliceNew
         | OpKind::StaticmethodNew
         | OpKind::StoreFast
-        | OpKind::StoreLocal
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
         | OpKind::StringEndswithSlice
         | OpKind::StringFind
         | OpKind::StringFindSlice
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -21045,7 +19508,6 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -21055,7 +19517,6 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TypeOf
-        | OpKind::UnaryOp
         | OpKind::Unreachable
         | OpKind::VecMax
         | OpKind::VecMin
@@ -21439,7 +19900,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -21451,14 +19911,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -21549,7 +20007,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -21573,7 +20030,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -21596,7 +20052,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -21756,7 +20211,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -21764,8 +20218,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -21794,7 +20246,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -21804,8 +20255,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -21863,14 +20312,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -21879,19 +20325,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -21907,7 +20344,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -21931,7 +20367,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -21990,7 +20425,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -22002,14 +20436,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -22102,7 +20534,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -22126,7 +20557,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -22149,7 +20579,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -22311,7 +20740,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -22319,8 +20747,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -22349,7 +20775,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -22359,8 +20784,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -22418,14 +20841,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -22434,19 +20854,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -22462,7 +20873,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -22486,7 +20896,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -22541,7 +20950,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -22553,14 +20961,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -22652,7 +21058,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -22676,7 +21081,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -22699,7 +21103,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -22858,7 +21261,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -22866,8 +21268,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -22899,7 +21299,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -22908,8 +21307,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -22967,14 +21364,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -22983,19 +21377,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -23011,7 +21396,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -23035,7 +21419,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -23087,7 +21470,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -23099,14 +21481,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -23199,7 +21579,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -23223,7 +21602,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -23246,7 +21624,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -23406,7 +21783,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -23414,8 +21790,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -23447,7 +21821,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -23457,8 +21830,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -23516,14 +21887,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -23532,19 +21900,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -23560,7 +21919,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -23584,7 +21942,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -23640,7 +21997,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -23652,14 +22008,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -23748,7 +22102,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -23772,7 +22125,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -23795,7 +22147,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -23955,7 +22306,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -23963,8 +22313,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -23996,7 +22344,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -24006,8 +22353,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -24064,14 +22409,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -24080,19 +22422,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -24108,7 +22441,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -24132,7 +22464,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -24189,17 +22520,14 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopMod
         | OpKind::BinopMul
         | OpKind::BinopPow
         | OpKind::BinopSub
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::BoundMethodNew
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuiltinAbs
@@ -24268,14 +22596,12 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::ConstEllipsis
         | OpKind::ConstNotImplemented
         | OpKind::Contains
         | OpKind::ContextEnter
         | OpKind::ContextExit
-        | OpKind::DelItem
         | OpKind::DictClear
         | OpKind::DictCopy
         | OpKind::DictFromObj
@@ -24296,7 +22622,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::DictValues
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::ExceptEnd
@@ -24413,13 +22738,10 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::ListRemove
         | OpKind::ListReverse
         | OpKind::ListReverseSlice
-        | OpKind::LoadLocal
         | OpKind::LoopBreak
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -24433,13 +22755,10 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::ModuleLoadCached
         | OpKind::ModuleNew
         | OpKind::Modulo
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::ObjectNew
         | OpKind::OperatorIndex
         | OpKind::Ord
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::PowMod
         | OpKind::PrintNewline
@@ -24471,13 +22790,10 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::StatefulLocalsRegister
         | OpKind::StaticmethodNew
         | OpKind::StoreFast
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -24485,19 +22801,10 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -24513,7 +22820,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -24531,7 +22837,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::Unreachable
         | OpKind::VecMax
         | OpKind::VecMin
@@ -25003,7 +23308,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -25015,14 +23319,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -25108,7 +23410,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -25129,7 +23430,6 @@ impl OpKind {
             | OpKind::DelAttr
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -25152,7 +23452,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -25299,7 +23598,6 @@ impl OpKind {
             | OpKind::ListReverse
             | OpKind::ListReverseSlice
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -25307,8 +23605,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -25340,7 +23636,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -25350,8 +23645,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -25402,13 +23695,10 @@ impl OpKind {
             | OpKind::StaticmethodNew
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -25417,19 +23707,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -25445,7 +23726,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -25469,7 +23749,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -25543,7 +23822,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::AsyncWorkPoll
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -25555,13 +23833,11 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -25612,7 +23888,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::CmpLe
         | OpKind::CmpLt
         | OpKind::CmpNe
-        | OpKind::Compare
         | OpKind::Const
         | OpKind::ConstBigint
         | OpKind::ConstBool
@@ -25632,14 +23907,12 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictSet
         | OpKind::DictUpdateMissing
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Eq
         | OpKind::ExceptEnd
@@ -25723,7 +23996,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -25731,8 +24003,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -25761,15 +24031,12 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
         | OpKind::ObjectNewBound
         | OpKind::Or
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -25808,23 +24075,10 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringEq
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
-        | OpKind::StringSplitlines
         | OpKind::Sub
         | OpKind::Subscript
         | OpKind::Sum
@@ -25838,7 +24092,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -26091,7 +24344,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -26103,14 +24355,12 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -26203,7 +24453,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -26227,7 +24476,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -26250,7 +24498,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -26412,7 +24659,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -26420,8 +24666,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -26453,7 +24697,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -26463,8 +24706,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -26522,14 +24763,11 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -26538,19 +24776,10 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -26566,7 +24795,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -26590,7 +24818,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -26636,7 +24863,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -26648,14 +24874,12 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -26748,7 +24972,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -26772,7 +24995,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -26795,7 +25017,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -26952,7 +25173,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -26960,8 +25180,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -26993,7 +25211,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -27003,8 +25220,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -27062,14 +25277,11 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -27078,19 +25290,10 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -27106,7 +25309,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -27130,7 +25332,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -27180,7 +25381,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -27192,14 +25392,12 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -27292,7 +25490,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -27316,7 +25513,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -27339,7 +25535,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -27494,7 +25689,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -27502,8 +25696,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -27534,7 +25726,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Not
         | OpKind::NotIn
         | OpKind::ObjectNew
@@ -27543,8 +25734,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -27602,14 +25791,11 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -27618,19 +25804,10 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -27646,7 +25823,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -27670,7 +25846,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -27723,7 +25898,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -27735,14 +25909,12 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -27835,7 +26007,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -27859,7 +26030,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -27880,7 +26050,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -28036,7 +26205,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -28044,8 +26212,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -28077,7 +26243,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -28087,8 +26252,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -28145,14 +26308,11 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -28161,19 +26321,10 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -28189,7 +26340,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -28211,7 +26361,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -28268,7 +26417,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -28280,14 +26428,12 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -28380,7 +26526,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -28402,7 +26547,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -28425,7 +26569,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -28584,15 +26727,12 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoopBreak
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -28624,7 +26764,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -28634,8 +26773,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -28693,13 +26830,10 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -28708,19 +26842,10 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -28736,7 +26861,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -28760,7 +26884,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -28812,7 +26935,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -28824,14 +26946,12 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -28924,7 +27044,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -28948,7 +27067,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -28971,7 +27089,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -29129,7 +27246,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -29137,8 +27253,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -29170,7 +27284,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -29180,8 +27293,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -29239,14 +27350,11 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -29255,19 +27363,10 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -29283,7 +27382,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -29307,7 +27405,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -29355,7 +27452,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -29367,14 +27463,12 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -29467,7 +27561,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -29491,7 +27584,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -29514,7 +27606,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -29675,7 +27766,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -29683,8 +27773,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -29716,7 +27804,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -29726,8 +27813,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -29785,14 +27870,11 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -29801,19 +27883,10 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -29829,7 +27902,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -29853,7 +27925,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -30648,7 +28719,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -30660,14 +28730,12 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -30759,7 +28827,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -30783,7 +28850,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -30806,7 +28872,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -30958,7 +29023,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -30966,8 +29030,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -30998,7 +29060,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Not
         | OpKind::NotIn
         | OpKind::ObjectNew
@@ -31007,8 +29068,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -31065,14 +29124,11 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -31081,19 +29137,10 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -31109,7 +29156,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -31133,7 +29179,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -31193,7 +29238,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -31205,14 +29249,12 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -31305,7 +29347,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -31329,7 +29370,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -31352,7 +29392,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -31512,7 +29551,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -31520,8 +29558,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -31553,7 +29589,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -31563,8 +29598,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -31622,14 +29655,11 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -31638,19 +29668,10 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -31666,7 +29687,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -31690,7 +29710,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -31736,7 +29755,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -31748,14 +29766,12 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -31848,7 +29864,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -31872,7 +29887,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -31895,7 +29909,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -32055,7 +30068,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -32063,8 +30075,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -32096,7 +30106,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -32106,8 +30115,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -32165,14 +30172,11 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -32181,19 +30185,10 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -32209,7 +30204,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -32233,7 +30227,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -32279,7 +30272,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -32291,14 +30283,12 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -32391,7 +30381,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -32415,7 +30404,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -32438,7 +30426,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -32600,7 +30587,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -32608,8 +30594,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -32641,7 +30625,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -32650,8 +30633,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -32709,14 +30690,11 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -32725,19 +30703,10 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -32753,7 +30722,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -32777,7 +30745,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -32824,7 +30791,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -32836,14 +30802,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -32927,7 +30891,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -32951,7 +30914,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -32974,7 +30936,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -33135,7 +31096,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -33143,8 +31103,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -33176,7 +31134,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -33186,8 +31143,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -33245,14 +31200,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -33261,19 +31213,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -33289,7 +31232,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -33313,7 +31255,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -33369,7 +31310,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -33381,14 +31321,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -33480,7 +31418,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -33504,7 +31441,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -33527,7 +31463,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -33689,7 +31624,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -33697,8 +31631,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -33730,7 +31662,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -33740,8 +31671,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -33799,14 +31728,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -33815,19 +31741,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -33843,7 +31760,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -33867,7 +31783,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -33915,7 +31830,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -33927,14 +31841,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -34027,7 +31939,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -34051,7 +31962,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -34074,7 +31984,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -34236,7 +32145,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -34244,8 +32152,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -34277,7 +32183,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -34287,8 +32192,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -34345,14 +32248,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -34361,19 +32261,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -34389,7 +32280,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -34413,7 +32303,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -34461,7 +32350,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -34473,14 +32361,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -34573,7 +32459,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -34597,7 +32482,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -34620,7 +32504,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -34781,7 +32664,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -34789,8 +32671,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -34822,7 +32702,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -34832,8 +32711,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -34891,14 +32768,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -34907,19 +32781,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -34935,7 +32800,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -34959,7 +32823,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -35006,7 +32869,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -35018,14 +32880,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -35118,7 +32978,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -35142,7 +33001,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -35165,7 +33023,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -35327,7 +33184,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -35335,8 +33191,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -35368,7 +33222,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -35378,8 +33231,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -35437,14 +33288,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -35453,19 +33301,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -35481,7 +33320,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -35505,7 +33343,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -35553,7 +33390,6 @@ impl OpKind {
             | OpKind::AsyncgenNew
             | OpKind::Band
             | OpKind::BindingAlias
-            | OpKind::Binop
             | OpKind::BinopAdd
             | OpKind::BinopFloorDiv
             | OpKind::BinopMod
@@ -35565,14 +33401,12 @@ impl OpKind {
             | OpKind::BitOr
             | OpKind::BitXor
             | OpKind::Bool
-            | OpKind::BoolConst
             | OpKind::Bor
             | OpKind::Borrow
             | OpKind::BoundMethodNew
             | OpKind::Box
             | OpKind::BoxFromRawInt
             | OpKind::BrIf
-            | OpKind::Branch
             | OpKind::BranchFalse
             | OpKind::BranchTrue
             | OpKind::BuildDict
@@ -35665,7 +33499,6 @@ impl OpKind {
             | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
-            | OpKind::Compare
             | OpKind::ComplexFromObj
             | OpKind::Const
             | OpKind::ConstBigint
@@ -35689,7 +33522,6 @@ impl OpKind {
             | OpKind::DelAttrName
             | OpKind::DelBoundary
             | OpKind::DelIndex
-            | OpKind::DelItem
             | OpKind::DeleteVar
             | OpKind::DictClear
             | OpKind::DictCopy
@@ -35712,7 +33544,6 @@ impl OpKind {
             | OpKind::Div
             | OpKind::DropInserted
             | OpKind::Else
-            | OpKind::EndFor
             | OpKind::EndIf
             | OpKind::Enumerate
             | OpKind::Eq
@@ -35873,7 +33704,6 @@ impl OpKind {
             | OpKind::Load
             | OpKind::LoadAttr
             | OpKind::LoadConst
-            | OpKind::LoadLocal
             | OpKind::LoadMethod
             | OpKind::LoadSuperMethod
             | OpKind::LoadVar
@@ -35881,8 +33711,6 @@ impl OpKind {
             | OpKind::LoopBreakIfException
             | OpKind::LoopBreakIfFalse
             | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
             | OpKind::LoopContinue
             | OpKind::LoopEnd
             | OpKind::LoopIndexEnd
@@ -35914,7 +33742,6 @@ impl OpKind {
             | OpKind::Mul
             | OpKind::Ne
             | OpKind::Neg
-            | OpKind::NoneConst
             | OpKind::Nop
             | OpKind::Not
             | OpKind::NotIn
@@ -35924,8 +33751,6 @@ impl OpKind {
             | OpKind::Or
             | OpKind::Ord
             | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
             | OpKind::Phi
             | OpKind::Pos
             | OpKind::Pow
@@ -35983,14 +33808,11 @@ impl OpKind {
             | OpKind::StoreAttr
             | OpKind::StoreFast
             | OpKind::StoreIndex
-            | OpKind::StoreLocal
             | OpKind::StoreSubscript
             | OpKind::StoreVar
             | OpKind::Str
             | OpKind::StrFromObj
             | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
             | OpKind::StringCount
             | OpKind::StringCountSlice
             | OpKind::StringEndswith
@@ -35999,19 +33821,10 @@ impl OpKind {
             | OpKind::StringFind
             | OpKind::StringFindSlice
             | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
             | OpKind::StringJoin
             | OpKind::StringLower
             | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
             | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
             | OpKind::StringRstrip
             | OpKind::StringSplit
             | OpKind::StringSplitField
@@ -36027,7 +33840,6 @@ impl OpKind {
             | OpKind::StringSplitSepDictInc
             | OpKind::StringSplitValidate
             | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
             | OpKind::StringStartswith
             | OpKind::StringStartswithSlice
             | OpKind::StringStrip
@@ -36051,7 +33863,6 @@ impl OpKind {
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
             | OpKind::UnaryNot
-            | OpKind::UnaryOp
             | OpKind::UnaryPos
             | OpKind::Unbox
             | OpKind::UnboxToRawInt
@@ -36069,551 +33880,6 @@ impl OpKind {
             | OpKind::YieldFrom
             | OpKind::Zip => false,
             OpKind::ExceptionFinallyPendingObserver => true,
-        }
-    }
-}
-
-impl OpKind {
-    #[inline]
-    pub const fn requires_luau_ordered_mapping(self) -> bool {
-        match self {
-            OpKind::MAnd
-            | OpKind::Abs
-            | OpKind::Add
-            | OpKind::Aiter
-            | OpKind::All
-            | OpKind::Alloc
-            | OpKind::AllocClass
-            | OpKind::AllocClassStatic
-            | OpKind::AllocClassTrusted
-            | OpKind::AllocInstance
-            | OpKind::AllocTask
-            | OpKind::And
-            | OpKind::Anext
-            | OpKind::Any
-            | OpKind::AsciiFromObj
-            | OpKind::AsyncForEnd
-            | OpKind::AsyncForStart
-            | OpKind::AsyncWorkPending
-            | OpKind::AsyncWorkPoll
-            | OpKind::AsyncgenNew
-            | OpKind::Band
-            | OpKind::BindingAlias
-            | OpKind::Binop
-            | OpKind::BinopAdd
-            | OpKind::BinopFloorDiv
-            | OpKind::BinopMod
-            | OpKind::BinopMul
-            | OpKind::BinopPow
-            | OpKind::BinopSub
-            | OpKind::BitAnd
-            | OpKind::BitNot
-            | OpKind::BitOr
-            | OpKind::BitXor
-            | OpKind::Bool
-            | OpKind::BoolConst
-            | OpKind::Bor
-            | OpKind::Borrow
-            | OpKind::BoundMethodNew
-            | OpKind::Box
-            | OpKind::BoxFromRawInt
-            | OpKind::BrIf
-            | OpKind::Branch
-            | OpKind::BranchFalse
-            | OpKind::BranchTrue
-            | OpKind::BuildDict
-            | OpKind::BuildList
-            | OpKind::BuildSet
-            | OpKind::BuildSlice
-            | OpKind::BuildTuple
-            | OpKind::BuiltinAbs
-            | OpKind::BuiltinAll
-            | OpKind::BuiltinAny
-            | OpKind::BuiltinBool
-            | OpKind::BuiltinFloat
-            | OpKind::BuiltinFunc
-            | OpKind::BuiltinInt
-            | OpKind::BuiltinLen
-            | OpKind::BuiltinPrint
-            | OpKind::BuiltinRange
-            | OpKind::BuiltinReversed
-            | OpKind::BuiltinSorted
-            | OpKind::BuiltinStr
-            | OpKind::BuiltinSum
-            | OpKind::BuiltinType
-            | OpKind::Bxor
-            | OpKind::BytearrayCount
-            | OpKind::BytearrayCountSlice
-            | OpKind::BytearrayEndswith
-            | OpKind::BytearrayEndswithSlice
-            | OpKind::BytearrayFillRange
-            | OpKind::BytearrayFind
-            | OpKind::BytearrayFindSlice
-            | OpKind::BytearrayFromObj
-            | OpKind::BytearrayFromStr
-            | OpKind::BytearrayReplace
-            | OpKind::BytearraySplit
-            | OpKind::BytearraySplitMax
-            | OpKind::BytearrayStartswith
-            | OpKind::BytearrayStartswithSlice
-            | OpKind::BytesCount
-            | OpKind::BytesCountSlice
-            | OpKind::BytesEndswith
-            | OpKind::BytesEndswithSlice
-            | OpKind::BytesFind
-            | OpKind::BytesFindSlice
-            | OpKind::BytesFromObj
-            | OpKind::BytesFromStr
-            | OpKind::BytesReplace
-            | OpKind::BytesSplit
-            | OpKind::BytesSplitMax
-            | OpKind::BytesStartswith
-            | OpKind::BytesStartswithSlice
-            | OpKind::Call
-            | OpKind::CallAsync
-            | OpKind::CallBind
-            | OpKind::CallBuiltin
-            | OpKind::CallFunc
-            | OpKind::CallFunction
-            | OpKind::CallGuarded
-            | OpKind::CallIndirect
-            | OpKind::CallInternal
-            | OpKind::CallLoadedMethod
-            | OpKind::CallMethod
-            | OpKind::CallargsExpandStar
-            | OpKind::CallargsNew
-            | OpKind::CallargsPushKw
-            | OpKind::CallargsPushMethodReceiver
-            | OpKind::CallargsPushPos
-            | OpKind::Cast
-            | OpKind::CastBool
-            | OpKind::CastFloat
-            | OpKind::CastInt
-            | OpKind::CastStr
-            | OpKind::CheckException
-            | OpKind::CheckedAdd
-            | OpKind::CheckedMul
-            | OpKind::Chr
-            | OpKind::ClassDef
-            | OpKind::ClassLayoutFieldCount
-            | OpKind::ClassLayoutSlotCount
-            | OpKind::ClassSetDefinition
-            | OpKind::ClassmethodNew
-            | OpKind::ClosureLoad
-            | OpKind::ClosureStore
-            | OpKind::CmpEq
-            | OpKind::CmpGe
-            | OpKind::CmpGt
-            | OpKind::CmpLe
-            | OpKind::CmpLt
-            | OpKind::CmpNe
-            | OpKind::CodeNew
-            | OpKind::CodeSlotSet
-            | OpKind::CodeSlotsInit
-            | OpKind::Compare
-            | OpKind::ComplexFromObj
-            | OpKind::Const
-            | OpKind::ConstBigint
-            | OpKind::ConstBool
-            | OpKind::ConstBytes
-            | OpKind::ConstEllipsis
-            | OpKind::ConstFloat
-            | OpKind::ConstInt
-            | OpKind::ConstNone
-            | OpKind::ConstNotImplemented
-            | OpKind::ConstStr
-            | OpKind::Contains
-            | OpKind::ContextEnter
-            | OpKind::ContextExit
-            | OpKind::Copy
-            | OpKind::CopyVar
-            | OpKind::DecRef
-            | OpKind::DelAttr
-            | OpKind::DelAttrGenericObj
-            | OpKind::DelAttrGenericPtr
-            | OpKind::DelAttrName
-            | OpKind::DelBoundary
-            | OpKind::DelIndex
-            | OpKind::DelItem
-            | OpKind::DeleteVar
-            | OpKind::DictClear
-            | OpKind::DictCopy
-            | OpKind::DictFromObj
-            | OpKind::DictGet
-            | OpKind::DictItems
-            | OpKind::DictKeys
-            | OpKind::DictNew
-            | OpKind::DictPop
-            | OpKind::DictPopitem
-            | OpKind::DictSet
-            | OpKind::DictSetdefault
-            | OpKind::DictSetdefaultEmptyList
-            | OpKind::DictStrIntInc
-            | OpKind::DictUpdate
-            | OpKind::DictUpdateKwstar
-            | OpKind::DictUpdateMissing
-            | OpKind::DictValues
-            | OpKind::Div
-            | OpKind::DropInserted
-            | OpKind::Else
-            | OpKind::EndFor
-            | OpKind::EndIf
-            | OpKind::Enumerate
-            | OpKind::Eq
-            | OpKind::ExceptEnd
-            | OpKind::ExceptStart
-            | OpKind::ExceptionActive
-            | OpKind::ExceptionClass
-            | OpKind::ExceptionClear
-            | OpKind::ExceptionContextSet
-            | OpKind::ExceptionCurrent
-            | OpKind::ExceptionFinallyPendingObserver
-            | OpKind::ExceptionLast
-            | OpKind::ExceptionLastPending
-            | OpKind::ExceptionMatchBuiltin
-            | OpKind::ExceptionNew
-            | OpKind::ExceptionNewBuiltin
-            | OpKind::ExceptionNewBuiltinEmpty
-            | OpKind::ExceptionNewBuiltinOne
-            | OpKind::ExceptionNewFromClass
-            | OpKind::ExceptionPending
-            | OpKind::ExceptionPop
-            | OpKind::ExceptionPush
-            | OpKind::ExceptionRegionDropsInserted
-            | OpKind::ExceptionSetLast
-            | OpKind::ExceptionStackClear
-            | OpKind::ExceptionStackDepth
-            | OpKind::ExceptionStackEnter
-            | OpKind::ExceptionStackExit
-            | OpKind::ExceptionStackSetDepth
-            | OpKind::ExceptiongroupCombine
-            | OpKind::ExceptiongroupMatch
-            | OpKind::FinallyEnd
-            | OpKind::FinallyStart
-            | OpKind::Float
-            | OpKind::FloatFromObj
-            | OpKind::FloorDiv
-            | OpKind::Floordiv
-            | OpKind::ForIter
-            | OpKind::ForIterEnd
-            | OpKind::ForIterStart
-            | OpKind::ForRange
-            | OpKind::FormatString
-            | OpKind::FrameContextSet
-            | OpKind::FrameHomeCell
-            | OpKind::FrameHomeClear
-            | OpKind::FrameHomeLoad
-            | OpKind::FrameHomePrivateCell
-            | OpKind::FrameHomeStore
-            | OpKind::FrameHomeTake
-            | OpKind::FrameLocals
-            | OpKind::FrameLocalsSet
-            | OpKind::FrameSetLocation
-            | OpKind::Free
-            | OpKind::FrozensetAdd
-            | OpKind::FrozensetNew
-            | OpKind::FuncNew
-            | OpKind::FuncNewClosure
-            | OpKind::FunctionClosureBits
-            | OpKind::FunctionDefaultsVersion
-            | OpKind::Ge
-            | OpKind::GenClose
-            | OpKind::GenSend
-            | OpKind::GenThrow
-            | OpKind::GetAttr
-            | OpKind::GetAttrGenericObj
-            | OpKind::GetAttrGenericPtr
-            | OpKind::GetAttrName
-            | OpKind::GetAttrNameDefault
-            | OpKind::GetAttrSpecialObj
-            | OpKind::GetItem
-            | OpKind::GetIter
-            | OpKind::Getframe
-            | OpKind::GlobalSlotGet
-            | OpKind::Goto
-            | OpKind::GpuBarrier
-            | OpKind::GpuBlockDim
-            | OpKind::GpuBlockId
-            | OpKind::GpuGridDim
-            | OpKind::GpuThreadId
-            | OpKind::Gt
-            | OpKind::GuardBool
-            | OpKind::GuardFloat
-            | OpKind::GuardInt
-            | OpKind::GuardLayout
-            | OpKind::GuardNone
-            | OpKind::GuardStr
-            | OpKind::GuardTag
-            | OpKind::GuardType
-            | OpKind::GuardedFieldGet
-            | OpKind::GuardedFieldSet
-            | OpKind::GuardedLoad
-            | OpKind::HasAttrName
-            | OpKind::Id
-            | OpKind::IdentityAlias
-            | OpKind::If
-            | OpKind::IfNot
-            | OpKind::Import
-            | OpKind::ImportFrom
-            | OpKind::ImportName
-            | OpKind::In
-            | OpKind::IncRef
-            | OpKind::Index
-            | OpKind::IndexSet
-            | OpKind::InitInstance
-            | OpKind::InplaceAdd
-            | OpKind::InplaceBitAnd
-            | OpKind::InplaceBitOr
-            | OpKind::InplaceBitXor
-            | OpKind::InplaceDiv
-            | OpKind::InplaceFloordiv
-            | OpKind::InplaceLshift
-            | OpKind::InplaceMatmul
-            | OpKind::InplaceMod
-            | OpKind::InplaceMul
-            | OpKind::InplacePow
-            | OpKind::InplaceRshift
-            | OpKind::InplaceSub
-            | OpKind::InstanceGetField
-            | OpKind::InstanceHasField
-            | OpKind::InstanceSetField
-            | OpKind::Int
-            | OpKind::IntFromObj
-            | OpKind::IntFromStrOfObj
-            | OpKind::Invert
-            | OpKind::InvokeFfi
-            | OpKind::Is
-            | OpKind::IsBoundMethod
-            | OpKind::IsCallable
-            | OpKind::IsGenerator
-            | OpKind::IsNativeAwaitable
-            | OpKind::IsNot
-            | OpKind::IsPending
-            | OpKind::Isinstance
-            | OpKind::Issubclass
-            | OpKind::Iter
-            | OpKind::IterNext
-            | OpKind::IterNextUnboxed
-            | OpKind::Jump
-            | OpKind::Label
-            | OpKind::Le
-            | OpKind::Len
-            | OpKind::Line
-            | OpKind::ListAppend
-            | OpKind::ListClear
-            | OpKind::ListCopy
-            | OpKind::ListCount
-            | OpKind::ListExtend
-            | OpKind::ListFillNew
-            | OpKind::ListFromRange
-            | OpKind::ListIndex
-            | OpKind::ListIndexRange
-            | OpKind::ListInsert
-            | OpKind::ListIntNew
-            | OpKind::ListNew
-            | OpKind::ListPop
-            | OpKind::ListRemove
-            | OpKind::ListReverse
-            | OpKind::ListReverseSlice
-            | OpKind::Load
-            | OpKind::LoadAttr
-            | OpKind::LoadConst
-            | OpKind::LoadLocal
-            | OpKind::LoadMethod
-            | OpKind::LoadSuperMethod
-            | OpKind::LoadVar
-            | OpKind::LoopBreak
-            | OpKind::LoopBreakIfException
-            | OpKind::LoopBreakIfFalse
-            | OpKind::LoopBreakIfTrue
-            | OpKind::LoopCarryInit
-            | OpKind::LoopCarryUpdate
-            | OpKind::LoopContinue
-            | OpKind::LoopEnd
-            | OpKind::LoopIndexEnd
-            | OpKind::LoopIndexNext
-            | OpKind::LoopIndexStart
-            | OpKind::LoopStart
-            | OpKind::Lshift
-            | OpKind::Lt
-            | OpKind::Matmul
-            | OpKind::Missing
-            | OpKind::Mod
-            | OpKind::Mod_
-            | OpKind::ModuleCacheDel
-            | OpKind::ModuleCacheGet
-            | OpKind::ModuleCacheSet
-            | OpKind::ModuleDelGlobal
-            | OpKind::ModuleDelGlobalIfPresent
-            | OpKind::ModuleGetAttr
-            | OpKind::ModuleGetGlobal
-            | OpKind::ModuleGetName
-            | OpKind::ModuleImport
-            | OpKind::ModuleImportFrom
-            | OpKind::ModuleImportStar
-            | OpKind::ModuleLoadCached
-            | OpKind::ModuleNew
-            | OpKind::ModuleSetAttr
-            | OpKind::ModuleSlot
-            | OpKind::Modulo
-            | OpKind::Mul
-            | OpKind::Ne
-            | OpKind::Neg
-            | OpKind::NoneConst
-            | OpKind::Nop
-            | OpKind::Not
-            | OpKind::NotIn
-            | OpKind::ObjectNew
-            | OpKind::ObjectNewBound
-            | OpKind::OperatorIndex
-            | OpKind::Or
-            | OpKind::Ord
-            | OpKind::OrdAt
-            | OpKind::PcallWrapBegin
-            | OpKind::PcallWrapEnd
-            | OpKind::Phi
-            | OpKind::Pos
-            | OpKind::Pow
-            | OpKind::PowMod
-            | OpKind::Print
-            | OpKind::PrintNewline
-            | OpKind::PropertyNew
-            | OpKind::Raise
-            | OpKind::RaiseFrom
-            | OpKind::Range
-            | OpKind::RangeNew
-            | OpKind::Release
-            | OpKind::ReprFromObj
-            | OpKind::Reraise
-            | OpKind::Ret
-            | OpKind::RetVoid
-            | OpKind::Reversed
-            | OpKind::Round
-            | OpKind::Rshift
-            | OpKind::SetAdd
-            | OpKind::SetAddProbe
-            | OpKind::SetAttr
-            | OpKind::SetAttrGenericObj
-            | OpKind::SetAttrGenericPtr
-            | OpKind::SetAttrName
-            | OpKind::SetClear
-            | OpKind::SetDifferenceUpdate
-            | OpKind::SetDiscard
-            | OpKind::SetIntersectionUpdate
-            | OpKind::SetItem
-            | OpKind::SetNew
-            | OpKind::SetPop
-            | OpKind::SetRemove
-            | OpKind::SetSymdiffUpdate
-            | OpKind::SetUpdate
-            | OpKind::Shl
-            | OpKind::Shr
-            | OpKind::Slice
-            | OpKind::SliceNew
-            | OpKind::Sorted
-            | OpKind::StackAlloc
-            | OpKind::StateBlockEnd
-            | OpKind::StateBlockStart
-            | OpKind::StateLabel
-            | OpKind::StateSet
-            | OpKind::StateSwitch
-            | OpKind::StateTransition
-            | OpKind::StateYield
-            | OpKind::StatefulLocalsRegister
-            | OpKind::StaticCellBase
-            | OpKind::StaticCellLoad
-            | OpKind::StaticCellSet
-            | OpKind::StaticmethodNew
-            | OpKind::Store
-            | OpKind::StoreAttr
-            | OpKind::StoreFast
-            | OpKind::StoreIndex
-            | OpKind::StoreLocal
-            | OpKind::StoreSubscript
-            | OpKind::StoreVar
-            | OpKind::Str
-            | OpKind::StrFromObj
-            | OpKind::StringCapitalize
-            | OpKind::StringConcat
-            | OpKind::StringConst
-            | OpKind::StringCount
-            | OpKind::StringCountSlice
-            | OpKind::StringEndswith
-            | OpKind::StringEndswithSlice
-            | OpKind::StringEq
-            | OpKind::StringFind
-            | OpKind::StringFindSlice
-            | OpKind::StringFormat
-            | OpKind::StringIndex
-            | OpKind::StringIndexSlice
-            | OpKind::StringJoin
-            | OpKind::StringLower
-            | OpKind::StringLstrip
-            | OpKind::StringPartition
-            | OpKind::StringRepeat
-            | OpKind::StringReplace
-            | OpKind::StringRfind
-            | OpKind::StringRfindSlice
-            | OpKind::StringRindex
-            | OpKind::StringRindexSlice
-            | OpKind::StringRpartition
-            | OpKind::StringRstrip
-            | OpKind::StringSplit
-            | OpKind::StringSplitField
-            | OpKind::StringSplitFieldEnd
-            | OpKind::StringSplitFieldEq
-            | OpKind::StringSplitFieldIsAscii
-            | OpKind::StringSplitFieldLen
-            | OpKind::StringSplitFieldLenFromBounds
-            | OpKind::StringSplitFieldOrdAtBounds
-            | OpKind::StringSplitFieldStart
-            | OpKind::StringSplitFieldToInt
-            | OpKind::StringSplitMax
-            | OpKind::StringSplitSepDictInc
-            | OpKind::StringSplitValidate
-            | OpKind::StringSplitWsDictInc
-            | OpKind::StringSplitlines
-            | OpKind::StringStartswith
-            | OpKind::StringStartswithSlice
-            | OpKind::StringStrip
-            | OpKind::StringUpper
-            | OpKind::Sub
-            | OpKind::Subscript
-            | OpKind::Sum
-            | OpKind::TaskWait
-            | OpKind::TraceEnterSlot
-            | OpKind::TraceExit
-            | OpKind::TrueDiv
-            | OpKind::Trunc
-            | OpKind::TryEnd
-            | OpKind::TryStart
-            | OpKind::TupleCount
-            | OpKind::TupleFromList
-            | OpKind::TupleIndex
-            | OpKind::TupleNew
-            | OpKind::TypeGuard
-            | OpKind::TypeOf
-            | OpKind::UnaryInvert
-            | OpKind::UnaryNeg
-            | OpKind::UnaryNot
-            | OpKind::UnaryOp
-            | OpKind::UnaryPos
-            | OpKind::Unbox
-            | OpKind::UnboxToRawInt
-            | OpKind::UnpackSequence
-            | OpKind::Unreachable
-            | OpKind::VecMax
-            | OpKind::VecMin
-            | OpKind::VecProd
-            | OpKind::VecSum
-            | OpKind::WarnStderr
-            | OpKind::WhileEnd
-            | OpKind::WhileStart
-            | OpKind::Widen
-            | OpKind::Yield
-            | OpKind::YieldFrom
-            | OpKind::Zip => false,
-            OpKind::CallargsExpandKwstar | OpKind::DictUnpack => true,
         }
     }
 }
@@ -48058,7 +45324,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -48070,14 +45335,12 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -48167,7 +45430,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -48191,7 +45453,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -48214,7 +45475,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -48373,7 +45633,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -48381,8 +45640,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -48414,7 +45671,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -48424,8 +45680,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -48483,14 +45737,11 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -48499,19 +45750,10 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -48527,7 +45769,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -48551,7 +45792,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -48599,7 +45839,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -48611,14 +45850,12 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -48703,7 +45940,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -48727,7 +45963,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -48750,7 +45985,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -48912,7 +46146,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -48920,8 +46153,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -48953,7 +46184,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -48963,8 +46193,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -49022,14 +46250,11 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -49038,19 +46263,10 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -49066,7 +46282,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -49090,7 +46305,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -49143,7 +46357,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -49155,14 +46368,12 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -49249,7 +46460,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -49273,7 +46483,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -49296,7 +46505,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -49458,7 +46666,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -49466,8 +46673,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -49499,7 +46704,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -49509,8 +46713,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -49568,14 +46770,11 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -49584,19 +46783,10 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -49612,7 +46802,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -49636,7 +46825,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -49687,7 +46875,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -49699,14 +46886,12 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -49799,7 +46984,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -49823,7 +47007,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -49846,7 +47029,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -50007,7 +47189,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -50015,8 +47196,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -50048,7 +47227,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -50058,8 +47236,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -50115,14 +47291,11 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -50131,19 +47304,10 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -50159,7 +47323,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -50183,7 +47346,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -50386,7 +47548,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -50398,12 +47559,10 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -50496,7 +47655,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -50520,7 +47678,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -50543,7 +47700,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -50705,7 +47861,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -50713,8 +47868,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -50746,7 +47899,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -50755,8 +47907,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::OperatorIndex
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -50814,14 +47964,11 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -50830,19 +47977,10 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -50858,7 +47996,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -50882,7 +48019,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::UnpackSequence
         | OpKind::Unreachable
@@ -50931,7 +48067,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -50943,14 +48078,12 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -51042,7 +48175,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -51066,7 +48198,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -51088,7 +48219,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -51248,7 +48378,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -51256,8 +48385,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -51289,7 +48416,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -51299,8 +48425,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -51356,14 +48480,11 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -51372,19 +48493,10 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -51400,7 +48512,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -51423,7 +48534,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -51478,7 +48588,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::AsyncgenNew
         | OpKind::Band
         | OpKind::BindingAlias
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -51490,14 +48599,12 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::Borrow
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -51590,7 +48697,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::CodeNew
         | OpKind::CodeSlotSet
         | OpKind::CodeSlotsInit
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -51614,7 +48720,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -51637,7 +48742,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -51798,7 +48902,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -51806,8 +48909,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -51839,7 +48940,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -51849,8 +48949,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -51908,14 +49006,11 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::StoreVar
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -51924,19 +49019,10 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::StringFind
         | OpKind::StringFindSlice
         | OpKind::StringFormat
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -51952,7 +49038,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -51976,7 +49061,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -52410,8 +49494,6 @@ pub mod runtime_calls {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum RuntimeCallRealization {
         Runtime,
-        LuauIterCarriers,
-        LuauDictStorage,
         Unsupported,
     }
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52492,14 +49574,10 @@ pub mod runtime_calls {
                 (Self::DictSet, TargetKind::NativeCranelift) => RuntimeCallRealization::Runtime,
                 (Self::DictSet, TargetKind::Wasm) => RuntimeCallRealization::Runtime,
                 (Self::DictSet, TargetKind::Llvm) => RuntimeCallRealization::Runtime,
-                (Self::DictSet, TargetKind::Luau) => RuntimeCallRealization::LuauDictStorage,
-                (Self::DictSet, TargetKind::Rust) => RuntimeCallRealization::Unsupported,
                 (Self::DictSet, TargetKind::Mlir) => RuntimeCallRealization::Unsupported,
                 (Self::Iter, TargetKind::NativeCranelift) => RuntimeCallRealization::Runtime,
                 (Self::Iter, TargetKind::Wasm) => RuntimeCallRealization::Runtime,
                 (Self::Iter, TargetKind::Llvm) => RuntimeCallRealization::Runtime,
-                (Self::Iter, TargetKind::Luau) => RuntimeCallRealization::LuauIterCarriers,
-                (Self::Iter, TargetKind::Rust) => RuntimeCallRealization::Unsupported,
                 (Self::Iter, TargetKind::Mlir) => RuntimeCallRealization::Unsupported,
             }
         }

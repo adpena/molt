@@ -3808,7 +3808,7 @@ def diff_test(
     whether the operator interrupted the guard or the child exited itself.
 
     MULTI-BACKEND (doc 66): `targets` selects which backend(s) to validate
-    (native / wasm / llvm / luau). Each backend is compared against CPython under
+    (native / wasm / llvm). Each backend is compared against CPython under
     the ONE comparison law (tools/compat/comparison.py); when two or more
     backends ran, they are also compared against EACH OTHER (the cross-backend
     divergence sub-oracle). The test FAILS if any backend disagrees with CPython

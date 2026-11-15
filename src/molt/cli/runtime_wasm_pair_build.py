@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from molt.cli import progress as _progress
-from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
+from molt.cli.build_locks import (
+    BuildLockAcquisitionError,
+    _build_lock,
+    held_build_lock,
+)
+from molt.default_paths import _default_molt_cache, shared_cache_lock_path
 
 import contextlib
+from collections.abc import Generator
+from contextlib import contextmanager
 import json
 import subprocess
 import sys
@@ -947,6 +954,36 @@ def _ensure_installed_runtime_wasm(
     return True
 
 
+@contextmanager
+def _pair_identity_single_flight(ctx: _RuntimeWasmPairBuild) -> Generator[None]:
+    """One builder per pair identity on this host, across every checkout.
+
+    The checkout's own pair lock only keeps two builds in one Cargo target
+    apart; two checkouts with identical inputs each held their own and both
+    compiled the runtime. When the pair will be published to the shared cache,
+    the builder also holds this lock, keyed by the digest that names the
+    pair's cache entry, and a waiter that gets it finds the published entry
+    (``_materialize_runtime_wasm_pair`` reads the cache first). It is the
+    product store's single-flight (``held_build_lock``: an OS file lock, so a
+    dead holder never blocks). A pair that is not published, an explicit
+    incremental build, is checkout-private and takes no host lock.
+    """
+    identity = ctx.pre_identity
+    plan = ctx.shared_spec.cargo_plan
+    if identity is None or plan is None:
+        yield
+        return
+    if not ctx.shared_spec.build_policy.bind(plan).publish_shared_cache:
+        yield
+        return
+    digest = identity.shared.family_digest
+    with held_build_lock(
+        shared_cache_lock_path(_default_molt_cache(), f"runtime-wasm-build.{digest}"),
+        purpose=f"runtime WASM pair ({digest[:12]})",
+    ):
+        yield
+
+
 def _ensure_runtime_wasm_both(
     runtime_state: _RuntimeArtifactState,
     *,
@@ -1060,9 +1097,12 @@ def _ensure_runtime_wasm_both(
         # builder that waited accepts the published generation instead of
         # building again (HF-F227).
         try:
-            with _build_lock(
-                ctx.project_root,
-                f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair",
+            with (
+                _pair_identity_single_flight(ctx),
+                _build_lock(
+                    ctx.project_root,
+                    f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair",
+                ),
             ):
                 outcome = _materialize_runtime_wasm_pair(ctx)
                 if outcome is _PairBuildOutcome.FAILED:

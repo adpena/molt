@@ -568,7 +568,7 @@ struct FunctionLowering<'ctx, 'func> {
     /// Shared representation facts for this function, derived from the
     /// `ScalarRepresentationPlan`. Drives the overflow-safe integer-carrier and
     /// container dispatch decisions so the LLVM backend reads the same typed
-    /// facts as the native/WASM/Luau backends instead of trusting `TirType`.
+    /// facts as the native/WASM backends instead of trusting `TirType`.
     repr_facts: crate::representation_plan::ProducerCarrierPlan,
     /// The entry slot holding the base address of the binding homes that own
     /// a synchronous Python frame's bindings: its frame record's base.

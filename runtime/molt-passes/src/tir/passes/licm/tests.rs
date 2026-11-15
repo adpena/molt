@@ -1,39 +1,13 @@
 use super::super::value_range::ValueRangeResult;
 use super::run;
 use super::safety::throw_condition_disproven;
-use crate::ir::{FunctionIR, OpIR};
-use crate::tir::analysis::{AnalysisManager, LoopForest};
+use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
-use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::numeric_facts::IntRange;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
-use crate::tir::pass_manager::{Mutates, PassManager, TirPass};
-use crate::tir::passes::PassStats;
-use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
-
-struct LicmOnlyPass;
-
-impl TirPass for LicmOnlyPass {
-    fn name(&self) -> &'static str {
-        "licm"
-    }
-
-    fn mutation_class(&self) -> Mutates {
-        Mutates::Cfg
-    }
-
-    fn run(
-        &self,
-        func: &mut TirFunction,
-        am: &mut AnalysisManager,
-        _tti: &TargetInfo,
-    ) -> PassStats {
-        super::run(func, am)
-    }
-}
 
 fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
@@ -578,87 +552,6 @@ fn same_round_hoists_preserve_source_order() {
         first_pos < second_pos,
         "back-to-front removal must not reverse destination order"
     );
-}
-
-#[test]
-fn luau_loop_pending_observer_stays_inside_executable_loop_through_pass_manager() {
-    let source = FunctionIR {
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "loop_pending_observer".into(),
-        ops: vec![
-            OpIR {
-                kind: molt_ir::OpKind::LoopStart,
-                ..OpIR::new(molt_ir::OpKind::LoopStart)
-            },
-            OpIR {
-                kind: molt_ir::OpKind::LoopBreakIfException,
-                ..OpIR::new(molt_ir::OpKind::LoopBreakIfException)
-            },
-            OpIR {
-                kind: molt_ir::OpKind::LoopBreak,
-                ..OpIR::new(molt_ir::OpKind::LoopBreak)
-            },
-            OpIR {
-                kind: molt_ir::OpKind::LoopEnd,
-                ..OpIR::new(molt_ir::OpKind::LoopEnd)
-            },
-            OpIR {
-                kind: molt_ir::OpKind::Const,
-                value: Some(1),
-                out: Some("ok".into()),
-                ..OpIR::new(molt_ir::OpKind::Const)
-            },
-            OpIR {
-                kind: molt_ir::OpKind::Ret,
-                args: Some(vec!["ok".into()]),
-                ..OpIR::new(molt_ir::OpKind::Ret)
-            },
-        ],
-        ..FunctionIR::default()
-    };
-    let mut func = lower_to_tir(&source);
-
-    let pending_block_before = func
-        .blocks
-        .iter()
-        .find_map(|(&bid, block)| {
-            block
-                .ops
-                .iter()
-                .any(|op| op.opcode == OpCode::ExceptionPending)
-                .then_some(bid)
-        })
-        .expect("SimpleIR lift must materialize the loop pending observer");
-    let mut am = AnalysisManager::new();
-    let forest_before = am.get::<LoopForest>(&func);
-    assert!(
-        forest_before.headers.is_empty(),
-        "the retained loop_end after an unconditional break is not an executable backedge"
-    );
-
-    let pipeline = PassManager::new(
-        vec![Box::new(LicmOnlyPass)],
-        TargetInfo::luau_release_fast(),
-    );
-    let stats = pipeline.run(&mut func);
-    assert_eq!(stats.len(), 1);
-    assert_eq!(stats[0].name, "licm");
-
-    let pending_block_after = func
-        .blocks
-        .iter()
-        .find_map(|(&bid, block)| {
-            block
-                .ops
-                .iter()
-                .any(|op| op.opcode == OpCode::ExceptionPending)
-                .then_some(bid)
-        })
-        .expect("LICM must retain the runtime pending observer");
-    let mut am = AnalysisManager::new();
-    let forest_after = am.get::<LoopForest>(&func);
-    assert!(forest_after.headers.is_empty());
-    assert_eq!(pending_block_after, pending_block_before);
 }
 
 #[test]

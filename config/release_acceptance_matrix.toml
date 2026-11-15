@@ -22,11 +22,9 @@ lane = [
 ]
 
 # These exclusions describe advertised applicability; they do not certify the
-# experimental emitters. Any change to their support tier requires this authority
+# experimental emitter. Any change to their support tier requires this authority
 # and the full acceptance projection to change together.
 excluded_backend = [
-  { backend = "rust", reason = "Experimental closed-world source emitter; general Python imports explicitly rejected", authority = "docs/spec/STATUS.md" },
-  { backend = "luau", reason = "Experimental closed-world source emitter; general Python imports explicitly rejected", authority = "docs/spec/STATUS.md" },
   { backend = "mlir", reason = "Advertised text emission, not an executable CPython runtime comparison", authority = "src/molt/cli/entrypoint_parser.py" },
 ]
 

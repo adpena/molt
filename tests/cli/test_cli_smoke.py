@@ -1896,7 +1896,7 @@ def test_cli_completion_uses_parser_commands_flags_and_positional_semantics(
         (["install"], "", {"add", "-r", "--requirements"}, {"--add", "--r"}),
         (["install", "--json"], "", {"add", "--sync"}, {"--add"}),
         (["install", "add"], "", {"--sync"}, {"add"}),
-        (["deploy"], "", {"cloudflare", "roblox"}, {"--cloudflare"}),
+        (["deploy"], "", {"cloudflare"}, {"--cloudflare"}),
         (["harness"], "", {"quick", "standard", "deep"}, {"--quick"}),
         (["harness", "quick"], "", {"--json"}, {"quick", "standard", "deep"}),
         (["build"], "-q", {"-q"}, {"--q"}),

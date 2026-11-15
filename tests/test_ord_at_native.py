@@ -40,18 +40,6 @@ show("float-index", lambda: ord(text[1.0]))
 show("oob", lambda: ord(text[99]))
 """
 
-LUAU_PROGRAM = """
-text = "AéZ"
-print("ascii", ord(text[0]))
-print("unicode", ord(text[1]))
-print("bool-true", ord(text[True]))
-print("bool-false", ord(text[False]))
-print("negative", ord(text[-1]))
-print("negative-unicode", ord(text[-2]))
-items = ["A", "é"]
-print("list-fallback", ord(items[1]))
-"""
-
 EXPECTED_LINES = [
     "ascii 65",
     "unicode 233",
@@ -64,18 +52,6 @@ EXPECTED_LINES = [
     "float-index TypeError string indices must be integers, not 'float'",
     "oob IndexError string index out of range",
 ]
-
-LUAU_EXPECTED = "\n".join(
-    [
-        "ascii 65",
-        "unicode 233",
-        "bool-true 233",
-        "bool-false 65",
-        "negative 90",
-        "negative-unicode 233",
-        "list-fallback 233",
-    ]
-)
 
 
 def _env(root: Path) -> ProcessEnvironment:
@@ -191,47 +167,3 @@ def test_ord_at_llvm_semantics(tmp_path: Path) -> None:
     )
     assert run.returncode == 0, run.stderr
     _assert_program_output(run.stdout)
-
-
-def test_ord_at_luau_semantics(tmp_path: Path) -> None:
-    runner = shutil.which("luau") or shutil.which("lune")
-    if runner is None:
-        pytest.skip("luau or lune is required for Luau ord_at test")
-
-    root = Path(__file__).resolve().parents[1]
-    src = _write_program(tmp_path, "ord_at_luau.py", LUAU_PROGRAM)
-    luau_path = tmp_path / "ord_at_luau.luau"
-    build = run_native_test_process(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            str(src),
-            "--target",
-            "luau",
-            "--output",
-            str(luau_path),
-        ],
-        cwd=root,
-        env=_env(root),
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
-    assert build.returncode == 0, build.stderr
-    assert luau_path.exists(), f"expected Luau output at {luau_path}"
-
-    run_cmd = (
-        [runner, "run", str(luau_path)]
-        if Path(runner).name == "lune"
-        else [runner, str(luau_path)]
-    )
-    run = run_native_test_process(
-        run_cmd,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert run.returncode == 0, run.stderr
-    assert run.stdout.strip() == LUAU_EXPECTED

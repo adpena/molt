@@ -4,7 +4,6 @@
     "native": 131,
     "llvm": 0,
     "wasm": 4,
-    "luau": 0,
     "jit": 0
   }
 }
