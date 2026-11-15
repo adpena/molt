@@ -223,8 +223,6 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x}");
         }
         // One resolution gives the target and its argument convention (K4).
-        // A runtime poll is called through its own Rust pointer, never through
-        // the app's `molt_call_indirect1` (K2).
         let result = match crate::builtins::functions::runtime_poll_call_target(poll_fn_addr) {
             Some(PollTarget::Runtime(poll)) => poll(
                 _py.attached_context(),
@@ -264,27 +262,20 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
     }
 }
 
-/// Call a compiled poll with the raw payload address of its task. On wasm32
-/// the app's own `molt_call_indirect1` dispatches its table index.
+/// Call a compiled poll with the raw payload address of its task, through its
+/// own function pointer. On wasm32 that pointer is a slot of the one shared
+/// table, so the call is one `call_indirect` (HF-699 K2).
 /// Requires: `index` came from `runtime_poll_call_target`.
 #[inline]
 unsafe fn call_app_poll(py: &PyToken<'_>, index: u64, payload_address: u64) -> i64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { crate::molt_call_indirect1(py.attached_context(), index, payload_address) }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let target = crate::provenance::abi::function_ptr(index)
-            .expect("runtime_poll_call_target admits only machine-word identities");
-        // SAFETY: compiled code stores the address of a task poll function,
-        // whose ABI takes the attached context then the raw task payload address
-        // (the backend validates every task target).
-        let poll = unsafe {
-            std::mem::transmute::<*const (), unsafe extern "C" fn(u64, u64) -> i64>(target)
-        };
-        unsafe { poll(py.attached_context(), payload_address) }
-    }
+    let target = crate::provenance::abi::function_ptr(index)
+        .expect("runtime_poll_call_target admits only machine-word identities");
+    // SAFETY: compiled code stores the address of a task poll function,
+    // whose ABI takes the attached context then the raw task payload address
+    // (the backend validates every task target).
+    let poll =
+        unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn(u64, u64) -> i64>(target) };
+    unsafe { poll(py.attached_context(), payload_address) }
 }
 
 /// Print one poll's identity, kind, code object and result for

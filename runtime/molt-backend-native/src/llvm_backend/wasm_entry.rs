@@ -13,7 +13,7 @@ use super::LlvmBackend;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::{ExecutionBuilderExt, ExecutionModuleExt};
 #[cfg(feature = "llvm")]
-use inkwell::{AddressSpace, module::Linkage};
+use inkwell::module::Linkage;
 #[cfg(feature = "llvm")]
 use molt_ir::runtime_callable_abi_generated::compiled_execution_symbol;
 #[cfg(feature = "llvm")]
@@ -55,71 +55,6 @@ impl<'ctx> LlvmBackend<'ctx> {
         builder.position_at_end(entry);
         let module_id = dispatcher.get_nth_param(1).unwrap().into_int_value();
         builder.build_switch(module_id, missing, &cases).unwrap();
-    }
-
-    /// The app half of the wasm32 indirect-call contract: the runtime calls a
-    /// compiled function through `molt_call_indirectN(context, slot, args..)`
-    /// (molt-runtime `lib.rs`), as the WASM backend's
-    /// `emit_call_indirect_exports_and_sentinel` defines it. A slot above
-    /// `u32::MAX` is a runtime key, never a table index, and traps (HF-699 K2).
-    /// The arities are the generated execution ABI's `molt_call_indirectN`.
-    pub fn emit_wasm_call_indirect_trampolines(&self) {
-        let ctx = self.context;
-        let module = &self.module;
-        let i64_ty = ctx.i64_type();
-        let ptr_ty = ctx.ptr_type(AddressSpace::default());
-        let builder = ctx.create_builder();
-        let trap = module.get_function("llvm.trap").unwrap_or_else(|| {
-            module.add_function("llvm.trap", ctx.void_type().fn_type(&[], false), None)
-        });
-        for arity in 0usize.. {
-            let name = format!("molt_call_indirect{arity}");
-            if molt_ir::runtime_callable_abi_generated::runtime_execution_abi(&name).is_none() {
-                break;
-            }
-            let logical: Vec<inkwell::types::BasicMetadataTypeEnum> =
-                vec![i64_ty.into(); arity + 1];
-            let trampoline = module.add_compiled_function(
-                &name,
-                i64_ty.fn_type(&logical, false),
-                Some(Linkage::External),
-            );
-            let entry = ctx.append_basic_block(trampoline, "entry");
-            let call = ctx.append_basic_block(trampoline, "call");
-            let reject = ctx.append_basic_block(trampoline, "reject");
-            builder.position_at_end(entry);
-            let slot = trampoline.get_nth_param(1).unwrap().into_int_value();
-            let is_key = builder
-                .build_int_compare(
-                    inkwell::IntPredicate::UGT,
-                    slot,
-                    i64_ty.const_int(u64::from(u32::MAX), false),
-                    "is_runtime_key",
-                )
-                .unwrap();
-            builder
-                .build_conditional_branch(is_key, reject, call)
-                .unwrap();
-            builder.position_at_end(reject);
-            builder.build_call(trap, &[], "").unwrap();
-            builder.build_unreachable().unwrap();
-            builder.position_at_end(call);
-            let target = builder.build_int_to_ptr(slot, ptr_ty, "target").unwrap();
-            let mut args: Vec<inkwell::values::BasicMetadataValueEnum> =
-                vec![trampoline.get_nth_param(0).unwrap().into()];
-            for index in 0..arity {
-                let arg: inkwell::values::BasicMetadataValueEnum =
-                    trampoline.get_nth_param(index as u32 + 2).unwrap().into();
-                args.push(arg);
-            }
-            let callee_ty = i64_ty.fn_type(&logical, false);
-            let result = builder
-                .build_indirect_call(callee_ty, target, &args, "result")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            builder.build_return(Some(&result)).unwrap();
-        }
     }
 
     /// Record the attached execution-context ABI witness as the WASM custom

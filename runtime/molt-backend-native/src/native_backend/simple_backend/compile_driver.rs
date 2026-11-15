@@ -345,7 +345,6 @@ impl SimpleBackend {
             // carries the resolver and registry; stdlib-cache and batch
             // objects hold function bodies only.
             if llvm_target.is_wasm() && emit_resolver_here {
-                llvm.emit_wasm_call_indirect_trampolines();
                 if let Some(registry) = self.module_registry.as_ref() {
                     llvm.emit_wasm_isolate_import(registry);
                 }
