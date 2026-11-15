@@ -257,8 +257,13 @@ link to a runtime whose old record put recursion depth at that offset. The
 execution lease keeps the borrowed word alive for the invocation, including
 callbacks and isolate switches. [Inline async-work safepoints](../../../design/foundation/inline_async_work_poll.md)
 owns the producer, ordering, reentrancy and backend contract.
-Direct calls charge that depth without entering the object runtime
-(`molt_recursion_enter_fast`); the limit stays runtime policy.
+Direct calls charge that depth inline, with no runtime call
+(`molt_codegen_abi::thread_record::generate_recursion_*`): the record holds
+the depth and the address of the runtime's limit
+(`THREAD_RECORD_RECURSION_DEPTH_OFFSET`,
+`THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET`), published and cleared with the
+execution binding as the pending-work pointer is. The limit stays runtime
+policy.
 
 Frame entry returns `None`, not its borrowed code identity. The frame stack
 owns the transferred code, globals and builtins until exit; disposing an unbound

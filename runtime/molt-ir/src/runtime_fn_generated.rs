@@ -2159,8 +2159,6 @@ pub enum RuntimeFn {
     ReSub,
     ReSubjectSnapshot,
     ReSubjectView,
-    RecursionEnterFast,
-    RecursionExitFast,
     ReprBuiltin,
     ReprFromObj,
     RequireIntrinsicRuntime,
@@ -5002,8 +5000,6 @@ impl RuntimeFn {
         Self::ReSub,
         Self::ReSubjectSnapshot,
         Self::ReSubjectView,
-        Self::RecursionEnterFast,
-        Self::RecursionExitFast,
         Self::ReprBuiltin,
         Self::ReprFromObj,
         Self::RequireIntrinsicRuntime,
@@ -5793,7 +5789,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2839;
+    pub const COUNT: usize = 2837;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -30502,30 +30498,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
         effects: RuntimeEffects::Impure,
-    },
-    RuntimeFnAbi {
-        symbol: "molt_recursion_enter_fast",
-        linker_symbol: "molt_recursion_enter_fast__molt_context_047a33b55bc1b76d",
-        context: RuntimeExecutionContext::Attached,
-        params: 0,
-        param_types: PARAMS_NONE,
-        result_type: Some(RuntimeMachineType::Word),
-        callable_trampoline: None,
-        result: RuntimeReturnContract::RawBits,
-        form: RuntimeCallForm::Helper,
-        effects: RuntimeEffects::NothrowWrite,
-    },
-    RuntimeFnAbi {
-        symbol: "molt_recursion_exit_fast",
-        linker_symbol: "molt_recursion_exit_fast__molt_context_047a33b55bc1b76d",
-        context: RuntimeExecutionContext::Attached,
-        params: 0,
-        param_types: PARAMS_NONE,
-        result_type: None,
-        callable_trampoline: None,
-        result: RuntimeReturnContract::Void,
-        form: RuntimeCallForm::Helper,
-        effects: RuntimeEffects::NothrowWrite,
     },
     RuntimeFnAbi {
         symbol: "molt_repr_builtin",

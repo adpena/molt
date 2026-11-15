@@ -709,18 +709,15 @@ fn a_guarded_call_admits_then_calls_its_target_directly() {
             .into_iter()
             .map(|(_, op)| op.runtime.unwrap())
             .collect();
-        for expected in [
-            RuntimeFn::FunctionDirectCallEligible,
-            RuntimeFn::RecursionEnterFast,
-            RuntimeFn::RecursionExitFast,
-            RuntimeFn::RaiseRecursionError,
-        ] {
-            assert_eq!(
-                runtimes.iter().filter(|&&r| r == expected).count(),
-                1,
-                "{expected:?}"
-            );
-        }
+        assert_eq!(
+            runtimes,
+            [
+                RuntimeFn::FunctionDirectCallEligible,
+                RuntimeFn::RaiseRecursionError,
+            ],
+            "the recursion charge makes no runtime call"
+        );
+        assert_recursion_charge_brackets_the_direct_call(&func);
         // Admission passes the supplied count and the adoption bit as raw words.
         let (entry, eligible) = ops(&func, OpCode::CallRuntime)
             .into_iter()
@@ -1331,18 +1328,8 @@ fn a_proven_call_skips_admission_and_the_code_guard() {
         .into_iter()
         .map(|(_, op)| op.runtime.unwrap())
         .collect();
-    assert_eq!(
-        runtimes,
-        [
-            RuntimeFn::RecursionEnterFast,
-            RuntimeFn::RecursionExitFast,
-            RuntimeFn::RaiseRecursionError,
-        ]
-        .into_iter()
-        .filter(|expected| runtimes.contains(expected))
-        .collect::<Vec<_>>(),
-    );
-    assert!(!runtimes.contains(&RuntimeFn::FunctionDirectCallEligible));
+    assert_eq!(runtimes, [RuntimeFn::RaiseRecursionError]);
+    assert_recursion_charge_brackets_the_direct_call(&func);
     assert!(ops(&func, OpCode::CodeIs).is_empty(), "no code guard");
     assert!(
         ops(&func, OpCode::Call).is_empty(),
@@ -1351,6 +1338,34 @@ fn a_proven_call_skips_admission_and_the_code_guard() {
     let direct = ops(&func, OpCode::DirectCall);
     assert_eq!(direct.len(), 1);
     assert_eq!(direct[0].1.operands, [ValueId(0), ValueId(1)]);
-    assert_eq!(runtimes.len(), 3, "{runtimes:?}");
     let _ = result;
+}
+
+/// CPython's call protocol: the limit check guards the call (its false edge
+/// raises RecursionError), and the admitted frame is counted before the call
+/// and released after it in the same block, so no path leaks or skips a count.
+fn assert_recursion_charge_brackets_the_direct_call(func: &TirFunction) {
+    let admits = ops(func, OpCode::RecursionAdmits);
+    assert_eq!(admits.len(), 1);
+    let (check_block, check) = &admits[0];
+    let Terminator::CondBranch {
+        cond, then_block, ..
+    } = &func.blocks[check_block].terminator
+    else {
+        panic!("the limit check ends its block in a branch");
+    };
+    assert_eq!(*cond, check.results[0]);
+    let kinds: Vec<OpCode> = func.blocks[then_block]
+        .ops
+        .iter()
+        .map(|op| op.opcode)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            OpCode::RecursionCount,
+            OpCode::DirectCall,
+            OpCode::RecursionRelease
+        ]
+    );
 }

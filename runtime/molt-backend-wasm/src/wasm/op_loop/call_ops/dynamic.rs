@@ -110,14 +110,12 @@ pub(super) fn emit_dynamic_call_op(
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::If(BlockType::Empty));
 
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[WasmRuntimeImport::RecursionEnterFast],
-                );
-                func.instruction(&Instruction::I64Const(0));
-                func.instruction(&Instruction::I64Ne);
+                // The recursion charge, inline in the module's generated
+                // bodies (`frame_record.rs`).
+                let frame_bodies = import_ids.frame_bodies();
+                emit_call(func, reloc_enabled, frame_bodies.recursion_admits());
                 func.instruction(&Instruction::If(BlockType::Empty));
+                emit_call(func, reloc_enabled, frame_bodies.recursion_count());
                 // Hand the callee to the frame entry it reaches with plain
                 // loads and stores of the thread record's invocation word;
                 // the outer handoff goes back once the call returns.
@@ -151,11 +149,7 @@ pub(super) fn emit_dynamic_call_op(
                 func.instruction(&Instruction::I32WrapI64);
                 func.instruction(&Instruction::LocalGet(tmp_ptr));
                 func.instruction(&Instruction::I64Store(pending_invocation_memarg()));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[WasmRuntimeImport::RecursionExitFast],
-                );
+                emit_call(func, reloc_enabled, frame_bodies.recursion_release());
                 // The adopting entry ended its parameters; the instruction's
                 // callable ends after it returns, as on the owned fallback leg.
                 release_adopted_callable(func, import_ids, reloc_enabled, locals, op);

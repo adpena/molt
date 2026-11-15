@@ -143,10 +143,11 @@ const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes), intBase = BigInt(config.int_base);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
-  let frames=0, handlers=0, recursion=0, owners=1, pending=false;
+  let frames=0, handlers=0, owners=1, pending=false;
   const lines=[], handed=[];
-  // The thread record: the direct call writes its invocation word.
-  const record=256, handoff=record+8;
+  // The thread record: the direct call writes its invocation word and charges
+  // its recursion depth.
+  const record=256, handoff=record+8, depth=record+64;
   const imports = {env:{
     memory:new WebAssembly.Memory({initial:test.memory_pages}),
     __indirect_function_table:new WebAssembly.Table({initial:test.table_entries,element:'anyfunc'})
@@ -165,12 +166,11 @@ for (const test of config.cases) {
     raise: bits => {
       assert.equal(bits,yes); assert.equal(handlers,1); pending=true;
       handed.push(new DataView(imports.env.memory.buffer).getBigInt64(handoff,true));
+      assert.equal(new DataView(imports.env.memory.buffer).getBigUint64(depth,true),1n,'the callee runs counted');
       return none;
     },
     function_direct_call_eligible: () => 1n,
     handle_resolve: bits => { assert.equal(bits,777n); return 128; },
-    recursion_enter_fast: () => { recursion++; return 1n; },
-    recursion_exit_fast: () => { assert.equal(recursion,1); recursion--; },
     inc_ref_obj: bits => { if(bits===777n) owners++; },
     dec_ref_obj: bits => { if(bits===777n) { assert.ok(owners>0); owners--; } },
   };
@@ -196,7 +196,8 @@ for (const test of config.cases) {
   // output, the pop proves the failed call took the handler edge.
   assert.deepEqual(lines,[],test.mode+': failed call must skip the fallthrough');
   assert.equal(pending,true);
-  assert.deepEqual([frames,handlers,recursion,owners],[0,0,0,1],test.mode);
+  const charged = new DataView(imports.env.memory.buffer).getBigUint64(depth,true);
+  assert.deepEqual([frames,handlers,charged,owners],[0,0,0n,1],test.mode);
   // The callee ran with itself handed over; the outer handoff came back.
   assert.deepEqual(handed,[777n],test.mode);
   assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(handoff,true),5n,test.mode);

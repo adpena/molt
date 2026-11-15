@@ -508,6 +508,9 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::BoxInlineInt
         | OpCode::CodeIs
         | OpCode::DirectCall
+        | OpCode::RecursionAdmits
+        | OpCode::RecursionCount
+        | OpCode::RecursionRelease
         | OpCode::CallRuntime => (IntegerOperandObservation::Always, false),
         OpCode::Add
         | OpCode::InplaceAdd

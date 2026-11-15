@@ -621,20 +621,6 @@ pub unsafe extern "C" fn molt_traceback_extract_tb(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_traceback_extract_tb_attached_body(_py, tb_bits, limit_bits)
 }
-#[unsafe(export_name = "molt_recursion_enter_fast__molt_context_047a33b55bc1b76d")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_recursion_enter_fast(__context: u64) -> i64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_recursion_enter_fast_attached_body(_py)
-}
-#[unsafe(export_name = "molt_recursion_exit_fast__molt_context_047a33b55bc1b76d")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_recursion_exit_fast(__context: u64) {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_recursion_exit_fast_attached_body(_py)
-}
 #[unsafe(export_name = "molt_raise_recursion_error__molt_context_047a33b55bc1b76d")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_raise_recursion_error(__context: u64) -> u64 {

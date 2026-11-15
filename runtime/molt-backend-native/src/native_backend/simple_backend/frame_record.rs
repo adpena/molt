@@ -8,6 +8,7 @@ use molt_codegen_abi::frame_record::{
     FrameBuilder, FrameShape, HomeCount, generate_frame_pop, generate_frame_push,
     generate_linked_frame_pop,
 };
+use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
 
 /// What one function's frame transitions call off their inline paths.
@@ -39,6 +40,18 @@ impl<'a, 'b> WordBuilder for NativeFrameBuilder<'a, 'b> {
     molt_codegen_abi::forward_word_builder!(words: NativeWords<'a, 'b>);
 }
 
+impl RecordWordBuilder for NativeFrameBuilder<'_, '_> {
+    fn load_word(&mut self, address: Value, offset: i32) -> Value {
+        self.words.load_word(address, offset)
+    }
+    fn store_word(&mut self, address: Value, offset: i32, value: Value) {
+        self.words.store_word(address, offset, value)
+    }
+    fn load_shared_word(&mut self, address: Value, offset: i32) -> Value {
+        self.words.load_shared_word(address, offset)
+    }
+}
+
 impl NativeFrameBuilder<'_, '_> {
     fn enter_block(&mut self, block: Block) {
         // Every block here is private to the generator and entered once all
@@ -64,18 +77,6 @@ impl FrameBuilder for NativeFrameBuilder<'_, '_> {
     }
     fn get(&mut self, local: Variable) -> Value {
         self.words.builder.use_var(local)
-    }
-    fn load_word(&mut self, address: Value, offset: i32) -> Value {
-        self.words
-            .builder
-            .ins()
-            .load(types::I64, MemFlagsData::trusted(), address, offset)
-    }
-    fn store_word(&mut self, address: Value, offset: i32, value: Value) {
-        self.words
-            .builder
-            .ins()
-            .store(MemFlagsData::trusted(), value, address, offset);
     }
     fn load_header_u32(&mut self, pointer: Value, offset: i32) -> Value {
         let value =

@@ -103,6 +103,28 @@ pub(in crate::native_backend::function_compiler) fn require_static_target_symbol
         .unwrap_or_else(|| panic!("{} missing static target symbol", op.kind))
 }
 
+/// Whether the static call `op`, given `supplied` machine arguments, enters a
+/// Python activation its call site charges against the recursion limit. A
+/// leaf callee makes no further Python call, and a classified runtime
+/// service is no Python activation (its callbacks charge for themselves).
+/// The function compiler holds the thread record exactly when some call
+/// charges, so both decisions read this one rule.
+pub(in crate::native_backend::function_compiler) fn static_call_charges_recursion(
+    op: &OpIR,
+    supplied: usize,
+    leaf_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
+) -> bool {
+    let target = require_static_target_symbol(op, function_table);
+    let runtime_service = op
+        .runtime
+        .filter(|function| function.params() == supplied)
+        .and_then(molt_ir::runtime_fn_generated::RuntimeFn::boxed_abi)
+        .is_some()
+        && !op.references_body(function_table);
+    !(leaf_functions.contains(target) || runtime_service)
+}
+
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_get(
     module: &mut dyn Module,

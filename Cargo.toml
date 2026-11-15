@@ -223,7 +223,7 @@ inherits = "release"
 lto = "off"
 # codegen-units: release-fast is a build-ITERATION profile (the backend daemon
 # + runtime staging), not a ship profile — the shipping native runtime is built with release-output and
-# WASM with wasm-release. Native shipping keeps ThinLTO/16; WASM uses fat LTO/1.
+# WASM with wasm-release. Both shipping policies use fat LTO in one codegen unit.
 # A high cgu here
 # parallelizes the incremental recompile of the 342k-LoC molt-runtime hub (cgu=1
 # serialized it into a ~72s one-line-edit rebuild; cgu=256 parallelizes across cores)
@@ -271,10 +271,23 @@ debug = 0
 # debug = 0          — shipping artifacts are stripped. Inheriting release's
 #                      debug=1 emitted unused PDB/debug payload and dominated both
 #                      rustc memory and archive size. Use dev-release for symbols.
+# The shipped native runtime: full optimization, whole-runtime fat LTO in one
+# codegen unit. Measured 2026-11-15 (macOS arm64, LLVM backend, interleaved
+# median user time against the former opt-z/ThinLTO-16 policy):
+# bench_generator_chain -17%, bench_exception_heavy -7%, bench_itertools_tee
+# -6%, bench_struct -5%; instructions retired -3.5% to -11.5% on six of nine
+# benchmarks, flat on bench_fib, nbody and bench_gc_pressure. Linked programs
+# are 2.5% smaller and the runtime staticlib 28% smaller (41.6 MB against
+# 57.8 MB). The staticlib's LTO step takes 110 s wall against 29 s and peaks
+# at 3.73 GB against 3.89 GB; the product store builds it once per runtime
+# input. One unit also keeps codegen stable across runtime edits: under 16
+# units one runtime change re-partitioned 1,570 functions and moved unrelated
+# benchmarks by about 0.6%.
 [profile.release-output]
 inherits = "release"
-opt-level = "z"
-codegen-units = 16
+# opt-level 3 comes from `release`.
+lto = "fat"
+codegen-units = 1
 debug = 0
 panic = "abort"
 
@@ -310,6 +323,8 @@ panic = "abort"
 # unwind tables for zero correctness gain.
 [profile.release-size]
 inherits = "release-output"
+# Size, not speed: the speed profile it inherits from runs at opt-level 3.
+opt-level = "z"
 
 # WASM-optimized release profile: one primary compiler authority. The former
 # thin-LTO/16-CGU retry profile duplicated policy and made invalid output trigger
@@ -319,12 +334,11 @@ inherits = "release-output"
 # specialization/partitioning costs without removing codec or parser tables.
 # All four hot runtime crates keep opt-"s"; wasm-ld compresses relocation
 # padding when the selected final-link policy strips debug information. Native
-# shipping retains its independently measured memory-bound plan.
+# shipping (release-output) runs at opt-level 3 with the same LTO policy.
 # Measurements and tradeoffs: docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md.
 [profile.wasm-release]
 inherits = "release-size"
-lto = "fat"
-codegen-units = 1
+# Fat LTO in one codegen unit comes from release-output through release-size.
 
 [profile.dev-release]
 inherits = "release"
@@ -366,8 +380,8 @@ opt-level = 3
 # hot-path object-model + arith + container functions are called millions of
 # times — every bit of inlining, vectorization, and scheduling matters, so
 # opt-3 even though the surrounding profile may select a smaller default
-# (release-output is opt-"z" at profile scope; these overrides keep the hot
-# crates at 3, verified shipping at opt-3 via `cargo build -v`).
+# (release-output itself is opt-level 3; release-size and wasm-release
+# re-assert size below).
 [profile.release.package.molt-runtime]
 opt-level = 3
 

@@ -355,7 +355,7 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
         };
         let runtime_fields = format!(
             r#"
-            (func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param i64))
+            (func (export "molt_print_newline@CONTEXT_SUFFIX@") (param i64))
             (func (export "molt_main_exit_status") (result i64) i64.const 0)
             (func (export "molt_runtime_execution_enter") (result i64) unreachable)
             (func (export "molt_runtime_execution_leave") (param i64) unreachable)
@@ -389,7 +389,7 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
         let app_import = if linked {
             ""
         } else {
-            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#
+            r#"(import "molt_runtime" "molt_print_newline@CONTEXT_SUFFIX@" (func (param i64)))"#
         };
         let core_start = if fail_schema_check {
             ""

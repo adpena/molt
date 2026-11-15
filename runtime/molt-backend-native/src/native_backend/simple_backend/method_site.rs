@@ -8,23 +8,24 @@ use molt_codegen_abi::method_site::{
     method_site_record_size, write_method_site_record_image,
 };
 
-/// What a method site's inline paths call besides the frame primitives.
-#[derive(Clone, Copy)]
-pub(crate) struct NativeMethodSiteSites {
-    pub(crate) frame: NativeFrameSites,
-    /// `molt_recursion_enter_fast` and `molt_recursion_exit_fast`.
-    pub(crate) recursion_enter: FuncRef,
-    pub(crate) recursion_exit: FuncRef,
-}
-
 struct NativeMethodSiteBuilder<'a, 'b> {
     frames: NativeFrameBuilder<'a, 'b>,
-    recursion_enter: FuncRef,
-    recursion_exit: FuncRef,
 }
 
 impl<'a, 'b> molt_codegen_abi::word::WordBuilder for NativeMethodSiteBuilder<'a, 'b> {
     molt_codegen_abi::forward_word_builder!(frames: NativeFrameBuilder<'a, 'b>);
+}
+
+impl molt_codegen_abi::thread_record::RecordWordBuilder for NativeMethodSiteBuilder<'_, '_> {
+    fn load_word(&mut self, address: Value, offset: i32) -> Value {
+        self.frames.load_word(address, offset)
+    }
+    fn store_word(&mut self, address: Value, offset: i32, value: Value) {
+        self.frames.store_word(address, offset, value)
+    }
+    fn load_shared_word(&mut self, address: Value, offset: i32) -> Value {
+        self.frames.load_shared_word(address, offset)
+    }
 }
 
 impl molt_codegen_abi::frame_record::FrameBuilder for NativeMethodSiteBuilder<'_, '_> {
@@ -38,12 +39,6 @@ impl molt_codegen_abi::frame_record::FrameBuilder for NativeMethodSiteBuilder<'_
     }
     fn get(&mut self, local: Variable) -> Value {
         self.frames.get(local)
-    }
-    fn load_word(&mut self, address: Value, offset: i32) -> Value {
-        self.frames.load_word(address, offset)
-    }
-    fn store_word(&mut self, address: Value, offset: i32, value: Value) {
-        self.frames.store_word(address, offset, value)
     }
     fn load_header_u32(&mut self, pointer: Value, offset: i32) -> Value {
         self.frames.load_header_u32(pointer, offset)
@@ -111,22 +106,6 @@ fn enter_private_block(builder: &mut FunctionBuilder<'_>, block: Block) {
 }
 
 impl MethodSiteBuilder for NativeMethodSiteBuilder<'_, '_> {
-    fn recursion_enter(&mut self) -> Value {
-        let call = self
-            .frames
-            .words
-            .builder
-            .ins()
-            .call(self.recursion_enter, &[]);
-        self.frames.words.builder.inst_results(call)[0]
-    }
-    fn recursion_exit(&mut self) {
-        self.frames
-            .words
-            .builder
-            .ins()
-            .call(self.recursion_exit, &[]);
-    }
     fn call_entry(
         &mut self,
         entry: Value,
@@ -189,7 +168,7 @@ pub(crate) fn method_site_record(
 /// self_out)`).
 pub(crate) fn emit_method_site_load(
     builder: &mut FunctionBuilder<'_>,
-    sites: NativeMethodSiteSites,
+    sites: NativeFrameSites,
     record: Value,
     receiver: Value,
     self_out: Value,
@@ -198,12 +177,10 @@ pub(crate) fn emit_method_site_load(
     let mut emitter = NativeMethodSiteBuilder {
         frames: NativeFrameBuilder {
             words: NativeWords { builder },
-            sites: sites.frame,
+            sites,
             slow_blocks: Vec::new(),
             sealed: Vec::new(),
         },
-        recursion_enter: sites.recursion_enter,
-        recursion_exit: sites.recursion_exit,
     };
     generate_method_site_load(&mut emitter, record, receiver, self_out, |b| {
         let call = b
@@ -221,7 +198,7 @@ pub(crate) fn emit_method_site_load(
 /// calls `cold` (the runtime's loaded-method call) with the same words.
 pub(crate) fn emit_method_site_call(
     builder: &mut FunctionBuilder<'_>,
-    sites: NativeMethodSiteSites,
+    sites: NativeFrameSites,
     thread: Value,
     record: Value,
     words: &[Value],
@@ -230,12 +207,10 @@ pub(crate) fn emit_method_site_call(
     let mut emitter = NativeMethodSiteBuilder {
         frames: NativeFrameBuilder {
             words: NativeWords { builder },
-            sites: sites.frame,
+            sites,
             slow_blocks: Vec::new(),
             sealed: Vec::new(),
         },
-        recursion_enter: sites.recursion_enter,
-        recursion_exit: sites.recursion_exit,
     };
     generate_method_site_call(
         &mut emitter,

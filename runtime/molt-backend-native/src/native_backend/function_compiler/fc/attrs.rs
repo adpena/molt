@@ -209,7 +209,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     site,
                     Some(attr_name.as_bytes()),
                 );
-                let sites = super::calls::native_method_site_sites(
+                let sites = super::calls::native_frame_sites(
                     &mut *module,
                     &mut *import_ids,
                     &mut *builder,

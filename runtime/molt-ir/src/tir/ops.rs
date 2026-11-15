@@ -198,6 +198,9 @@ pub enum OpCode {
     BoxInlineInt,
     CodeIs,
     DirectCall,
+    RecursionAdmits,
+    RecursionCount,
+    RecursionRelease,
     CallRuntime,
     // Refcount
     IncRef,

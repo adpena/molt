@@ -27,6 +27,9 @@
 
 use crate::boxed_word::{BoxTag, generate_has_tag};
 use crate::frame_record::FrameBuilder;
+use crate::thread_record::{
+    generate_recursion_admits, generate_recursion_count, generate_recursion_release,
+};
 use crate::word::WordComparison;
 use crate::{
     HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_OFFSET, HEADER_AUX_OFFSET,
@@ -134,11 +137,6 @@ const _: () = {
 /// `FrameBuilder` operation keeps its meaning; `enter_slow` and `exit_slow`
 /// are not used.
 pub trait MethodSiteBuilder: FrameBuilder {
-    /// `molt_recursion_enter_fast()`: nonzero when the recursion limit admits
-    /// one more Python frame, which it then counts; zero counts nothing.
-    fn recursion_enter(&mut self) -> Self::Word;
-    /// `molt_recursion_exit_fast()`.
-    fn recursion_exit(&mut self);
     /// Call the fixed-arity compiled entry `entry` with the execution
     /// context, then `self_word`, `args` and `defaults` in that order, each a
     /// boxed word; the result is the entry's owned word.
@@ -255,10 +253,9 @@ pub fn generate_method_site_call<B: MethodSiteBuilder>(
             let past_usable = b.add_immediate(usable, 1);
             let covered = b.compare(UnsignedLessThan, appended, past_usable);
             b.require(covered);
-            let admitted = b.recursion_enter();
-            let refused = b.constant(0);
-            let admitted = b.compare(NotEqual, admitted, refused);
+            let admitted = generate_recursion_admits(b, thread);
             b.require(admitted);
+            generate_recursion_count(b, thread);
             let outer = b.load_word(thread, THREAD_RECORD_PENDING_INVOCATION_OFFSET);
             b.store_word(thread, THREAD_RECORD_PENDING_INVOCATION_OFFSET, callable);
             for k in 0..=METHOD_SITE_MAX_DEFAULTS {
@@ -279,7 +276,7 @@ pub fn generate_method_site_call<B: MethodSiteBuilder>(
                 });
             }
             b.store_word(thread, THREAD_RECORD_PENDING_INVOCATION_OFFSET, outer);
-            b.recursion_exit();
+            generate_recursion_release(b, thread);
             b.release(callable);
         },
         |b| {

@@ -876,8 +876,8 @@ fn runtime_call(
 /// becomes
 ///   %e = CallRuntime[direct_call_eligible] %f, nargs, shape ; cond_br %e != 0, ^code, ^slow
 /// ^code:   %c = CodeIs[@target] %f ; cond_br %c, ^enter, ^slow
-/// ^enter:  %d = CallRuntime[recursion_enter_fast] ; cond_br %d != 0, ^direct, ^refuse
-/// ^direct: %r1 = DirectCall[@target] %f, args... ; CallRuntime[recursion_exit_fast]
+/// ^enter:  %d = RecursionAdmits ; cond_br %d, ^direct, ^refuse
+/// ^direct: RecursionCount ; %r1 = DirectCall[@target] %f, args... ; RecursionRelease
 ///          br ^join(%r1)
 /// ^refuse: CallRuntime[raise_recursion_error] ; %n = ConstNone ; br ^join(%n)
 /// ^slow:   %r2 = Call[guarded @target] %f, args...   ; the op, unchanged
@@ -956,19 +956,18 @@ fn expand_guarded_call(
         );
     }
 
-    let depth_ok = fresh_typed(func, TirType::I64);
-    let zero_depth = fresh_typed(func, TirType::I64);
-    let entered = fresh_typed(func, TirType::Bool);
+    let admitted = fresh_typed(func, TirType::Bool);
     func.blocks.insert(
         enter,
         new_block(
             enter,
-            vec![
-                runtime_call(RuntimeFn::RecursionEnterFast, vec![], vec![depth_ok], span),
-                const_int(zero_depth, 0, span),
-                new_op(OpCode::Ne, vec![depth_ok, zero_depth], vec![entered], span),
-            ],
-            cond_branch(entered, direct, refuse),
+            vec![new_op(
+                OpCode::RecursionAdmits,
+                vec![],
+                vec![admitted],
+                span,
+            )],
+            cond_branch(admitted, direct, refuse),
         ),
     );
 
@@ -986,8 +985,9 @@ fn expand_guarded_call(
         new_block(
             direct,
             vec![
+                new_op(OpCode::RecursionCount, vec![], vec![], span),
                 call,
-                runtime_call(RuntimeFn::RecursionExitFast, vec![], vec![], span),
+                new_op(OpCode::RecursionRelease, vec![], vec![], span),
             ],
             branch(join, direct_result),
         ),

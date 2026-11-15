@@ -332,6 +332,25 @@ impl WordBuilder for NativeWords<'_, '_> {
     }
 }
 
+impl molt_codegen_abi::thread_record::RecordWordBuilder for NativeWords<'_, '_> {
+    fn load_word(&mut self, address: Value, offset: i32) -> Value {
+        self.builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), address, offset)
+    }
+    fn store_word(&mut self, address: Value, offset: i32, value: Value) {
+        self.builder
+            .ins()
+            .store(MemFlagsData::trusted(), value, address, offset);
+    }
+    /// An aligned 64-bit load is single-copy atomic on every Cranelift
+    /// target, and Cranelift keeps a non-readonly load in place against
+    /// calls and stores, so a plain load is the relaxed read.
+    fn load_shared_word(&mut self, address: Value, offset: i32) -> Value {
+        self.load_word(address, offset)
+    }
+}
+
 impl<'a, 'b> WordBuilder for NativeRefcountBuilder<'a, 'b> {
     molt_codegen_abi::forward_word_builder!(words: NativeWords<'a, 'b>);
 }

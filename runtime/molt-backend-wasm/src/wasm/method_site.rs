@@ -161,17 +161,6 @@ pub(in crate::wasm) fn emit_body(
 }
 
 impl MethodSiteBuilder for WasmFrameBuilder<'_> {
-    fn recursion_enter(&mut self) -> u32 {
-        let enter = self.imports[WasmRuntimeImport::RecursionEnterFast];
-        emit_call(self.func, self.reloc, enter);
-        self.word()
-    }
-
-    fn recursion_exit(&mut self) {
-        let exit = self.imports[WasmRuntimeImport::RecursionExitFast];
-        emit_call(self.func, self.reloc, exit);
-    }
-
     fn call_entry(&mut self, entry: u32, self_word: u32, args: &[u32], defaults: &[u32]) -> u32 {
         let words = 1 + args.len() + defaults.len();
         let ty = *self

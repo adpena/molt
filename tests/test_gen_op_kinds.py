@@ -1440,6 +1440,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "BoxInlineInt": "dynbox",
         "IntToFloat": "f64",
         "CodeIs": "bool",
+        "RecursionAdmits": "bool",
         "GlobalSlotBase": "i64",
         "GlobalSlotGet": "dynbox",
         "ModuleSlot": "i64",
