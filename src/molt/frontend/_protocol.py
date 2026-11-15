@@ -2466,6 +2466,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _try_emit_builtin_guarded_range_loop(self, node: ast.For) -> bool: ...
 
+    def _try_emit_direct_builtin_call(
+        self, node: ast.Call, func_id: str, needs_bind: bool
+    ) -> MoltValue | object: ...
+
     def _try_emit_guarded_super_method_call(self, node: ast.Call) -> Any: ...
 
     def _try_emit_imported_attribute_call(
