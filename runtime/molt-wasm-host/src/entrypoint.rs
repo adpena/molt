@@ -250,7 +250,38 @@ pub(super) fn call_guest_entrypoint(
         } => lifetime.execute(store, |store, context| {
             call_molt_application_entrypoint(store, application, runtime, context)
         }),
-        GuestEntrypoint::WasiCommand { command } => call_wasi_command_entrypoint(store, command),
+        GuestEntrypoint::WasiCommand { command } => {
+            call_wasi_command_entrypoint(store, command).map_err(name_stack_exhaustion)
+        }
+    }
+}
+
+/// A trap unwinds guest frames without running their cleanup, so the runtime
+/// state those frames were changing (custody, locks, the execution lease) is
+/// no longer consistent. Every instance in the store is dead after one.
+fn is_engine_trap(error: &wasmtime::Error) -> bool {
+    error.downcast_ref::<wasmtime::Trap>().is_some()
+}
+
+/// The diagnostic a stack-overflow trap carries, once.
+#[derive(Debug)]
+struct StackExhausted;
+
+impl std::fmt::Display for StackExhausted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("stack exhausted: the WebAssembly call stack overflowed")
+    }
+}
+
+/// Name stack exhaustion the way a user reads it. The typed trap stays the
+/// root cause, so `downcast_ref::<Trap>()` still finds it.
+fn name_stack_exhaustion(error: wasmtime::Error) -> wasmtime::Error {
+    if error.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::StackOverflow)
+        && error.downcast_ref::<StackExhausted>().is_none()
+    {
+        error.context(StackExhausted)
+    } else {
+        error
     }
 }
 
@@ -266,7 +297,15 @@ pub(super) struct MoltRuntimeLifetime {
     compiled_enter: wasmtime::TypedFunc<i64, i64>,
     compiled_leave: wasmtime::TypedFunc<(i64, i64), ()>,
     schema: ContextSchemaAdmission,
-    entered: bool,
+    state: RuntimeLifetimeState,
+}
+
+/// `Trapped` is terminal: no later call enters the dead instance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeLifetimeState {
+    Admitted,
+    Entered,
+    Trapped,
 }
 
 enum ContextSchemaAdmission {
@@ -314,16 +353,29 @@ impl MoltRuntimeLifetime {
                 &mut *store,
                 runtime_symbol("molt_attached_context_abi_fingerprint")?,
             )?),
-            entered: false,
+            state: RuntimeLifetimeState::Admitted,
+        })
+    }
+
+    /// Record a trap before the error leaves the lifetime, so no later call
+    /// (release, status, shutdown) enters the dead instance.
+    fn observe<T>(&mut self, result: Result<T>) -> Result<T> {
+        result.inspect_err(|error| {
+            if is_engine_trap(error) {
+                self.state = RuntimeLifetimeState::Trapped;
+            }
         })
     }
 
     pub(super) fn validate_context_schema(&mut self, store: &mut Store<HostState>) -> Result<()> {
+        if self.state == RuntimeLifetimeState::Trapped {
+            bail!("Molt runtime trapped; its instance cannot run again");
+        }
         if let ContextSchemaAdmission::Offered(fingerprint) = &self.schema {
-            let offered = fingerprint
-                .call(&mut *store, ())
-                .context("call molt_attached_context_abi_fingerprint")?
-                as u64;
+            let offered = fingerprint.call(&mut *store, ());
+            let offered =
+                self.observe(offered)
+                    .context("call molt_attached_context_abi_fingerprint")? as u64;
             if offered != ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT {
                 bail!(
                     "MOLT_ATTACHED_CONTEXT_ABI_MISMATCH: runtime fingerprint differs from application schema"
@@ -340,18 +392,32 @@ impl MoltRuntimeLifetime {
         operation: impl FnOnce(&mut Store<HostState>, i64) -> Result<T>,
     ) -> Result<T> {
         self.validate_context_schema(store)?;
-        let token = self
-            .enter
-            .call(&mut *store, ())
-            .context("enter runtime execution")?;
+        let token = self.enter.call(&mut *store, ());
+        let token = self.observe(token).context("enter runtime execution")?;
         if token == 0 {
             bail!("runtime returned an empty execution-boundary token");
         }
-        self.entered = true;
-        let result = (|| {
+        self.state = RuntimeLifetimeState::Entered;
+        let result = self.execute_entered(store, operation);
+        if self.state == RuntimeLifetimeState::Trapped {
+            // The lease belongs to the dead instance; releasing it would run
+            // custody restore over state the trap left half-changed.
+            return result.map_err(name_stack_exhaustion);
+        }
+        let released = self.leave.call(&mut *store, token);
+        let released = self.observe(released).context("leave runtime execution");
+        preserve_application_and_cleanup_result(result, released).map_err(name_stack_exhaustion)
+    }
+
+    fn execute_entered<T>(
+        &mut self,
+        store: &mut Store<HostState>,
+        operation: impl FnOnce(&mut Store<HostState>, i64) -> Result<T>,
+    ) -> Result<T> {
+        {
+            let context = self.context.call(&mut *store, ());
             let context = self
-                .context
-                .call(&mut *store, ())
+                .observe(context)
                 .context("get attached execution context")?;
             let address =
                 u32::try_from(context).context("attached context is outside wasm32 memory")?;
@@ -371,28 +437,34 @@ impl MoltRuntimeLifetime {
             {
                 bail!("attached execution context header is outside runtime memory");
             }
+            let scope = self.compiled_enter.call(&mut *store, context);
             let scope = self
-                .compiled_enter
-                .call(&mut *store, context)
+                .observe(scope)
                 .context("enter compiled execution scope")?;
             if scope == 0 {
                 bail!("runtime returned an empty compiled execution scope");
             }
             let result = operation(store, context);
+            let result = self.observe(result);
+            if self.state == RuntimeLifetimeState::Trapped {
+                return result;
+            }
+            let retired = self.compiled_leave.call(&mut *store, (context, scope));
             let retired = self
-                .compiled_leave
-                .call(&mut *store, (context, scope))
+                .observe(retired)
                 .context("leave compiled execution scope");
             preserve_application_and_cleanup_result(result, retired)
-        })();
-        let released = self
-            .leave
-            .call(&mut *store, token)
-            .context("leave runtime execution");
-        preserve_application_and_cleanup_result(result, released)
+        }
     }
 
     pub(super) fn finish<T>(self, store: &mut Store<HostState>, result: Result<T>) -> Result<T> {
+        // A trap during setup (an instance start function, the schema offer)
+        // ends the lifetime as surely as one during execution.
+        if self.state == RuntimeLifetimeState::Trapped
+            || result.as_ref().err().is_some_and(is_engine_trap)
+        {
+            return result.map_err(name_stack_exhaustion);
+        }
         // This canonical Boundary observer neither initializes nor re-enters
         // the runtime, including after failed execution admission.
         let pending = read_runtime_exception_pending(
@@ -413,7 +485,7 @@ impl MoltRuntimeLifetime {
             .shutdown
             .call(&mut *store, ())
             .and_then(|status| {
-                if status == 1 || (status == 0 && !self.entered) {
+                if status == 1 || (status == 0 && self.state == RuntimeLifetimeState::Admitted) {
                     Ok(())
                 } else {
                     bail!("runtime shutdown did not complete: status={status}")
