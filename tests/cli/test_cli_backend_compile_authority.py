@@ -78,7 +78,6 @@ def test_capture_scope_is_explicit_and_never_a_semantic_codegen_input(
     supplied = {"MOLT_EMISSION_SCOPE": "b" * 64}
     dispatch, error = backend_compile._prepare_backend_dispatch(
         capture_origin=capture,
-        is_rust_transpile=False,
         is_wasm=False,
         wasm_layout=None,
         backend_environment=supplied,
@@ -166,7 +165,6 @@ def test_backend_dispatch_binds_scratch_before_any_backend_writer(
     )
     monkeypatch.setattr(backend_compile, "_start_backend_daemon_under_lock", start)
     dispatch, error = backend_compile._prepare_backend_dispatch(
-        is_rust_transpile=False,
         is_wasm=False,
         wasm_layout=None,
         backend_environment=supplied,

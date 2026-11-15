@@ -50,7 +50,6 @@ def add_factgraph_parser(
         choices=[
             TargetKind.NATIVE.value,
             TargetKind.WASM.value,
-            TargetKind.LUAU.value,
             "llvm",
         ],
         default=TargetKind.NATIVE.value,
@@ -101,8 +100,6 @@ def add_factgraph_parser(
 def backend_command_prefix(
     *,
     backend_bin: Path,
-    is_luau_transpile: bool,
-    is_rust_transpile: bool,
     is_wasm: bool,
     native_output_kind: NativeArtifactKind = NativeArtifactKind.OBJECT,
     target_triple: str | None,
@@ -113,11 +110,7 @@ def backend_command_prefix(
     wasm_runtime_poll_slots: int | None = None,
 ) -> list[str]:
     cmd = [str(backend_bin)]
-    if is_luau_transpile:
-        cmd.extend(["--target", "luau"])
-    elif is_rust_transpile:
-        cmd.extend(["--target", "rust"])
-    elif is_wasm:
+    if is_wasm:
         cmd.extend(["--target", "wasm"])
         if wasm_link:
             cmd.append("--wasm-link")
@@ -136,7 +129,7 @@ def backend_command_prefix(
             cmd.extend(["--wasm-runtime-poll-slots", str(wasm_runtime_poll_slots)])
     elif target_triple:
         cmd.extend(["--target-triple", target_triple])
-    if not is_luau_transpile and not is_rust_transpile and not is_wasm:
+    if not is_wasm:
         cmd.extend(["--native-output-kind", native_output_kind.value])
     return cmd
 
@@ -144,8 +137,6 @@ def backend_command_prefix(
 def execute_backend_fact_graph(
     *,
     request: FactGraphRequest,
-    is_luau_transpile: bool,
-    is_rust_transpile: bool,
     is_wasm: bool,
     target_triple: str | None,
     json_output: bool,
@@ -163,12 +154,6 @@ def execute_backend_fact_graph(
     entry_override_env: str,
     finalize_inputs: Callable[[], None] | None = None,
 ) -> int | None:
-    if is_rust_transpile:
-        return fail(
-            "factgraph does not support the rust transpile backend",
-            json_output,
-            command="factgraph",
-        )
     try:
         destination = file_publication.canonical_file_leaf(
             request.output_path, create_parent=True, role="TIR fact graph output"
@@ -184,8 +169,6 @@ def execute_backend_fact_graph(
         backend_env = {**backend_env, entry_override_env: entry_module}
         cmd = backend_command_prefix(
             backend_bin=backend_bin,
-            is_luau_transpile=is_luau_transpile,
-            is_rust_transpile=is_rust_transpile,
             is_wasm=is_wasm,
             target_triple=target_triple,
         )
@@ -322,15 +305,9 @@ def emit_pipeline_fact_graph(
                 return fail(str(exc), json_output, command="build")
         from molt.cli.backend_cache_setup import backend_operation_environment
 
-        is_native = not (
-            output_layout.is_wasm
-            or output_layout.is_rust_transpile
-            or output_layout.is_luau_transpile
-        )
+        is_native = not output_layout.is_wasm
         native_binding = runtime_context.runtime_state.native_runtime_codegen_binding
         prepared_backend_dispatch, dispatch_error = prepare_backend_dispatch(
-            is_rust_transpile=output_layout.is_rust_transpile,
-            is_luau_transpile=output_layout.is_luau_transpile,
             is_wasm=output_layout.is_wasm,
             wasm_layout=wasm_layout,
             # The projection a build's dispatch and cache identity receive.
@@ -366,8 +343,6 @@ def emit_pipeline_fact_graph(
         assert prepared_backend_dispatch is not None
         fact_graph_error = execute_backend_fact_graph(
             request=request,
-            is_luau_transpile=output_layout.is_luau_transpile,
-            is_rust_transpile=output_layout.is_rust_transpile,
             is_wasm=output_layout.is_wasm,
             target_triple=output_layout.target_triple,
             json_output=json_output,

@@ -397,7 +397,7 @@ def test_runtime_protocol_bit_counts_statements_the_scan_reaches() -> None:
     assert not detect("pass\n", "full")
 
 
-@pytest.mark.parametrize("target", ["native", "wasm", "rust", "luau", "mlir"])
+@pytest.mark.parametrize("target", ["native", "wasm", "mlir"])
 def test_late_native_root_refreshes_policy_and_catalog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

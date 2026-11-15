@@ -902,9 +902,6 @@ def test_compare_capability_temporary_custody_and_preflight(
     [
         ("native", "status"),
         ("native", "exception"),
-        ("luau", "status"),
-        ("luau", "exception"),
-        ("luau", "notice"),
     ],
 )
 def test_run_capability_temporary_custody(monkeypatch, tmp_path, route, failure):
@@ -989,9 +986,8 @@ def test_deploy_preserves_caller_owned_capability_file(monkeypatch, tmp_path, ra
 
     def invoke():
         return scripts._deploy(
-            "roblox",
+            "cloudflare",
             str(source),
-            None,
             None,
             None,
             None,

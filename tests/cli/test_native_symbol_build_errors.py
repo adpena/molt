@@ -192,8 +192,6 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     layout = _BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_mlir_emit=False,
         split_runtime=False,
         linked=False,

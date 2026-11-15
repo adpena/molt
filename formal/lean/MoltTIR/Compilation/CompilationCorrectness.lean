@@ -359,10 +359,9 @@ theorem compilation_semantically_idempotent (f : MoltTIR.Func)
 -- ======================================================================
 
 -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:planned):
--- Theorems 8-9 (full_pipeline_expr_luau, full_pipeline_expr_rust) require
--- Backend types (Backend.VarNames, Backend.LuauEnv, Backend.RustEnv, etc.)
--- and three_phase_expr_correct from ForwardSimulation, which are not yet defined.
--- Commented out pending backend formalization.
+-- An expression-level end-to-end theorem needs a backend emission link. The
+-- Luau and Rust links were deleted with those targets (2026-11-12); a full
+-- WASM `emitExpr_correct` over `WasmEmit` would restore it (HF-63).
 
 -- ======================================================================
 -- Section 9: Backward Preservation (Completeness)
@@ -495,22 +494,11 @@ constFoldFunc_correct    sorry (lift instr->func)
    constFoldExpr_correct (FULLY PROVEN)
 ```
 
-### Three-Phase Expression Pipeline (FULLY PROVEN in proof bodies)
+### Three-Phase Expression Pipeline (NOT STATED)
 
-```
-  full_pipeline_expr_luau / full_pipeline_expr_rust (Thms 8, 9)
-                |
-    three_phase_expr_correct
-      /         |          \
-  Phase 1     Phase 2      Phase 3
-  lowering    midend       backend
-  preserves   preserves    preserves
-  eval        evalExpr     evalExpr
-     |           |            |
-lowering_    fullPipeline   emitExpr_correct /
-preserves_   Expr_correct   emitRustExpr_correct
-eval
-```
+Phase 1 (`lowering_preserves_eval`) and Phase 2 (`fullPipelineExpr_correct`)
+are proven. Phase 3 has no full backend emission theorem: `WasmCorrect`
+proves the `val` and `var` cases only (HF-63).
 
 ### Sorry Budget
 
@@ -521,8 +509,6 @@ eval
 | behavioral_equivalence | 0 | delegates to fullPipelineFunc_behavioral_equiv |
 | observable_equivalence | 0 | delegates |
 | compilation_contextual_equiv | 0 | delegates to forward_simulation |
-| full_pipeline_expr_luau | 0 | delegates to three_phase_expr_correct |
-| full_pipeline_expr_rust | 0 | delegates to three_phase_expr_correct |
 | no_new_behaviors | 0 | uses behavioral_equivalence |
 | no_lost_behaviors | 0 | uses behavioral_equivalence |
 | compilation_refines | 0 | uses behavioral_equivalence |
@@ -538,8 +524,6 @@ eval
 | Compose.lean | 3 | fullPipeline_behavioral_equiv SCCP/DCE/CSE |
 | ForwardSimulation.lean | 2 | PhaseSimulation.compose + fullPipelineFunc |
 | MoltLowering/Correct.lean | 3 | binOp/unaryOp induction + lowerEnv_corr |
-| Backend/LuauCorrect.lean | ~3 | emitExpr_correct abs/bin/un |
-| Backend/RustCorrect.lean | ~1 | emitRustExpr_correct abs |
 
 ### Roadmap to Sorry-Free
 
@@ -553,8 +537,8 @@ eval
 3. **Close lowering induction**: binOp case requires threading sub-expression
    lowering hypotheses; unaryOp is similar but simpler.
 
-4. **Close backend composition**: Luau bin/un cases require Option.bind
-   compositionality through the Luau evaluation model.
+4. **State backend composition**: a full WASM `emitExpr_correct` over
+   `WasmEmit` (only `val` and `var` are proven today).
 
 5. **List.map + find? lemma**: straightforward Lean library lemma.
 

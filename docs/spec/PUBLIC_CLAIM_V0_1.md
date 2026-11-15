@@ -38,8 +38,8 @@ and the [public contract](PUBLIC_CONTRACT_V1.md) snapshots them.
   not block v0.1.
 - The other four release targets are Tier 2 and **not published in v0.1**: macOS x86_64, Linux aarch64,
   Windows x86_64 and Windows arm64.
-- **Not run:** the Luau and Rust source emitters and MLIR emission are experimental. No presubmit or
-  postsubmit cell runs them.
+- **Not run:** MLIR emission is experimental. No presubmit or postsubmit cell runs it. The Luau and
+  Rust source emitters were deleted on 2026-11-12.
 
 Tier 1 widens only by owner decision.
 

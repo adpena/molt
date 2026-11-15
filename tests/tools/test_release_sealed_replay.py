@@ -54,7 +54,7 @@ def test_compilation_controller_restores_current_receipts_once(tmp_path, orphan)
     source, destination = tmp_path / "seed", tmp_path / "restored"
     source.mkdir()
     content = b'fn main() { println!("cache"); }\n'
-    emitted = tmp_path / "emitted.rs"
+    emitted = tmp_path / "emitted.mlir"
     emitted.write_bytes(content)
     origin = BackendEmissionOrigin(
         BackendEmissionProducer("one-shot", 101, "a" * 64),
@@ -63,11 +63,11 @@ def test_compilation_controller_restores_current_receipts_once(tmp_path, orphan)
         len(content),
         BackendCodegenOrigin(101, ()),
     )
-    artifact = source / ("a" * 64 + ".artifact-" + "b" * 64 + ".rs")
+    artifact = source / ("a" * 64 + ".artifact-" + "b" * 64 + ".mlir")
     backend_cache._publish_immutable_backend_cache_artifact(
         emitted,
         artifact,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
         warnings=[],
         emission_origin=origin,
     )
@@ -93,7 +93,7 @@ def test_compilation_controller_restores_current_receipts_once(tmp_path, orphan)
         "config": {
             "compiler_source_root": str(Path(__file__).resolve().parents[2]),
             "environment": dict(os.environ),
-            "cache_contract": {"kind": "rust", "target_triple": None},
+            "cache_contract": {"kind": "mlir", "target_triple": None},
             "output_max_bytes": 1024**2,
         },
     }

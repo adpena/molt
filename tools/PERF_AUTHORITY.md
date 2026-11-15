@@ -182,8 +182,6 @@ metrics in `bench_diff.py` retain their independent success/profile rules, but
 require equal admitted source workloads, like every other cross-run metric.
 Fresh `bench_individual.py` and `bench/harness.py` CPython records carry this
 same source identity; their missing Molt build observations remain unbound.
-The Rust-transpile tool emits a separate list of nested millisecond results,
-which the shared flat-map reader already refuses before metric comparison.
 
 Methodology v8 binds source and ancestry to original Git objects, ignoring
 replacement refs and legacy grafts. Performance freshness resolves the current

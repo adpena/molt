@@ -909,8 +909,6 @@ class ChildExecutionClock:
 RootSignal: TypeAlias = Callable[
     [str, float], tuple[bool, GuardTerminationReport | None]
 ]
-# A diagnostic is part of timeout termination, never an unbounded stack probe.
-PYTHON_TIMEOUT_DUMP_GRACE_S = 0.5
 
 
 def owned_root_group_signal(
@@ -919,7 +917,7 @@ def owned_root_group_signal(
     child: GuardedChildProcess,
     *,
     terminate_job: Callable[[], None] | None = None,
-    python_timeout_dump: bool = False,
+    python_timeout_dump_wait_s: float | None = None,
 ) -> RootSignal | None:
     """The one signal whose target needs no observation, or None.
 
@@ -931,6 +929,13 @@ def owned_root_group_signal(
     first; SIGKILL follows the grace unless the reaper has reaped the root by
     then, when the group may no longer be this child's and observation must
     finish what remains.
+
+    With ``python_timeout_dump_wait_s`` a timed-out Python child gets SIGABRT
+    first: its faulthandler writes every thread's stack and the abort then
+    ends the process. The guard waits for that exit, up to the guard's own
+    termination budget, before SIGTERM; a fixed 0.5 s cut the dump short
+    under load (a truncated "Fatal Python error: " in the 2026-11-15 batch
+    48b31c5c4a).
     """
     if terminate_job is not None:
 
@@ -955,7 +960,10 @@ def owned_root_group_signal(
     def signal_group(reason: str, grace: float):
         started_at = _utc_timestamp()
         actions: list[GuardTerminationAction] = []
-        diagnostic = python_timeout_dump and reason in {"timeout", "output_stalled"}
+        diagnostic = python_timeout_dump_wait_s is not None and reason in {
+            "timeout",
+            "output_stalled",
+        }
         with clock.reap_signal_lock:
             if clock.error is not None or proc.returncode is not None:
                 return False, None
@@ -972,7 +980,8 @@ def owned_root_group_signal(
             else:
                 actions.append(_send_process_group_signal_action(pgid, signal.SIGTERM))
         if diagnostic:
-            clock.done.wait(PYTHON_TIMEOUT_DUMP_GRACE_S)
+            assert python_timeout_dump_wait_s is not None
+            clock.done.wait(python_timeout_dump_wait_s)
             with clock.reap_signal_lock:
                 if clock.error is None and proc.returncode is None:
                     actions.append(

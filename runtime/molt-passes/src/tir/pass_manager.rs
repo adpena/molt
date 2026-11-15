@@ -69,8 +69,7 @@ fn function_op_count(func: &TirFunction) -> usize {
 ///   native suppresses its automatic temp-RC substrate only on full-function
 ///   `drop_inserted` functions; the narrower
 ///   `exception_region_drops_inserted` fact protects pre-bail exception releases
-///   without disabling legacy native RC. Luau is GC-managed and therefore does
-///   not materialize target-dead RC operations at all. The native loop-phi
+///   without disabling legacy native RC. The native loop-phi
 ///   raw/heap representation blocker is pinned by
 ///   `reachable_heap_incoming_poisons_raw_loop_phi`, so the shared TIR drop
 ///   plane is now the native RC authority as well.
@@ -673,10 +672,7 @@ fn verify_late_lowering_step(
 ///   * LLVM  — `llvm_backend/lowering.rs` resolves operands by ValueId
 ///     (`resolve(id)` → correctly-boxed bits) and has no tracked-var auto-RC.
 ///   * WASM  — each SimpleIR name maps 1:1 to a uniformly NaN-boxed wasm local;
-///     no tracked-var auto-RC. The LIR fast lane lowers `IncRef`/`DecRef`
-///     directly (lower_to_wasm.rs).
-///   * Luau  — GC-managed; the terminal phase remains in the shared topology
-///     but does not manufacture target-dead `DecRef`/`IncRef` operations.
+///     no tracked-var auto-RC.
 ///   * Native/Cranelift — `function_compiler.rs` carries a value-tracking
 ///     automatic temp-RC substrate, suppressed only for full-function
 ///     drop-inserted functions by the design-20 §4.1 `drop_inserted`-marker gate
@@ -1025,40 +1021,6 @@ mod tests {
         );
         crate::tir::verify::verify_function(&func)
             .expect("later memory/value/cleanup phases must preserve the edge payload");
-    }
-
-    #[test]
-    fn luau_pipeline_does_not_inject_native_pending_call_polls() {
-        let mut func = TirFunction::new(
-            "luau_call".into(),
-            vec![],
-            TirType::None,
-            molt_ir::FunctionReturnAbi::Void,
-        );
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        let mut attrs = AttrDict::new();
-        attrs.insert("s_value".into(), AttrValue::Str("external_call".into()));
-        entry.ops.push(TirOp {
-            origin: None,
-            runtime: None,
-            dialect: Dialect::Molt,
-            opcode: OpCode::Call,
-            operands: vec![],
-            results: vec![],
-            attrs,
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return { values: vec![] };
-
-        let stats = build_default_pipeline(TargetInfo::luau_release_fast()).run(&mut func);
-        assert_eq!(stats.len(), 28);
-        assert!(
-            func.blocks
-                .values()
-                .flat_map(|block| &block.ops)
-                .all(|op| !op.is_async_work_poll()),
-            "a target without the runtime observer must not receive compiler-created polls"
-        );
     }
 
     /// The RC drop-insertion pipeline (round-7) is the two design-20 passes plus
@@ -1443,8 +1405,6 @@ mod tests {
             (TargetInfo::wasm_release_fast(), 1),
             (TargetInfo::llvm_release_fast(), 1),
             (withdrawn, 0),
-            (TargetInfo::luau_release_fast(), 0),
-            (TargetInfo::rust_release_fast(), 0),
             (TargetInfo::mlir_release_fast(), 0),
         ] {
             let plan = format!(

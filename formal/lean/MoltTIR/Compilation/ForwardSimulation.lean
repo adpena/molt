@@ -459,14 +459,9 @@ theorem fullPipelineFunc_observable_equiv (f : MoltTIR.Func)
 -- ======================================================================
 
 -- TODO(formal, owner:compiler, milestone:M4, priority:P1, status:planned):
--- three_phase_expr_correct and three_phase_expr_correct_rust require
--- Backend.VarNames, Backend.LuauEnv, Backend.RustEnv, and related types
--- which are not yet defined. Commented out pending backend formalization.
-/-
-/-- The three-phase composition at expression level. -/
-theorem three_phase_expr_correct ... := sorry
-theorem three_phase_expr_correct_rust ... := sorry
--/
+-- three_phase_expr_correct needs a full backend emission theorem. The Luau
+-- and Rust models were deleted with those targets (2026-11-12); a full WASM
+-- `emitExpr_correct` over `WasmEmit` would supply Phase 3 (HF-63).
 
 -- ======================================================================
 -- Section 10: Proof Status
@@ -483,8 +478,6 @@ theorem three_phase_expr_correct_rust ... := sorry
 - `DeterministicPassSimulation.compose` -- pass composition
 - `loweringSimulation` -- delegates to proven lowering_preserves_eval
 - `midendSimulation` -- delegates to proven pipeline theorems
-- `three_phase_expr_correct` -- full Luau pipeline (composes Phase 1+2+3)
-- `three_phase_expr_correct_rust` -- full Rust pipeline
 
 ### Sorry in This File
 - None. All sorrys have been closed:

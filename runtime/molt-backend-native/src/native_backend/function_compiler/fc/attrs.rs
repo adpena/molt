@@ -13,7 +13,7 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     // `del_index`/`call`/`call_builtin`). A TIR pass that yields a generic
     // by-name attribute op produces exactly these (e.g. the cold fallback the
     // release-fast guard-splitting passes leave when they specialize the
-    // `guarded_field_get`s in `__future__._Feature.__repr__`). rust/luau/llvm
+    // `guarded_field_get`s in `__future__._Feature.__repr__`). LLVM and WASM
     // all handle the canonical forms; the native backend must too, or the op
     // hits the dispatch's loud no-codegen catch-all at user `molt build` time.
     // All three get spellings share the bits-validating, tagged-safe boxed

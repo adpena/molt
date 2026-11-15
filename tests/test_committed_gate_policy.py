@@ -246,7 +246,6 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
             "tests/tools/test_structural_audit_records.py",
             # tools/structural_audit.py is a parser producer for these consumers.
             "tests/test_rust_source_scan.py",
-            "tests/tools/test_gen_luau_support_matrix.py",
             # Tests that import the audits or read the design document.
             POLICY_ORACLE,
             "tests/test_dx_run_context.py",
@@ -437,9 +436,6 @@ def test_guard_wiring_audit_changes_select_their_direct_consumers():
     "source",
     [
         "tools/structural_audit.py",
-        "tools/structural_audit_rust.py",
-        "tools/structural_audit_rust_admission.py",
-        "tools/structural_audit_rust_domains.py",
         "src/molt/rust_source_scan.py",
     ],
 )
@@ -451,7 +447,6 @@ def test_structural_audit_producers_select_all_parser_consumers(source):
         "tests/tools/test_structural_audit_records.py",
         "tests/test_generator_manifest.py",
         "tests/test_rust_source_scan.py",
-        "tests/tools/test_gen_luau_support_matrix.py",
     }
 
 
@@ -946,14 +941,7 @@ def test_committed_facts_policy_excludes_compiler_codegen(path):
 
 def test_committed_source_checks_precede_complete_native_build_selection():
     cfg = GateConfig.load(COMMITTED_GATES)
-    # Presubmit orders admitted backend owners. The public release authority
-    # excludes experimental Luau; its scheduled coverage is a separate cell.
-    matrix = tomllib.loads(
-        (REPO_ROOT / "config" / "release_acceptance_matrix.toml").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert "luau" in {row["backend"] for row in matrix["excluded_backend"]}
+    # Presubmit orders admitted backend owners.
     gates, matched = cfg.select(
         [
             "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
@@ -976,8 +964,6 @@ def test_committed_source_checks_precede_complete_native_build_selection():
         "committed-gate-policy",
         "ci-wiring",
     }
-    # Experimental backends (Luau) run in no presubmit or postsubmit cell
-    # (owner 2026-11-05; config/release_acceptance_matrix.toml).
     build_names = [
         "backend-native",
         "native-object-emission",

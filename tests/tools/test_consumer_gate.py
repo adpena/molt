@@ -391,3 +391,71 @@ def test_the_batch_reuses_only_a_receipt_run_on_exactly_the_tree(
     assert consumer_gate.proven_gates(repo, tree, exact=True) is None
     lane = consumer_gate.proven_gates(repo, tree)
     assert lane is not None and lane(gate)
+
+
+def test_a_test_failing_on_the_base_too_is_main_red_not_the_changes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-11-15: tests that failed on clean main blocked the receipt of every
+    # change broad enough to select them, so nothing touching dx.py could be
+    # committed. Chromium's "without patch" retry: a failure the base commit
+    # reproduces is main's defect, recorded, and does not block the change.
+    (repo / "tests/test_lib.py").write_text(
+        "def test_value():\n    assert False, 'red on main'\n", encoding="utf-8"
+    )
+    _commit(repo, "main is red")
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    paths = ["lib.py"]
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 0
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, paths)
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["preexisting_failures"] == ["tests/test_lib.py::test_value"]
+    assert receipt["flaky_reruns"] is None
+    # The temporary base worktree is gone.
+    assert len(_git(repo, "worktree", "list").splitlines()) == 1
+
+
+def test_the_owners_bypass_runs_static_gates_and_own_tests_and_records_the_rest(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Owner direction 2026-11-15: velocity work lands directly, bypassing the
+    # expensive importer suites; the receipt says so and names what it skipped.
+    (repo / "tests/test_other.py").write_text(
+        "def test_other():\n    assert False, 'an importer the bypass skips'\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "an importer that fails")
+    _graph(monkeypatch, ("tests/test_lib.py", "tests/test_other.py"))
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repo / "tests/test_lib.py").write_text(
+        "def test_value():\n    assert True\n\ndef test_new():\n    assert True\n",
+        encoding="utf-8",
+    )
+    paths = ["lib.py", "tests/test_lib.py"]
+    assert (
+        consumer_gate.run(
+            repo,
+            paths,
+            pytest_args=["-p", "no:cacheprovider"],
+            bypass_importers="unblock landings",
+        )
+        == 0
+    )
+    receipt = json.loads(
+        consumer_gate.receipt_path(
+            repo, consumer_gate.commit_tree(repo, paths)
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["bypass"] == "unblock landings"
+    assert receipt["importers"] == ["tests/test_lib.py"]
+    assert receipt["bypassed_importers"] == ["tests/test_other.py"]
+    assert consumer_gate.check(repo, paths) == 0
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    _git(repo, "add", "-A")
+    _commit(repo, message)

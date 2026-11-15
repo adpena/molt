@@ -43,8 +43,6 @@ fn singleton_materialization_does_not_authorize_identity_or_unknown_spellings() 
             TargetInfo::native_release_fast(),
             TargetInfo::wasm_release_fast(),
             TargetInfo::llvm_release_fast(),
-            TargetInfo::luau_release_fast(),
-            TargetInfo::rust_release_fast(),
             TargetInfo::mlir_release_fast(),
         ] {
             validate_runtime_target_contract(&ir, &target)
@@ -133,8 +131,6 @@ fn shared_graph_admission_precedes_target_representation_planning() {
         TargetInfo::native_release_fast(),
         TargetInfo::wasm_release_fast(),
         TargetInfo::llvm_release_fast(),
-        TargetInfo::luau_release_fast(),
-        TargetInfo::rust_release_fast(),
         TargetInfo::mlir_release_fast(),
     ] {
         for (ops, expected) in &cases {
@@ -165,8 +161,6 @@ fn representation_shape_admission_precedes_every_target_plan() {
         TargetInfo::native_release_fast(),
         TargetInfo::wasm_release_fast(),
         TargetInfo::llvm_release_fast(),
-        TargetInfo::luau_release_fast(),
-        TargetInfo::rust_release_fast(),
         TargetInfo::mlir_release_fast(),
     ] {
         for kind in [
@@ -374,8 +368,6 @@ fn raw_boxed_stack_allocation_is_rejected_on_every_target() {
         crate::tir::TargetInfo::native_release_fast(),
         crate::tir::TargetInfo::wasm_release_fast(),
         crate::tir::TargetInfo::llvm_release_fast(),
-        crate::tir::TargetInfo::luau_release_fast(),
-        crate::tir::TargetInfo::rust_release_fast(),
         crate::tir::TargetInfo::mlir_release_fast(),
     ] {
         let error = validate_runtime_target_contract(&ir, &target).unwrap_err();
@@ -418,7 +410,7 @@ fn binary(kind: molt_ir::OpKind, ty: &str) -> SimpleIR {
 fn target_with_runtime(
     supported_runtime_semantics: SimpleIrRuntimeRequirements,
 ) -> crate::tir::TargetInfo {
-    let mut target = crate::tir::TargetInfo::rust_release_fast();
+    let mut target = crate::tir::TargetInfo::mlir_release_fast();
     target.supported_runtime_semantics = supported_runtime_semantics;
     target
 }
@@ -508,11 +500,11 @@ fn extern_linkage_capability_is_one_shared_target_admission_gate() {
         profile: None,
     };
 
-    let error = validate_target_contract(&ir, &crate::tir::TargetInfo::rust_release_fast())
+    let error = validate_target_contract(&ir, &crate::tir::TargetInfo::mlir_release_fast())
         .expect_err("targets without a provider ABI must reject extern declarations");
     assert!(error.contains("rust target has no extern provider/linkage ABI"));
 
-    let mut linkable = crate::tir::TargetInfo::rust_release_fast();
+    let mut linkable = crate::tir::TargetInfo::mlir_release_fast();
     linkable.extern_function_linkage = true;
     validate_target_contract(&ir, &linkable)
         .expect("declaration-capable targets admit canonical extern signatures");
@@ -521,7 +513,7 @@ fn extern_linkage_capability_is_one_shared_target_admission_gate() {
 #[test]
 fn fixed_width_targets_admit_exact_float_basics_only() {
     let mut floats = binary(molt_ir::OpKind::Add, "float");
-    validate_numeric_target_contract(&floats, &crate::tir::TargetInfo::rust_release_fast())
+    validate_numeric_target_contract(&floats, &crate::tir::TargetInfo::mlir_release_fast())
         .expect_err("annotations do not prove the target's numeric capability");
     let func = &mut floats.functions[0];
     func.params.clear();
@@ -536,7 +528,7 @@ fn fixed_width_targets_admit_exact_float_basics_only() {
             },
         );
     }
-    validate_numeric_target_contract(&floats, &crate::tir::TargetInfo::rust_release_fast())
+    validate_numeric_target_contract(&floats, &crate::tir::TargetInfo::mlir_release_fast())
         .expect("producer-proven float add is exact in the target policy");
 
     for kind in [
@@ -546,7 +538,7 @@ fn fixed_width_targets_admit_exact_float_basics_only() {
     ] {
         let error = validate_numeric_target_contract(
             &binary(kind, "float"),
-            &crate::tir::TargetInfo::rust_release_fast(),
+            &crate::tir::TargetInfo::mlir_release_fast(),
         )
         .expect_err("non-exact float semantics must reject");
         assert!(error.contains("rejected before source generation"));
@@ -557,60 +549,10 @@ fn fixed_width_targets_admit_exact_float_basics_only() {
 fn fixed_width_targets_reject_integer_arithmetic() {
     let error = validate_numeric_target_contract(
         &binary(molt_ir::OpKind::Add, "int"),
-        &crate::tir::TargetInfo::rust_release_fast(),
+        &crate::tir::TargetInfo::mlir_release_fast(),
     )
     .expect_err("i64 is not Python integer semantics");
     assert!(error.contains("arbitrary-precision"));
-}
-
-#[test]
-fn exact_literal_capability_admits_only_complete_in_range_siblings() {
-    let target = crate::tir::TargetInfo::luau_release_fast();
-    for op in [
-        OpIR {
-            kind: molt_ir::OpKind::Const,
-            value: Some(42),
-            out: Some("out".to_string()),
-            ..OpIR::new(molt_ir::OpKind::Const)
-        },
-        OpIR {
-            kind: molt_ir::OpKind::ConstInt,
-            value: Some(-(1_i64 << 53)),
-            out: Some("out".to_string()),
-            ..OpIR::new(molt_ir::OpKind::ConstInt)
-        },
-        OpIR {
-            kind: molt_ir::OpKind::ConstBigint,
-            bytes: Some(molt_ir::literal_payload::integer_literal_bytes(
-                1_i128 << 53,
-            )),
-            out: Some("out".to_string()),
-            ..OpIR::new(molt_ir::OpKind::ConstBigint)
-        },
-    ] {
-        validate_numeric_target_contract(&function_ir(vec![op]), &target)
-            .expect("exact concrete literal must be admitted");
-    }
-    for payload in [
-        molt_ir::literal_payload::integer_literal_bytes(9_007_199_254_740_993),
-        molt_ir::literal_payload::integer_literal_bytes(-9_007_199_254_740_993),
-        vec![0, 0],
-    ] {
-        let error = validate_numeric_target_contract(
-            &function_ir(vec![OpIR {
-                kind: molt_ir::OpKind::ConstBigint,
-                bytes: Some(payload.clone()),
-                out: Some("out".to_string()),
-                ..OpIR::new(molt_ir::OpKind::ConstBigint)
-            }]),
-            &target,
-        )
-        .expect_err("unsafe or malformed bigint literal must reject");
-        assert!(
-            error.contains("exact concrete value authority"),
-            "{payload:?}: {error}"
-        );
-    }
 }
 
 #[test]
@@ -622,7 +564,7 @@ fn float_literal_stays_outside_integer_admission() {
             out: Some("out".to_string()),
             ..OpIR::new(molt_ir::OpKind::ConstFloat)
         }]),
-        &crate::tir::TargetInfo::rust_release_fast(),
+        &crate::tir::TargetInfo::mlir_release_fast(),
     )
     .expect("a float literal is not an integer literal");
 }
@@ -638,7 +580,7 @@ fn integer_literal_kind_without_integer_payload_is_rejected() {
             out: Some("out".to_string()),
             ..OpIR::new(molt_ir::OpKind::Const)
         }]),
-        &crate::tir::TargetInfo::rust_release_fast(),
+        &crate::tir::TargetInfo::mlir_release_fast(),
     )
     .expect_err("an integer-literal kind without an integer payload must reject");
     assert!(error.contains("integer literal"), "{error}");
@@ -667,7 +609,7 @@ fn execution_frames_are_distinct_from_python_introspection() {
             ..OpIR::new(kind)
         }]);
         let error =
-            validate_runtime_target_contract(&ir, &crate::tir::TargetInfo::rust_release_fast())
+            validate_runtime_target_contract(&ir, &crate::tir::TargetInfo::mlir_release_fast())
                 .expect_err("execution-frame operations must not degrade to target no-ops");
         assert!(error.contains("execution-frame stack and source-location"));
 

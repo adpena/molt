@@ -79,8 +79,6 @@ _CONTRACTS = [
     BackendArtifactContract(kind)
     for kind in (
         BackendArtifactKind.WASM,
-        BackendArtifactKind.RUST,
-        BackendArtifactKind.LUAU,
         BackendArtifactKind.MLIR,
     )
 ]
@@ -190,7 +188,7 @@ def test_publishing_payload_does_not_bind_callers_dict_to_a_peer_generation(
     tmp_path, monkeypatch
 ):
     receipt = tmp_path / "receipt.json"
-    artifact = tmp_path / "output.rs"
+    artifact = tmp_path / "output.mlir"
     artifact.write_bytes(b"return 1\n")
     original_write = sync._atomic_write_json
 
@@ -209,7 +207,7 @@ def test_publishing_payload_does_not_bind_callers_dict_to_a_peer_generation(
 
 
 def test_legacy_stat_receipt_is_a_miss_even_for_identical_bytes(tmp_path):
-    artifact = tmp_path / "artifact.rs"
+    artifact = tmp_path / "artifact.mlir"
     artifact.write_bytes(b"return 1\n")
     stat = artifact.stat()
     state = {
@@ -227,7 +225,7 @@ def test_legacy_stat_receipt_is_a_miss_even_for_identical_bytes(tmp_path):
 def test_receipt_validates_path_bound_identity_against_current_content(
     tmp_path,
 ):
-    artifact = tmp_path / "artifact.rs"
+    artifact = tmp_path / "artifact.mlir"
     artifact.write_bytes(b"return 1\n")
     identity = stable_regular_file_identity(artifact, label="test output")
     receipt = tmp_path / "receipt.json"
@@ -239,7 +237,7 @@ def test_receipt_validates_path_bound_identity_against_current_content(
     assert sync._artifact_sync_state_matches(
         state, source_key="key", tier="module", artifact=artifact, identity=identity
     )
-    other = tmp_path / "other.rs"
+    other = tmp_path / "other.mlir"
     other.write_bytes(artifact.read_bytes())
     assert not sync._artifact_sync_state_matches(
         state, source_key="key", tier="module", artifact=other, identity=identity
@@ -408,8 +406,8 @@ def test_all_backend_sync_consumers_reject_replacement_and_materialize_requested
 def test_backend_receipt_decision_validates_shape_once_and_readmits_content(
     tmp_path, monkeypatch
 ):
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
-    artifact = tmp_path / "artifact.rs"
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
+    artifact = tmp_path / "artifact.mlir"
     artifact.write_bytes(b"return 1\n")
     source_key = cache._backend_artifact_source_key(
         "key", stdlib_object_cache_key=None, artifact_contract=contract
@@ -500,7 +498,7 @@ def test_daemon_sync_reuses_validation_identity_for_module_chunk_closure(
 
 
 def test_disabled_cache_never_admits_empty_key_receipt(tmp_path, monkeypatch):
-    artifact = tmp_path / "artifact.rs"
+    artifact = tmp_path / "artifact.mlir"
     artifact.write_bytes(b"return 1\n")
     receipt = sync._artifact_sync_state_path(tmp_path, artifact)
     sync._write_artifact_sync_state(
@@ -519,7 +517,7 @@ def test_disabled_cache_never_admits_empty_key_receipt(tmp_path, monkeypatch):
         artifact,
         cache_key=None,
         function_cache_key=None,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
         state_path=receipt,
         state=state,
     ) == (False, False)
@@ -680,7 +678,7 @@ def test_origin_observation_rehashes_after_recency_refresh_but_refuses_replaceme
     )
     import time
 
-    artifact, receipt = tmp_path / "artifact.rs", tmp_path / "receipt.json"
+    artifact, receipt = tmp_path / "artifact.mlir", tmp_path / "receipt.json"
     content = b"fn original() {}\n"
     artifact.write_bytes(content)
     old = time.time_ns() - int(2 * AUTOMATIC_PRUNE_INTERVAL_SECONDS * 1e9)
@@ -725,11 +723,11 @@ def test_original_emitter_survives_publication_winner_promotion_and_output_reuse
     later = _original_emission_payload(content, process_id=202, scope="b" * 64)
     original = BackendEmissionOrigin.from_payload(expected)
     next_origin = BackendEmissionOrigin.from_payload(later)
-    source = tmp_path / "emitted.rs"
+    source = tmp_path / "emitted.mlir"
     source.write_bytes(content)
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
-    module = tmp_path / "cache" / "module.rs"
-    candidate = module if tier == "module" else module.with_name("function.rs")
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
+    module = tmp_path / "cache" / "module.mlir"
+    candidate = module if tier == "module" else module.with_name("function.mlir")
     first = cache._publish_immutable_backend_cache_artifact(
         source,
         candidate,
@@ -754,7 +752,7 @@ def test_original_emitter_survives_publication_winner_promotion_and_output_reuse
     assert receipt.read_bytes() == sealed_receipt
     source.unlink()
     sync._ARTIFACT_SYNC_STATE_CACHE.clear()
-    output = tmp_path / "build" / "output.rs"
+    output = tmp_path / "build" / "output.mlir"
     hit = cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[(tier, candidate)],
@@ -806,7 +804,7 @@ def test_original_emitter_survives_publication_winner_promotion_and_output_reuse
     assert not source.exists()
     # The immutable winner also owns a newly materialized, unsynchronized output.
     source.write_bytes(content)
-    fresh_output = tmp_path / "build" / "second.rs"
+    fresh_output = tmp_path / "build" / "second.mlir"
     staged = cache._stage_backend_output_and_caches(
         tmp_path,
         source,
@@ -857,10 +855,10 @@ def test_bytes_only_or_stale_origin_refuses_capture_but_preserves_ordinary_reuse
     tmp_path, receipt_fault
 ):
     content = b"fn original() {}\n"
-    source = tmp_path / "source.rs"
+    source = tmp_path / "source.mlir"
     source.write_bytes(content)
-    candidate = tmp_path / "cache" / "module.rs"
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
+    candidate = tmp_path / "cache" / "module.mlir"
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
     expected = _original_emission_payload(content, process_id=101, scope="a" * 64)
     cache._publish_immutable_backend_cache_artifact(
         source,
@@ -883,7 +881,7 @@ def test_bytes_only_or_stale_origin_refuses_capture_but_preserves_ordinary_reuse
         else:
             payload["version"] = 2
         receipt.write_text(json.dumps(payload), encoding="utf-8")
-    output = tmp_path / "build" / "out.rs"
+    output = tmp_path / "build" / "out.mlir"
     arguments = dict(
         project_root=tmp_path,
         cache_candidates=[("module", candidate)],
@@ -916,9 +914,9 @@ def test_new_cache_generation_never_inherits_an_orphaned_receipt(
     tmp_path, has_new_origin
 ):
     content = b"fn original() {}\n"
-    source = tmp_path / "source.rs"
+    source = tmp_path / "source.mlir"
     source.write_bytes(content)
-    candidate = tmp_path / "cache.rs"
+    candidate = tmp_path / "cache.mlir"
     receipt = backend_cache_sync_receipt_path(candidate)
     old = _original_emission_payload(content, process_id=101, scope="a" * 64)
     new = _original_emission_payload(content, process_id=202, scope="b" * 64)
@@ -932,7 +930,7 @@ def test_new_cache_generation_never_inherits_an_orphaned_receipt(
     published = cache._publish_immutable_backend_cache_artifact(
         source,
         candidate,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
         warnings=[],
         emission_origin=BackendEmissionOrigin.from_payload(new)
         if has_new_origin
@@ -952,11 +950,11 @@ def test_interrupted_origin_publication_leaves_only_uncapturable_bytes(
     tmp_path, monkeypatch
 ):
     content = b"fn original() {}\n"
-    source = tmp_path / "source.rs"
+    source = tmp_path / "source.mlir"
     source.write_bytes(content)
-    candidate = tmp_path / "cache.rs"
+    candidate = tmp_path / "cache.mlir"
     expected = _original_emission_payload(content, process_id=101, scope="a" * 64)
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
 
     def interrupt_receipt(*args, **kwargs):
         raise OSError("injected receipt publication failure")
@@ -973,7 +971,7 @@ def test_interrupted_origin_publication_leaves_only_uncapturable_bytes(
             )
     assert source.read_bytes() == candidate.read_bytes() == content
     assert not backend_cache_sync_receipt_path(candidate).exists()
-    output = tmp_path / "out.rs"
+    output = tmp_path / "out.mlir"
     with pytest.raises(
         BackendArtifactValidationError, match="requires original emission origin"
     ):
@@ -1008,9 +1006,9 @@ def test_competing_namespace_winner_keeps_its_origin_and_receipt(tmp_path, monke
     content = b"fn original() {}\n"
     expected = _original_emission_payload(content, process_id=101, scope="a" * 64)
     later = _original_emission_payload(content, process_id=202, scope="b" * 64)
-    source = tmp_path / "source.rs"
+    source = tmp_path / "source.mlir"
     source.write_bytes(content)
-    destination = tmp_path / "cache.rs"
+    destination = tmp_path / "cache.mlir"
     receipt = backend_cache_sync_receipt_path(destination)
     winning_receipts = []
 
@@ -1033,7 +1031,7 @@ def test_competing_namespace_winner_keeps_its_origin_and_receipt(tmp_path, monke
     winner = cache._publish_immutable_backend_cache_artifact(
         source,
         destination,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
         warnings=[],
         emission_origin=BackendEmissionOrigin.from_payload(later),
     )
@@ -1049,9 +1047,9 @@ def test_competing_namespace_winner_keeps_its_origin_and_receipt(tmp_path, monke
 def test_sealed_cache_transfer_republishes_generation_without_retagging(
     tmp_path, defect
 ):
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
     content = b"fn original() {}\n"
-    name = "a" * 64 + ".artifact-" + contract.cache_identity + ".rs"
+    name = "a" * 64 + ".artifact-" + contract.cache_identity + ".mlir"
     source = tmp_path / "sealed" / name
     source.parent.mkdir()
     source.write_bytes(content)
@@ -1110,9 +1108,9 @@ def test_admission_cache_export_keeps_only_consumed_original_scope(
 ):
     root = tmp_path / "cache"
     root.mkdir()
-    contract = BackendArtifactContract(BackendArtifactKind.RUST)
+    contract = BackendArtifactContract(BackendArtifactKind.MLIR)
     content = b"fn original() {}\n"
-    source = tmp_path / "emitted.rs"
+    source = tmp_path / "emitted.mlir"
     source.write_bytes(content)
     original = BackendEmissionOrigin.from_payload(
         _original_emission_payload(content, process_id=101, scope="a" * 64)
@@ -1123,7 +1121,7 @@ def test_admission_cache_export_keeps_only_consumed_original_scope(
     paths = []
     for index, origin in enumerate((original, other)):
         destination = root / (
-            str(index) * 64 + ".artifact-" + contract.cache_identity + ".rs"
+            str(index) * 64 + ".artifact-" + contract.cache_identity + ".mlir"
         )
         cache._publish_immutable_backend_cache_artifact(
             source,
@@ -1141,7 +1139,7 @@ def test_admission_cache_export_keeps_only_consumed_original_scope(
         selected_path = paths[1]
     elif defect == "symlink":
         selected_path = root / (
-            "d" * 64 + ".artifact-" + contract.cache_identity + ".rs"
+            "d" * 64 + ".artifact-" + contract.cache_identity + ".mlir"
         )
         selected_path.symlink_to(paths[0])
     # The producer already supplied its coordinate; unrelated directory contents

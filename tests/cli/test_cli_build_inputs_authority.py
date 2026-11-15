@@ -466,8 +466,6 @@ def test_venv_root_selection_custodies_version_and_site_misses(
         ("wasm-freestanding", "wasi"),
         ("wasm32-unknown-unknown", "wasi"),
         ("wasm32-wasip1", "wasi"),
-        ("rust", None),
-        ("luau", None),
         ("mlir", None),
         ("aarch64-apple-darwin", "darwin"),
         ("x86_64-unknown-linux-gnu", "linux"),

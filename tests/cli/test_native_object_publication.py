@@ -322,8 +322,6 @@ def test_native_object_publication_is_one_admitted_transaction(
     layout = _BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_mlir_emit=False,
         split_runtime=False,
         linked=False,

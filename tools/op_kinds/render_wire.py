@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .registration import backend_private_kinds, registered_simpleir_kinds
+from .registration import registered_simpleir_kinds
 
 
 def variant(kind: str) -> str:
@@ -114,21 +114,5 @@ def render_enum(data: dict) -> str:
         "    }\n"
         "}\n\n"
     )
-    private = backend_private_kinds(data)
-    out.append(
-        fact(
-            data,
-            "simpleir_backend_private_owner",
-            "Option<&'static str>",
-            {kind: f'Some("{owner}")' for kind, owner in private.items()},
-            "None",
-        )
-    )
-    out.append("pub const SIMPLEIR_BACKEND_PRIVATE_KINDS: &[(OpKind, &str)] = &[\n")
-    out.extend(
-        f'    ({kind_ref(kind)}, "{owner}"),\n'
-        for kind, owner in sorted(private.items())
-    )
-    out.append("];\n\n")
     out.append(boolean(data, "simpleir_kind_is_registered", set(kinds)))
     return "".join(out)

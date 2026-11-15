@@ -50,6 +50,12 @@ SCHEMA = "molt.checkout-provisioning.v1"
 STAMP_NAME = ".molt-provisioned.json"
 GUARD_PREFIX = "MOLT_CHECKOUT_PROVISIONING"
 PROVISION_TIMEOUT_S = 900.0
+# What a person runs when a checkout has no development image: venv_exec
+# provisions one itself (`bootstrap_argv`), so any command through it works.
+PROVISION_HINT = (
+    "run `uv run --no-project python tools/venv_exec.py python -V`, "
+    "which provisions the development image"
+)
 # A waiter outlasts the holder's whole provisioner budget.
 LOCK_TIMEOUT_S = PROVISION_TIMEOUT_S + 60.0
 _PROBE_TIMEOUT_S = 60.0
@@ -1108,6 +1114,45 @@ def ensure_all(
 def provisioning_command(name: CheckoutInputName) -> str:
     """The command a person or a setup step runs to provision ``name``."""
     return f"python -m molt.checkout_provisioning ensure {name}"
+
+
+def bootstrap_argv(name: CheckoutInputName, *, uv: str, checkout: Path) -> list[str]:
+    """Provision ``name`` from a bare uv interpreter, before any image exists.
+
+    The provisioning code's one third-party import is ``packaging``; uv
+    supplies it at the version ``uv.lock`` pins, so a fresh or moved checkout
+    needs no installed environment to make its first one. Run it with
+    ``src`` on ``PYTHONPATH`` (``bootstrap_env``).
+    """
+    import tomllib
+
+    lock = tomllib.loads((checkout / "uv.lock").read_text(encoding="utf-8"))
+    (version,) = {
+        package["version"]
+        for package in lock.get("package", ())
+        if package.get("name") == "packaging"
+    }
+    return [
+        uv,
+        "run",
+        "--no-project",
+        "--with",
+        f"packaging=={version}",
+        "python",
+        "-m",
+        "molt.checkout_provisioning",
+        "ensure",
+        name,
+    ]
+
+
+def bootstrap_env(env: Mapping[str, str], *, checkout: Path) -> dict[str, str]:
+    """``env`` with the checkout's ``src`` first on ``PYTHONPATH``."""
+    merged = dict(env)
+    prior = merged.get("PYTHONPATH")
+    source = str(checkout / "src")
+    merged["PYTHONPATH"] = source if not prior else os.pathsep.join((source, prior))
+    return merged
 
 
 def main(argv: Sequence[str] | None = None) -> int:

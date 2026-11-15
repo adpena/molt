@@ -36,7 +36,6 @@ bind_repository_imports(__file__)
 
 from tools.correspondence_sources import (  # noqa: E402
     normalize_lean_variant_name as _normalize_lean_variant_name,
-    parse_lean_builtin_mappings as _parse_lean_builtin_mappings,
     parse_lean_eval_binop_rules as _parse_lean_evalBinOp_rules,
     parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
     parse_lean_hex_constants as _parse_lean_hex_constants,
@@ -70,25 +69,16 @@ LEAN_DIR = ROOT / "formal" / "lean"
 NANBOX_LEAN = LEAN_DIR / "MoltTIR" / "Runtime" / "NanBox.lean"
 SYNTAX_LEAN = LEAN_DIR / "MoltTIR" / "Syntax.lean"
 TYPES_LEAN = LEAN_DIR / "MoltTIR" / "Types.lean"
-LUAU_EMIT_LEAN = LEAN_DIR / "MoltTIR" / "Backend" / "LuauEmit.lean"
-LUAU_SYNTAX_LEAN = LEAN_DIR / "MoltTIR" / "Backend" / "LuauSyntax.lean"
-CONSTFOLD_LEAN = LEAN_DIR / "MoltTIR" / "Passes" / "ConstFold.lean"
 EVAL_LEAN = LEAN_DIR / "MoltTIR" / "Semantics" / "EvalExpr.lean"
 LATTICE_LEAN = LEAN_DIR / "MoltTIR" / "Passes" / "Lattice.lean"
 SCCP_LEAN = LEAN_DIR / "MoltTIR" / "Passes" / "SCCP.lean"
 
 # Rust sources
 CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
-LUAU_BACKEND_SRC = ROOT / "runtime" / "molt-backend-luau" / "src"
-LUAU_CORE_TESTS_RS = LUAU_BACKEND_SRC / "luau" / "tests" / "core.rs"
-LUAU_HELPERS_RS = LUAU_BACKEND_SRC / "luau" / "helpers.rs"
-LUAU_RUNTIME_FRAGMENTS_RS = LUAU_BACKEND_SRC / "luau" / "runtime_fragments.rs"
 TIR_TYPES_RS = ROOT / "runtime" / "molt-ir" / "src" / "tir" / "types.rs"
 FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
 LEAN_PASSES_DIR = LEAN_DIR / "MoltTIR" / "Passes"
 
-# Python sources
-FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 SRC = ROOT / "src"
 
 
@@ -163,15 +153,6 @@ def _read(path: Path) -> str:
     if path.exists():
         return path.read_text(errors="replace", encoding="utf-8")
     return ""
-
-
-def _read_tree(path: Path, pattern: str) -> str:
-    if not path.is_dir():
-        return ""
-    return "\n".join(
-        source.read_text(errors="replace", encoding="utf-8")
-        for source in sorted(path.rglob(pattern))
-    )
 
 
 #
@@ -431,283 +412,6 @@ def check_type_system() -> CategoryResult:
     return result
 
 
-#
-# Category 4: Luau builtin mappings
-#
-
-
-def check_luau_builtins() -> CategoryResult:
-    result = CategoryResult(
-        "luau_builtins",
-        "Luau builtin mappings (Lean LuauEmit <-> Rust Luau backend family)",
-    )
-
-    lean_text = _read(LUAU_EMIT_LEAN)
-    rust_text = _read_tree(LUAU_BACKEND_SRC, "*.rs")
-
-    if not lean_text:
-        result.items.append(
-            CheckItem("source", False, f"Lean missing: {LUAU_EMIT_LEAN}")
-        )
-        return result
-    if not rust_text:
-        result.items.append(
-            CheckItem("source", False, f"Rust missing: {LUAU_BACKEND_SRC}")
-        )
-        return result
-
-    lean_mappings = _parse_lean_builtin_mappings(lean_text)
-    result.metrics["builtin_mappings_parsed"] = len(lean_mappings)
-
-    result.items.append(
-        CheckItem(
-            "mapping count",
-            bool(lean_mappings),
-            f"Lean defines {len(lean_mappings)} builtin mappings",
-        )
-    )
-
-    for ir_name, luau_name in lean_mappings:
-        ir_found = ir_name in rust_text
-        luau_found = luau_name in rust_text
-        if ir_found and luau_found:
-            result.items.append(
-                CheckItem(
-                    f"{ir_name} -> {luau_name}",
-                    True,
-                    "IR name and emitted Luau target found in Rust backend family",
-                )
-            )
-        else:
-            result.items.append(
-                CheckItem(
-                    f"{ir_name} -> {luau_name}",
-                    False,
-                    f"IR found={ir_found}, Luau target found={luau_found}",
-                )
-            )
-
-    result.metrics["builtin_mappings_mapped"] = sum(
-        item.passed for item in result.items[1:]
-    )
-
-    return result
-
-
-#
-# Category 5: Luau operator translations
-#
-
-
-def check_luau_operators() -> CategoryResult:
-    result = CategoryResult(
-        "luau_operators",
-        "Luau operator translations (Lean LuauEmit completeness)",
-    )
-
-    emit_text = _read(LUAU_EMIT_LEAN)
-    syntax_text = _read(SYNTAX_LEAN)
-    luau_syntax_text = _read(LUAU_SYNTAX_LEAN)
-
-    if not emit_text or not syntax_text or not luau_syntax_text:
-        result.items.append(CheckItem("source", False, "Missing required Lean sources"))
-        return result
-
-    binops = _parse_lean_inductive_variants(syntax_text, "BinOp")
-    unops = _parse_lean_inductive_variants(syntax_text, "UnOp")
-    luau_binops = _parse_lean_inductive_variants(luau_syntax_text, "LuauBinOp")
-    luau_unops = _parse_lean_inductive_variants(luau_syntax_text, "LuauUnOp")
-
-    # Parse emitBinOp match arms
-    binop_map: dict[str, str] = {}
-    in_binop = False
-    for line in emit_text.splitlines():
-        if "emitBinOp" in line and "def " in line:
-            in_binop = True
-            continue
-        if in_binop:
-            m = re.match(r"\s*\|\s*\.(\w+)\s*=>\s*\.(\w+)", line)
-            if m:
-                binop_map[_normalize_lean_variant_name(m.group(1))] = m.group(2)
-            elif line.strip().startswith("def ") or line.strip().startswith("end "):
-                in_binop = False
-
-    # Parse emitUnOp match arms
-    unop_map: dict[str, str] = {}
-    in_unop = False
-    for line in emit_text.splitlines():
-        if "emitUnOp" in line and "def " in line:
-            in_unop = True
-            continue
-        if in_unop:
-            m = re.match(r"\s*\|\s*\.(\w+)\s*=>\s*\.(\w+)", line)
-            if m:
-                unop_map[_normalize_lean_variant_name(m.group(1))] = m.group(2)
-            elif line.strip().startswith("def ") or (
-                line.strip().startswith("--") and "Section" in line
-            ):
-                in_unop = False
-
-    result.items.append(
-        CheckItem(
-            "LuauBinOp variants",
-            True,
-            f"{len(luau_binops)}: {', '.join(luau_binops)}",
-        )
-    )
-    result.items.append(
-        CheckItem(
-            "LuauUnOp variants",
-            True,
-            f"{len(luau_unops)}: {', '.join(luau_unops)}",
-        )
-    )
-
-    for op in binops:
-        if op in binop_map:
-            target = binop_map[op]
-            ok = target in luau_binops
-            result.items.append(
-                CheckItem(
-                    f"emitBinOp .{op}",
-                    ok,
-                    f"-> .{target}" if ok else f".{target} not in LuauBinOp",
-                )
-            )
-        else:
-            result.items.append(CheckItem(f"emitBinOp .{op}", False, "NO mapping"))
-
-    for op in unops:
-        if op in unop_map:
-            target = unop_map[op]
-            ok = target in luau_unops
-            result.items.append(
-                CheckItem(
-                    f"emitUnOp .{op}",
-                    ok,
-                    f"-> .{target}" if ok else f".{target} not in LuauUnOp",
-                )
-            )
-        else:
-            result.items.append(CheckItem(f"emitUnOp .{op}", False, "NO mapping"))
-
-    result.items.append(
-        CheckItem(
-            "BinOp coverage",
-            len(binop_map) == len(binops),
-            f"{len(binop_map)}/{len(binops)} mapped",
-        )
-    )
-    result.items.append(
-        CheckItem(
-            "UnOp coverage",
-            len(unop_map) == len(unops),
-            f"{len(unop_map)}/{len(unops)} mapped",
-        )
-    )
-
-    return result
-
-
-def check_luau_identity_lowering() -> CategoryResult:
-    """Compare every kernel-checked Lean admission cell with the Rust table."""
-    result = CategoryResult(
-        "luau_identity",
-        "Luau identity admission and raw-identity primitive (Lean <-> Rust)",
-    )
-    lean_text = _read(EVAL_LEAN)
-    emit_text = _read(LUAU_EMIT_LEAN)
-    rust_tests = _read(LUAU_CORE_TESTS_RS)
-    rust_helpers = _read(LUAU_HELPERS_RS)
-    rust_runtime_fragments = _read(LUAU_RUNTIME_FRAGMENTS_RS)
-
-    lean_match = re.search(
-        r"theorem\s+identityLowering_complete_matrix\s*:.*?=\s*\[(?P<rhs>.*?)\]\s*:=\s*by\s*rfl",
-        lean_text,
-        re.DOTALL,
-    )
-    rust_match = re.search(
-        r"fn\s+identity_provenance_matrix_matches_the_formal_admission_table\s*\(\)\s*\{.*?"
-        r"let\s+expected\s*=\s*\[(?P<matrix>.*?)\];",
-        rust_tests,
-        re.DOTALL,
-    )
-    if lean_match is None or rust_match is None:
-        result.items.append(
-            CheckItem(
-                "matrix receipts",
-                False,
-                f"Lean receipt={lean_match is not None}, Rust receipt={rust_match is not None}",
-            )
-        )
-        return result
-
-    lean_cells = [
-        "direct" if token == "directRawEqual" else token.replace(" ", "_")
-        for token in re.findall(
-            r"\.(directRawEqual|reject|constant\s+false)", lean_match.group("rhs")
-        )
-    ]
-    rust_cells = [
-        {"Direct": "direct", "Reject": "reject", "Constant(false)": "constant_false"}[
-            token
-        ]
-        for token in re.findall(
-            r"Direct|Reject|Constant\(false\)", rust_match.group("matrix")
-        )
-    ]
-    provenances = [
-        "singleton_bool",
-        "singleton_none",
-        "value_int",
-        "value_float",
-        "value_str",
-        "reference",
-        "unknown",
-    ]
-    result.metrics["lean_cells"] = len(lean_cells)
-    result.metrics["rust_cells"] = len(rust_cells)
-    for index in range(49):
-        lhs = provenances[index // 7]
-        rhs = provenances[index % 7]
-        lean_cell = lean_cells[index] if index < len(lean_cells) else "missing"
-        rust_cell = rust_cells[index] if index < len(rust_cells) else "missing"
-        result.items.append(
-            CheckItem(
-                f"{lhs} x {rhs}",
-                lean_cell == rust_cell and lean_cell != "missing",
-                f"Lean={lean_cell}, Rust={rust_cell}",
-            )
-        )
-
-    primitive_checks = {
-        "Lean same-SSA dominance theorem": "theorem identityLowering_sameSsa"
-        in lean_text,
-        "Rust same-SSA dominance matrix": "same-SSA identity must dominate provenance"
-        in rust_tests,
-        "Lean is -> rawequal": bool(
-            re.search(r"\|\s*\.is\s*=>\s*\.rawequal", emit_text)
-        ),
-        "Lean is_not -> not_rawequal": bool(
-            re.search(r"\|\s*\.is_not\s*=>\s*\.not_rawequal", emit_text)
-        ),
-        "Rust Direct -> molt_rawequal": 'format!("molt_rawequal({lhs}, {rhs})")'
-        in rust_helpers,
-        "Rust captures trusted rawequal": "local molt_rawequal = rawequal"
-        in rust_runtime_fragments,
-        "Rust Direct avoids equality metamethod": "let operator = if negated"
-        not in rust_helpers,
-    }
-    for name, passed in primitive_checks.items():
-        result.items.append(CheckItem(name, passed, "raw identity contract"))
-    return result
-
-
-#
-# Category 6: Evaluation rules
-#
-
-
 def check_eval_rules() -> CategoryResult:
     result = CategoryResult(
         "eval_rules",
@@ -890,108 +594,6 @@ def check_sccp_lattice() -> CategoryResult:
 #
 
 
-def check_structural_invariants() -> CategoryResult:
-    result = CategoryResult(
-        "structural",
-        "Structural invariants (cross-file consistency)",
-    )
-
-    syntax_text = _read(SYNTAX_LEAN)
-    emit_text = _read(LUAU_EMIT_LEAN)
-    types_text = _read(TYPES_LEAN)
-    luau_syntax_text = _read(LUAU_SYNTAX_LEAN)
-    constfold_text = _read(CONSTFOLD_LEAN)
-
-    binops = _parse_lean_inductive_variants(syntax_text, "BinOp")
-    unops = _parse_lean_inductive_variants(syntax_text, "UnOp")
-
-    # Count emitBinOp arms (before emitUnOp)
-    pre_unop = emit_text.split("emitUnOp")[0] if "emitUnOp" in emit_text else emit_text
-    emit_binop_arms = len(re.findall(r"\|\s*\.\w+\s*=>\s*\.", pre_unop))
-    result.items.append(
-        CheckItem(
-            "BinOp variant count match",
-            len(binops) == emit_binop_arms,
-            f"Syntax: {len(binops)}, LuauEmit: {emit_binop_arms}",
-        )
-    )
-
-    # Count emitUnOp arms
-    unop_section = emit_text.split("emitUnOp")[1] if "emitUnOp" in emit_text else ""
-    unop_sec = (
-        unop_section.split("-- ==")[0] if "-- ==" in unop_section else unop_section
-    )
-    emit_unop_arms = len(re.findall(r"\|\s*\.\w+\s*=>\s*\.", unop_sec))
-    result.items.append(
-        CheckItem(
-            "UnOp variant count match",
-            len(unops) == emit_unop_arms,
-            f"Syntax: {len(unops)}, LuauEmit: {emit_unop_arms}",
-        )
-    )
-
-    values = _parse_lean_inductive_variants(syntax_text, "Value")
-    result.items.append(
-        CheckItem(
-            "Value variants",
-            len(values) > 0,
-            f"{len(values)}: {', '.join(values)}",
-        )
-    )
-
-    tys = _parse_lean_inductive_variants(types_text, "Ty")
-    for vt in values:
-        has_ty = vt in tys
-        result.items.append(
-            CheckItem(
-                f"Value.{vt} -> Ty counterpart",
-                has_ty,
-                f"Ty.{vt}" if has_ty else "MISSING in Ty",
-            )
-        )
-
-    expr_variants = _parse_lean_inductive_variants(syntax_text, "Expr")
-    for v in expr_variants:
-        found = re.search(rf"\.\s*{v}\b", constfold_text) is not None
-        result.items.append(
-            CheckItem(
-                f"constFoldExpr handles .{v}",
-                found,
-                "handled" if found else "NOT handled",
-            )
-        )
-
-    luau_exprs = _parse_lean_inductive_variants(luau_syntax_text, "LuauExpr")
-    result.items.append(
-        CheckItem(
-            "LuauExpr constructors",
-            len(luau_exprs) > 0,
-            f"{len(luau_exprs)}: {', '.join(luau_exprs)}",
-        )
-    )
-
-    luau_stmts = _parse_lean_inductive_variants(luau_syntax_text, "LuauStmt")
-    result.items.append(
-        CheckItem(
-            "LuauStmt constructors",
-            len(luau_stmts) > 0,
-            f"{len(luau_stmts)}: {', '.join(luau_stmts)}",
-        )
-    )
-
-    for v in expr_variants:
-        found = re.search(rf"\.\s*{v}\b", emit_text) is not None
-        result.items.append(
-            CheckItem(
-                f"emitExpr handles .{v}",
-                found,
-                "handled" if found else "NOT handled",
-            )
-        )
-
-    return result
-
-
 def check_compiler_passes() -> CategoryResult:
     """Require every modeled optimization to retain its correctness module."""
     result = CategoryResult(
@@ -1035,12 +637,8 @@ ALL_CATEGORIES: dict[str, callable] = {
     "nanbox": check_nanbox_constants,
     "operators": check_operator_enums,
     "types": check_type_system,
-    "luau_builtins": check_luau_builtins,
-    "luau_operators": check_luau_operators,
-    "luau_identity": check_luau_identity_lowering,
     "eval_rules": check_eval_rules,
     "sccp_lattice": check_sccp_lattice,
-    "structural": check_structural_invariants,
     "compiler_passes": check_compiler_passes,
 }
 

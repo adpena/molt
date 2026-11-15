@@ -32,8 +32,6 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy, resolve_rust_cpu_policy
             "wasm32-unknown-unknown",
             True,
         ),
-        ("rust", TargetKind.RUST, None, False),
-        ("luau", TargetKind.LUAU, None, False),
         ("mlir", TargetKind.MLIR, None, False),
     ],
 )
@@ -239,9 +237,7 @@ def test_invalid_configured_target_does_not_become_host(target):
         )
 
 
-@pytest.mark.parametrize(
-    "target", ["wasm-freestanding", "wasm32-unknown-unknown", "rust"]
-)
+@pytest.mark.parametrize("target", ["wasm-freestanding", "wasm32-unknown-unknown"])
 def test_run_rejects_nonexecutable_target_before_workload(
     monkeypatch, tmp_path, capsys, target
 ):
@@ -398,7 +394,7 @@ def test_artifact_target_resolves_the_symbolic_host_once(monkeypatch):
     assert calls == [1]
 
 
-@pytest.mark.parametrize("kind", [TargetKind.RUST, TargetKind.LUAU, TargetKind.MLIR])
+@pytest.mark.parametrize("kind", [TargetKind.MLIR])
 def test_source_backends_have_no_artifact_target(kind):
     from molt.compilation_target import resolve_artifact_target
 

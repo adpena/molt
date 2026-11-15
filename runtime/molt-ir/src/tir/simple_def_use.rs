@@ -173,18 +173,6 @@ pub fn visit_simple_ir_reads<'a>(op: &'a OpIR, mut visit: impl FnMut(SimpleIrRea
     }
 }
 
-/// A unary semantic input, independent of its transport field. Missing or
-/// multiple reads fail closed rather than selecting an arbitrary first value.
-pub fn simple_ir_single_read(op: &OpIR) -> Option<SimpleIrRead<'_>> {
-    let mut source = None;
-    let mut count = 0;
-    visit_simple_ir_reads(op, |read| {
-        count += 1;
-        source = Some(read);
-    });
-    source.filter(|_| count == 1)
-}
-
 /// Rewrite only semantic source names. Results, binding destinations and
 /// metadata are inaccessible to the callback, even when they collide with a
 /// read name. This uses the same allocation-free field walk as read analysis.

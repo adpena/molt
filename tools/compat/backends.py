@@ -2,7 +2,7 @@
 
 doc 66 §1.1 names the critical structural gap: tests/molt_diff.py is
 SINGLE-BACKEND (native). It has `--build-profile` but no `--target`, so a
-backend-specific divergence — where wasm/llvm/luau produces a different answer
+backend-specific divergence — where wasm/llvm produces a different answer
 than native/CPython — is INVISIBLE. The pre-existing response was a *separate*
 runner per backend (tools/wasm_diff.py), each hand-reimplementing the verdict
 loop, which is the very dual-truth the project forbids.
@@ -22,8 +22,6 @@ Adapters:
     `wasm/run_wasm.js`, with Node diagnostics separate from guest stderr.
   * llvm   — `molt build --target llvm` (emits a native binary) + run the binary
     under the shared memory guard. Available-gated on the LLVM toolchain.
-  * luau   — `molt build --target luau` + `lune run <out>.luau`. Available-gated
-    on the `lune` runtime.
 
 Availability is detected once and a missing toolchain yields a LOUD `uncalibrated`
 outcome (never a silent skip, never a false pass) — doc 66 FACT 1's `uncalibrated`
@@ -285,7 +283,6 @@ class TimeoutPolicy:
         for backend, default_build, default_run in (
             ("wasm", 600.0, 60.0),
             ("llvm", 900.0, 60.0),
-            ("luau", 600.0, 60.0),
             ("jit", 600.0, 600.0),
         ):
             values = []
@@ -812,7 +809,7 @@ def _with_adapter_scratch(
     *,
     environment: Mapping[str, str],
 ) -> BackendResult:
-    if backend not in {"wasm", "llvm", "luau", "jit"}:
+    if backend not in {"wasm", "llvm", "jit"}:
         raise ValueError("unknown adapter scratch namespace")
     npath = test_policy.normalize_repo_relative(file_path)
     environment = dict(environment)
@@ -1247,83 +1244,6 @@ class JitAdapter:
         )
 
 
-# ---------------------------------------------------------------------------
-# Luau adapter
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class LuauAdapter:
-    name: str = "luau"
-
-    def availability(self, budget: ItemBudget | None = None) -> BackendAvailability:
-        if shutil.which("lune") is None:
-            return BackendAvailability(
-                available=False,
-                reason="lune not on PATH (Molt luau output runs under the lune "
-                "runtime; install via `cargo install lune`)",
-            )
-        return BackendAvailability(available=True)
-
-    def build_and_run(
-        self,
-        file_path: str,
-        *,
-        context: BackendExecutionContext,
-    ) -> BackendResult:
-        if context.budget.expired():
-            return context.budget.exhausted_result(build_failed=True)
-        return _with_adapter_scratch(
-            self.name,
-            file_path,
-            lambda out_dir: self._build_and_run_owned(
-                file_path, context=context, out_dir=out_dir
-            ),
-            environment=context.environment,
-        )
-
-    def _build_and_run_owned(
-        self, file_path: str, *, context: BackendExecutionContext, out_dir: Path
-    ) -> BackendResult:
-        env = _cross_build_env(context)
-        stem = Path(file_path).stem
-        cmd = _build_cmd(file_path, "luau", out_dir, context)
-        build = _guarded_run(
-            cmd,
-            prefix="MOLT_COMPAT_LUAU_BUILD",
-            env=compiler_environment(context, env),
-            budget=context.budget,
-            backend=self.name,
-            phase="build",
-            cwd=str(_REPO_ROOT),
-        )
-        luau_out = out_dir / f"{stem}.luau"
-        if not luau_out.exists():
-            # Some layouts name it output.luau; accept either.
-            alt = out_dir / "output.luau"
-            if alt.exists():
-                luau_out = alt
-        if build.returncode != 0 or not luau_out.exists():
-            return build.as_build_failure(
-                detail="luau build produced no .luau source",
-                fallback="luau build failed",
-            )
-        return _guarded_run(
-            [shutil.which("lune") or "lune", "run", str(luau_out)],
-            prefix="MOLT_COMPAT_LUAU_RUN",
-            env=env,
-            budget=context.budget,
-            backend=self.name,
-            phase="run",
-            cwd=str(_REPO_ROOT),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
-
-#: Re-export the test-policy authority for existing command-line consumers.
 ALL_BACKENDS = test_policy.ALL_BACKENDS
 
 
@@ -1337,7 +1257,6 @@ def build_registry(run_molt: RunMoltCallable) -> dict[str, BackendAdapter]:
         "native": NativeAdapter(run_molt=run_molt),
         "wasm": WasmAdapter(),
         "llvm": LlvmAdapter(),
-        "luau": LuauAdapter(),
         "jit": JitAdapter(),
     }
 

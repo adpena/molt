@@ -1722,3 +1722,32 @@ def test_python_release_image_names_the_missing_release_and_ignores_the_caller_i
     assert "caller-image" not in message
     with pytest.raises(cp.ProvisioningError, match="names no patch release"):
         cp.ensure_python_release(root, environment, PythonInterpreterRequest(3, 13))
+
+
+def test_bootstrap_runs_from_a_bare_uv_interpreter_with_the_locked_packaging() -> None:
+    """A checkout without an image provisions one from the bare uv
+    interpreter, which lacks `packaging`; uv supplies it at the version
+    uv.lock pins (a bare `python -m` run failed with ModuleNotFoundError)."""
+    import tomllib
+
+    root = Path(cp.__file__).resolve().parents[2]
+    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    locked = [p["version"] for p in lock["package"] if p["name"] == "packaging"]
+    argv = cp.bootstrap_argv("uv-environment", uv="uv", checkout=root)
+    assert argv[:4] == ["uv", "run", "--no-project", "--with"]
+    assert argv[4] == f"packaging=={locked[0]}"
+    assert argv[5:] == [
+        "python",
+        "-m",
+        "molt.checkout_provisioning",
+        "ensure",
+        "uv-environment",
+    ]
+    env = cp.bootstrap_env({"PYTHONPATH": "/elsewhere"}, checkout=root)
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(root / "src"), "/elsewhere"]
+
+
+def test_venv_exec_provisions_nothing_when_an_image_is_selected(tmp_path: Path) -> None:
+    from tools import venv_exec
+
+    venv_exec.provision_development_image({"UV_PROJECT_ENVIRONMENT": str(tmp_path)})

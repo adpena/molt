@@ -39,8 +39,6 @@ def _capture_pipeline(
     layout = _BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_mlir_emit=False,
         split_runtime=False,
         linked=False,
@@ -125,8 +123,6 @@ def test_input_capture_reaches_backend_for_linkable_outputs(
         ({"emit_mode": "jit"}, "cranelift", None),
         ({"emit_mode": "obj"}, "cranelift", None),
         ({"is_mlir_emit": True}, "cranelift", None),
-        ({"is_rust_transpile": True}, "cranelift", None),
-        ({"is_luau_transpile": True}, "cranelift", None),
         ({"is_wasm": True, "linked": False}, "cranelift", None),
         ({}, "cranelift", object()),
     ],

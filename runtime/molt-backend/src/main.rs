@@ -2,15 +2,8 @@
 // code reads them through `molt_ir::backend_environment` (clippy.toml).
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
-#[cfg(not(any(
-    feature = "native-backend",
-    feature = "wasm-backend",
-    feature = "luau-backend",
-    feature = "rust-backend"
-)))]
-compile_error!(
-    "molt-backend needs a backend: enable native-backend, wasm-backend, luau-backend or rust-backend"
-);
+#[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+compile_error!("molt-backend needs a backend: enable native-backend or wasm-backend");
 
 use std::env;
 use std::io;
@@ -65,12 +58,8 @@ fn main() -> io::Result<()> {
             let features: &[&str] = &[
                 #[cfg(feature = "native-backend")]
                 "native-backend",
-                #[cfg(feature = "luau-backend")]
-                "luau-backend",
                 #[cfg(feature = "wasm-backend")]
                 "wasm-backend",
-                #[cfg(feature = "rust-backend")]
-                "rust-backend",
                 #[cfg(feature = "cbor")]
                 "cbor",
             ];

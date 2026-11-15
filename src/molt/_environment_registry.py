@@ -551,16 +551,6 @@ _REGISTRY_JSON = r"""{
       "summary": "Guard scope for compat-suite LLVM backend runs."
     },
     {
-      "name": "MOLT_COMPAT_LUAU_BUILD",
-      "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite Luau backend builds."
-    },
-    {
-      "name": "MOLT_COMPAT_LUAU_RUN",
-      "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite Luau backend runs."
-    },
-    {
       "name": "MOLT_COMPAT_WASM_BUILD",
       "owner": "tools/compat/backends.py",
       "summary": "Guard scope for compat-suite WASM backend builds."
@@ -739,11 +729,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_RUNTIME_WASM",
       "owner": "tools/bench_wasm.py",
       "summary": "Guard scope for WASM runtime builds launched by the WASM benchmark tooling."
-    },
-    {
-      "name": "MOLT_RUST_TEST",
-      "owner": "tests/rust/process_guard.py",
-      "summary": "Guard scope for the Rust-backend test suite's subprocesses."
     },
     {
       "name": "MOLT_SENTINEL",
@@ -4692,7 +4677,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MODULE_CHUNK_OPS",
       "output_neutral": false,
       "owner": "src/molt/cli/frontend_pipeline.py",
-      "summary": "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps the default with a warning; the default is 1400, and 1500 for Luau transpile builds.",
+      "summary": "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps the default with a warning; the default is 1400.",
       "values": []
     },
     {

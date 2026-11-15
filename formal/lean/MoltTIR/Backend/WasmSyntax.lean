@@ -7,7 +7,7 @@
   translation correctness proofs.
 
   Key WASM-specific modeling decisions:
-  - Stack-based execution (push/pop operand stack), unlike Luau which is expression-based
+  - Stack-based execution (push/pop operand stack)
   - 0-based indexing throughout (locals, globals, functions, memory offsets)
   - Linear memory model with explicit alignment constraints
   - NaN-boxed values are carried as i64 on the operand stack

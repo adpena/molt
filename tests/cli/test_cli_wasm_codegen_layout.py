@@ -122,7 +122,6 @@ def _compile(
         function_cache_path=None,
         project_root=root,
         warnings=[],
-        is_rust_transpile=False,
         is_wasm=True,
         split_runtime=True,
         output_artifact=root / "output.wasm",

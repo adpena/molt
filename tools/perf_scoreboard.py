@@ -38,7 +38,6 @@ Backends / profiles (baseline run)
 ----------------------------------
   * Native, LLVM and linked WASM use the same cold/warm/output-parity controller.
     WASM executes the compiler's manifest through the canonical Node runner.
-    Luau lives in ``tools/benchmark_luau_vs_cpython.py``.
   * release-fast is the daily-contract runtime profile, explicitly pinned by
     the shared release-lane selection alongside the independent host compiler.
     release-output is the incremental next fill.

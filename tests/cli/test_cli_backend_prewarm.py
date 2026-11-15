@@ -89,8 +89,6 @@ _TARGETS = (
     "wasm-freestanding",
     "wasm32-wasip1",
     "wasm32-unknown-unknown",
-    "luau",
-    "rust",
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
 )
@@ -276,8 +274,6 @@ def _build_backend_setup(
     return cli_backend_compile._prepare_backend_setup(
         function_digests=FunctionDigests(),
         split_runtime=False,
-        is_rust_transpile=layout.is_rust_transpile,
-        is_luau_transpile=layout.is_luau_transpile,
         is_wasm=layout.is_wasm,
         is_wasm_freestanding=layout.is_wasm_freestanding,
         emit_mode=layout.emit_mode,
@@ -576,7 +572,6 @@ def test_prewarm_admits_the_backend_the_build_selects(
     ("target", "binary_name", "features"),
     [
         ("wasm", "molt-backend.wasm_backend", ("wasm-backend",)),
-        ("luau", "molt-backend.luau_backend", ("luau-backend",)),
         ("native", "molt-backend.native_backend", ("native-backend",)),
         ("llvm", "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
     ],
@@ -702,9 +697,9 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     root = _isolated_molt_root(tmp_path, monkeypatch, MOLT_SESSION_ID="wasm-ci")
     cargo_calls, probe_calls = _fake_backend_toolchain(monkeypatch)
     release_dir = root / "target" / "sessions" / "wasm-ci" / "release"
-    coordinate = release_dir / f"molt-backend.luau_backend{_EXE}"
+    coordinate = release_dir / f"molt-backend.native_backend{_EXE}"
 
-    assert _dispatch(["internal-backend-build", "--target", "luau", "--json"]) == 0
+    assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert (payload["command"], payload["status"]) == ("internal-backend-build", "ok")
@@ -717,24 +712,33 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     assert compiler["sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
     assert (compiler["cargo_profile"], compiler["features"]) == (
         "release",
-        ["luau-backend"],
+        ["native-backend"],
     )
     assert "backend_binary_cargo_build" in data["stage_timings_ms"]
     [cargo_cmd] = cargo_calls
     assert cargo_cmd[cargo_cmd.index("--profile") + 1] == "release"
-    assert cargo_cmd[cargo_cmd.index("--features") + 1] == "luau-backend"
+    assert cargo_cmd[cargo_cmd.index("--features") + 1] == "native-backend"
     receipts = data["receipts"]
     source_receipt = Path(receipts["source_content"]["path"])
     assert source_receipt.is_file()
     assert Path(receipts["feature_probe"]["path"]).is_file()
-    assert receipts["feature_probe"]["probe_target"] == "luau"
+    assert receipts["feature_probe"]["probe_target"] == "native"
     assert len(probe_calls) == 1
 
     # The next `--build-profile dev` build admits the prewarmed compiler from
     # those receipts: no Cargo, no re-probe, and its cache identity binds the
     # prewarmed bytes.
-    cache_inputs = _stub_backend_cache_setup(monkeypatch, TargetKind.LUAU)
-    prepared, error = _build_backend_setup(TargetKind.LUAU, tmp_path, "cranelift")
+    # The runtime build is not this test's subject; it stubs runtime state as
+    # the recorded-runtime-failure tests do.
+    from molt.cli.models import _RuntimeArtifactState
+
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_initialize_runtime_artifact_state",
+        lambda **_kwargs: _RuntimeArtifactState(),
+    )
+    cache_inputs = _stub_backend_cache_setup(monkeypatch, TargetKind.NATIVE)
+    prepared, error = _build_backend_setup(TargetKind.NATIVE, tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert prepared.backend_bin.samefile(binary)
     assert prepared.backend_compiler_fingerprint == compiler["fingerprint"]
@@ -745,7 +749,7 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     # The receipts, not a lucky cache, carry that admission: without them the
     # build must establish provenance with Cargo again.
     source_receipt.unlink()
-    prepared, error = _build_backend_setup(TargetKind.LUAU, tmp_path, "cranelift")
+    prepared, error = _build_backend_setup(TargetKind.NATIVE, tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert len(cargo_calls) == 2
     assert prepared.backend_bin.read_bytes() == b"backend build 2"

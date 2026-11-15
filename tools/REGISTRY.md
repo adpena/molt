@@ -112,7 +112,7 @@ self-commits or invents an external scheduling authority.
   a definition and restarts only an idle guest, starting it as a service
   launch that Lima's hostagent outlives. Lane retirement releases first.
 - `tests/molt_diff.py <files> --jobs 1` — the CPython differential (serial until the
-  collective-budget-pool lands; parallel gives false FAILs). `--target native,wasm,llvm,luau`
+  collective-budget-pool lands; parallel gives false FAILs). `--target native,wasm,llvm`
   (or `all`) runs the MULTI-BACKEND oracle (doc 66): every backend is compared vs CPython AND
   vs each other, so a backend-specific divergence is a FAIL, not invisible. A backend whose
   toolchain is absent is a loud `uncalibrated`, never a silent skip.
@@ -121,7 +121,7 @@ self-commits or invents an external scheduling authority.
   `tests/molt_diff.py` + `tools/parity_gate.py` both import it; there is no second comparison
   implementation. Proven byte-identical to the inlined original by `tests/test_compat_comparison.py`.
 - `tools/compat/backends.py` — the backend adapter registry for the multi-backend oracle
-  (native/wasm/llvm/luau): one place that knows how to build+run a file on each backend.
+  (native/wasm/llvm): one place that knows how to build+run a file on each backend.
 - `tools/parity_gate.py [dir]` — lightweight 3-tier (STRICT/RELAXED/EXCLUDED) `molt run`-based
   parity gate; the tiers are now MODES of `tools/compat/comparison.py` (no duplicate law).
 

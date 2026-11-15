@@ -691,8 +691,6 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             backend_environment=CodegenSelection().environment(
                 os.environ, profile="dev"
             ),
-            is_rust_transpile=False,
-            is_luau_transpile=False,
             is_wasm=False,
             wasm_layout=None,
             deterministic=True,
@@ -793,8 +791,6 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         cache_path=None,
         function_cache_path=None,
         artifacts_root=tmp_path,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -993,8 +989,6 @@ def test_native_object_output_rejects_runtime_generation_drift(
         prepared_build_config=config,
         resolved_build_entry=NS(),
         output_layout=NS(
-            is_rust_transpile=False,
-            is_luau_transpile=False,
             is_wasm=False,
             emit_mode="obj",
             target_triple=None,

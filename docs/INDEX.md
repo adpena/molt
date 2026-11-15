@@ -56,7 +56,6 @@ the source of truth.
   [spec/areas/perf/0520_DFLASH_CONTRACT.md](spec/areas/perf/0520_DFLASH_CONTRACT.md)
 - Active GPU parallelism, MLIR, runtime-handle integration, and tinygrad off-the-shelf friend-suite driver: [spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
 - Backend representation evidence: [spec/areas/compiler/backend_representation.generated.md](spec/areas/compiler/backend_representation.generated.md)
-- Luau backend optimization and generated support: [spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md), [spec/areas/compiler/luau_support_matrix.generated.md](spec/areas/compiler/luau_support_matrix.generated.md)
 - Stdlib intrinsic audit and platform availability: [spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md), [spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md)
 - Stdlib intrinsic loading/default metadata contract: [spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md](spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md)
 - `sysconfig` build values read from the running binary (HF-273): [design/sysconfig_build_values.md](design/sysconfig_build_values.md)

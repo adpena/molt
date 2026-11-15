@@ -1883,7 +1883,7 @@ def test_guest_replaced_leaf_is_never_retired(admitted_guest_environment):
     assert (root / "original").is_dir()
 
 
-@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm", "luau"])
+@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm"])
 @pytest.mark.parametrize("outcome", ["success", "failure", "exception"])
 def test_guest_backends_preserve_primary_and_cleanup_failure(
     admitted_guest_environment, monkeypatch, backend, outcome
@@ -1960,7 +1960,6 @@ def test_guest_backends_preserve_primary_and_cleanup_failure(
         adapter = {
             "wasm": backends.WasmAdapter,
             "llvm": backends.LlvmAdapter,
-            "luau": backends.LuauAdapter,
         }[backend]()
         monkeypatch.setattr(adapter, "_build_and_run_owned", owned)
 

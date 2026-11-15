@@ -373,7 +373,6 @@ _CLASSIFIER_SETS = (
     "simpleir_pending_exception_clear_kinds",
     "async_work_poll_kinds",
     "async_work_poll_marker_kinds",
-    "simpleir_luau_ordered_mapping_kinds",
     "classifier_owned_value",
     "classifier_exception_creation_ref",
     "classifier_owned_alias",

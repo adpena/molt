@@ -100,8 +100,6 @@ def _run_build_pipeline(
         fact_graph_request is not None
         or output_layout.emit_mode in {"jit", "obj"}
         or output_layout.is_mlir_emit
-        or output_layout.is_rust_transpile
-        or output_layout.is_luau_transpile
         or output_layout.is_wasm
         and not output_layout.linked
     ):

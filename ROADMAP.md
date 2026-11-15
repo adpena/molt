@@ -72,13 +72,12 @@ closed types, so the compiler rejects a stale consumer. The order:
 | Tier | Backends | Rule |
 | --- | --- | --- |
 | P0 | Native (Cranelift by default, LLVM opt-in), WASM, LLVM, JIT | Release cells come from these backends. |
-| Experimental | Luau, the Rust source emitter, MLIR | No release claim until admitted cells exist. |
+| Experimental | MLIR | No release claim until admitted cells exist. |
 
 Every backend compiles against the same closed typed contract: it implements
 an op or returns a typed refusal before it produces an artifact. The
-experimental backends keep contract parity, so a new op cannot silently skip
-them. The [Luau matrix](docs/spec/areas/compiler/luau_support_matrix.generated.md)
-shows which Luau rows are admitted.
+experimental MLIR backend keeps contract parity, so a new op cannot silently
+skip it.
 
 ### Guardrails
 

@@ -275,7 +275,12 @@ _ARTIFACT_BINDING_REMEDY = (
     "`python -m molt.checkout_provisioning artifact-root --clear` "
     "(use --checkout to select the family)."
 )
-_ARTIFACT_BINDING_CACHE: dict[Path, _ArtifactRootBinding | str | None] = {}
+# The record's file identity when read (device, inode, mtime, size), or None
+# when it was absent: a record replaced at the same path is a new record.
+_RecordIdentity = tuple[int, int, int, int] | None
+_ARTIFACT_BINDING_CACHE: dict[
+    Path, tuple[_RecordIdentity, _ArtifactRootBinding | str | None]
+] = {}
 _ARTIFACT_BINDING_CACHE_LOCK = RLock()
 
 
@@ -296,11 +301,29 @@ def artifact_root_binding_path(
 def _read_artifact_root_binding(
     record: Path,
 ) -> _ArtifactRootBinding | str | None:
-    """Read one bounded family record once, including absence and refusals."""
+    """Read one bounded family record once per file identity, including
+    absence and refusals. A record removed and written again at the same path
+    (another process's provisioning, a reused directory) is read again: a
+    path-only key returned the earlier record's verdict."""
+    try:
+        status = record.lstat()
+        identity: _RecordIdentity = (
+            status.st_dev,
+            status.st_ino,
+            status.st_mtime_ns,
+            status.st_size,
+        )
+    except FileNotFoundError:
+        identity = None
+    except OSError:
+        # Unreadable metadata: the loader reports it; nothing is cached.
+        return _load_artifact_root_binding(record)
     with _ARTIFACT_BINDING_CACHE_LOCK:
-        if record not in _ARTIFACT_BINDING_CACHE:
-            _ARTIFACT_BINDING_CACHE[record] = _load_artifact_root_binding(record)
-        return _ARTIFACT_BINDING_CACHE[record]
+        cached = _ARTIFACT_BINDING_CACHE.get(record)
+        if cached is None or cached[0] != identity:
+            cached = (identity, _load_artifact_root_binding(record))
+            _ARTIFACT_BINDING_CACHE[record] = cached
+        return cached[1]
 
 
 def provision_artifact_root_binding(
@@ -2768,10 +2791,9 @@ class RunContext:
     def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
         selected = selected_uv_project_environment(env, self.root)
         if selected is None:
-            raise DxConfigError(
-                "development image not selected; run "
-                "`python -m molt.checkout_provisioning ensure uv-environment`"
-            )
+            from molt.checkout_provisioning import PROVISION_HINT
+
+            raise DxConfigError(f"development image not selected; {PROVISION_HINT}")
         return selected
 
     def canonical_env(
