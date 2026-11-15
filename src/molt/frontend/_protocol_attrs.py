@@ -100,6 +100,7 @@ class _GeneratorProtocolAttrs(Protocol):
     compiler_bindings: dict[str, MoltValue]
     comprehension_bindings: dict[str, ComprehensionBinding]
     const_ints: dict[str, int]
+    constructor_fallbacks: dict[str, list[str]]
     container_elem_hints: dict[str, TypeHint]
     control_flow_depth: Any
     current_func_name: str
@@ -142,4 +143,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
-    imported_attr_names: dict[str, str]

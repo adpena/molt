@@ -740,6 +740,8 @@ class MethodInfo(TypedDict):
     inline_return: NotRequired[ast.expr | None]
     inline_params: NotRequired[list[str] | None]
     inline_init_assigns: NotRequired[list[tuple[str, ast.expr]] | None]
+    # Every return of the synchronous body yields None (no value, no yield).
+    returns_none: NotRequired[bool]
 
 
 class ClassInfo(TypedDict, total=False):
@@ -785,7 +787,8 @@ class ClassInfo(TypedDict, total=False):
     needs_classcell: bool
     custom_metaclass: bool
     class_value_name: str
-    constructor_fold_safe: bool
+    # Why ``C(args)`` keeps the runtime class call; None: inline allocation.
+    constructor_refusal: str | None
     constructor_binding_proven: bool
     decorated: bool
 

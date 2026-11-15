@@ -27,7 +27,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
-| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)") | constructor sites (HF-847, lane hf847-ctor); guarded field sites inline from one generator (integrator; `GuardedFieldGet/Set` are runtime calls on every backend today, see below); typed-layout deallocation | HF-202, HF-206 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)") | field access on exact receivers as plain loads and stores and property reads as direct getter calls (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today, see below); typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
 | 7 TIR inlining | not started | - | - | HF-773 |
@@ -1485,6 +1485,56 @@ zero-argument `super()` load keeps its runtime cache (`SuperIcEntry`). One runti
 on a site: a load the record cannot answer (a callable stored in an instance field, a descriptor)
 takes the generic lookup, whose field tier (`field_sites`) is keyed by the record's address. It
 goes when attribute sites land (stage 4, attributes).
+
+**Implementation (constructor sites, HF-847, 2026-11-15).** A class call binds statically when
+the frontend's class proof holds (`_class_constructor_refusal` returns None): the class statement
+is at module top level and no code in the program rebinds its name (the HF-226 premise names every
+writer), its namespace is closed, it has metaclass `type`, no decorator, no `__del__`, and
+`__new__` resolves to `object.__new__`. The call site then needs positional arguments only, one per
+`__init__` parameter after `self`, and an `__init__` that is a plain synchronous function whose
+every return yields None (`MethodInfo.returns_none`; a valued return or `yield` keeps the runtime
+call, which owns the `TypeError`). `C(args)` becomes `OBJECT_NEW_BOUND` and a direct `CALL` of the
+compiled `__init__` with `self` as argument zero: no argument tuple, no bound method, no runtime
+class call. A field-assignment body is still inlined. Arguments evaluate before the allocation, as
+in CPython; an exception in `__init__` leaves through the call's exception edge, which releases the
+allocation. Both are existing ops that every backend lowers, so the meaning is written once, in the
+frontend. After a direct `__init__` call the result is declared `C` but not exact, since `__init__`
+may assign `__class__`: field stores on it take the guarded form. Every class call that keeps the
+runtime protocol records the failed fact in the build diagnostics, beside the closed-world binding
+fallbacks (`closed_world_binding_fallbacks`; lines `module:line C(): runtime class call: reason`).
+
+The proof had not fired in real builds. The HF-226 source-demand analysis turned a store or load on
+an instance (`p.x = i` in `main`) into a `protocol` demand on the constructor's result, which
+escaped the class namespace and marked the class statement opaque, so `bench_struct`'s `Point`
+was `definition_exposed`. An attribute access is descriptor-only: it runs the class's attribute
+hooks and data descriptors and may release the old value. `_operand_dispatch_deferred` now gives an
+escape-phase deferred reference the same phase as a source origin (`descriptor` plus `release`);
+only a module reference still escapes. Analysis schema 67.
+
+Measured (release, macOS arm64, `bench_struct` with its loop at 10,000,000, minimum of three
+interleaved runs, output identical; base origin/main 1048061056, change on f1ce89791b, whose
+runtime diff from the base is an async poll change and dead code):
+
+| benchmark | backend | instructions retired |
+|---|---|---|
+| `bench_struct` x10 | LLVM | 162.21 G -> 43.07 G (-73.5%; 16,221 -> 4,307 per iteration) |
+| `bench_struct` x10 | Cranelift | 164.79 G -> 44.05 G (-73.3%) |
+| `bench_class_hierarchy` | LLVM, Cranelift | 16.44 G, 22.13 G: unchanged |
+| `bench_method_defaults` | LLVM, Cranelift | 3.22 G, 4.31 G: unchanged |
+
+The call sites in the hot loop of `main` (LLVM, `opt_explorer anatomy`) went from 20
+(`molt_callargs_new`, two `molt_callargs_push_pos`, `molt_call_bind_ic_owned`, two
+`molt_set_attr_object_ic`, seven exception tests, four releases, one retain, two polls) to 15
+(`molt_object_new_bound`, `molt_object_field_set`, three `molt_guarded_field_set`, seven exception
+tests, two releases, one poll). Compiled code rose from 1.4% to 2.0% of samples; field stores
+(`guard_layout_match`, `object_field_set_ptr_raw`, field-storage resolution) and the allocation
+(`pin_tuple`, `class_finish_definition`) hold the rest, which field access on exact receivers
+removes next. Refused sites seen: `bench_class_hierarchy`'s `Leaf()` and `bench_method_defaults`'
+`Obj()` stay opaque: a binary operator on a method's result (`total += obj.compute(i)`) is a
+`protocol` demand whose candidates reach the class statement, because method results carry no
+type; type flow (design 78, slice 2) owns that. A call inside the class's own body or methods, a
+class from another module, omitted defaults, keywords, a closure `__init__` (zero-argument
+`super()`), dataclasses and `__slots__` keep the runtime call.
 
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,

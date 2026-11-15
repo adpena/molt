@@ -716,6 +716,10 @@ class SerializationMixin(
                 func_entry["execution_context"] = "inherited"
             elif any(op.get("kind") == WireKinds.TRACE_ENTER_SLOT for op in json_ops):
                 func_entry["execution_context"] = "local"
+            if name in self.constructor_fallbacks:
+                metadata["constructor_fallbacks"] = list(
+                    self.constructor_fallbacks[name]
+                )
             if name == "molt_main" and self.is_entry_module:
                 metadata["app_callable_bindings"] = [
                     dict(self.app_callable_bindings[binding_name])

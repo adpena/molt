@@ -271,8 +271,10 @@ def test_non_none_initializer_requires_runtime_constructor_validation():
         module_name="mod", namespace_premise=PythonNamespacePremise((), 0, 0, (), ())
     )
     generator.visit(ast.parse(source + "C()\n"))
-    assert not generator.classes[ClassId("mod", "C")].get("constructor_fold_safe")
     assert not any(op.kind == "OBJECT_NEW_BOUND" for op in _ops(generator))
+    assert generator.constructor_fallbacks["molt_main"] == [
+        "mod:3 C(): runtime class call: __init__ may return a value other than None"
+    ]
 
 
 def test_unknown_foreign_namespace_cannot_certify_constructor_identity():
@@ -709,3 +711,53 @@ def test_allocation_names_its_class_statement_not_its_name() -> None:
     for allocation in allocations:
         assert allocation["class_definition"] in stamped
         assert "type_hint" not in allocation
+
+
+def test_proven_class_call_enters_init_directly_and_guards_later_stores():
+    """``C(args)`` with a non-field-assignment ``__init__`` allocates inline
+    and calls the compiled ``__init__`` (HF-847, CALL_ALLOC_AND_ENTER_INIT).
+    ``__init__`` may assign ``__class__``, so a later store keeps its layout
+    guard; each refused site names its fact."""
+    source = (
+        "class Node:\n"
+        "    def __init__(self, value):\n"
+        "        self.value = value\n"
+        "        if value < 0:\n"
+        "            return\n"
+        "        self.items = [value]\n"
+        "class Stated:\n"
+        "    def __init__(self):\n"
+        "        return 1\n"
+        "def build():\n"
+        "    n = Node(3)\n"
+        "    n.value = 4\n"
+        "    Node()\n"
+        "    Node(value=1)\n"
+        "    Stated()\n"
+        "    return n\n"
+    )
+    generator = SimpleTIRGenerator(
+        module_name="mod", namespace_premise=PythonNamespacePremise((), 0, 0, (), ())
+    )
+    generator.visit(ast.parse(source))
+    ops = [
+        op
+        for op in generator.funcs_map["mod__build"]["ops"]
+        if op.kind != "CHECK_EXCEPTION"
+    ]
+    kinds = [op.kind for op in ops]
+    allocation = kinds.index("OBJECT_NEW_BOUND")
+    call = ops[allocation + 1]
+    assert call.kind == "CALL" and call.args[0] == "mod__Node___init__"
+    assert call.args[1].name == ops[allocation].result.name
+    assert "GUARDED_SETATTR" in kinds and "SETATTR" not in kinds
+    assert kinds.count("OBJECT_NEW_BOUND") == 1
+    assert kinds.count("CALL_BIND") == 3
+    assert generator.constructor_fallbacks["mod__build"] == [
+        "mod:13 Node(): runtime class call: the call passes 0 positional "
+        "arguments and __init__ takes 1 (defaults are not bound inline)",
+        "mod:14 Node(): runtime class call: the call passes keywords or "
+        "unpacked arguments",
+        "mod:15 Stated(): runtime class call: __init__ may return a value "
+        "other than None",
+    ]

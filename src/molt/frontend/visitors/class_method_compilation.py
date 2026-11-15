@@ -633,6 +633,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 else None
             ),
             "inline_init_assigns": inline_init_assigns,
+            "returns_none": _returns_only_none(item),
         }
 
     def _compile_class_async_method(
@@ -994,3 +995,27 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             "property_field": property_field,
             "property_update": property_update,
         }
+
+
+def _returns_only_none(item: ast.FunctionDef) -> bool:
+    """Whether every return of a synchronous, non-generator body yields None.
+
+    Nested functions, lambdas and classes are their own scopes. The caller
+    compiles only non-generator synchronous defs here, so a body without a
+    valued return completes with None.
+    """
+    pending: list[ast.AST] = list(item.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        if (
+            isinstance(node, ast.Return)
+            and node.value is not None
+            and not (isinstance(node.value, ast.Constant) and node.value.value is None)
+        ):
+            return False
+        pending.extend(ast.iter_child_nodes(node))
+    return True

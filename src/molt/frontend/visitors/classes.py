@@ -88,19 +88,34 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             method_count = len(methods or {})
         return 1 + field_offsets + len(class_attrs) + method_count
 
-    def _class_constructor_fold_safe(
+    def _class_constructor_refusal(
         self, class_id: ClassId, class_info: ClassInfo
-    ) -> bool:
+    ) -> str | None:
+        """Why ``C(args)`` cannot allocate inline, or None when it can.
+
+        Inline construction (CPython 3.13 ``CALL_ALLOC_AND_ENTER_INIT``;
+        call_anatomy.md 4.5, "Constructors") allocates the class's fixed layout
+        and enters ``__init__`` directly. It is equivalent to ``type.__call__``
+        only when no code in the program can rebind the class name or a member
+        of its MRO, the metaclass is ``type`` and ``__new__`` resolves to
+        ``object.__new__``. The call site checks the ``__init__`` shape. The
+        reason names the failed fact for the build diagnostic.
+        """
         if class_id.module != self.module_name:
-            return False
+            return f"the class is defined in module {class_id.module}"
         if not class_info.get("constructor_binding_proven"):
-            return False
+            if class_info.get("definition_exposed"):
+                return (
+                    "the class statement reaches code the whole-program analysis "
+                    "cannot follow"
+                )
+            return "no closed whole-program namespace premise for this module"
         index = self._class_index
         if index is None or class_id not in index.top_level:
-            return False
+            return "the class statement is not at module top level"
         binding_name = class_info["binding_name"]
         if binding_name not in self.stable_module_classes:
-            return False
+            return f"module scope may rebind {binding_name!r}"
         if self.module_globals_dict_escaped and (
             self.namespace_premise is None
             or self.namespace_premise.foreign_writes is None
@@ -108,16 +123,20 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             # Without a closed graph, an observed namespace may be rebound by
             # unseen code; with one, the stable binding above names every
             # writer (HF-226).
-            return False
+            return "the module namespace escapes and no premise names its writers"
         if binding_name in self.module_global_mutations:
-            return False
-        if (
-            not class_namespace_closed(class_info)
-            or class_info.get("dataclass")
-            or class_info.get("custom_metaclass")
-            or class_info.get("decorated")
-        ):
-            return False
+            return f"this module writes {binding_name!r} after the class statement"
+        if class_info.get("custom_metaclass"):
+            return "the class has a custom metaclass"
+        if class_info.get("dataclass"):
+            return "a dataclass: the generated __init__ uses the class protocol"
+        if class_info.get("decorated"):
+            return "a class decorator may replace the class"
+        if not class_namespace_closed(class_info):
+            return (
+                "the class namespace is not closed (several bases, __slots__, "
+                "attribute hooks or a mutated base)"
+            )
         # A class that defines `__del__` (directly or anywhere in its MRO except
         # `object`) has a finalizer that CPython runs at the LAST reference drop.
         # The constructor fold inlines `__init__` and statically tracks
@@ -133,27 +152,17 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # scope boundary. `__del__` classes are rare and inherently slow, so the
         # lost fold is the correct trade for finalizer-dispatch parity.
         if self._class_defines_finalizer(class_id):
-            return False
-        # `object_new_bound` and the inlined-init constructor fold are only
-        # equivalent to `type.__call__` when the MRO resolves `__new__` to
-        # default `object.__new__`.  Custom or opaque `__new__` must stay on the
-        # runtime class-call route so inherited overrides consume constructor
-        # args and decide whether `__init__` should run.
+            return "the class defines __del__"
+        # `object_new_bound` and inline construction are only equivalent to
+        # `type.__call__` when the MRO resolves `__new__` to default
+        # `object.__new__`. Custom or opaque `__new__` must stay on the runtime
+        # class-call route so inherited overrides consume constructor args and
+        # decide whether `__init__` should run.
         if not self._class_resolves_default_object_new(class_id, class_info):
-            return False
-        for owner in self._class_mro(class_id):
-            info = self.classes.get(owner) if isinstance(owner, ClassId) else None
-            if info is None:
-                continue
-            initializer = info.get("methods", {}).get("__init__")
-            if initializer is not None:
-                # The existing body proof admits only field assignments and
-                # implicit/explicit None. Other initializers require the real
-                # type protocol's return-value validation and call context.
-                if initializer.get("inline_init_assigns") is None:
-                    return False
-                break
-        return self._class_layout_stable(class_id)
+            return "__new__ does not resolve to object.__new__"
+        if not self._class_layout_stable(class_id):
+            return "the class layout is mutated"
+        return None
 
     def _class_defines_finalizer(self, class_id: ClassId) -> bool:
         """True iff ``class_id`` resolves a user-defined ``__del__`` through its
@@ -1819,12 +1828,14 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
         ):
             class_info["class_value_name"] = class_val.name
-            if self._class_constructor_fold_safe(class_id, class_info):
-                class_info["constructor_fold_safe"] = True
-            else:
-                class_info.pop("constructor_fold_safe", None)
+            class_info["constructor_refusal"] = self._class_constructor_refusal(
+                class_id, class_info
+            )
         else:
             class_info.pop("class_value_name", None)
-            class_info.pop("constructor_fold_safe", None)
+            class_info["constructor_refusal"] = (
+                "the class statement is decorated, built dynamically or not "
+                "bound at module scope"
+            )
 
         return None

@@ -693,6 +693,10 @@ class _FrontendIntegrationState:
     function_digest_seeds: list[FunctionDigestSeed] = field(default_factory=list)
     global_code_ids: dict[str, int] = field(default_factory=dict)
     function_metadata: dict[str, FunctionAssemblyMetadata] = field(default_factory=dict)
+    # Class calls that keep the runtime class protocol, one line per site
+    # (call_anatomy.md 4.5, "Constructors"); published with the closed-world
+    # binding diagnostics, never kept as per-function assembly metadata.
+    constructor_fallbacks: list[str] = field(default_factory=list)
     # HF-220: the module that owns each class statement symbol, and the first
     # module whose stamp or layout guard names each symbol.
     class_definition_owners: dict[str, str] = field(default_factory=dict)

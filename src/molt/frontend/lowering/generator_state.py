@@ -380,6 +380,11 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # lowering updates this table in execution order; serialization carries
         # it on the entry module initializer for linker contract projection.
         self.app_callable_bindings: dict[str, dict[str, Any]] = {}
+        # Class calls that keep the runtime class protocol, keyed by the
+        # emitting function: one line per site naming the refused fact.
+        # Serialization carries them as assembly metadata; integration
+        # publishes them with the closed-world binding diagnostics.
+        self.constructor_fallbacks: dict[str, list[str]] = {}
         self.module_chunk_globals: set[str] = set()
         self.func_symbol_names: dict[str, str] = {}
         self.func_default_specs: dict[str, dict[str, Any]] = {}
