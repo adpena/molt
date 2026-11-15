@@ -1,7 +1,7 @@
 use std::mem::{align_of, size_of};
 
 fn release_tracked_bytes(size: usize) {
-    let _ = crate::try_with_tracker(|tracker| tracker.on_free(size));
+    crate::release_allocation(size);
 }
 
 pub struct TempArena {
@@ -119,7 +119,7 @@ impl TempArena {
     }
 
     fn try_alloc_chunk(size: usize) -> Option<Vec<u8>> {
-        if crate::with_tracker(|tracker| tracker.on_allocate(size)).is_err() {
+        if crate::charge_allocation(size).is_err() {
             return None;
         }
         let mut chunk = Vec::new();
@@ -129,9 +129,7 @@ impl TempArena {
         }
         chunk.resize(size, 0);
         let capacity = chunk.capacity();
-        if capacity > size
-            && crate::with_tracker(|tracker| tracker.on_grow(capacity - size)).is_err()
-        {
+        if capacity > size && crate::charge_growth(capacity - size).is_err() {
             release_tracked_bytes(size);
             return None;
         }

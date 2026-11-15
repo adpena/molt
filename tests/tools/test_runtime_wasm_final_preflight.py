@@ -118,7 +118,7 @@ def test_signature_rule_selects_the_oracle_manifest():
     ["runtime/molt-runtime/src/process.rs", "src/molt/_wasm_abi_generated.py"],
 )
 def test_signature_plan_builds_candidate_before_its_compiled_oracle(changed):
-    from tools.molt_dev_gates import _cargo_chain, _local_command
+    from tools.molt_dev_gates import _local_command, _shared_target_order
     from tools.molt_dev_policy import GateConfig, LandingMode
     from tools.proof_plan import CargoTargetAccess, ProofPlan
 
@@ -136,7 +136,7 @@ def test_signature_plan_builds_candidate_before_its_compiled_oracle(changed):
         gates, matched = config.select([changed], mode=mode)
         assert matched == [owner]
         assert len(gates) == 2
-        build, compare = _cargo_chain(
+        build, compare = _shared_target_order(
             [
                 _local_command(i, gate, "local", repo=root)
                 for i, gate in enumerate(gates)

@@ -980,6 +980,7 @@ def build_candidate(
                 replay = GitResult(replay.returncode, replay.stdout, str(exc))
         if replay.returncode != 0:
             merging = run_git(["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
+            culprits = conflict_culprits(run_git, before, request.head)
             if merging.returncode == 0:
                 git("merge", "--abort")
             elif merging.returncode != 1:
@@ -994,13 +995,49 @@ def build_candidate(
             conflicted.append(
                 (
                     request,
-                    "does not apply on main and the lanes ahead of it: "
+                    (
+                        f"conflicts with {culprits}; merge origin/main into the "
+                        "lane, resolve, and land again\n"
+                        if culprits
+                        else ""
+                    )
+                    + "does not apply on main and the lanes ahead of it: "
                     + (replay.stderr.strip() or replay.stdout.strip()),
                 )
             )
             continue
         included.append(request)
     return Candidate(included=tuple(included), conflicted=tuple(conflicted))
+
+
+def conflict_culprits(run_git: GitRunner, candidate: str, lane: str) -> str:
+    """Name each conflicted file of a failed merge and the candidate commit
+    that last changed it since the lane's merge base, as one line:
+    ``<sha> <subject> (<file>)``; empty when Git cannot say."""
+    unmerged = run_git(["diff", "--name-only", "--diff-filter=U", "-z"])
+    if unmerged.returncode != 0:
+        return ""
+    files = [name for name in unmerged.stdout.split("\0") if name]
+    base = run_git(["merge-base", candidate, lane])
+    if base.returncode != 0 or not files:
+        return ""
+    named: list[str] = []
+    for name in files[:5]:
+        last = run_git(
+            [
+                "log",
+                "-1",
+                "--format=%h %s",
+                f"{base.stdout.strip()}..{candidate}",
+                "--",
+                name,
+            ]
+        )
+        commit = last.stdout.strip() if last.returncode == 0 else ""
+        named.append(f"{commit or 'an unknown commit'} ({name})")
+    if len(files) > 5:
+        named.append(f"{len(files) - 5} more file(s)")
+    return "; ".join(named)
 
 
 def retire_old_records(paths: QueuePaths, *, now: float) -> None:

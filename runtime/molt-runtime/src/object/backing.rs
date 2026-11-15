@@ -157,7 +157,7 @@ pub(crate) fn charge_alloc(bytes: usize) -> bool {
     if bytes == 0 {
         return true;
     }
-    crate::resource::with_tracker(|tracker| tracker.on_allocate(bytes)).is_ok()
+    crate::resource::charge_allocation(bytes).is_ok()
 }
 
 #[inline]
@@ -165,7 +165,7 @@ pub(crate) fn charge_grow(bytes: usize) -> bool {
     if bytes == 0 {
         return true;
     }
-    crate::resource::with_tracker(|tracker| tracker.on_grow(bytes)).is_ok()
+    crate::resource::charge_growth(bytes).is_ok()
 }
 
 #[inline]
@@ -173,7 +173,7 @@ pub(crate) fn release_alloc(bytes: usize) {
     if bytes == 0 {
         return;
     }
-    let _ = crate::resource::try_with_tracker(|tracker| tracker.on_free(bytes));
+    crate::resource::release_allocation(bytes);
 }
 
 #[inline]
@@ -181,7 +181,7 @@ pub(crate) fn release_grow(bytes: usize) {
     if bytes == 0 {
         return;
     }
-    let _ = crate::resource::try_with_tracker(|tracker| tracker.on_shrink(bytes));
+    crate::resource::release_growth(bytes);
 }
 
 /// Allocate an object-owned Vec with resource accounting for both the owning

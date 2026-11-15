@@ -696,6 +696,9 @@ impl<'a, 'py> TupleCacheMutation<'a, 'py> {
     }
 }
 
+/// Always inlined: the terminal free releases a tuple's items through it, and
+/// an outlined copy cost bench_tuple_pack 1.6% instructions (2026-11-15).
+#[inline(always)]
 pub(crate) unsafe fn detach_tuple_edges(ptr: *mut u8, mut detach: impl FnMut(u64)) {
     let none = MoltObject::none().bits();
     // Tuple storage unwinds last-to-first, including finalizer reentry.

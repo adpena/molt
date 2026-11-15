@@ -2,7 +2,7 @@ use crate::{MoltObject, usize_from_bits};
 use std::alloc::Layout;
 
 fn release_tracked_bytes(size: usize) {
-    let _ = crate::resource::try_with_tracker(|tracker| tracker.on_free(size));
+    crate::resource::release_allocation(size);
 }
 
 // ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ struct ArenaChunk {
 impl ArenaChunk {
     fn try_new(capacity: usize) -> Option<Self> {
         let layout = Layout::from_size_align(capacity, SCOPE_ARENA_ALIGN).ok()?;
-        if crate::resource::with_tracker(|tracker| tracker.on_allocate(capacity)).is_err() {
+        if crate::resource::charge_allocation(capacity).is_err() {
             return None;
         }
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
