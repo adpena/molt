@@ -156,8 +156,7 @@ impl ExecutionIrAssertions for str {
 }
 
 fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
-    let backend = LlvmBackend::new(ctx, "test");
-    backend
+    LlvmBackend::new(ctx, "test")
 }
 
 fn test_native_linkage_abi(

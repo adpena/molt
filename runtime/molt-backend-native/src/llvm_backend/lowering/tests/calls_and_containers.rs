@@ -23,7 +23,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "runtime_call".into(),
             vec![],
@@ -143,7 +143,7 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
         for with_result in [false, true] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
-            admit_runtime_entry(&mut backend, &symbol);
+            admit_runtime_entry(&mut backend, symbol);
             let mut func = TirFunction::new(
                 "void_runtime_call".into(),
                 vec![],
@@ -293,7 +293,7 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "discard_runtime_result".into(),
             vec![],
@@ -958,7 +958,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &producer);
+        admit_runtime_entry(&mut backend, producer);
         let mut func = TirFunction::new(
             "discard_container_result".into(),
             vec![],
@@ -1121,7 +1121,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "raw_iterator_input".into(),
             vec![],

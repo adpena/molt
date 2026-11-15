@@ -108,7 +108,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &expected);
+        admit_runtime_entry(&mut backend, expected);
         let mut func = TirFunction::new(
             format!("iterator_{call_name}"),
             vec![],

@@ -851,7 +851,7 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
             for with_result in [false, true] {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                admit_runtime_entry(&mut backend, &symbol);
+                admit_runtime_entry(&mut backend, symbol);
                 let func =
                     runtime_call_shape_function(opcode, kind, symbol, arity, with_result, false);
 
@@ -991,7 +991,7 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
             for with_result in [false, true] {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                retire_runtime_entry(&mut backend, &symbol);
+                retire_runtime_entry(&mut backend, symbol);
                 let func =
                     runtime_call_shape_function(opcode, kind, symbol, arity, with_result, true);
                 let error = try_lower_tir_to_llvm(&func, &backend)
@@ -1348,7 +1348,7 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
         ),
     ];
     for &(_, _, sym) in cases {
-        admit_runtime_entry(&mut backend, &sym);
+        admit_runtime_entry(&mut backend, sym);
     }
     for &(kind, nops, sym) in cases {
         let ir = lower_preserved_kind_ir(&backend, kind, nops, false, None).unwrap_or_else(|e| {
@@ -1575,7 +1575,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "raw_preserved_container".into(),
             vec![],
@@ -2243,7 +2243,7 @@ fn generated_runtime_call_agreement_imports_declared_llvm_function() {
             } {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                admit_runtime_entry(&mut backend, &abi.symbol());
+                admit_runtime_entry(&mut backend, abi.symbol());
                 // A wrong s_value cannot override the generated op meaning.
                 let mut func = runtime_call_shape_function(
                     opcode,

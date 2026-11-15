@@ -417,7 +417,7 @@ fn late_lowered_boxed_add_selects_the_inline_int_lane() {
     block.terminator = Terminator::Return { values: vec![sum] };
 
     // The selected runtime exports the slow entry, as a built runtime does.
-    admit_runtime_entry(&mut backend, &RuntimeFn::Add.symbol());
+    admit_runtime_entry(&mut backend, RuntimeFn::Add.symbol());
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     // Production order (finalize_function_drops): refine, then the stage.
     crate::tir::type_refine::refine_types(&mut func);
@@ -479,7 +479,7 @@ fn late_lowered_boxed_comparison_selects_a_signed_compare() {
     ));
     block.terminator = Terminator::Return { values: vec![less] };
 
-    admit_runtime_entry(&mut backend, &RuntimeFn::Lt.symbol());
+    admit_runtime_entry(&mut backend, RuntimeFn::Lt.symbol());
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     // Production order (finalize_function_drops): refine, then the stage.
     crate::tir::type_refine::refine_types(&mut func);

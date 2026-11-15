@@ -2771,7 +2771,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         "molt_callargs_push_pos",
         "molt_dict_update_missing",
     ] {
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
     }
     for name in ["fam_target", "fam_poll"] {
         backend.function_linkage_abis.insert(
