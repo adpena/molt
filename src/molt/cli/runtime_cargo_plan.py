@@ -38,6 +38,8 @@ from molt.cli.cargo_target_cfg import (
 )
 from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 from molt.rust_toolchain import (
+    OWNED_BUILD_REMAP,
+    OWNED_SOURCE_REMAP,
     canonical_rust_codegen_option,
     rust_flag_spans,
     rust_remap_path_flags,
@@ -1835,7 +1837,7 @@ def resolve_runtime_cargo_plan(
         # last; if both roots coincide, source spelling owns that directory.
         # This also covers generated Rust in OUT_DIR, outside the source tree.
         build_root = _cargo_build_directory_base(root, environment)
-        mappings = ((root, "/molt/source"), (build_root, "/molt/build"))
+        mappings = ((root, OWNED_SOURCE_REMAP), (build_root, OWNED_BUILD_REMAP))
         if root.is_relative_to(build_root):
             mappings = mappings[::-1]
         remaps = rust_remap_path_flags(mappings)
