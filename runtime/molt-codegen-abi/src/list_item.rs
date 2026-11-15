@@ -60,7 +60,8 @@
 //!    the protocol.
 
 use crate::boxed_word::{
-    BoxTag, generate_box_inline_int, generate_has_tag, generate_unbox_inline_int,
+    BoxTag, generate_box_inline_int, generate_has_tag, generate_lacks_tag,
+    generate_unbox_inline_int,
 };
 use crate::frame_record::FrameBuilder;
 use crate::word::WordComparison;
@@ -341,6 +342,21 @@ pub fn generate_list_item_set<B: FrameBuilder>(
             b.set(stored, zero);
             when(b, &element.boxed, |b| {
                 let old = b.load_word(element.slot, 0);
+                // A generic list keeps an exact count of its heap-pointer
+                // items (molt-runtime `TrackedVecBox::heap_edge_count`).
+                // The fast path admits only a store that keeps it: old and
+                // new both pointers, or both not. A store that changes the
+                // count takes `cold`, which maintains it.
+                let old_is_ptr = generate_has_tag(b, old, BoxTag::Ptr);
+                b.if_then(old_is_ptr, |b| {
+                    let value_is_ptr = generate_has_tag(b, value, BoxTag::Ptr);
+                    b.require(value_is_ptr);
+                });
+                let old_is_not_ptr = generate_lacks_tag(b, old, BoxTag::Ptr);
+                b.if_then(old_is_not_ptr, |b| {
+                    let value_is_not_ptr = generate_lacks_tag(b, value, BoxTag::Ptr);
+                    b.require(value_is_not_ptr);
+                });
                 b.retain(value);
                 b.store_word(element.slot, 0, value);
                 b.release(old);

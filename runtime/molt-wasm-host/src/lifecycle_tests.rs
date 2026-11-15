@@ -70,6 +70,7 @@ fn lifetime_fixture(
             local.get $context i64.const 32768 i64.ne if unreachable end
             local.get $scope global.get $active_scope i64.ne if unreachable end
             i32.const 7 call $mark i64.const 0 global.set $active_scope)
+        (func $recurse call $recurse)
 
         (memory (export "memory") 1)
 )"#
@@ -118,13 +119,14 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             vec![1, 6, 2, 5, 7, 3, 4],
             Some("shutdown did not complete"),
         ),
+        // A trap ends the lifetime: no release or shutdown enters the instance.
         (
             "unreachable",
             0,
             "i64.const 41",
             "",
             "",
-            vec![1, 6, 2, 7, 3, 4],
+            vec![1, 6, 2],
             Some("call molt_main"),
         ),
         (
@@ -151,7 +153,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "unreachable",
             "",
-            vec![1, 6, 2, 5, 7, 3, 4],
+            vec![1, 6, 2, 5, 7, 3],
             Some("leave runtime execution"),
         ),
         (
@@ -178,7 +180,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "unreachable",
             "",
             "",
-            vec![1, 4],
+            vec![1],
             Some("enter runtime execution"),
         ),
     ] {
@@ -196,31 +198,62 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
 }
 
 #[test]
-fn finite_lifetime_preserves_primary_typed_trap_and_both_cleanup_failures() {
+fn trapped_lifetime_keeps_the_typed_trap_and_never_reenters_the_instance() {
+    // Wasmtime reports StackOverflow at the engine's wasm stack limit (8 MiB
+    // by default) only when the host thread's own stack is larger; the default
+    // 2 MiB test thread would overflow first.
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(trapped_lifetime_body)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn trapped_lifetime_body() {
     let engine = build_engine().unwrap();
-    let (mut store, instance, events) = lifetime_fixture(
-        &engine,
-        "i64.const 1 global.set $pending i32.const 1 i32.const 0 i32.div_s drop",
-        0,
-        "i64.const 41",
-        "unreachable",
-        "unreachable",
-        "",
-    );
-    let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
-    assert_eq!(*events.lock().unwrap(), vec![1, 6, 2, 7, 3, 4]);
-    assert_eq!(
-        error.downcast_ref::<wasmtime::Trap>(),
-        Some(&wasmtime::Trap::IntegerDivisionByZero)
-    );
-    let text = format!("{error:#}");
-    for phase in [
-        "call molt_main",
-        "pending runtime exception before runtime shutdown",
-        "leave runtime execution",
-        "finalize Molt application",
+    // The scope release, lease release and shutdown trap if they run, as
+    // custody restore aborts inside an instance a trap left half-changed.
+    for (main, trap, stack_exhausted) in [
+        (
+            "i64.const 1 global.set $pending i32.const 1 i32.const 0 i32.div_s drop",
+            wasmtime::Trap::IntegerDivisionByZero,
+            false,
+        ),
+        ("call $recurse", wasmtime::Trap::StackOverflow, true),
     ] {
-        assert!(text.contains(phase), "{text}");
+        let (mut store, instance, events) = lifetime_fixture(
+            &engine,
+            main,
+            0,
+            "i64.const 41",
+            "unreachable",
+            "unreachable",
+            "",
+        );
+        let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
+        assert_eq!(*events.lock().unwrap(), vec![1, 6, 2]);
+        assert_eq!(error.downcast_ref::<wasmtime::Trap>(), Some(&trap));
+        let text = format!("{error:#}");
+        assert!(text.contains("call molt_main"), "{text}");
+        assert_eq!(
+            text.starts_with("stack exhausted: the WebAssembly call stack overflowed"),
+            stack_exhausted,
+            "{text}"
+        );
+        // Named once, although execute and finish both see the trap.
+        assert_eq!(
+            text.matches("the WebAssembly call stack overflowed")
+                .count(),
+            usize::from(stack_exhausted)
+        );
+        for cleanup in [
+            "pending runtime exception",
+            "leave",
+            "finalize Molt application",
+        ] {
+            assert!(!text.contains(cleanup), "{text}");
+        }
     }
 }
 
@@ -231,16 +264,22 @@ fn finite_lifetime_retains_pending_failure_without_successful_execution_admissio
         "i64.const 1 global.set $pending unreachable",
         "i64.const 1 global.set $pending i64.const 0",
     ] {
+        let trapped = enter.ends_with("unreachable");
         let (mut store, instance, events) = lifetime_fixture(&engine, "", 0, enter, "", "", "");
         let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
-        assert_eq!(*events.lock().unwrap(), vec![1, 4]);
+        // A trapped entry leaves nothing a status query or shutdown may read.
+        assert_eq!(
+            *events.lock().unwrap(),
+            if trapped { vec![1] } else { vec![1, 4] }
+        );
         let text = format!("{error:#}");
-        assert!(
+        assert_eq!(
             text.contains("pending runtime exception before runtime shutdown"),
+            !trapped,
             "{text}"
         );
         assert!(
-            text.contains(if enter.ends_with("unreachable") {
+            text.contains(if trapped {
                 "enter runtime execution"
             } else {
                 "empty execution-boundary token"
@@ -429,14 +468,18 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
             },
         )
         .unwrap_err();
-        // Setup must remain the primary typed error. A distinct teardown trap
-        // proves that shutdown ran even though execution was never entered.
+        // Setup must remain the primary typed error. A setup trap ends the
+        // lifetime too: the distinct teardown trap must not appear.
         assert_eq!(
             error.downcast_ref::<wasmtime::Trap>(),
             Some(&wasmtime::Trap::IntegerDivisionByZero)
         );
         let text = format!("{error:#}");
-        assert!(text.contains("finalize Molt application runtime"), "{text}");
+        assert!(
+            !text.contains("finalize Molt application runtime"),
+            "{text}"
+        );
+        assert!(!text.contains("unreachable"), "{text}");
         assert!(
             text.contains(if fail_schema_check {
                 "call molt_attached_context_abi_fingerprint"
@@ -522,9 +565,19 @@ fn finite_lifetime_preserves_reporter_failure_and_finalizes_once() {
             body,
         );
         let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
-        assert_eq!(*events.lock().unwrap(), vec![1, 6, 2, 5, 7, 3, 4]);
+        assert_eq!(
+            *events.lock().unwrap(),
+            if trap {
+                vec![1, 6, 2, 5]
+            } else {
+                vec![1, 6, 2, 5, 7, 3, 4]
+            }
+        );
         assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
-        assert!(format!("{error:#}").contains("pending runtime exception before runtime shutdown"));
+        assert_eq!(
+            format!("{error:#}").contains("pending runtime exception before runtime shutdown"),
+            !trap
+        );
         assert_eq!(
             error.downcast_ref::<wasmtime::Trap>(),
             trap.then_some(&wasmtime::Trap::IntegerDivisionByZero)
@@ -612,7 +665,15 @@ fn rejected_compiled_scope_releases_the_execution_lease_before_shutdown() {
         let error = lifetime.finish(&mut store, result).unwrap_err();
         assert!(!reached_application);
         assert!(format!("{error:#}").contains("compiled execution scope"));
-        assert_eq!(*events.lock().unwrap(), vec![1, 2, 3]);
+        // A refused scope releases the lease; a trapped one ends the lifetime.
+        assert_eq!(
+            *events.lock().unwrap(),
+            if enter == "unreachable" {
+                vec![1]
+            } else {
+                vec![1, 2, 3]
+            }
+        );
     }
 }
 
@@ -647,8 +708,11 @@ fn failed_runtime_schema_offer_keeps_the_published_cleanup_owner() {
         )
         .unwrap_err();
         let diagnostic = format!("{error:#}");
-        assert!(
+        // A refused offer keeps the cleanup owner, which finalizes; a trapped
+        // offer ends the lifetime before shutdown.
+        assert_eq!(
             diagnostic.contains("shutdown did not complete: status=2"),
+            fingerprint == "i64.const 0",
             "{diagnostic}"
         );
         if fingerprint == "i64.const 0" {

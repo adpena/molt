@@ -377,6 +377,30 @@ fn a_word_store_retains_the_new_value_before_releasing_the_old() {
 }
 
 #[test]
+fn a_store_that_changes_the_heap_edge_count_takes_the_runtime() {
+    // The runtime counts a generic list's pointer items exactly; only a
+    // store that keeps the count may skip it. `xs[i] = obj` over an int and
+    // `xs[i] = 0` over an object both go to `cold`, untouched.
+    let pointer = 0x7ffc_0000_00d0_0000;
+    let mut m = Machine::list(TYPE_ID_LIST, &OBJECTS);
+    assert_eq!(m.set(int(0), int(5)), COLD, "int over an object");
+    assert_eq!(m.events, [Event::Cold]);
+    assert_eq!(m.element(0), OBJECTS[0]);
+    let ints = [int(1), int(2), int(3)];
+    let mut m = Machine::list(TYPE_ID_LIST, &ints);
+    assert_eq!(m.set(int(0), pointer), COLD, "an object over an int");
+    assert_eq!(m.events, [Event::Cold]);
+    assert_eq!(m.element(0), ints[0]);
+    let mut m = Machine::list(TYPE_ID_LIST, &ints);
+    assert_eq!(
+        m.set(int(0), int(9)),
+        QNAN | TAG_NONE,
+        "int over int keeps it"
+    );
+    assert_eq!(m.element(0), int(9));
+}
+
+#[test]
 fn a_free_threaded_build_always_takes_the_runtime() {
     let mut m = Machine::list(TYPE_ID_LIST, &OBJECTS);
     let read = generate_list_item_get(
