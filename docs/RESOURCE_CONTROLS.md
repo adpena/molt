@@ -33,21 +33,29 @@ pub trait ResourceTracker {
     fn check_time(&mut self) -> Result<(), ResourceError>;
     fn check_recursion_depth(&mut self, depth: usize) -> Result<(), ResourceError>;
     fn check_operation_size(&mut self, op: &OperationEstimate) -> Result<(), ResourceError>;
+    fn enforces_limits(&self) -> bool { true }
 }
 ```
 
-Selected allocation owners call the memory hooks through `with_tracker`.
-Implementations must avoid reentry while that mutable borrow is held:
+Selected allocation owners call the memory hooks through four accounting entry
+points, the one authority for memory charges: `charge_allocation`,
+`release_allocation`, `charge_growth` and `release_growth`. Until a tracker
+that enforces limits is installed on some thread (`set_tracker` with one whose
+`enforces_limits` is true, `set_global_tracker_factory`, or
+`install_global_limited_tracker`, which the `MOLT_RESOURCE_*` startup path
+calls), every entry point is one relaxed load of a process flag and a branch:
+no thread-local access, `RefCell` borrow or dynamic call. The flag is sticky.
+After it is set the entry points call the thread-local tracker as before:
 
 ```rust
-resource::with_tracker(|t| t.on_allocate(4096))?;
+resource::charge_allocation(4096)?;
 ```
 
 ### Thread ownership and non-reentrancy
 
-`with_tracker` holds a mutable `RefCell` borrow of the thread-local tracker.
-Tracker hooks must not call paths that re-enter `with_tracker`; a nested borrow
-panics. `LimitedTracker::check_operation_size` currently formats operation labels
+`with_tracker`, and the accounting entry points once limits are installed,
+hold a mutable `RefCell` borrow of the thread-local tracker. Tracker hooks must
+not call paths that re-enter tracking; a nested borrow panics. `LimitedTracker::check_operation_size` currently formats operation labels
 inside the hook. Such allocations must not be routed back through the same
 borrowed tracker. Custom trackers should return structured errors and defer any
 formatting that could re-enter tracking until the borrow ends.
