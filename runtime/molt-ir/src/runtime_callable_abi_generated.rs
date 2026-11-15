@@ -24176,6 +24176,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_rt_object_type_id__molt_context_047a33b55bc1b76d",
         },
+        "molt_run_program_entry" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_run_program_entry__molt_context_047a33b55bc1b76d",
+        },
         "molt_runpy_run_module" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_runpy_run_module__molt_context_047a33b55bc1b76d",

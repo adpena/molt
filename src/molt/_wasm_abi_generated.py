@@ -34626,6 +34626,7 @@ RUNTIME_EXECUTION_ABIS: dict[str, RuntimeExecutionAbi] = {
     'molt_round_builtin': RuntimeExecutionAbi('Attached', 'molt_round_builtin__molt_context_047a33b55bc1b76d'),
     'molt_rshift': RuntimeExecutionAbi('Attached', 'molt_rshift__molt_context_047a33b55bc1b76d'),
     'molt_rt_object_type_id': RuntimeExecutionAbi('Attached', 'molt_rt_object_type_id__molt_context_047a33b55bc1b76d'),
+    'molt_run_program_entry': RuntimeExecutionAbi('Attached', 'molt_run_program_entry__molt_context_047a33b55bc1b76d'),
     'molt_runpy_run_module': RuntimeExecutionAbi('Attached', 'molt_runpy_run_module__molt_context_047a33b55bc1b76d'),
     'molt_runpy_run_path': RuntimeExecutionAbi('Attached', 'molt_runpy_run_path__molt_context_047a33b55bc1b76d'),
     'molt_runtime_active_runtime': RuntimeExecutionAbi('Attached', 'molt_runtime_active_runtime__molt_context_047a33b55bc1b76d'),

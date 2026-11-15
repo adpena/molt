@@ -227,7 +227,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "e0c6457ea277210437a2dfa1c228cb86df72c5f44bfb6996777cf711c2c2a9ae",
+      "sha256": "bf20980bedd3e6a0f555edb26e2601050391cc698778860b048c7b0658fde453",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -510,7 +510,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "ffdd6eac2c3fb0202c2e95d2dfc59ddcde1783c2c041e8370e4833a22a8ff8ce",
+      "sha256": "515c1c64f070e9355a2a7ee3559d2a75958651f2d03da070f866ca1b4ea55124",
       "source_type": "data"
     }
   },

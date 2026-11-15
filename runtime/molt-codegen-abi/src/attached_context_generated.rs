@@ -2872,6 +2872,7 @@ macro_rules! attached_symbol {
     ("molt_round_builtin") => { "molt_round_builtin__molt_context_047a33b55bc1b76d" };
     ("molt_rshift") => { "molt_rshift__molt_context_047a33b55bc1b76d" };
     ("molt_rt_object_type_id") => { "molt_rt_object_type_id__molt_context_047a33b55bc1b76d" };
+    ("molt_run_program_entry") => { "molt_run_program_entry__molt_context_047a33b55bc1b76d" };
     ("molt_runpy_run_module") => { "molt_runpy_run_module__molt_context_047a33b55bc1b76d" };
     ("molt_runpy_run_path") => { "molt_runpy_run_path__molt_context_047a33b55bc1b76d" };
     ("molt_runtime_active_runtime") => { "molt_runtime_active_runtime__molt_context_047a33b55bc1b76d" };
