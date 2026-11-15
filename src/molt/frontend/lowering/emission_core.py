@@ -115,7 +115,7 @@ class EmissionCoreMixin(GeneratorMixinBase):
                     # aggregate fallback fires only when lowering emitted no
                     # such boundary; it never re-mints a producer fact.
                     if self.exact_class_token == exact_token_before:
-                        self._expire_exact_class_facts()
+                        self._expire_exact_class_facts(callback=True)
                 return result
             return super().visit(node)
         except CompatibilityError:
@@ -210,7 +210,7 @@ class EmissionCoreMixin(GeneratorMixinBase):
             # This generated opcode-effect projection also covers callback
             # boundaries synthesized by statement lowering. Unknown kinds fail
             # closed instead of creating a second handwritten effect registry.
-            self._expire_exact_class_facts()
+            self._expire_exact_class_facts(callback=True)
         if self.python_frame_context_active and (
             op.kind == FrontendKinds.STATE_LABEL or op.kind in FRONTEND_REPOLL_KINDS
         ):

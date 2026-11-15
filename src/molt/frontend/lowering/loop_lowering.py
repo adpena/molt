@@ -715,9 +715,13 @@ class LoopLoweringMixin(GeneratorMixinBase):
                 guard_map.pop(key, None)
 
     def _prepare_exact_class_loop_entry(self, body: list[ast.stmt]) -> None:
-        """Establish the loop-carried exact-fact fixed point before lowering."""
+        """Establish the loop-carried exact-fact fixed point before lowering.
+
+        The loop's own assignments end their names' facts separately; this
+        boundary covers what one iteration's callbacks may do to the next.
+        """
         if self.is_async() or not self._loop_body_preserves_exact_class_lifetimes(body):
-            self._expire_exact_class_facts()
+            self._expire_exact_class_facts(callback=True)
 
     def _emit_hoisted_loop_guards(
         self, body: list[ast.stmt]

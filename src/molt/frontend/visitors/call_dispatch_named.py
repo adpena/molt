@@ -1267,7 +1267,15 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             )
         )
         # ``__init__`` returns None (``returns_none``), so its result needs no
-        # check. It is a callback boundary that may assign ``__class__``: the
-        # value stays declared ``C``, never exact, so field accesses on it keep
-        # their layout guard.
+        # check. It is a callback boundary: the value stays exactly ``C`` only
+        # when no code in the closed graph can assign ``__class__`` on an
+        # instance (``instance_class_writer``); otherwise it is declared ``C``
+        # and its field accesses keep their layout guard.
+        writer = self._instance_class_writer()
+        if writer is None:
+            return res
+        self.constructor_fallbacks.setdefault(self.current_func_name, []).append(
+            f"{self.module_name}:{node.lineno} {class_id.qualname}(): "
+            f"result declared, not exact: __class__ may be assigned at {writer}"
+        )
         return MoltValue(res.name, type_hint=DeclaredClass(class_id))

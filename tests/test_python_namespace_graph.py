@@ -145,6 +145,7 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
         (),
         namespace_reflected=True,
         code_rebinding=True,
+        instance_class_writer="an unknown graph",
     )
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(batch) == frozenset()
@@ -331,3 +332,51 @@ def test_escaped_module_values_meet_named_member_stores(tmp_path: Path) -> None:
     assert flat.escaped == frozenset({warnings})
     # Without a writer an own escape is any module's value.
     assert graph_python_namespace_writes([own], sources.get).escaped is None
+
+
+def test_instance_class_writers_reach_every_premise(tmp_path: Path) -> None:
+    """A constructor's result is exactly its class only while no code in the
+    graph can assign `__class__` on an instance: a named store, a computed
+    attribute store, or a native extension (call_anatomy.md 4.5, "Implementation
+    (field slots)"). The fact belongs to every module's premise."""
+    from molt.compiler_analysis.python_namespace_graph import (
+        PythonGraphNamespaceIndex,
+        graph_python_namespace_writes,
+    )
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+
+    first, second = tmp_path / "first.py", tmp_path / "second.py"
+    sources = {"first": first, "second": second}
+    index = PythonGraphNamespaceIndex()
+    field = PythonNamespaceWrite(None, "x", "member_store", 3)
+    assert (
+        index.merge(
+            graph_python_namespace_writes([field], sources.get, writer=("first", first))
+        )
+        == frozenset()
+    )
+    assert index.premise(second, frozenset()).instance_class_writer is None
+    assert (
+        index.premise(second, frozenset(), native_code=True).instance_class_writer
+        == "a native extension module"
+    )
+
+    computed = PythonNamespaceWrite(None, None, "computed_member_store", 9)
+    later = PythonNamespaceWrite(None, None, "computed_member_store", 4)
+    batch = graph_python_namespace_writes(
+        [computed, later], sources.get, writer=("second", second)
+    )
+    assert batch.computed_member_store == "second:4"
+    # A new writer changes every premise: a global change.
+    assert index.merge(batch) is None
+    assert index.premise(first, frozenset()).instance_class_writer == "second:4"
+
+    named = PythonNamespaceWrite(None, "__class__", "member_store", 12)
+    index = PythonGraphNamespaceIndex()
+    assert (
+        index.merge(
+            graph_python_namespace_writes([named], sources.get, writer=("first", first))
+        )
+        is None
+    )
+    assert index.premise(second, frozenset()).instance_class_writer == "first:12"

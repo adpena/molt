@@ -535,7 +535,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
             return
         if self._class_layout_stable(expected_class):
-            if self._exact_class_for_value(obj, obj_name) == expected_class:
+            if (
+                self._exact_class_for_value(obj, obj_name, fields=True)
+                == expected_class
+            ):
                 self.emit(
                     MoltOp(
                         kind="SETATTR",
@@ -655,7 +658,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
             return res
         if self._class_layout_stable(expected_class):
-            if self._exact_class_for_value(obj, obj_name) == expected_class:
+            if (
+                self._exact_class_for_value(obj, obj_name, fields=True)
+                == expected_class
+            ):
                 res = MoltValue(self.next_var())
                 self.emit(
                     MoltOp(

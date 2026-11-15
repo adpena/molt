@@ -50,7 +50,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 13
+SUMMARY_SCHEMA: Final = 14
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -85,6 +85,13 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # reference. ``module`` is None. It writes a module only through a module
     # value that escaped (``module_escape``); the graph joins the two.
     "member_store",
+    # The same with a computed name (``setattr(x, name, value)``,
+    # ``x.__setattr__(name, value)``) on a receiver that is not a module
+    # reference. ``module`` and ``name`` are None. It may write any
+    # attribute, ``__class__`` included, so no instance's class is a
+    # program constant while one is activated (call_anatomy.md 4.5,
+    # "Implementation (field slots)").
+    "computed_member_store",
     # A module value that escapes: a ``sys.modules[...]``/``sys.modules.get``,
     # ``importlib.import_module`` or import-name value that is stored,
     # returned, aliased past this function's reads, or passed to a call that
@@ -237,6 +244,10 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         raise ValueError("invalid code reflection")
     if construct == "member_store" and (module is not None or name is None):
         raise ValueError("invalid member store")
+    if construct == "computed_member_store" and (
+        module is not None or name is not None
+    ):
+        raise ValueError("invalid computed member store")
     if construct == "module_escape" and name is not None:
         raise ValueError("invalid module escape")
     if construct == "own_module_escape" and (module is not None or name is not None):
@@ -355,6 +366,19 @@ def _absolute_module(name: str, level: int, package: str | None) -> str | None:
         return None
     base = ".".join(parts[: len(parts) - (level - 1)])
     return f"{base}.{name}" if name else base
+
+
+def _dunder_setattr_name(method: str, call: ast.Call) -> str | None:
+    """The literal attribute name of a ``__setattr__``/``__delattr__`` call.
+
+    A bound call (``x.__setattr__(name, value)``) names it first; an unbound
+    one (``object.__setattr__(x, name, value)``) second. A setter call that
+    passes three arguments, or a deleter two, is unbound.
+    """
+
+    unbound = len(call.args) >= (3 if method == "__setattr__" else 2)
+    index = 1 if unbound else 0
+    return _literal_string(call.args[index]) if len(call.args) > index else None
 
 
 def _literal_string(node: ast.expr | None) -> str | None:
@@ -1097,6 +1121,13 @@ class _NamespaceWriteCollector:
                 module, name, construct, line, site.source_owner, source_site
             )
 
+    def _member_store(self, name: str | None, site: _Site) -> None:
+        """An attribute write on a receiver that is not a module reference."""
+        if name is None:
+            self._record(None, None, "computed_member_store", site)
+        else:
+            self._record(None, name, "member_store", site)
+
     def _reflects_own_namespace(self, node: ast.AST) -> None:
         line = getattr(node, "lineno", 0) or 1
         if not self.own_reflection_line or line < self.own_reflection_line:
@@ -1475,6 +1506,8 @@ class _NamespaceWriteCollector:
                 if is_module:
                     name = _literal_string(parent.args[0]) if parent.args else None
                     self._record(module, name, "setattr", site, node=parent)
+                else:
+                    self._member_store(_dunder_setattr_name(node.attr, parent), site)
         elif node.attr in _HOOK_ATTRIBUTES:
             spelling = self._reference(node)
             if spelling in _IMPORT_HOOK_OBJECTS:
@@ -1501,8 +1534,8 @@ class _NamespaceWriteCollector:
             name = _literal_string(node.args[1]) if len(node.args) > 1 else None
             if is_module:
                 self._record(module, name, "setattr", site)
-            elif name is not None:
-                self._record(None, name, "member_store", site)
+            else:
+                self._member_store(name, site)
         elif func == "vars" and node.args:
             is_module, module = self._module_receiver(node.args[0])
             if is_module:

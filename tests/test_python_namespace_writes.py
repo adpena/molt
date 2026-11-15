@@ -23,7 +23,9 @@ def _summary(source: str, package: str | None = "pkg.sub") -> PythonNamespaceSum
 
 # Rows that are not writes of a module namespace by themselves: the graph joins
 # member stores with escaped module values (call_anatomy.md 4.5a).
-_ESCAPE_ROWS = frozenset({"member_store", "module_escape", "own_module_escape"})
+_ESCAPE_ROWS = frozenset(
+    {"member_store", "computed_member_store", "module_escape", "own_module_escape"}
+)
 
 
 def _writes(source: str, package: str | None = "pkg.sub") -> set[tuple]:
@@ -1375,7 +1377,16 @@ def test_own_namespace_literal_delete_spelling(source: str, name: str | None) ->
         # Stores on receivers that are not module references.
         ("self.value = 1\n", {(None, "value", "member_store")}),
         ("setattr(obj, 'k', 1)\n", {(None, "k", "member_store")}),
-        ("setattr(obj, name, 1)\n", set()),
+        # A computed name may write any attribute, `__class__` included.
+        ("setattr(obj, name, 1)\n", {(None, None, "computed_member_store")}),
+        ("obj.__class__ = Other\n", {(None, "__class__", "member_store")}),
+        (
+            "object.__setattr__(self, '__class__', Other)\n",
+            {(None, "__class__", "member_store")},
+        ),
+        ("self.__setattr__('k', 1)\n", {(None, "k", "member_store")}),
+        ("self.__setattr__(name, 1)\n", {(None, None, "computed_member_store")}),
+        ("object.__delattr__(self, name)\n", {(None, None, "computed_member_store")}),
         # sys.modules values, by literal, computed and own key.
         (
             "import sys\nclass C:\n    def __init__(self):\n"

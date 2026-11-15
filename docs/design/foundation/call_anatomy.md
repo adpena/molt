@@ -27,7 +27,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
-| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") | exact construction results and exact `self`, so the guarded field sites become proven ones, and property reads as direct getter calls (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today); typed-layout deallocation | HF-202, HF-206 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results") | exact `self` in methods, and property reads as direct getter calls (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today); typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
 | 7 TIR inlining | not started | - | - | HF-773 |
@@ -1578,6 +1578,35 @@ was already inline for an immediate. The small rise is the type-id test and the 
 word. The win arrives when the next slices make those guarded sites proven (exact construction
 results under a no-`__class__`-writer fact, then exact `self`). Differential program:
 `tests/differential/basic/class_field_slots.py`.
+
+**Exact construction results (HF-847 step 2, slice b, 2026-11-15).** The HF-226 namespace-write
+analysis now records every attribute store whose name it cannot read (`setattr(x, name, v)`,
+`x.__setattr__(name, v)`, `object.__setattr__(x, name, v)`: `computed_member_store` rows) and the
+literal-name `__setattr__`/`__delattr__` calls on receivers that are not modules. The graph joins
+them into one program fact, `PythonNamespacePremise.instance_class_writer`: the first site that may
+assign `__class__` on an instance (a named `__class__` store, a computed-name store, or a native
+extension module), or None. With None, no code can change an instance's class, so the frontend
+keeps a constructor's exact-class fact for the object's whole life: a direct `__init__` call no
+longer demotes its result to declared, and a callback boundary keeps the facts of locals no
+callback can rebind (function locals that are not global, nonlocal, free, cell, comprehension or
+class-body bindings, and whose reads a frame proxy cannot have rebound). Such a fact is durable
+(`ExactClassFact.durable`, `MoltValue.exact_class_durable`): it proves the class, which fixes
+field offsets, and nothing else, because a callback may have stored an instance attribute that
+shadows a class attribute or method. Only field access consumes it (`fields=True`); method
+devirtualization and class-attribute binding keep the old token rule. Loop entry ends facts the
+same way, since the loop's own assignments end their names' facts separately. With a writer, each
+constructor site that keeps the guarded form names it in the build diagnostics
+(`... result declared, not exact: __class__ may be assigned at module:line`).
+
+Measured (release, macOS arm64, instructions retired, median of three interleaved runs, output
+identical, against ada1e42de4): `bench_struct` x10 LLVM 43.03 G -> 30.39 G (-29.4%), Cranelift
+43.98 G -> 31.74 G (-27.8%); `bench_descriptor_property` x10 unchanged (its read is a property).
+The loop's three `molt_guarded_field_set` calls are gone on both backends: the inlined
+`__init__`'s stores and `main`'s `p.x`/`p.y` stores are `field_slot` machine code. What remains
+per iteration is `molt_object_new_bound` and the release of the previous `Point` (its terminal
+free); the rest of the loop's call sites are cold paths. Differential program:
+`tests/differential/basic/class_exact_results.py` (callbacks that create an instance dictionary
+and shadow a method between accesses, `del` then read, a rebound local, subclasses).
 
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,
