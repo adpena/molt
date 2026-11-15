@@ -30,7 +30,7 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -311,12 +311,21 @@ def run(
     *,
     pytest_args: list[str] | None,
     base: str = "HEAD",
+    bypass_importers: str | None = None,
 ) -> int:
     """Gate the tree a commit of ``paths`` would record, against ``base``.
 
     ``base`` is HEAD for work about to be committed. A committed stack (a
     rebase onto a new main, a bypass push) names the main it lands on, so
     every commit since that main is the change.
+
+    ``bypass_importers`` (a reason) is the owner's bounded bypass for work
+    that unblocks development velocity (2026-11-13, 2026-11-15): the static
+    gates and the change's own test files still run; the importer suites do
+    not, and the receipt names the reason and every skipped importer. Such a
+    receipt proves only the gates that ran (``proven_gates``), so the landing
+    and postsubmit still run the rest; a red postsubmit is reverted within the
+    hour.
     """
     from tools.test_dependency_graph import git_blob_reader, load_graph
 
@@ -341,6 +350,24 @@ def run(
     )
     landing_built = landing_built_tests(root, readers.importers)
     run_now = [test for test in readers.importers if test not in landing_built]
+    bypassed: list[str] = []
+    if bypass_importers is not None:
+        own_tests = [
+            path
+            for path in changed
+            if path.startswith("tests/")
+            and path.endswith(".py")
+            and PurePosixPath(path).name.startswith("test_")
+            and (root / path).is_file()
+        ]
+        bypassed = [test for test in run_now if test not in own_tests]
+        run_now = own_tests
+        print(
+            f"consumer-gate: BYPASS ({bypass_importers}): running the change's own "
+            f"{len(own_tests)} test file(s); {len(bypassed)} importer file(s) are "
+            "left to the landing and postsubmit",
+            flush=True,
+        )
     print(f"consumer-gate: {len(changed)} changed path(s), tree {tree[:12]}")
     for label, tests in (
         ("importers (run now)", run_now),
@@ -418,6 +445,9 @@ def run(
         # Tests that fail on the base commit too (Chromium's "without patch"
         # retry): main's defects, not this change's; their owners fix main.
         "preexisting_failures": preexisting if run_now else [],
+        # The owner's bounded bypass: its reason and the importers not run here.
+        "bypass": bypass_importers,
+        "bypassed_importers": bypassed,
         # The tests saw only the tree's files; the queue's batch reuses only
         # such a receipt (proven_gates(exact=True)).
         "exact": exact,
@@ -579,11 +609,27 @@ def main(argv: list[str] | None = None) -> int:
             "work about to be committed); a committed stack names its main"
         ),
     )
+    parser.add_argument(
+        "--bypass-importers",
+        metavar="REASON",
+        default=None,
+        help=(
+            "run: the owner's bounded bypass for velocity work; run the static "
+            "gates and the change's own tests, record REASON and the skipped "
+            "importers; the landing and postsubmit run the rest"
+        ),
+    )
     parser.add_argument("paths", nargs="*", help="the paths the commit names")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     if args.mode == "run":
-        return run(root, args.paths, pytest_args=args.pytest_arg, base=args.base)
+        return run(
+            root,
+            args.paths,
+            pytest_args=args.pytest_arg,
+            base=args.base,
+            bypass_importers=args.bypass_importers,
+        )
     return check(root, args.paths)
 
 
