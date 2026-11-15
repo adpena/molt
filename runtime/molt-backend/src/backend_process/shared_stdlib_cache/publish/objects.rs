@@ -29,6 +29,63 @@ pub(crate) struct StdlibObjectCache {
     /// The cache root that holds both constituent and archive generations.
     cache_root: PathBuf,
     authority: serde_json::Value,
+    /// The backend executable whose bytes the authority binds, and its file
+    /// stamp when they were hashed. Workers run that path; a rebuild that
+    /// replaces it mid-build would emit another binary's bytes under this
+    /// key (HF-852), so publication re-checks the stamp first.
+    executable: PathBuf,
+    stamp: ExecutableStamp,
+}
+
+/// A file's identity cheap enough to compare on every publication: a rebuild
+/// writes a new file (new inode) or new bytes (new length or mtime).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExecutableStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: (u64, u64),
+}
+
+impl ExecutableStamp {
+    fn of(path: &Path) -> io::Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            inode: {
+                use std::os::unix::fs::MetadataExt;
+                (metadata.dev(), metadata.ino())
+            },
+        })
+    }
+}
+
+/// The SHA-256 of the backend executable, hashed once per file stamp: a
+/// process serves many requests and the binary is large.
+fn executable_identity(path: &Path) -> io::Result<(String, ExecutableStamp)> {
+    static IDENTITY: std::sync::Mutex<Option<(PathBuf, ExecutableStamp, String)>> =
+        std::sync::Mutex::new(None);
+    let stamp = ExecutableStamp::of(path)?;
+    let mut cached = IDENTITY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_path, cached_stamp, digest)) = cached.as_ref()
+        && cached_path == path
+        && *cached_stamp == stamp
+    {
+        return Ok((digest.clone(), stamp));
+    }
+    let digest = sha256_file_hex(path)?;
+    // A rebuild during hashing leaves no trustworthy identity.
+    if ExecutableStamp::of(path)? != stamp {
+        return Err(io::Error::other(
+            "backend executable changed while its identity was hashed",
+        ));
+    }
+    *cached = Some((path.to_path_buf(), stamp, digest.clone()));
+    Ok((digest, stamp))
 }
 
 /// A content-addressed archive generation: the archive assembled from one
@@ -102,9 +159,10 @@ impl StdlibObjectCache {
         // fields, exact profiles, compiler and canonical codegen environment.
         fields.remove("cache_key");
         let executable = std::env::current_exe()?;
+        let (executable_sha256, stamp) = executable_identity(&executable)?;
         fields.insert(
             "executing_backend_sha256".into(),
-            serde_json::json!(sha256_file_hex(&executable)?),
+            serde_json::json!(executable_sha256),
         );
         fields.insert(
             "effective_codegen".into(),
@@ -113,6 +171,8 @@ impl StdlibObjectCache {
         Ok(Some(Self {
             cache_root: stdlib_archive_cache_root(archive)?,
             authority,
+            executable,
+            stamp,
         }))
     }
 
@@ -123,6 +183,19 @@ impl StdlibObjectCache {
     /// constituent outputs. So two programs with the same stdlib partition
     /// share one archive, as Go's build cache serves an unchanged package
     /// archive by its action ID.
+    /// Whether the backend executable is still the one the key binds. A
+    /// build whose binary was replaced keeps its outputs but caches none.
+    pub(crate) fn executable_unchanged(&self) -> io::Result<bool> {
+        let unchanged = ExecutableStamp::of(&self.executable)? == self.stamp;
+        if !unchanged {
+            eprintln!(
+                "MOLT_BACKEND: backend executable {} changed during this build; its stdlib outputs are not cached",
+                self.executable.display()
+            );
+        }
+        Ok(unchanged)
+    }
+
     pub(crate) fn archive_key(inputs: &[[u8; 32]]) -> [u8; 32] {
         let mut digest = Sha256::new();
         digest.update(b"native-stdlib-archive-input-v1\0");
@@ -223,6 +296,9 @@ impl StdlibObjectCache {
         output: &Path,
         origin: &NativeWorkerOrigin,
     ) -> io::Result<NativeWorkerOrigin> {
+        if !self.executable_unchanged()? {
+            return Ok(origin.clone());
+        }
         let file = File::open(output)?;
         let object = unsafe { memmap2::MmapOptions::new().map(&file) }?;
         validate_native_object_bytes(&object)?;

@@ -121,7 +121,9 @@ pub(crate) fn materialize_stdlib_cache(
                 },
             )?;
             let digest = digest.expect("assembly publishes the archive");
-            if let Some(content) = &content {
+            if let Some(content) = &content
+                && executable_unchanged(object_cache.as_ref())?
+            {
                 // Later programs with this partition transfer the generation.
                 publish_copy(
                     stdlib_path,
@@ -136,7 +138,9 @@ pub(crate) fn materialize_stdlib_cache(
         }
     };
 
-    if let Some(cache_path) = cache_path.as_deref() {
+    if let Some(cache_path) = cache_path.as_deref()
+        && executable_unchanged(object_cache.as_ref())?
+    {
         // Required bytes remain in build custody throughout optional cache
         // publication. Eviction after this stripe releases cannot break linking.
         publish_copy(
@@ -160,6 +164,12 @@ pub(crate) fn materialize_stdlib_cache(
         ir.functions.len()
     );
     Ok(())
+}
+
+/// Cache publication binds the backend executable; a build whose binary was
+/// replaced keeps its own outputs and caches none (HF-852).
+fn executable_unchanged(cache: Option<&StdlibObjectCache>) -> io::Result<bool> {
+    cache.map_or(Ok(true), StdlibObjectCache::executable_unchanged)
 }
 
 fn content_generation(content: &ContentArchive) -> ArchiveGeneration<'_> {

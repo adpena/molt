@@ -13,7 +13,33 @@ fn cache() -> StdlibObjectCache {
             NONCE.fetch_add(1, Ordering::Relaxed)
         )),
         authority: serde_json::json!({"compiler_fingerprint": "compiler-a", "cache_variant": "profile=dev;codegen_env=a", "executing_backend_sha256": "binary-a", "effective_codegen": "isa-a"}),
+        executable: std::env::current_exe().unwrap(),
+        stamp: ExecutableStamp::of(&std::env::current_exe().unwrap()).unwrap(),
     }
+}
+
+#[test]
+fn a_backend_replaced_after_its_key_was_bound_publishes_nothing() {
+    // HF-852: workers run the executable path; a rebuild that replaces it
+    // mid-build emits another binary's bytes under the old binary's key.
+    let mut cache = cache();
+    std::fs::create_dir_all(&cache.cache_root).unwrap();
+    let executable = cache.cache_root.join("molt-backend");
+    std::fs::write(&executable, b"binary a").unwrap();
+    cache.stamp = ExecutableStamp::of(&executable).unwrap();
+    cache.executable = executable.clone();
+    let key = cache.input_key(&job()).unwrap();
+    let source = cache.cache_root.join("source.o");
+    let bytes = object_bytes("original");
+    std::fs::write(&source, &bytes).unwrap();
+    let origin = worker_origin(&bytes, 101);
+    // A rebuild writes a new file at the same path.
+    std::fs::remove_file(&executable).unwrap();
+    std::fs::write(&executable, b"binary b, rebuilt").unwrap();
+    assert!(!cache.executable_unchanged().unwrap());
+    assert_eq!(cache.publish(&key, &source, &origin).unwrap(), origin);
+    assert!(cache.admit(&key).unwrap().is_none(), "nothing was cached");
+    std::fs::remove_dir_all(cache.cache_root).unwrap();
 }
 
 fn job() -> NativeBatchObjectJob {
@@ -134,6 +160,8 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
         let other = StdlibObjectCache {
             cache_root: cache.cache_root.clone(),
             authority: changed_authority,
+            executable: cache.executable.clone(),
+            stamp: cache.stamp,
         };
         assert_ne!(
             original_key,
