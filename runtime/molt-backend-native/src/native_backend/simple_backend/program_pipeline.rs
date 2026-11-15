@@ -45,7 +45,7 @@ impl SimpleBackend {
         let source_callables =
             molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
         // One lane target answers every target query below: the Cranelift TIR
-        // cache and dead-op elimination. The TIR pipeline is the one optimizer.
+        // cache. The TIR pipeline is the one optimizer.
         let lane_target_info = if use_llvm {
             crate::tir::target_info::TargetInfo::llvm_release_fast()
         } else {
@@ -77,9 +77,6 @@ impl SimpleBackend {
             )
             .cached_tir
         });
-        if use_llvm && !self.skip_ir_passes {
-            eliminate_dead_ops(ir, &lane_target_info);
-        }
 
         // Bound per-function optimization growth while transport allocations
         // can still be planned by the shared terminal ownership phase.
